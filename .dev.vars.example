@@ -1,0 +1,18 @@
+# 仅供本地 wrangler dev 使用。复制为 .dev.vars 后填写真实值。
+# .dev.vars 已被 .gitignore 排除，严禁提交真实密钥。
+
+GATEWAY_ACCESS_KEY="replace-with-a-long-random-key"
+PRIMARY_API_TOKENS="token-a@https://primary-a.example/v1,token-b@https://primary-b.example/v1"
+
+# 未在 PRIMARY_API_TOKENS 中使用 Token@BaseURL 时取消下一行注释。
+# PRIMARY_BASE_URL="https://primary.example/v1"
+
+# 可选：模型别名映射。JSON 必须压缩为单行或按 dotenv 引号规则填写。
+# MODEL_MAPPING='{"primary-a.example":{"model-alias":"vendor/model-id"}}'
+
+# 可选：Fallback。
+# FALLBACK_API_TOKEN="replace-with-fallback-token"
+# FALLBACK_BASE_URL="https://fallback.example/v1"
+# FALLBACK_PRIMARY_MODEL="model-pro"
+# FALLBACK_SECONDARY_MODEL="model-flash"
+# FALLBACK_CLIENT_NOTICE_MODE="headers"

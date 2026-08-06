@@ -1,0 +1,47 @@
+#!/bin/sh
+set -e
+
+# 环境自适应
+[ -d "/c/Portable Files" ] && export PATH="/c/Portable Files/PortableGit/bin:/c/Portable Files/PortableGit/usr/bin:$PATH"
+
+COMMIT_MSG_FILE=$1
+ORIGINAL_MSG=$(cat "$COMMIT_MSG_FILE" | xargs)
+
+SKIP_TAG=$(echo "$ORIGINAL_MSG" | grep -o "\[skip ci\]" || true)
+
+CLEAN_MSG=$(echo "$ORIGINAL_MSG" | sed 's/\[skip ci\]//g' | xargs)
+CLEAN_LENGTH=$(echo -n "$CLEAN_MSG" | wc -m | tr -d ' ')
+
+IS_TRIGGER=0
+case "$CLEAN_MSG" in
+    up*|update*|Update*|Create*|Delete*|Rename*|"") IS_TRIGGER=1 ;;
+esac
+
+# 逻辑拦截 (字数少于10或命中触发词)
+if [ "$CLEAN_LENGTH" -lt 10 ] || [ "$IS_TRIGGER" -eq 1 ]; then
+    DIFF_DATA=$(git diff --cached --name-status)
+    [ -z "$DIFF_DATA" ] && exit 0
+
+    SUBJECT=""
+    BODY=""
+    
+    ADD_COUNT=$(echo "$DIFF_DATA" | awk '$1~/^A/' | wc -l | xargs)
+    MOD_COUNT=$(echo "$DIFF_DATA" | awk '$1~/^M/' | wc -l | xargs)
+    DEL_COUNT=$(echo "$DIFF_DATA" | awk '$1~/^D/' | wc -l | xargs)
+
+    [ "$ADD_COUNT" -gt 0 ] && SUBJECT="${SUBJECT}新增 $ADD_COUNT 个，" && BODY="${BODY}[新增] $(echo "$DIFF_DATA" | awk '$1~/^A/{print $2}' | paste -sd ", " -)\n"
+    [ "$MOD_COUNT" -gt 0 ] && SUBJECT="${SUBJECT}修订 $MOD_COUNT 个，" && BODY="${BODY}[修订] $(echo "$DIFF_DATA" | awk '$1~/^M/{print $2}' | paste -sd ", " -)\n"
+    [ "$DEL_COUNT" -gt 0 ] && SUBJECT="${SUBJECT}删除 $DEL_COUNT 个，" && BODY="${BODY}[删除] $(echo "$DIFF_DATA" | awk '$1~/^D/{print $2}' | paste -sd ", " -)\n"
+
+    if [ -n "$SUBJECT" ]; then
+        RAW_SUBJECT=$(echo "$SUBJECT" | sed 's/，$/文件/')
+        
+        if [ -n "$SKIP_TAG" ]; then
+            TITLE="${RAW_SUBJECT} ${SKIP_TAG}"
+        else
+            TITLE="${RAW_SUBJECT}"
+        fi
+        
+        printf "%s\n\n%b" "$TITLE" "$BODY" > "$COMMIT_MSG_FILE"
+    fi
+fi

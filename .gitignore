@@ -1,0 +1,14 @@
+node_modules/
+.wrangler/
+.dev.vars
+.env
+.env.*
+!.env.example
+secrets*.json
+*.local
+*.log
+.DS_Store
+Thumbs.db
+release/
+*.zip
+*.tar.gz

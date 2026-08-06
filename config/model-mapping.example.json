@@ -1,0 +1,22 @@
+{
+  "primary-a.example": {
+    "model-alias": "vendor/model-large",
+    "model-alias-fast": {
+      "model": "vendor/model-fast",
+      "capabilities": {
+        "tools": true,
+        "stream_usage": true
+      }
+    }
+  },
+  "fallback.example": {
+    "model-pro": {
+      "model": "actual-pro-model-id",
+      "capabilities": {
+        "tools": true,
+        "expose_reasoning": true
+      }
+    },
+    "model-flash": "actual-flash-model-id"
+  }
+}

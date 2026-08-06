@@ -1,0 +1,25 @@
+{
+  "name": "smart-edge-gateway",
+  "version": "5.11.0",
+  "private": true,
+  "description": "OpenAI Chat Completions 与 Anthropic Messages / Claude Code 双协议智能边缘网关。",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "check": "node --check src/index.js",
+    "test": "node scripts/smoke-test.mjs",
+    "verify": "npm run check && npm test && npm run security:scan",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "cf:login": "wrangler login",
+    "cf:whoami": "wrangler whoami",
+    "security:scan": "node scripts/secret-scan.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "4.114.0"
+  }
+}
