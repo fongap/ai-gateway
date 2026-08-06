@@ -4,6 +4,7 @@
 
 - [ ] `npm ci` 成功；
 - [ ] `npm run verify` 全部通过；
+- [ ] `npm run check:deploy` Wrangler dry-run 通过；
 - [ ] `package.json`、`APP_META.version` 和 `CHANGELOG.md` 版本一致；
 - [ ] Dashboard、`/version`、`/health`、`/metrics` 冒烟测试通过；
 - [ ] ZIP 和 TAR.GZ 能正常解压；
@@ -14,7 +15,10 @@
 - [ ] 仓库中不存在 `.dev.vars`、`.env`、`secrets*.json`；
 - [ ] 示例 Token、域名和账户 ID 均为虚构值；
 - [ ] Git 历史中不存在曾提交过的真实密钥；
-- [ ] 已确认 `/health` 与 `/metrics` 仍需鉴权；
+- [ ] 已确认 `/health`、`/metrics` 和 `/v1/models` 仍需鉴权；
+- [ ] 已确认白名单外路径和危险 HTTP 方法不会被转发；
+- [ ] 已确认 Primary / Fallback 默认只接受 HTTPS；
+- [ ] 已确认更新部署保留已有普通变量和 Secrets；
 - [ ] 已开启 GitHub Security Advisories；
 - [ ] 已确认 Security Advisory 私密报告链接可用。
 

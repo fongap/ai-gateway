@@ -1,9 +1,9 @@
 {
-  "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "smart-edge-gateway",
   "main": "src/index.js",
   "compatibility_date": "2026-08-06",
   "workers_dev": true,
+  "keep_vars": true,
   "observability": {
     "enabled": true
   }

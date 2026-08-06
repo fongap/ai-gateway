@@ -43,7 +43,9 @@ Primary handles normal traffic. Fallback is not part of normal rotation and is a
 ## Features
 
 - OpenAI and Anthropic-compatible endpoints;
-- Primary rotation, bounded retries, health scoring, and cooldowns;
+- a default route and method allowlist that blocks arbitrary upstream management APIs;
+- HTTPS-only Primary and Fallback upstreams by default;
+- Primary rotation, bounded retries, health scoring, hard concurrency limits, and true cooldown exclusion;
 - two-level Fallback routing after Primary exhaustion;
 - per-host model aliases, capabilities, and independent `invoke_url` values;
 - non-streaming and streaming conversion, images, and tool calls;
@@ -57,7 +59,9 @@ Primary handles normal traffic. Fallback is not part of normal rotation and is a
 
 This project provides a stable entry point for multiple OpenAI-compatible upstreams. It is not an official Anthropic proxy, and it cannot create native Anthropic thinking signatures, exact token accounting, or unsupported protocol semantics on behalf of a third-party model.
 
-`/health` and `/metrics` expose local state from the current Worker isolate. They are not globally aggregated Cloudflare totals and are not a billing dashboard.
+`/health` and `/metrics` expose local state from the current Worker isolate. They are not globally aggregated Cloudflare totals and are not a billing dashboard. Streaming requests remain active until the response body ends or the client cancels.
+
+The gateway forwards a client-supplied `Idempotency-Key`, but retries still cannot guarantee idempotency across all third-party providers. If an upstream accepted a request but the gateway timed out before response headers arrived, a later retry may cause a duplicate call or duplicate charge.
 
 ## Repository layout
 
@@ -70,7 +74,7 @@ This project provides a stable entry point for multiple OpenAI-compatible upstre
 ├─ .github/workflows/            CI and GitHub Release workflows
 ├─ .github/ISSUE_TEMPLATE/       Issue forms
 ├─ wrangler.jsonc                Wrangler configuration
-├─ package.json                  npm commands and pinned dependency versions
+├─ package.json                  npm commands and pinned Wrangler invocations
 ├─ package-lock.json             Reproducible dependency lock file
 ├─ README.md                     Chinese documentation
 ├─ README_EN.md                  English documentation
@@ -111,8 +115,8 @@ Real credentials are not stored in the repository.
 ```text
 Root directory: /
 Build command: npm run verify
-Deploy command: npx wrangler deploy
-Non-production deploy command: npx wrangler versions upload
+Deploy command: npx --yes wrangler@4.114.0 deploy --keep-vars
+Non-production deploy command: npx --yes wrangler@4.114.0 versions upload --keep-vars
 ```
 
 6. after the first deployment, add real values under **Settings → Variables and Secrets**;
@@ -132,6 +136,9 @@ See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the full procedure.
 | `PRIMARY_API_TOKENS` | Yes | One or more upstream tokens; supports `Token@BaseURL` |
 | `PRIMARY_BASE_URL` | Conditional | Shared upstream URL when tokens do not bind a URL |
 | `MODEL_MAPPING` | No | Maps client-facing model names to actual upstream model IDs |
+| `STRICT_MODEL_MAPPING` | No | Allows only configured model names when set to `true` |
+| `ALLOW_UNSAFE_PROXY_ROUTES` | No | Defaults to `false`; only supported routes are exposed |
+| `FAKE_STREAM_PROTECTION` | No | Defaults to `false`; non-stream reconstruction is opt-in |
 
 Fallback requires at least:
 
@@ -231,13 +238,19 @@ curl https://YOUR-WORKER.workers.dev/metrics \
   -H "Authorization: Bearer YOUR_GATEWAY_ACCESS_KEY"
 ```
 
-These metrics are intended for temporary endpoint diagnostics. One client request can produce multiple upstream attempts, so endpoint attempt counts are not client request counts.
+`/health` and `/metrics` expose two current-isolate views:
+
+- client request, success, failure, Fallback activation, and Fallback success counters;
+- per-upstream attempt, success, failure, active-stream, and average time-to-response-headers metrics.
+
+A client request can produce multiple upstream attempts, so the two groups do not match. All values reset with the isolate and are not daily global totals.
 
 ## Local verification
 
 ```bash
 npm ci
 npm run verify
+npm run check:deploy
 ```
 
 Verification includes:
@@ -258,8 +271,8 @@ Pushing a semantic version tag automatically triggers GitHub Actions to:
 4. create a GitHub Release and upload the assets.
 
 ```bash
-git tag v5.12.0
-git push origin v5.12.0
+git tag v5.13.0
+git push origin v5.13.0
 ```
 
 See [docs/RELEASE.md](docs/RELEASE.md).

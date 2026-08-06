@@ -43,7 +43,7 @@
  * - ANTHROPIC_MAX_BODY_BYTES   : Anthropic 请求体上限；默认 20 MiB
  * - ANTHROPIC_COUNT_TOKENS_MODE: approximate/disabled；默认 approximate
  * - ANTHROPIC_REASONING_REQUEST_MODE: none/reasoning_effort/chat_template_kwargs/thinking
- * - FAKE_STREAM_PROTECTION     : 非流式请求转上游流式并重组；默认 true
+ * - FAKE_STREAM_PROTECTION     : 非流式请求转上游流式并重组；默认 false，按需启用
  *
  * 运行保护：
  * - REQUEST_TIMEOUT_MS         : 上游首字节超时；默认 60000，范围 5000-180000
@@ -51,6 +51,9 @@
  * - AUTH_FAIL_COOLDOWN_MS      : 401/403 冷却；默认 86400000
  * - RATE_LIMIT_COOLDOWN_MS     : 429 冷却；默认 60000
  * - ALLOWED_ORIGIN             : CORS 来源；默认 *
+ * - STRICT_MODEL_MAPPING       : true 时只允许 MODEL_MAPPING 中声明的模型
+ * - ALLOW_UNSAFE_PROXY_ROUTES  : true 时允许白名单外路径；默认 false
+ * - ALLOW_INSECURE_HTTP_UPSTREAM: true 时允许 HTTP 上游；默认 false
  *
  * 缓存与诊断：
  * - CACHE_ENABLED / CACHE_STREAM / CACHE_MAX_AGE_SEC / CACHE_MAX_BODY_BYTES
@@ -63,6 +66,8 @@
  * - GET /v1/models            : 汇总可用模型；需要网关鉴权
  * - GET /health               : 当前 isolate 的端点健康快照
  * - GET /metrics              : 当前 isolate 的 Prometheus 指标
+ * - POST /v1/chat/completions  : OpenAI Chat Completions
+ * - POST /v1/messages          : Anthropic Messages
  *
  * 运行边界：健康分、并发、滑动窗口和冷却状态保存在当前 isolate 内，
  * 不代表跨全部边缘节点的严格全局状态。大体积直通请求不会执行模型映射或多端点重试。
@@ -71,12 +76,12 @@
 const APP_META = Object.freeze({
   name: 'Smart Edge Gateway',
   displayName: '智能边缘网关',
-  version: '5.12.0',
+  version: '5.13.0',
   repository: 'https://github.com/fongap/smart-edge-gateway',
 });
 
 // ============ 管理首页 ============
-const DASHBOARD_HTML = "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"UTF-8\">\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<meta name=\"color-scheme\" content=\"light\">\n<title>智能边缘网关</title>\n<style>\n:root{--brand:#48636f;--brand-strong:#2d424c;--brand-soft:rgba(72,99,111,.08);--brand-line:rgba(72,99,111,.18);--bg:#fff;--bg-soft:#f7f9fa;--bg-code:#171a1d;--text:#111827;--muted:#59636e;--subtle:#7b8490;--line:#e4e8eb;--shadow:0 18px 55px rgba(17,24,39,.07);--radius:12px;--font:-apple-system,BlinkMacSystemFont,\"Segoe UI\",\"PingFang SC\",\"Hiragino Sans GB\",\"Microsoft YaHei\",sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,\"Liberation Mono\",monospace}\n*{box-sizing:border-box;margin:0;padding:0}html{scroll-behavior:smooth}body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:1.7;-webkit-font-smoothing:antialiased;overflow-x:hidden}a{color:inherit}code{font-family:var(--mono);font-size:.92em}header{position:fixed;inset:0 0 auto;height:64px;display:flex;align-items:center;justify-content:space-between;padding:0 max(5%,24px);background:rgba(255,255,255,.88);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border-bottom:1px solid rgba(228,232,235,.88);z-index:100}.brand{display:flex;align-items:center;gap:11px;font-size:17px;font-weight:650;letter-spacing:.1px}.brand-icon{width:28px;height:28px;display:grid;place-items:center;border-radius:8px;background:var(--brand);box-shadow:0 6px 18px rgba(72,99,111,.22)}.source-link{display:flex;align-items:center;gap:8px;padding:7px 14px;border:1px solid var(--line);border-radius:999px;text-decoration:none;font-size:13px;font-weight:600;transition:.2s ease}.source-link:hover{border-color:var(--brand);background:var(--brand-soft);color:var(--brand-strong);transform:translateY(-1px)}.source-link svg{width:18px;height:18px;flex:none}main{padding-top:64px;min-height:100vh}.doc-container{width:100%;max-width:960px;margin:0 auto;padding:70px 5% 64px}.doc-hero{text-align:center;margin:0 auto 64px;max-width:800px}.doc-hero h1{font-size:clamp(1.85rem,4.2vw,2.65rem);line-height:1.18;letter-spacing:-.035em;font-weight:700;margin-bottom:18px}.doc-hero h1 span{color:var(--brand)}.doc-hero p{max-width:730px;margin:0 auto;color:var(--muted);font-size:1.06rem}.hero-chips{display:flex;flex-wrap:wrap;justify-content:center;gap:9px;margin-top:24px}.chip{padding:6px 10px;border-radius:8px;background:var(--bg-soft);border:1px solid var(--line);font-size:12px;font-weight:650;color:var(--muted)}.flow{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;align-items:center;gap:12px;margin:30px 0 0;padding:17px 20px;border:1px solid var(--line);border-radius:var(--radius);background:linear-gradient(180deg,#fff,var(--bg-soft));box-shadow:0 12px 32px rgba(17,24,39,.04)}.flow-node{text-align:center}.flow-node strong{display:block;font-size:13px}.flow-node small{display:block;margin-top:2px;color:var(--subtle);font-size:11px}.flow-arrow{color:var(--brand);font-weight:800}.section{margin-bottom:58px;scroll-margin-top:92px}.section-title{display:flex;align-items:center;gap:11px;margin-bottom:22px;padding-bottom:12px;border-bottom:1px solid var(--line);font-size:1.42rem;font-weight:680;letter-spacing:-.02em}.section-title svg{width:23px;height:23px;color:var(--brand);flex:none}.section-content{font-size:15px;color:var(--muted)}.section-content>p{margin-bottom:13px}.section-content strong{color:var(--text)}.section-content ul{padding-left:21px;margin:10px 0 18px}.section-content li{margin:7px 0}.step-list{counter-reset:step;margin-top:18px}.step-item{position:relative;padding:0 0 25px 48px}.step-item:last-child{padding-bottom:0}.step-item:before{counter-increment:step;content:counter(step);position:absolute;left:0;top:0;width:30px;height:30px;display:grid;place-items:center;border-radius:9px;background:var(--brand);color:#fff;font-size:13px;font-weight:750;box-shadow:0 7px 17px rgba(72,99,111,.18)}.step-item:after{content:\"\";position:absolute;left:14px;top:36px;bottom:5px;width:1px;background:var(--line)}.step-item:last-child:after{display:none}.step-item h4{margin-bottom:5px;color:var(--text);font-size:16px}.step-item p{font-size:14px}.callout{margin:16px 0;padding:15px 17px;border:1px solid var(--brand-line);border-left:3px solid var(--brand);border-radius:10px;background:var(--brand-soft);color:var(--muted)}.callout strong{display:block;margin-bottom:3px}.code-editor{margin:17px 0;border:1px solid #2b3035;border-radius:11px;overflow:hidden;background:var(--bg-code);box-shadow:var(--shadow)}.code-header{height:38px;display:flex;align-items:center;gap:7px;padding:0 14px;background:#202429;border-bottom:1px solid #30353a}.mac-dot{width:9px;height:9px;border-radius:50%}.dot-r{background:#ff605c}.dot-y{background:#ffbd44}.dot-g{background:#00ca4e}.code-header span{margin-left:7px;color:#939aa3;font-family:var(--mono);font-size:11px}.code-editor pre{padding:19px 20px;overflow:auto;color:#d7dce2;font-family:var(--mono);font-size:12.5px;line-height:1.68;tab-size:2}.kw{color:#79b8ff}.str{color:#e6a57e}.brand-str{color:#92c5d6}.cmt{color:#7d9b72}.fun{color:#e4d28b}.num{color:#b8d7a3}.var{color:#9cc7f1}.grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.mini-card{padding:20px;border:1px solid var(--line);border-radius:var(--radius);background:#fff}.mini-card h3{margin-bottom:7px;color:var(--text);font-size:16px}.mini-card p{font-size:13.5px}.table-wrapper{overflow:auto;margin:17px 0;border:1px solid var(--line);border-radius:11px}table{width:100%;border-collapse:collapse;font-size:13.5px}th{padding:12px 15px;background:var(--bg-soft);border-bottom:1px solid var(--line);color:var(--text);text-align:left;font-weight:700;white-space:nowrap}td{padding:12px 15px;border-bottom:1px solid var(--line);vertical-align:top}tr:last-child td{border-bottom:0}td code{color:var(--brand-strong)}.tag{display:inline-block;padding:2px 7px;border-radius:6px;font-size:11px;font-weight:700}.tag-req{background:#fff0ef;color:#b42318}.tag-opt{background:#eaf5f9;color:#276071}.tag-safe{background:#eef7ef;color:#397143}.features-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:17px;margin-top:18px}.feature-card{padding:22px;border:1px solid var(--line);border-radius:var(--radius);background:#fff;transition:.22s ease}.feature-card:hover{transform:translateY(-2px);box-shadow:0 14px 36px rgba(17,24,39,.06);border-color:var(--brand-line)}.feature-icon{width:38px;height:38px;display:grid;place-items:center;margin-bottom:14px;border-radius:10px;background:var(--brand-soft);color:var(--brand)}.feature-card h3{margin-bottom:7px;font-size:15.5px}.feature-card p{color:var(--muted);font-size:13px;line-height:1.6}.subheading{margin:27px 0 9px;color:var(--text);font-size:16px}.header-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin:13px 0 17px}.header-item{padding:11px 13px;border:1px solid var(--line);border-radius:9px;background:var(--bg-soft);font-family:var(--mono);font-size:12px;color:var(--brand-strong)}footer{text-align:center;padding:34px 20px;border-top:1px solid var(--line);background:var(--bg-soft);color:var(--subtle);font-size:12.5px}.footer-link{text-decoration:none}.footer-link:hover{color:var(--brand-strong)}\n@media(max-width:760px){header{height:56px;padding:0 18px}.brand{font-size:15px}.brand-icon{width:25px;height:25px}.source-link{padding:6px 10px}.source-link span{display:none}main{padding-top:56px}.doc-container{padding:48px 20px 50px}.doc-hero{margin-bottom:48px}.doc-hero p{font-size:.98rem}.flow{grid-template-columns:1fr;padding:15px}.flow-arrow{transform:rotate(90deg)}.grid-2,.features-grid,.header-list{grid-template-columns:1fr}.section{margin-bottom:48px}.section-title{font-size:1.25rem}.code-editor pre{padding:16px;font-size:11.8px}.table-wrapper{margin-left:-4px;margin-right:-4px}}\n</style>\n</head>\n<body>\n<header><div class=\"brand\"><div class=\"brand-icon\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"white\" stroke-width=\"2.4\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z\"/><polyline points=\"3.27 6.96 12 12.01 20.73 6.96\"/><line x1=\"12\" y1=\"22.08\" x2=\"12\" y2=\"12\"/></svg></div>智能边缘网关</div><a href=\"https://github.com/fongap/smart-edge-gateway\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"source-link\" aria-label=\"查看源码\"><svg viewBox=\"0 0 24 24\" fill=\"currentColor\" aria-hidden=\"true\"><path d=\"M12 .7a11.3 11.3 0 0 0-3.6 22c.6.1.8-.2.8-.6v-2.2c-3.3.7-4-1.4-4-1.4-.5-1.4-1.3-1.8-1.3-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1.1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.5-1.3-5.5-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.6.1-3.2 0 0 1-.3 3.3 1.2a11.4 11.4 0 0 1 6 0C17.3 4.9 18.3 5.2 18.3 5.2c.6 1.6.2 2.9.1 3.2.8.9 1.2 1.9 1.2 3.2 0 4.6-2.8 5.6-5.5 5.9.4.4.8 1.1.8 2.2v3.3c0 .4.2.7.8.6A11.3 11.3 0 0 0 12 .7Z\"/></svg><span>源码</span></a></header>\n<main><div class=\"doc-container\">\n<section class=\"doc-hero\"><h1>双协议接入，<span>Primary → Fallback</span> 稳定路由</h1><p>同时兼容 OpenAI Chat Completions 与 Anthropic Messages / Claude Code。主端点负责日常调度，兜底端点仅在主链路不可用时接管，并通过响应头或可选正文提示向客户端反馈实际路由。</p><div class=\"hero-chips\"><span class=\"chip\">OpenAI SDK</span><span class=\"chip\">Claude Code</span><span class=\"chip\">模型映射</span><span class=\"chip\">健康轮换</span><span class=\"chip\">双级兜底</span></div><div class=\"flow\"><div class=\"flow-node\"><strong>Client</strong><small>OpenAI / Anthropic</small></div><div class=\"flow-arrow\">→</div><div class=\"flow-node\"><strong>Primary Pool</strong><small>轮换 · 健康评分 · 重试</small></div><div class=\"flow-arrow\">→</div><div class=\"flow-node\"><strong>Fallback</strong><small>Primary / Secondary</small></div></div></section>\n\n<section class=\"section\" id=\"deploy\"><h2 class=\"section-title\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M13 2L3 14h9l-1 8 10-12h-9l1-8z\"/></svg>部署步骤</h2><div class=\"section-content\"><div class=\"step-list\"><div class=\"step-item\"><h4>创建并部署 Worker</h4><p>在 Cloudflare Workers & Pages 中创建 Worker，用完整源码覆盖默认代码并部署。</p></div><div class=\"step-item\"><h4>设置网关鉴权</h4><p>将 <code>GATEWAY_ACCESS_KEY</code> 设置为机密。客户端通过 Bearer Token 或 <code>x-api-key</code> 提交该访问密钥。</p></div><div class=\"step-item\"><h4>配置 Primary 端点</h4><p>设置 <code>PRIMARY_API_TOKENS</code>，并通过共享 <code>PRIMARY_BASE_URL</code> 或 <code>Token@BaseURL</code> 绑定 OpenAI 兼容上游。</p></div><div class=\"step-item\"><h4>配置可选 Fallback</h4><p>设置兜底 Token、Base URL 与主副模型。兜底不会参与日常轮询，仅在 Primary 尝试失败后依次接管。</p></div><div class=\"step-item\"><h4>绑定域名并验证</h4><p>绑定自定义域名后访问 <code>/health</code>；再分别测试 <code>/v1/chat/completions</code> 与 <code>/v1/messages</code>。</p></div></div></div></section>\n\n<section class=\"section\" id=\"clients\"><h2 class=\"section-title\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M16 18l6-6-6-6\"/><path d=\"M8 6l-6 6 6 6\"/></svg>客户端接入</h2><div class=\"section-content\"><div class=\"grid-2\"><div class=\"mini-card\"><h3>OpenAI 兼容客户端</h3><p>Base URL 使用网关的 <code>/v1</code>，接口保持 <code>/chat/completions</code>。</p></div><div class=\"mini-card\"><h3>Claude Code</h3><p><code>ANTHROPIC_BASE_URL</code> 只填写域名根地址，不附加 <code>/v1</code>。</p></div></div><h3 class=\"subheading\">Claude Code 配置</h3><div class=\"code-editor\"><div class=\"code-header\"><i class=\"mac-dot dot-r\"></i><i class=\"mac-dot dot-y\"></i><i class=\"mac-dot dot-g\"></i><span>settings.json</span></div><pre><code>{\n  <span class=\"str\">\"env\"</span>: {\n    <span class=\"str\">\"ANTHROPIC_BASE_URL\"</span>: <span class=\"brand-str\">\"https://api.yourdomain.com\"</span>,\n    <span class=\"str\">\"ANTHROPIC_AUTH_TOKEN\"</span>: <span class=\"brand-str\">\"your-gateway-access-key\"</span>,\n    <span class=\"str\">\"ANTHROPIC_MODEL\"</span>: <span class=\"brand-str\">\"model-alias\"</span>,\n    <span class=\"str\">\"ANTHROPIC_DEFAULT_OPUS_MODEL\"</span>: <span class=\"brand-str\">\"model-alias\"</span>,\n    <span class=\"str\">\"ANTHROPIC_DEFAULT_SONNET_MODEL\"</span>: <span class=\"brand-str\">\"model-alias\"</span>,\n    <span class=\"str\">\"ANTHROPIC_DEFAULT_HAIKU_MODEL\"</span>: <span class=\"brand-str\">\"model-alias-fast\"</span>,\n    <span class=\"str\">\"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS\"</span>: <span class=\"brand-str\">\"1\"</span>\n  }\n}</code></pre></div><h3 class=\"subheading\">OpenAI cURL</h3><div class=\"code-editor\"><div class=\"code-header\"><i class=\"mac-dot dot-r\"></i><i class=\"mac-dot dot-y\"></i><i class=\"mac-dot dot-g\"></i><span>Terminal</span></div><pre><code><span class=\"fun\">curl</span> https://api.yourdomain.com/v1/chat/completions \\\\\n  -H <span class=\"str\">\"Authorization: Bearer your-gateway-access-key\"</span> \\\\\n  -H <span class=\"str\">\"Content-Type: application/json\"</span> \\\\\n  -d <span class=\"str\">'{\"model\":\"model-alias\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}]}'</span></code></pre></div><div class=\"callout\"><strong>协议桥接</strong>Claude Code 请求的 <code>/v1/messages</code> 会被转换为上游 <code>/v1/chat/completions</code>；工具调用、图片、thinking、usage 与 SSE 事件在网关内完成双向适配。</div></div></section>\n\n<section class=\"section\" id=\"env\"><h2 class=\"section-title\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><circle cx=\"12\" cy=\"12\" r=\"3\"/><path d=\"M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1h.1a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z\"/></svg>环境变量</h2><div class=\"section-content\"><div class=\"table-wrapper\"><table><thead><tr><th>变量</th><th>类型</th><th>用途</th></tr></thead><tbody><tr><td><code>GATEWAY_ACCESS_KEY</code></td><td><span class=\"tag tag-req\">必填</span></td><td>客户端访问网关所使用的鉴权密钥。</td></tr><tr><td><code>PRIMARY_API_TOKENS</code></td><td><span class=\"tag tag-req\">必填</span></td><td>Primary Token 列表；支持 <code>Token@BaseURL</code>。</td></tr><tr><td><code>PRIMARY_BASE_URL</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>未单独绑定 URL 时使用的共享上游地址。</td></tr><tr><td><code>MODEL_MAPPING</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>按上游 hostname 映射客户端模型别名。</td></tr><tr><td><code>FALLBACK_API_TOKEN</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>主副兜底共用 Token，也可分别覆盖。</td></tr><tr><td><code>FALLBACK_BASE_URL</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>主副兜底共用 OpenAI 兼容 Base URL。</td></tr><tr><td><code>FALLBACK_PRIMARY_MODEL</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>第一兜底模型。</td></tr><tr><td><code>FALLBACK_SECONDARY_MODEL</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>第二兜底模型；默认关闭，填写模型名启用，填写 <code>off</code> 显式关闭。</td></tr><tr><td><code>FALLBACK_CLIENT_NOTICE_MODE</code></td><td><span class=\"tag tag-safe\">推荐</span></td><td><code>headers</code>、<code>visible</code> 或 <code>off</code>；默认 headers。</td></tr><tr><td><code>REQUEST_TIMEOUT_MS</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>上游首字节超时，代码最大限制为 180000 ms。</td></tr></tbody></table></div><h3 class=\"subheading\">Primary 与 Fallback</h3><div class=\"code-editor\"><div class=\"code-header\"><i class=\"mac-dot dot-r\"></i><i class=\"mac-dot dot-y\"></i><i class=\"mac-dot dot-g\"></i><span>环境变量</span></div><pre><code><span class=\"var\">PRIMARY_API_TOKENS</span>=<span class=\"str\">token-a@https://primary-a.example/v1,token-b@https://primary-b.example/v1</span>\n\n<span class=\"var\">FALLBACK_API_TOKEN</span>=<span class=\"str\">fallback-token</span>\n<span class=\"var\">FALLBACK_BASE_URL</span>=<span class=\"str\">https://fallback.example/v1</span>\n<span class=\"var\">FALLBACK_PRIMARY_MODEL</span>=<span class=\"str\">model-pro</span>\n<span class=\"var\">FALLBACK_SECONDARY_MODEL</span>=<span class=\"str\">model-flash</span>\n<span class=\"var\">FALLBACK_CLIENT_NOTICE_MODE</span>=<span class=\"str\">headers</span></code></pre></div><div class=\"callout\"><strong>第二兜底开关</strong>不设置 <code>FALLBACK_SECONDARY_MODEL</code> 时默认关闭；填写具体模型名后启用；需要显式关闭时只使用 <code>off</code>。</div><h3 class=\"subheading\">模型映射</h3><div class=\"code-editor\"><div class=\"code-header\"><i class=\"mac-dot dot-r\"></i><i class=\"mac-dot dot-y\"></i><i class=\"mac-dot dot-g\"></i><span>MODEL_MAPPING</span></div><pre><code>{\n  <span class=\"str\">\"primary-a.example\"</span>: {\n    <span class=\"str\">\"model-alias\"</span>: <span class=\"str\">\"vendor/model-large\"</span>,\n    <span class=\"str\">\"model-alias-fast\"</span>: <span class=\"str\">\"vendor/model-fast\"</span>\n  },\n  <span class=\"str\">\"fallback.example\"</span>: {\n    <span class=\"str\">\"model-pro\"</span>: {\n      <span class=\"str\">\"model\"</span>: <span class=\"str\">\"actual-pro-id\"</span>,\n      <span class=\"str\">\"capabilities\"</span>: { <span class=\"str\">\"tools\"</span>: <span class=\"kw\">true</span>, <span class=\"str\">\"expose_reasoning\"</span>: <span class=\"kw\">true</span> }\n    }\n  }\n}</code></pre></div></div></section>\n\n<section class=\"section\" id=\"feedback\"><h2 class=\"section-title\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z\"/><path d=\"M8 9h8M8 13h5\"/></svg>兜底反馈</h2><div class=\"section-content\"><p>当 Primary 链路耗尽并切换至 Fallback 时，网关会向客户端返回结构化路由信息。浏览器客户端可直接读取这些响应头，因为页面已配置 <code>Access-Control-Expose-Headers</code>。</p><div class=\"header-list\"><div class=\"header-item\">x-edge-gateway-route: fallback</div><div class=\"header-item\">x-edge-gateway-fallback-provider</div><div class=\"header-item\">x-edge-gateway-fallback-tier</div><div class=\"header-item\">x-edge-gateway-fallback-model</div><div class=\"header-item\">x-edge-gateway-requested-model</div><div class=\"header-item\">x-edge-gateway-primary-attempts</div></div><div class=\"grid-2\"><div class=\"mini-card\"><h3>headers（默认）</h3><p>仅返回响应头，不改变模型正文，适合 Claude Code 与自动化 Agent。</p></div><div class=\"mini-card\"><h3>visible</h3><p>除响应头外，在普通文本回答首段加入提示；纯工具调用自动跳过，避免影响工具解析。</p></div></div><div class=\"code-editor\"><div class=\"code-header\"><i class=\"mac-dot dot-r\"></i><i class=\"mac-dot dot-y\"></i><i class=\"mac-dot dot-g\"></i><span>可选提示</span></div><pre><code><span class=\"var\">FALLBACK_CLIENT_NOTICE_MODE</span>=<span class=\"str\">visible</span>\n<span class=\"var\">FALLBACK_CLIENT_NOTICE_TEXT</span>=<span class=\"str\">[智能边缘网关] 主端点不可用，已切换至 {provider} / {model}（{tier}）。</span></code></pre></div><div class=\"callout\"><strong>安全规则</strong>Anthropic 响应的 <code>model</code> 字段会报告实际兜底模型。可见提示只注入文本内容；工具调用、tool_result 与 JSON 参数不做任何改写。</div></div></section>\n\n<section class=\"section\" id=\"diagnostics\"><h2 class=\"section-title\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z\"/><path d=\"M9 12l2 2 4-4\"/></svg>诊断与能力</h2><div class=\"section-content\"><div class=\"features-grid\"><article class=\"feature-card\"><div class=\"feature-icon\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M22 12h-4l-3 9L9 3l-3 9H2\"/></svg></div><h3>健康轮换</h3><p>综合健康分、滑动窗口、并发与延迟排序，Primary 端点发生异常时自动降级。</p></article><article class=\"feature-card\"><div class=\"feature-icon\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M21 12a9 9 0 1 1-9-9\"/><path d=\"M21 3v6h-6\"/></svg></div><h3>严格兜底</h3><p>Fallback 不参与正常轮询；第一兜底失败后才尝试第二兜底，并分别维护冷却状态。</p></article><article class=\"feature-card\"><div class=\"feature-icon\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M4 4h16v16H4z\"/><path d=\"M8 9h8M8 13h5\"/></svg></div><h3>双协议桥接</h3><p>支持文本、图片、工具、并行工具、thinking、usage、错误体和 Anthropic SSE 事件序列。</p></article><article class=\"feature-card\"><div class=\"feature-icon\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6\"/></svg></div><h3>长文保护</h3><p>OpenAI 非流式请求可转为上游流式并在边缘重组，降低慢模型首字节超时风险。</p></article><article class=\"feature-card\"><div class=\"feature-icon\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M3 12h18M12 3v18\"/></svg></div><h3>动态映射</h3><p>按实际上游 hostname 翻译模型别名，并支持独立 invoke URL 与模型能力声明。</p></article><article class=\"feature-card\"><div class=\"feature-icon\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M12 8v4l3 2\"/></svg></div><h3>实时诊断</h3><p><code>/health</code> 查看 isolate 状态，<code>/metrics</code> 输出 Prometheus 指标；均需网关鉴权。</p></article></div><div class=\"callout\"><strong>兼容边界</strong>非 Anthropic 上游无法提供 Anthropic 原生可验证 thinking 签名与精确 token 计数。网关采用兼容签名和近似统计，适合协议桥接，不等同于 Anthropic 原生服务。</div></div></section>\n</div></main>\n<footer><p>&copy; <script>document.write(new Date().getFullYear())</script> <a href=\"https://www.fongap.com\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"footer-link\">Fongap EngineSuite WorkGroup</a></p></footer>\n</body>\n</html>";
+const DASHBOARD_HTML = "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"UTF-8\">\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<meta name=\"color-scheme\" content=\"light\">\n<title>智能边缘网关</title>\n<style>\n:root{--brand:#48636f;--brand-strong:#2d424c;--brand-soft:rgba(72,99,111,.08);--brand-line:rgba(72,99,111,.18);--bg:#fff;--bg-soft:#f7f9fa;--bg-code:#171a1d;--text:#111827;--muted:#59636e;--subtle:#7b8490;--line:#e4e8eb;--shadow:0 18px 55px rgba(17,24,39,.07);--radius:12px;--font:-apple-system,BlinkMacSystemFont,\"Segoe UI\",\"PingFang SC\",\"Hiragino Sans GB\",\"Microsoft YaHei\",sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,\"Liberation Mono\",monospace}\n*{box-sizing:border-box;margin:0;padding:0}html{scroll-behavior:smooth}body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:1.7;-webkit-font-smoothing:antialiased;overflow-x:hidden}a{color:inherit}code{font-family:var(--mono);font-size:.92em}header{position:fixed;inset:0 0 auto;height:64px;display:flex;align-items:center;justify-content:space-between;padding:0 max(5%,24px);background:rgba(255,255,255,.88);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border-bottom:1px solid rgba(228,232,235,.88);z-index:100}.brand{display:flex;align-items:center;gap:11px;font-size:17px;font-weight:650;letter-spacing:.1px}.brand-icon{width:28px;height:28px;display:grid;place-items:center;border-radius:8px;background:var(--brand);box-shadow:0 6px 18px rgba(72,99,111,.22)}.source-link{display:flex;align-items:center;gap:8px;padding:7px 14px;border:1px solid var(--line);border-radius:999px;text-decoration:none;font-size:13px;font-weight:600;transition:.2s ease}.source-link:hover{border-color:var(--brand);background:var(--brand-soft);color:var(--brand-strong);transform:translateY(-1px)}.source-link svg{width:18px;height:18px;flex:none}main{padding-top:64px;min-height:100vh}.doc-container{width:100%;max-width:960px;margin:0 auto;padding:70px 5% 64px}.doc-hero{text-align:center;margin:0 auto 64px;max-width:800px}.doc-hero h1{font-size:clamp(1.85rem,4.2vw,2.65rem);line-height:1.18;letter-spacing:-.035em;font-weight:700;margin-bottom:18px}.doc-hero h1 span{color:var(--brand)}.doc-hero p{max-width:730px;margin:0 auto;color:var(--muted);font-size:1.06rem}.hero-chips{display:flex;flex-wrap:wrap;justify-content:center;gap:9px;margin-top:24px}.chip{padding:6px 10px;border-radius:8px;background:var(--bg-soft);border:1px solid var(--line);font-size:12px;font-weight:650;color:var(--muted)}.flow{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;align-items:center;gap:12px;margin:30px 0 0;padding:17px 20px;border:1px solid var(--line);border-radius:var(--radius);background:linear-gradient(180deg,#fff,var(--bg-soft));box-shadow:0 12px 32px rgba(17,24,39,.04)}.flow-node{text-align:center}.flow-node strong{display:block;font-size:13px}.flow-node small{display:block;margin-top:2px;color:var(--subtle);font-size:11px}.flow-arrow{color:var(--brand);font-weight:800}.section{margin-bottom:58px;scroll-margin-top:92px}.section-title{display:flex;align-items:center;gap:11px;margin-bottom:22px;padding-bottom:12px;border-bottom:1px solid var(--line);font-size:1.42rem;font-weight:680;letter-spacing:-.02em}.section-title svg{width:23px;height:23px;color:var(--brand);flex:none}.section-content{font-size:15px;color:var(--muted)}.section-content>p{margin-bottom:13px}.section-content strong{color:var(--text)}.section-content ul{padding-left:21px;margin:10px 0 18px}.section-content li{margin:7px 0}.step-list{counter-reset:step;margin-top:18px}.step-item{position:relative;padding:0 0 25px 48px}.step-item:last-child{padding-bottom:0}.step-item:before{counter-increment:step;content:counter(step);position:absolute;left:0;top:0;width:30px;height:30px;display:grid;place-items:center;border-radius:9px;background:var(--brand);color:#fff;font-size:13px;font-weight:750;box-shadow:0 7px 17px rgba(72,99,111,.18)}.step-item:after{content:\"\";position:absolute;left:14px;top:36px;bottom:5px;width:1px;background:var(--line)}.step-item:last-child:after{display:none}.step-item h4{margin-bottom:5px;color:var(--text);font-size:16px}.step-item p{font-size:14px}.callout{margin:16px 0;padding:15px 17px;border:1px solid var(--brand-line);border-left:3px solid var(--brand);border-radius:10px;background:var(--brand-soft);color:var(--muted)}.callout strong{display:block;margin-bottom:3px}.code-editor{margin:17px 0;border:1px solid #2b3035;border-radius:11px;overflow:hidden;background:var(--bg-code);box-shadow:var(--shadow)}.code-header{height:38px;display:flex;align-items:center;gap:7px;padding:0 14px;background:#202429;border-bottom:1px solid #30353a}.mac-dot{width:9px;height:9px;border-radius:50%}.dot-r{background:#ff605c}.dot-y{background:#ffbd44}.dot-g{background:#00ca4e}.code-header span{margin-left:7px;color:#939aa3;font-family:var(--mono);font-size:11px}.code-editor pre{padding:19px 20px;overflow:auto;color:#d7dce2;font-family:var(--mono);font-size:12.5px;line-height:1.68;tab-size:2}.kw{color:#79b8ff}.str{color:#e6a57e}.brand-str{color:#92c5d6}.cmt{color:#7d9b72}.fun{color:#e4d28b}.num{color:#b8d7a3}.var{color:#9cc7f1}.grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.mini-card{padding:20px;border:1px solid var(--line);border-radius:var(--radius);background:#fff}.mini-card h3{margin-bottom:7px;color:var(--text);font-size:16px}.mini-card p{font-size:13.5px}.table-wrapper{overflow:auto;margin:17px 0;border:1px solid var(--line);border-radius:11px}table{width:100%;border-collapse:collapse;font-size:13.5px}th{padding:12px 15px;background:var(--bg-soft);border-bottom:1px solid var(--line);color:var(--text);text-align:left;font-weight:700;white-space:nowrap}td{padding:12px 15px;border-bottom:1px solid var(--line);vertical-align:top}tr:last-child td{border-bottom:0}td code{color:var(--brand-strong)}.tag{display:inline-block;padding:2px 7px;border-radius:6px;font-size:11px;font-weight:700}.tag-req{background:#fff0ef;color:#b42318}.tag-opt{background:#eaf5f9;color:#276071}.tag-safe{background:#eef7ef;color:#397143}.features-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:17px;margin-top:18px}.feature-card{padding:22px;border:1px solid var(--line);border-radius:var(--radius);background:#fff;transition:.22s ease}.feature-card:hover{transform:translateY(-2px);box-shadow:0 14px 36px rgba(17,24,39,.06);border-color:var(--brand-line)}.feature-icon{width:38px;height:38px;display:grid;place-items:center;margin-bottom:14px;border-radius:10px;background:var(--brand-soft);color:var(--brand)}.feature-card h3{margin-bottom:7px;font-size:15.5px}.feature-card p{color:var(--muted);font-size:13px;line-height:1.6}.subheading{margin:27px 0 9px;color:var(--text);font-size:16px}.header-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin:13px 0 17px}.header-item{padding:11px 13px;border:1px solid var(--line);border-radius:9px;background:var(--bg-soft);font-family:var(--mono);font-size:12px;color:var(--brand-strong)}footer{text-align:center;padding:34px 20px;border-top:1px solid var(--line);background:var(--bg-soft);color:var(--subtle);font-size:12.5px}.footer-link{text-decoration:none}.footer-link:hover{color:var(--brand-strong)}\n@media(max-width:760px){header{height:56px;padding:0 18px}.brand{font-size:15px}.brand-icon{width:25px;height:25px}.source-link{padding:6px 10px}.source-link span{display:none}main{padding-top:56px}.doc-container{padding:48px 20px 50px}.doc-hero{margin-bottom:48px}.doc-hero p{font-size:.98rem}.flow{grid-template-columns:1fr;padding:15px}.flow-arrow{transform:rotate(90deg)}.grid-2,.features-grid,.header-list{grid-template-columns:1fr}.section{margin-bottom:48px}.section-title{font-size:1.25rem}.code-editor pre{padding:16px;font-size:11.8px}.table-wrapper{margin-left:-4px;margin-right:-4px}}\n</style>\n</head>\n<body>\n<header><div class=\"brand\"><div class=\"brand-icon\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"white\" stroke-width=\"2.4\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z\"/><polyline points=\"3.27 6.96 12 12.01 20.73 6.96\"/><line x1=\"12\" y1=\"22.08\" x2=\"12\" y2=\"12\"/></svg></div>智能边缘网关</div><a href=\"https://github.com/fongap/smart-edge-gateway\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"source-link\" aria-label=\"查看源码\"><svg viewBox=\"0 0 24 24\" fill=\"currentColor\" aria-hidden=\"true\"><path d=\"M12 .7a11.3 11.3 0 0 0-3.6 22c.6.1.8-.2.8-.6v-2.2c-3.3.7-4-1.4-4-1.4-.5-1.4-1.3-1.8-1.3-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1.1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.5-1.3-5.5-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.6.1-3.2 0 0 1-.3 3.3 1.2a11.4 11.4 0 0 1 6 0C17.3 4.9 18.3 5.2 18.3 5.2c.6 1.6.2 2.9.1 3.2.8.9 1.2 1.9 1.2 3.2 0 4.6-2.8 5.6-5.5 5.9.4.4.8 1.1.8 2.2v3.3c0 .4.2.7.8.6A11.3 11.3 0 0 0 12 .7Z\"/></svg><span>源码</span></a></header>\n<main><div class=\"doc-container\">\n<section class=\"doc-hero\"><h1>双协议接入，<span>Primary → Fallback</span> 稳定路由</h1><p>同时兼容 OpenAI Chat Completions 与 Anthropic Messages / Claude Code。主端点负责日常调度，兜底端点仅在主链路不可用时接管，并通过响应头或可选正文提示向客户端反馈实际路由。</p><div class=\"hero-chips\"><span class=\"chip\">OpenAI SDK</span><span class=\"chip\">Claude Code</span><span class=\"chip\">模型映射</span><span class=\"chip\">健康轮换</span><span class=\"chip\">双级兜底</span></div><div class=\"flow\"><div class=\"flow-node\"><strong>Client</strong><small>OpenAI / Anthropic</small></div><div class=\"flow-arrow\">→</div><div class=\"flow-node\"><strong>Primary Pool</strong><small>轮换 · 健康评分 · 重试</small></div><div class=\"flow-arrow\">→</div><div class=\"flow-node\"><strong>Fallback</strong><small>Primary / Secondary</small></div></div></section>\n\n<section class=\"section\" id=\"deploy\"><h2 class=\"section-title\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M13 2L3 14h9l-1 8 10-12h-9l1-8z\"/></svg>部署步骤</h2><div class=\"section-content\"><div class=\"step-list\"><div class=\"step-item\"><h4>创建并部署 Worker</h4><p>在 Cloudflare Workers & Pages 中创建 Worker，用完整源码覆盖默认代码并部署。</p></div><div class=\"step-item\"><h4>设置网关鉴权</h4><p>将 <code>GATEWAY_ACCESS_KEY</code> 设置为机密。客户端通过 Bearer Token 或 <code>x-api-key</code> 提交该访问密钥。</p></div><div class=\"step-item\"><h4>配置 Primary 端点</h4><p>设置 <code>PRIMARY_API_TOKENS</code>，并通过共享 <code>PRIMARY_BASE_URL</code> 或 <code>Token@BaseURL</code> 绑定 OpenAI 兼容上游。</p></div><div class=\"step-item\"><h4>配置可选 Fallback</h4><p>设置兜底 Token、Base URL 与主副模型。兜底不会参与日常轮询，仅在 Primary 尝试失败后依次接管。</p></div><div class=\"step-item\"><h4>绑定域名并验证</h4><p>绑定自定义域名后访问 <code>/health</code>；再分别测试 <code>/v1/chat/completions</code> 与 <code>/v1/messages</code>。</p></div></div></div></section>\n\n<section class=\"section\" id=\"clients\"><h2 class=\"section-title\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M16 18l6-6-6-6\"/><path d=\"M8 6l-6 6 6 6\"/></svg>客户端接入</h2><div class=\"section-content\"><div class=\"grid-2\"><div class=\"mini-card\"><h3>OpenAI 兼容客户端</h3><p>Base URL 使用网关的 <code>/v1</code>，接口保持 <code>/chat/completions</code>。</p></div><div class=\"mini-card\"><h3>Claude Code</h3><p><code>ANTHROPIC_BASE_URL</code> 只填写域名根地址，不附加 <code>/v1</code>。</p></div></div><h3 class=\"subheading\">Claude Code 配置</h3><div class=\"code-editor\"><div class=\"code-header\"><i class=\"mac-dot dot-r\"></i><i class=\"mac-dot dot-y\"></i><i class=\"mac-dot dot-g\"></i><span>settings.json</span></div><pre><code>{\n  <span class=\"str\">\"env\"</span>: {\n    <span class=\"str\">\"ANTHROPIC_BASE_URL\"</span>: <span class=\"brand-str\">\"https://api.yourdomain.com\"</span>,\n    <span class=\"str\">\"ANTHROPIC_AUTH_TOKEN\"</span>: <span class=\"brand-str\">\"your-gateway-access-key\"</span>,\n    <span class=\"str\">\"ANTHROPIC_MODEL\"</span>: <span class=\"brand-str\">\"model-alias\"</span>,\n    <span class=\"str\">\"ANTHROPIC_DEFAULT_OPUS_MODEL\"</span>: <span class=\"brand-str\">\"model-alias\"</span>,\n    <span class=\"str\">\"ANTHROPIC_DEFAULT_SONNET_MODEL\"</span>: <span class=\"brand-str\">\"model-alias\"</span>,\n    <span class=\"str\">\"ANTHROPIC_DEFAULT_HAIKU_MODEL\"</span>: <span class=\"brand-str\">\"model-alias-fast\"</span>,\n    <span class=\"str\">\"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS\"</span>: <span class=\"brand-str\">\"1\"</span>\n  }\n}</code></pre></div><h3 class=\"subheading\">OpenAI cURL</h3><div class=\"code-editor\"><div class=\"code-header\"><i class=\"mac-dot dot-r\"></i><i class=\"mac-dot dot-y\"></i><i class=\"mac-dot dot-g\"></i><span>Terminal</span></div><pre><code><span class=\"fun\">curl</span> https://api.yourdomain.com/v1/chat/completions \\\\\n  -H <span class=\"str\">\"Authorization: Bearer your-gateway-access-key\"</span> \\\\\n  -H <span class=\"str\">\"Content-Type: application/json\"</span> \\\\\n  -d <span class=\"str\">'{\"model\":\"model-alias\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}]}'</span></code></pre></div><div class=\"callout\"><strong>协议桥接</strong>Claude Code 请求的 <code>/v1/messages</code> 会被转换为上游 <code>/v1/chat/completions</code>；工具调用、图片、thinking、usage 与 SSE 事件在网关内完成双向适配。</div></div></section>\n\n<section class=\"section\" id=\"env\"><h2 class=\"section-title\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><circle cx=\"12\" cy=\"12\" r=\"3\"/><path d=\"M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1h.1a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z\"/></svg>环境变量</h2><div class=\"section-content\"><div class=\"table-wrapper\"><table><thead><tr><th>变量</th><th>类型</th><th>用途</th></tr></thead><tbody><tr><td><code>GATEWAY_ACCESS_KEY</code></td><td><span class=\"tag tag-req\">必填</span></td><td>客户端访问网关所使用的鉴权密钥。</td></tr><tr><td><code>PRIMARY_API_TOKENS</code></td><td><span class=\"tag tag-req\">必填</span></td><td>Primary Token 列表；支持 <code>Token@BaseURL</code>。</td></tr><tr><td><code>PRIMARY_BASE_URL</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>未单独绑定 URL 时使用的共享上游地址。</td></tr><tr><td><code>MODEL_MAPPING</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>按上游 hostname 映射客户端模型别名。</td></tr><tr><td><code>FALLBACK_API_TOKEN</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>主副兜底共用 Token，也可分别覆盖。</td></tr><tr><td><code>FALLBACK_BASE_URL</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>主副兜底共用 OpenAI 兼容 Base URL。</td></tr><tr><td><code>FALLBACK_PRIMARY_MODEL</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>第一兜底模型。</td></tr><tr><td><code>FALLBACK_SECONDARY_MODEL</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>第二兜底模型；默认关闭，填写模型名启用，填写 <code>off</code> 显式关闭。</td></tr><tr><td><code>FALLBACK_CLIENT_NOTICE_MODE</code></td><td><span class=\"tag tag-safe\">推荐</span></td><td><code>headers</code>、<code>visible</code> 或 <code>off</code>；默认 headers。</td></tr><tr><td><code>STRICT_MODEL_MAPPING</code></td><td><span class=\"tag tag-safe\">推荐</span></td><td>设为 <code>true</code> 后，只允许配置中声明的模型名。</td></tr><tr><td><code>FAKE_STREAM_PROTECTION</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>默认 <code>false</code>；启用后可能改变结构化输出行为。</td></tr><tr><td><code>ALLOW_UNSAFE_PROXY_ROUTES</code></td><td><span class=\"tag tag-safe\">安全</span></td><td>默认 <code>false</code>；仅开放聊天、模型和诊断接口。</td></tr><tr><td><code>ALLOW_INSECURE_HTTP_UPSTREAM</code></td><td><span class=\"tag tag-safe\">安全</span></td><td>默认 <code>false</code>；Primary 只接受 HTTPS。</td></tr><tr><td><code>MODEL_LIST_TIMEOUT_MS</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>单个模型列表上游请求超时；默认 5000 ms。</td></tr><tr><td><code>MODEL_LIST_MAX_ATTEMPTS</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>模型列表最多尝试的 Primary 数量；默认 3。</td></tr><tr><td><code>REQUEST_TIMEOUT_MS</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>上游首字节超时，代码最大限制为 180000 ms。</td></tr></tbody></table></div><h3 class=\"subheading\">Primary 与 Fallback</h3><div class=\"code-editor\"><div class=\"code-header\"><i class=\"mac-dot dot-r\"></i><i class=\"mac-dot dot-y\"></i><i class=\"mac-dot dot-g\"></i><span>环境变量</span></div><pre><code><span class=\"var\">PRIMARY_API_TOKENS</span>=<span class=\"str\">token-a@https://primary-a.example/v1,token-b@https://primary-b.example/v1</span>\n<span class=\"var\">STRICT_MODEL_MAPPING</span>=<span class=\"str\">true</span>\n<span class=\"var\">FAKE_STREAM_PROTECTION</span>=<span class=\"str\">false</span>\n<span class=\"var\">ALLOW_UNSAFE_PROXY_ROUTES</span>=<span class=\"str\">false</span>\n\n<span class=\"var\">FALLBACK_ENABLED</span>=<span class=\"str\">true</span>\n<span class=\"var\">FALLBACK_API_TOKEN</span>=<span class=\"str\">fallback-token</span>\n<span class=\"var\">FALLBACK_BASE_URL</span>=<span class=\"str\">https://fallback.example/v1</span>\n<span class=\"var\">FALLBACK_PRIMARY_MODEL</span>=<span class=\"str\">model-pro</span>\n<span class=\"var\">FALLBACK_SECONDARY_MODEL</span>=<span class=\"str\">model-flash</span>\n<span class=\"var\">FALLBACK_CLIENT_NOTICE_MODE</span>=<span class=\"str\">headers</span></code></pre></div><div class=\"callout\"><strong>第二兜底开关</strong>不设置 <code>FALLBACK_SECONDARY_MODEL</code> 时默认关闭；填写具体模型名后启用；需要显式关闭时只使用 <code>off</code>。</div><h3 class=\"subheading\">模型映射</h3><div class=\"code-editor\"><div class=\"code-header\"><i class=\"mac-dot dot-r\"></i><i class=\"mac-dot dot-y\"></i><i class=\"mac-dot dot-g\"></i><span>MODEL_MAPPING</span></div><pre><code>{\n  <span class=\"str\">\"primary-a.example\"</span>: {\n    <span class=\"str\">\"model-alias\"</span>: <span class=\"str\">\"vendor/model-large\"</span>,\n    <span class=\"str\">\"model-alias-fast\"</span>: <span class=\"str\">\"vendor/model-fast\"</span>\n  },\n  <span class=\"str\">\"fallback.example\"</span>: {\n    <span class=\"str\">\"model-pro\"</span>: {\n      <span class=\"str\">\"model\"</span>: <span class=\"str\">\"actual-pro-id\"</span>,\n      <span class=\"str\">\"capabilities\"</span>: { <span class=\"str\">\"tools\"</span>: <span class=\"kw\">true</span>, <span class=\"str\">\"expose_reasoning\"</span>: <span class=\"kw\">true</span> }\n    }\n  }\n}</code></pre></div></div></section>\n\n<section class=\"section\" id=\"feedback\"><h2 class=\"section-title\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z\"/><path d=\"M8 9h8M8 13h5\"/></svg>兜底反馈</h2><div class=\"section-content\"><p>当 Primary 链路耗尽并切换至 Fallback 时，网关会向客户端返回结构化路由信息。浏览器客户端可直接读取这些响应头，因为页面已配置 <code>Access-Control-Expose-Headers</code>。</p><div class=\"header-list\"><div class=\"header-item\">x-edge-gateway-route: fallback</div><div class=\"header-item\">x-edge-gateway-fallback-provider</div><div class=\"header-item\">x-edge-gateway-fallback-tier</div><div class=\"header-item\">x-edge-gateway-fallback-model</div><div class=\"header-item\">x-edge-gateway-requested-model</div><div class=\"header-item\">x-edge-gateway-primary-attempts</div></div><div class=\"grid-2\"><div class=\"mini-card\"><h3>headers（默认）</h3><p>仅返回响应头，不改变模型正文，适合 Claude Code 与自动化 Agent。</p></div><div class=\"mini-card\"><h3>visible</h3><p>除响应头外，在普通文本回答首段加入提示；纯工具调用自动跳过，避免影响工具解析。</p></div></div><div class=\"code-editor\"><div class=\"code-header\"><i class=\"mac-dot dot-r\"></i><i class=\"mac-dot dot-y\"></i><i class=\"mac-dot dot-g\"></i><span>可选提示</span></div><pre><code><span class=\"var\">FALLBACK_CLIENT_NOTICE_MODE</span>=<span class=\"str\">visible</span>\n<span class=\"var\">FALLBACK_CLIENT_NOTICE_TEXT</span>=<span class=\"str\">[智能边缘网关] 主端点不可用，已切换至 {provider} / {model}（{tier}）。</span></code></pre></div><div class=\"callout\"><strong>安全规则</strong>Anthropic 响应的 <code>model</code> 字段会报告实际兜底模型。可见提示会改变文本正文，不适合严格 JSON 或结构化输出；工具调用、tool_result 与 JSON 参数不做改写。</div></div></section>\n\n<section class=\"section\" id=\"diagnostics\"><h2 class=\"section-title\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z\"/><path d=\"M9 12l2 2 4-4\"/></svg>诊断与能力</h2><div class=\"section-content\"><div class=\"features-grid\"><article class=\"feature-card\"><div class=\"feature-icon\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M22 12h-4l-3 9L9 3l-3 9H2\"/></svg></div><h3>健康轮换</h3><p>冷却、窗口或并发达到上限时直接跳过端点；其余端点再按健康分与延迟排序。</p></article><article class=\"feature-card\"><div class=\"feature-icon\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M21 12a9 9 0 1 1-9-9\"/><path d=\"M21 3v6h-6\"/></svg></div><h3>严格兜底</h3><p>Fallback 不参与正常轮询；第一兜底失败后才尝试第二兜底，并分别维护冷却状态。</p></article><article class=\"feature-card\"><div class=\"feature-icon\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M4 4h16v16H4z\"/><path d=\"M8 9h8M8 13h5\"/></svg></div><h3>双协议桥接</h3><p>支持文本、图片、工具、并行工具、thinking、usage、错误体和 Anthropic SSE 事件序列。</p></article><article class=\"feature-card\"><div class=\"feature-icon\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6\"/></svg></div><h3>长文保护</h3><p>可按需把 OpenAI 非流式请求转为上游流式并在边缘重组；默认关闭，避免改变结构化输出语义。</p></article><article class=\"feature-card\"><div class=\"feature-icon\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M3 12h18M12 3v18\"/></svg></div><h3>动态映射</h3><p>按实际上游 hostname 翻译模型别名，并支持独立 invoke URL 与模型能力声明。</p></article><article class=\"feature-card\"><div class=\"feature-icon\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M12 8v4l3 2\"/></svg></div><h3>实时诊断</h3><p><code>/health</code> 查看客户端请求与端点状态，<code>/metrics</code> 输出当前 isolate 的 Prometheus 指标；包括 Fallback 触发次数，延迟表示到响应头的首字节时间，均需网关鉴权。</p></article></div><div class=\"callout\"><strong>兼容边界</strong>非 Anthropic 上游无法提供 Anthropic 原生可验证 thinking 签名与精确 token 计数。网关采用兼容签名和近似统计，适合协议桥接，不等同于 Anthropic 原生服务。</div></div></section>\n</div></main>\n<footer><p>&copy; <script>document.write(new Date().getFullYear())</script> <a href=\"https://www.fongap.com\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"footer-link\">Fongap EngineSuite WorkGroup</a></p></footer>\n</body>\n</html>";
 
 // ============ 运行参数 ============
 
@@ -91,6 +96,8 @@ const DEFAULT_MAX_BODY_BYTES = 20 * 1024 * 1024;
 const MAX_DIAGNOSTIC_BYTES = 4096;
 // 限制单次请求的主端点尝试次数，避免上游故障时放大延迟。
 const DEFAULT_PRIMARY_MAX_ATTEMPTS = 3;
+const DEFAULT_MODEL_LIST_TIMEOUT_MS = 5_000;
+const DEFAULT_MODEL_LIST_MAX_ATTEMPTS = 3;
 
 const DEFAULT_AUTH_FAIL_COOLDOWN = 86_400_000;
 const DEFAULT_RATE_LIMIT_COOLDOWN = 60_000;
@@ -159,14 +166,21 @@ class BodyTooLargeError extends Error {
 // endpointState 仅在当前 isolate 内共享。健康分、并发、窗口计数与冷却状态均为局部近似值；
 // 如需跨边缘节点的严格一致性，应改用 Durable Object 或外部协调存储。
 const endpointState = new Map();
+const gatewayStats = {
+  startedAt: Date.now(),
+  clientRequests: 0,
+  clientSuccesses: 0,
+  clientFailures: 0,
+  fallbackActivations: 0,
+  fallbackSuccesses: 0,
+};
 let selectionCounter = 0;
 let lastCleanupTime = 0;
 let g_ringBufferSize = RING_BUFFER_MIN_SIZE;
 
 // ============ 请求入口 ============
 
-export default {
-  async fetch(request, env, ctx) {
+async function handleRequest(request, env, ctx) {
     const logger = getLogger(env);
     const requestId = crypto.randomUUID();
     const requestUrl = new URL(request.url);
@@ -203,6 +217,15 @@ export default {
     if (!(await timingSafeEqual(providedGatewayAccessKey, expectedGatewayAccessKey))) {
       return gatewayError(request, env, isAnthropicClient, 401,
         'Unauthorized: gateway access key is invalid or missing.', undefined, requestId);
+    }
+
+    const allowUnsafeProxyRoutes = readOptionalEnv(env, 'ALLOW_UNSAFE_PROXY_ROUTES') === 'true';
+    if (!allowUnsafeProxyRoutes && !isSupportedGatewayRoute(request.method, requestUrl.pathname)) {
+      return gatewayError(request, env, isAnthropicClient, 404,
+        'Route not found or not allowed by the gateway route policy.', {
+          method: request.method,
+          path: requestUrl.pathname,
+        }, requestId);
     }
 
     if (request.method === 'GET' && requestUrl.pathname === '/health') {
@@ -269,7 +292,7 @@ export default {
               bodyParsed = true;
 
               const isChatCompletions = requestUrl.pathname.includes('/chat/completions');
-              const fakeStreamEnabled = readOptionalEnv(env, 'FAKE_STREAM_PROTECTION') !== 'false';
+              const fakeStreamEnabled = readOptionalEnv(env, 'FAKE_STREAM_PROTECTION') === 'true';
               if (isChatCompletions && fakeStreamEnabled && originalBodyJson.stream !== true) {
                 targetWasNonStream = true;
                 originalBodyJson.stream = true;
@@ -352,6 +375,17 @@ export default {
         fallbackEndpoints,
         modelMapping,
       });
+    }
+
+    if (readOptionalEnv(env, 'STRICT_MODEL_MAPPING') === 'true') {
+      if (!bodyParsed || !originalBodyJson || typeof originalBodyJson.model !== 'string') {
+        return gatewayError(request, env, isAnthropicClient, 400,
+          'STRICT_MODEL_MAPPING requires a JSON request body with a model field.', undefined, requestId);
+      }
+      if (!isRequestedModelAllowed(originalBodyJson.model, primaryEndpoints, fallbackEndpoints, modelMapping)) {
+        return gatewayError(request, env, isAnthropicClient, 400,
+          `Model "${originalBodyJson.model}" is not allowed by STRICT_MODEL_MAPPING.`, undefined, requestId);
+      }
     }
 
     const cacheEnabled = readOptionalEnv(env, 'CACHE_ENABLED') === 'true';
@@ -440,9 +474,14 @@ export default {
     const attempts = [];
     const requestedModel = originalBodyJson?.model || 'unknown';
     const anthropicClientWantsStream = route === 'anthropic_messages' && originalBodyJson?.stream === true;
+    let fallbackChainEntered = false;
 
     for (let index = 0; index < candidates.length; index++) {
       const endpoint = candidates[index];
+      if (endpoint.role === 'fallback' && !fallbackChainEntered) {
+        fallbackChainEntered = true;
+        gatewayStats.fallbackActivations++;
+      }
       recordRequestStart(endpoint.id);
 
       let targetUrl;
@@ -464,7 +503,7 @@ export default {
         targetUrl = buildTargetUrl(upstreamRequestUrl, endpoint.baseUrl);
         if (modelConfig.invoke_url) {
           const forced = new URL(modelConfig.invoke_url);
-          forced.search = requestUrl.search;
+          mergeSearchParams(forced, requestUrl);
           targetUrl = forced.toString();
           targetHost = forced.hostname;
         }
@@ -555,7 +594,6 @@ export default {
               );
             }
 
-            recordSuccess(endpoint.id, elapsedMs);
             if (env && env.AE_DATASET) {
               ctx.waitUntil(writeAnalytics(env, {
                 endpointId: await fingerprint(endpoint.token),
@@ -586,7 +624,12 @@ export default {
                 const message = openAIToAnthropicMessage(openAIData, requestedModel, modelConfig, fallbackFeedback);
                 anthropicResponse = anthropicMessageToSseResponse(message);
               }
-              return withCors(anthropicResponse, request, env, extraHeaders);
+              return withCors(
+                trackEndpointStream(anthropicResponse, endpoint.id, elapsedMs),
+                request,
+                env,
+                extraHeaders
+              );
             }
 
             if (request.signal && clientAbortListener) {
@@ -599,6 +642,7 @@ export default {
               openAIData = await safeJsonResponse(upstream);
             }
             const anthropicMessage = openAIToAnthropicMessage(openAIData, requestedModel, modelConfig, fallbackFeedback);
+            recordSuccess(endpoint.id, elapsedMs);
             return new Response(JSON.stringify(anthropicMessage), {
               status: 200,
               headers: {
@@ -632,8 +676,7 @@ export default {
             return assembleResult;
           }
 
-          if (upstream.ok) recordSuccess(endpoint.id, elapsedMs);
-          else recordNeutralEnd(endpoint.id);
+          if (!upstream.ok) recordNeutralEnd(endpoint.id);
 
           if (env && env.AE_DATASET) {
             ctx.waitUntil(writeAnalytics(env, {
@@ -648,6 +691,7 @@ export default {
           if (fallbackFeedback?.visible && upstream.ok && !isStreaming) {
             const openAIData = await safeJsonResponse(upstream);
             applyOpenAIFallbackNotice(openAIData, fallbackFeedback);
+            recordSuccess(endpoint.id, elapsedMs);
             return new Response(JSON.stringify(openAIData), {
               status: 200,
               headers: {
@@ -663,7 +707,7 @@ export default {
             const transformed = transformOpenAIStreamWithFallbackNotice(
               upstream, fallbackFeedback, request.signal, clientAbortListener
             );
-            return withCors(transformed, request, env, extraHeaders);
+            return withCors(trackEndpointStream(transformed, endpoint.id, elapsedMs), request, env, extraHeaders);
           }
 
           if (cacheUrl && upstream.ok && !isStreaming) {
@@ -673,11 +717,16 @@ export default {
             const resForClient = new Response(stream1, { status: upstream.status, statusText: upstream.statusText, headers: upstream.headers });
             const resForCache = new Response(stream2, { status: upstream.status, statusText: upstream.statusText, headers: upstream.headers });
             ctx.waitUntil(cacheResponse(cacheUrl, resForCache, cacheMaxBytes, cacheTtl, logger));
+            recordSuccess(endpoint.id, elapsedMs);
             return withCors(resForClient, request, env, extraHeaders);
           }
 
+          if (!isStreaming && upstream.ok) recordSuccess(endpoint.id, elapsedMs);
+          const responseForClient = isStreaming && upstream.ok
+            ? trackEndpointStream(upstream, endpoint.id, elapsedMs)
+            : upstream;
           return withCors(
-            upstream,
+            responseForClient,
             request,
             env,
             extraHeaders,
@@ -766,11 +815,44 @@ export default {
       fallback_order: fallbackEndpoints.map(ep => ({
         tier: ep.fallbackTier,
         order: ep.fallbackOrder,
-        provider: ep.providerName,
-        base_url: ep.baseUrl,
+        provider: exposeUpstreamInfo ? ep.providerName : getEndpointRole(ep),
+        ...(exposeUpstreamInfo ? { base_url: ep.baseUrl } : {}),
         model: ep.configuredModel,
       })),
     }, requestId);
+}
+
+function isCountedClientRoute(method, pathname) {
+  const verb = String(method || '').toUpperCase();
+  const path = String(pathname || '/').replace(/\/+$/, '').toLowerCase() || '/';
+  if (verb === 'GET') return path === '/v1/models' || path === '/models';
+  if (verb !== 'POST') return false;
+  return [
+    '/v1/chat/completions', '/chat/completions',
+    '/v1/messages', '/messages',
+    '/v1/messages/count_tokens', '/messages/count_tokens',
+  ].includes(path);
+}
+
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    const counted = isCountedClientRoute(request.method, url.pathname);
+    if (counted) gatewayStats.clientRequests++;
+    try {
+      const response = await handleRequest(request, env, ctx);
+      if (counted) {
+        if (response.status < 400) gatewayStats.clientSuccesses++;
+        else gatewayStats.clientFailures++;
+        if (response.status < 400 && response.headers.get('x-edge-gateway-fallback') === 'true') {
+          gatewayStats.fallbackSuccesses++;
+        }
+      }
+      return response;
+    } catch (error) {
+      if (counted) gatewayStats.clientFailures++;
+      throw error;
+    }
   },
 };
 
@@ -778,10 +860,23 @@ export default {
 
 function detectGatewayRoute(method, pathname) {
   if (String(method).toUpperCase() !== 'POST') return 'other';
-  const path = String(pathname || '/').replace(/\/+$/, '') || '/';
+  const path = String(pathname || '/').replace(/\/+$/, '').toLowerCase() || '/';
   if (path === '/v1/messages/count_tokens' || path === '/messages/count_tokens') return 'anthropic_count_tokens';
   if (path === '/v1/messages' || path === '/messages') return 'anthropic_messages';
-  return 'openai';
+  if (path === '/v1/chat/completions' || path === '/chat/completions') return 'openai_chat';
+  return 'other';
+}
+
+function isSupportedGatewayRoute(method, pathname) {
+  const verb = String(method || '').toUpperCase();
+  const path = String(pathname || '/').replace(/\/+$/, '').toLowerCase() || '/';
+  if (verb === 'GET') return ['/version', '/health', '/metrics', '/v1/models', '/models'].includes(path);
+  if (verb === 'POST') return [
+    '/v1/chat/completions', '/chat/completions',
+    '/v1/messages', '/messages',
+    '/v1/messages/count_tokens', '/messages/count_tokens',
+  ].includes(path);
+  return verb === 'OPTIONS';
 }
 
 function isModelsListRoute(method, pathname) {
@@ -834,7 +929,7 @@ function anthropicToOpenAIRequest(body, modelConfig, env) {
     for (const item of converted) messages.push(item);
   }
 
-  const fakeStreamEnabled = readOptionalEnv(env, 'FAKE_STREAM_PROTECTION') !== 'false';
+  const fakeStreamEnabled = readOptionalEnv(env, 'FAKE_STREAM_PROTECTION') === 'true';
   const clientWantsStream = body.stream === true;
   const upstreamStream = clientWantsStream || fakeStreamEnabled;
   const maxField = caps.max_tokens_field === 'max_completion_tokens'
@@ -1965,9 +2060,8 @@ function simpleHash(str) {
 function selectPrimaryEndpoints(primaryEndpoints, maxAttempts, config, originalBodyJson) {
   const now = Date.now();
   const { rotationWindowMs, rotationMaxPerWindow, maxConcurrencyPerEndpoint } = config;
-  const saturatedThreshold = Math.max(1, Math.floor(rotationMaxPerWindow * DEGRADE_THRESHOLD_RATIO));
-  const concurrencyThreshold = Math.max(1, Math.floor(maxConcurrencyPerEndpoint * DEGRADE_THRESHOLD_RATIO));
 
+  const tiers = { ready: [], degraded: [] };
   for (const ep of primaryEndpoints) {
     const state = getEndpointState(ep.id);
     if (state.cooldownUntil > 0 && state.cooldownUntil <= now) {
@@ -1976,19 +2070,14 @@ function selectPrimaryEndpoints(primaryEndpoints, maxAttempts, config, originalB
       state.consecutiveFailures = 0;
       state.healthScore = Math.min(HEALTH_SCORE_MAX, state.healthScore + HEALTH_SCORE_COOLDOWN_RECOVERY);
     }
-  }
 
-  const tiers = { ready: [], degraded: [], cooling: [] };
-  for (const ep of primaryEndpoints) {
-    const s = getEndpointState(ep.id);
-    const isCooling = s.cooldownUntil > now;
-    const isSaturated = s.requestBuffer.getRecentCount(rotationWindowMs, now) >= saturatedThreshold;
-    const isMaxConcurrency = s.activeRequests >= concurrencyThreshold;
-    const isLowHealth = s.healthScore < 30;
+    const recentRequests = state.requestBuffer.getRecentCount(rotationWindowMs, now);
+    if (state.cooldownUntil > now) continue;
+    if (state.activeRequests >= maxConcurrencyPerEndpoint) continue;
+    if (recentRequests >= rotationMaxPerWindow) continue;
 
-    if (isCooling) tiers.cooling.push({ ep, state: s });
-    else if (isSaturated || isMaxConcurrency || isLowHealth) tiers.degraded.push({ ep, state: s });
-    else tiers.ready.push({ ep, state: s });
+    if (state.healthScore < 30) tiers.degraded.push({ ep, state });
+    else tiers.ready.push({ ep, state });
   }
 
   const sortByHealthAndLoad = (a, b) => {
@@ -2002,27 +2091,19 @@ function selectPrimaryEndpoints(primaryEndpoints, maxAttempts, config, originalB
 
   tiers.ready.sort(sortByHealthAndLoad);
   tiers.degraded.sort(sortByHealthAndLoad);
-  tiers.cooling.sort((a, b) => a.state.cooldownUntil - b.state.cooldownUntil);
-
-  const ordered = [...tiers.ready, ...tiers.degraded, ...tiers.cooling];
+  const ordered = [...tiers.ready, ...tiers.degraded];
   if (ordered.length === 0) return [];
 
   const readyCount = tiers.ready.length;
   if (readyCount > 1) {
     let offset = 0;
-
     if (originalBodyJson && Array.isArray(originalBodyJson.messages) && originalBodyJson.messages.length > 0) {
-      const msgs = originalBodyJson.messages;
-      const prefixMsgs = msgs.slice(0, 2);
-      // 对前缀消息做稳定序列化，保证文本与多模态请求都能形成有效粘性路由键。
-      const cacheContextStr = stableStringify(prefixMsgs);
-      offset = simpleHash(cacheContextStr) % readyCount;
+      offset = simpleHash(stableStringify(originalBodyJson.messages.slice(0, 2))) % readyCount;
     } else {
       offset = selectionCounter++ % readyCount;
     }
-
     const rotatedReady = [...tiers.ready.slice(offset), ...tiers.ready.slice(0, offset)];
-    return [...rotatedReady, ...tiers.degraded, ...tiers.cooling].slice(0, maxAttempts).map(x => x.ep);
+    return [...rotatedReady, ...tiers.degraded].slice(0, maxAttempts).map(x => x.ep);
   }
 
   return ordered.slice(0, maxAttempts).map(x => x.ep);
@@ -2140,6 +2221,7 @@ async function healthCheck(env, requestId) {
   const endpoints = [...primaryEndpoints, ...fallbackEndpoints];
   const now = Date.now();
   const rotationWindowMs = clampInt(readOptionalEnv(env, 'PRIMARY_ROTATION_WINDOW_MS'), 10_000, 18_000_000, DEFAULT_PRIMARY_ROTATION_WINDOW_MS);
+  const exposeUpstreamInfo = readOptionalEnv(env, 'EXPOSE_UPSTREAM_INFO') === 'true';
 
   // 端点标识使用异步 SHA-256 指纹，因此并行生成后再序列化。
   const endpointDetails = await Promise.all(endpoints.map(async ep => {
@@ -2147,11 +2229,11 @@ async function healthCheck(env, requestId) {
     const cooling = s.cooldownUntil > now;
     return {
       id: await fingerprint(ep.role === 'fallback' ? `${ep.token}|${ep.configuredModel}` : ep.token),
-      base_url: ep.baseUrl,
+      ...(exposeUpstreamInfo ? { base_url: ep.baseUrl } : {}),
       role: getEndpointRole(ep),
-      provider: ep.providerName || inferProviderName(ep.baseUrl),
-      primary_provider: ep.role === 'fallback' ? null : (ep.providerName || inferProviderName(ep.baseUrl)),
-      fallback_provider: ep.role === 'fallback' ? ep.providerName : null,
+      provider: exposeUpstreamInfo ? (ep.providerName || inferProviderName(ep.baseUrl)) : getEndpointRole(ep),
+      primary_provider: ep.role === 'fallback' ? null : (exposeUpstreamInfo ? (ep.providerName || inferProviderName(ep.baseUrl)) : 'primary'),
+      fallback_provider: ep.role === 'fallback' ? (exposeUpstreamInfo ? ep.providerName : getEndpointRole(ep)) : null,
       fallback_tier: ep.role === 'fallback' ? ep.fallbackTier : null,
       fallback_order: ep.role === 'fallback' ? ep.fallbackOrder : null,
       configured_model: ep.role === 'fallback' ? ep.configuredModel : null,
@@ -2161,6 +2243,7 @@ async function healthCheck(env, requestId) {
       cooldown_reason: s.cooldownReason || null,
       active_requests: s.activeRequests,
       recent_requests_in_window: s.requestBuffer.getRecentCount(rotationWindowMs, now),
+      avg_ttfb_ms: Math.round(s.avgLatencyMs) || 0,
       avg_latency_ms: Math.round(s.avgLatencyMs) || 0,
       total_requests: s.totalRequests,
       total_successes: s.totalSuccesses,
@@ -2179,21 +2262,38 @@ async function healthCheck(env, requestId) {
     status: endpoints.length > 0 ? 'ok' : 'misconfigured',
     gateway_auth_enabled: true,
     primary_endpoints_total: primaryEndpoints.length,
-    primary_providers: [...new Set(primaryEndpoints.map(ep => ep.providerName || inferProviderName(ep.baseUrl)))],
-    primary_base_urls: [...new Set(primaryEndpoints.map(ep => ep.baseUrl))],
+    primary_providers: exposeUpstreamInfo
+      ? [...new Set(primaryEndpoints.map(ep => ep.providerName || inferProviderName(ep.baseUrl)))]
+      : (primaryEndpoints.length > 0 ? ['primary'] : []),
+    ...(exposeUpstreamInfo ? { primary_base_urls: [...new Set(primaryEndpoints.map(ep => ep.baseUrl))] } : {}),
     fallback_configured: fallbackEndpoints.length > 0,
     fallback_order: fallbackEndpoints.map(ep => ({
         tier: ep.fallbackTier,
         order: ep.fallbackOrder,
-        provider: ep.providerName,
-      base_url: ep.baseUrl,
+        provider: exposeUpstreamInfo ? ep.providerName : getEndpointRole(ep),
+      ...(exposeUpstreamInfo ? { base_url: ep.baseUrl } : {}),
       model: ep.configuredModel,
     })),
     note: 'This snapshot reflects only the current isolate\'s in-memory state, not a strictly global view across all edge locations.',
     endpoints_total: endpoints.length,
     endpoints_active: endpoints.length - cooling,
     endpoints_cooling_down: cooling,
+    client_stats: {
+      started_at: new Date(gatewayStats.startedAt).toISOString(),
+      requests_total: gatewayStats.clientRequests,
+      successes_total: gatewayStats.clientSuccesses,
+      failures_total: gatewayStats.clientFailures,
+      fallback_activations_total: gatewayStats.fallbackActivations,
+      fallback_successes_total: gatewayStats.fallbackSuccesses,
+      success_rate: gatewayStats.clientRequests > 0
+        ? (gatewayStats.clientSuccesses / gatewayStats.clientRequests * 100).toFixed(1) + '%'
+        : 'N/A',
+    },
     isolate_stats: {
+      endpoint_attempts_total: totalRequests,
+      endpoint_successes_total: totalSuccesses,
+      endpoint_success_rate: totalRequests > 0 ? (totalSuccesses / totalRequests * 100).toFixed(1) + '%' : 'N/A',
+      // 兼容旧字段；该值是上游端点尝试次数，不是客户端请求数。
       total_requests_served: totalRequests,
       total_successes: totalSuccesses,
       overall_success_rate: totalRequests > 0 ? (totalSuccesses / totalRequests * 100).toFixed(1) + '%' : 'N/A',
@@ -2217,18 +2317,38 @@ async function metricsCheck(env) {
   const endpoints = [...primaryEndpoints, ...fallbackEndpoints];
   const now = Date.now();
   const rotationWindowMs = clampInt(readOptionalEnv(env, 'PRIMARY_ROTATION_WINDOW_MS'), 10_000, 18_000_000, DEFAULT_PRIMARY_ROTATION_WINDOW_MS);
+  const exposeUpstreamInfo = readOptionalEnv(env, 'EXPOSE_UPSTREAM_INFO') === 'true';
 
   const lines = [];
+  lines.push('# HELP edge_gateway_client_requests_total Counted client API requests since isolate start.');
+  lines.push('# TYPE edge_gateway_client_requests_total counter');
+  lines.push(`edge_gateway_client_requests_total ${gatewayStats.clientRequests}`);
+  lines.push('# HELP edge_gateway_client_successes_total Client API responses with HTTP status below 400 since isolate start.');
+  lines.push('# TYPE edge_gateway_client_successes_total counter');
+  lines.push(`edge_gateway_client_successes_total ${gatewayStats.clientSuccesses}`);
+  lines.push('# HELP edge_gateway_client_failures_total Client API responses with HTTP status 400 or above, including thrown errors, since isolate start.');
+  lines.push('# TYPE edge_gateway_client_failures_total counter');
+  lines.push(`edge_gateway_client_failures_total ${gatewayStats.clientFailures}`);
+  lines.push('# HELP edge_gateway_fallback_activations_total Requests that entered the Fallback chain since isolate start.');
+  lines.push('# TYPE edge_gateway_fallback_activations_total counter');
+  lines.push(`edge_gateway_fallback_activations_total ${gatewayStats.fallbackActivations}`);
+  lines.push('# HELP edge_gateway_fallback_successes_total Successful client responses served by a Fallback endpoint since isolate start.');
+  lines.push('# TYPE edge_gateway_fallback_successes_total counter');
+  lines.push(`edge_gateway_fallback_successes_total ${gatewayStats.fallbackSuccesses}`);
   lines.push('# HELP edge_gateway_endpoint_health_score Current health score (1-100) per upstream endpoint.');
   lines.push('# TYPE edge_gateway_endpoint_health_score gauge');
   lines.push('# HELP edge_gateway_endpoint_active_requests Currently in-flight requests per upstream endpoint.');
   lines.push('# TYPE edge_gateway_endpoint_active_requests gauge');
   lines.push('# HELP edge_gateway_endpoint_cooldown_remaining_ms Remaining cooldown time in ms (0 if not cooling).');
   lines.push('# TYPE edge_gateway_endpoint_cooldown_remaining_ms gauge');
-  lines.push('# HELP edge_gateway_endpoint_avg_latency_ms Exponentially-weighted average latency in ms.');
+  lines.push('# HELP edge_gateway_endpoint_avg_ttfb_ms Exponentially-weighted time to response headers in ms.');
+  lines.push('# TYPE edge_gateway_endpoint_avg_ttfb_ms gauge');
+  lines.push('# HELP edge_gateway_endpoint_avg_latency_ms Deprecated alias of edge_gateway_endpoint_avg_ttfb_ms.');
   lines.push('# TYPE edge_gateway_endpoint_avg_latency_ms gauge');
   lines.push('# HELP edge_gateway_endpoint_requests_total Total requests served per endpoint since isolate start.');
   lines.push('# TYPE edge_gateway_endpoint_requests_total counter');
+  lines.push('# HELP edge_gateway_endpoint_successes_total Total successful requests per endpoint since isolate start.');
+  lines.push('# TYPE edge_gateway_endpoint_successes_total counter');
   lines.push('# HELP edge_gateway_endpoint_failures_total Total failed requests per endpoint since isolate start.');
   lines.push('# TYPE edge_gateway_endpoint_failures_total counter');
 
@@ -2239,14 +2359,18 @@ async function metricsCheck(env) {
     const role = getEndpointRole(ep);
     const fallbackTier = ep.role === 'fallback' ? ep.fallbackTier : '';
     const configuredModel = ep.role === 'fallback' ? ep.configuredModel : '';
-    const provider = sanitizePrometheusLabel(ep.providerName || inferProviderName(ep.baseUrl));
+    const provider = sanitizePrometheusLabel(exposeUpstreamInfo
+      ? (ep.providerName || inferProviderName(ep.baseUrl))
+      : getEndpointRole(ep));
     const fallbackProvider = ep.role === 'fallback' ? provider : '';
     const label = `endpoint_id="${id}",endpoint_role="${role}",provider="${provider}",fallback_provider="${fallbackProvider}",fallback_tier="${fallbackTier}",configured_model="${sanitizePrometheusLabel(configuredModel)}"`;
     lines.push(`edge_gateway_endpoint_health_score{${label}} ${Math.round(s.healthScore)}`);
     lines.push(`edge_gateway_endpoint_active_requests{${label}} ${s.activeRequests}`);
     lines.push(`edge_gateway_endpoint_cooldown_remaining_ms{${label}} ${cooling}`);
+    lines.push(`edge_gateway_endpoint_avg_ttfb_ms{${label}} ${Math.round(s.avgLatencyMs) || 0}`);
     lines.push(`edge_gateway_endpoint_avg_latency_ms{${label}} ${Math.round(s.avgLatencyMs) || 0}`);
     lines.push(`edge_gateway_endpoint_requests_total{${label}} ${s.totalRequests}`);
+    lines.push(`edge_gateway_endpoint_successes_total{${label}} ${s.totalSuccesses}`);
     lines.push(`edge_gateway_endpoint_failures_total{${label}} ${s.totalFailures}`);
     // 当前窗口请求数用于观察端点是否接近轮换阈值。
     lines.push(`edge_gateway_endpoint_recent_requests_in_window{${label}} ${s.requestBuffer.getRecentCount(rotationWindowMs, now)}`);
@@ -2278,16 +2402,23 @@ async function writeAnalytics(env, { endpointId, status, latencyMs, attempt, cac
 
 async function modelsListResponse({ request, env, requestId, primaryEndpoints, fallbackEndpoints, modelMapping }) {
   const timeoutMs = clampInt(
-    readOptionalEnv(env, 'REQUEST_TIMEOUT_MS'),
-    MIN_TIMEOUT_MS,
-    MAX_TIMEOUT_MS,
-    DEFAULT_TIMEOUT_MS
+    readOptionalEnv(env, 'MODEL_LIST_TIMEOUT_MS'),
+    1_000,
+    30_000,
+    DEFAULT_MODEL_LIST_TIMEOUT_MS
+  );
+  const maxAttempts = clampInt(
+    readOptionalEnv(env, 'MODEL_LIST_MAX_ATTEMPTS'),
+    1,
+    Math.max(1, primaryEndpoints.length),
+    Math.min(DEFAULT_MODEL_LIST_MAX_ATTEMPTS, Math.max(1, primaryEndpoints.length))
   );
 
   const configuredModels = collectConfiguredModelEntries(primaryEndpoints, fallbackEndpoints, modelMapping);
   const attempts = [];
+  const modelListCandidates = primaryEndpoints.filter(endpoint => !isCoolingDown(endpoint.id)).slice(0, maxAttempts);
 
-  for (const endpoint of primaryEndpoints) {
+  for (const endpoint of modelListCandidates) {
     let targetUrl;
     try {
       targetUrl = buildTargetUrl(new URL(request.url), endpoint.baseUrl);
@@ -2453,6 +2584,14 @@ function addModelEntry(models, item) {
   models.set(id, { ...item, id });
 }
 
+
+function isRequestedModelAllowed(requestedModel, primaryEndpoints, fallbackEndpoints, modelMapping) {
+  const requested = String(requestedModel || '').trim();
+  if (!requested) return false;
+  const configured = collectConfiguredModelEntries(primaryEndpoints, fallbackEndpoints, modelMapping);
+  return configured.some(item => item.id === requested);
+}
+
 // ============ HTTP 处理 ============
 
 function buildStandardOpenAIHeaders(request, token, requestId) {
@@ -2466,6 +2605,8 @@ function buildStandardOpenAIHeaders(request, token, requestId) {
   headers.set('Accept-Encoding', 'gzip, deflate');
   const orgId = incoming.get('openai-organization');
   if (orgId) headers.set('OpenAI-Organization', orgId);
+  const idempotencyKey = incoming.get('idempotency-key');
+  if (idempotencyKey) headers.set('Idempotency-Key', idempotencyKey);
   headers.set('X-Request-ID', requestId);
   return headers;
 }
@@ -2479,8 +2620,17 @@ function buildTargetUrl(incomingUrl, targetBaseUrl) {
     incomingPath = incomingPath.replace(/^\/[vV]1(?=\/|$)/, '') || '/';
   }
   base.pathname = joinPath(base.pathname, incomingPath);
-  base.search = incomingUrl.search;
+  mergeSearchParams(base, incomingUrl);
   return base.toString();
+}
+
+function mergeSearchParams(targetUrl, incomingUrl) {
+  const merged = new URLSearchParams(targetUrl.search);
+  for (const [key, value] of incomingUrl.searchParams.entries()) {
+    merged.delete(key);
+    merged.append(key, value);
+  }
+  targetUrl.search = merged.toString();
 }
 
 function joinPath(left, right) {
@@ -2545,8 +2695,70 @@ function createAbortableStream(upstreamBody, requestSignal, clientAbortListener)
   });
 }
 
+
+function sanitizeUpstreamResponseHeaders(sourceHeaders, exposeUpstreamInfo) {
+  const headers = new Headers();
+  const blocked = new Set([
+    'server', 'via', 'x-powered-by', 'cf-ray', 'cf-cache-status',
+    'x-served-by', 'x-cache', 'x-cache-hits', 'x-envoy-upstream-service-time',
+    'alt-svc', 'report-to', 'nel'
+  ]);
+  for (const [name, value] of sourceHeaders.entries()) {
+    const lower = name.toLowerCase();
+    if (!exposeUpstreamInfo && blocked.has(lower)) continue;
+    if (lower === 'set-cookie') continue;
+    headers.append(name, value);
+  }
+  return headers;
+}
+
+function trackEndpointStream(response, endpointId, latencyMs) {
+  if (!response.body) {
+    recordSuccess(endpointId, latencyMs);
+    return response;
+  }
+  const reader = response.body.getReader();
+  let finished = false;
+  const finishSuccess = () => {
+    if (finished) return;
+    finished = true;
+    recordSuccess(endpointId, latencyMs);
+  };
+  const finishNeutral = () => {
+    if (finished) return;
+    finished = true;
+    recordNeutralEnd(endpointId);
+  };
+  const finishFailure = () => {
+    if (finished) return;
+    finished = true;
+    recordFailure(endpointId, 0, 2_000, 'stream_interrupted');
+  };
+  const body = new ReadableStream({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          finishSuccess();
+          controller.close();
+        } else {
+          controller.enqueue(value);
+        }
+      } catch (error) {
+        finishFailure();
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      finishNeutral();
+      try { await reader.cancel(reason); } catch {}
+    },
+  });
+  return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+}
+
 function withCors(response, request, env, extraHeaders = {}, streamOptions = null) {
-  const headers = new Headers(response.headers);
+  const headers = sanitizeUpstreamResponseHeaders(response.headers, readOptionalEnv(env, 'EXPOSE_UPSTREAM_INFO') === 'true');
   Object.entries(corsHeaders(request, env)).forEach(([k, v]) => headers.set(k, v));
   Object.entries(extraHeaders).forEach(([k, v]) => headers.set(k, v));
 
@@ -2569,7 +2781,7 @@ function corsHeaders(request, env) {
   const allowedOrigin = readOptionalEnv(env, 'ALLOWED_ORIGIN') || '*';
   const headers = {
     'Access-Control-Allow-Origin': allowedOrigin,
-    'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
+    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
     'Access-Control-Allow-Headers': requestedHeaders || 'Authorization,X-Api-Key,Content-Type,Accept,Anthropic-Version,Anthropic-Beta,X-Claude-Code-Session-Id,X-Claude-Code-Agent-Id,X-Claude-Code-Parent-Agent-Id',
     'Access-Control-Expose-Headers': 'X-Request-Id,X-Edge-Gateway-Attempts,X-Edge-Gateway-Upstream-Status,X-Edge-Gateway-Cache,X-Edge-Gateway-Health,X-Edge-Gateway-Route,X-Edge-Gateway-Fallback,X-Edge-Gateway-Fallback-Provider,X-Edge-Gateway-Fallback-Tier,X-Edge-Gateway-Fallback-Model,X-Edge-Gateway-Requested-Model,X-Edge-Gateway-Primary-Attempts,X-Edge-Gateway-Fallback-Reason',
     'Access-Control-Max-Age': '86400',
@@ -2611,7 +2823,8 @@ function buildPrimaryEndpoints(env) {
   if (!enabled || !tokensRaw) return [];
 
   const defaultBaseUrl = readOptionalEnv(env, 'PRIMARY_BASE_URL') || '';
-  return parseTokens(tokensRaw, defaultBaseUrl)
+  const allowInsecureHttp = readOptionalEnv(env, 'ALLOW_INSECURE_HTTP_UPSTREAM') === 'true';
+  return parseTokens(tokensRaw, defaultBaseUrl, allowInsecureHttp)
     .filter(endpoint => endpoint.token && endpoint.baseUrl)
     .map(endpoint => ({
       ...endpoint,
@@ -2699,13 +2912,7 @@ function buildFallbackEndpoints(env) {
 }
 
 function normalizeHttpsBaseUrl(value) {
-  try {
-    const parsed = new URL(String(value || '').trim());
-    if (parsed.protocol !== 'https:') return '';
-    return parsed.toString().replace(/\/+$/, '');
-  } catch {
-    return '';
-  }
+  return normalizeUpstreamBaseUrl(value, false);
 }
 
 
@@ -2775,7 +2982,7 @@ function isFallbackEligible(route, pathname) {
   return path === '/v1/chat/completions' || path === '/chat/completions';
 }
 
-function parseTokens(raw, defaultBaseUrl) {
+function parseTokens(raw, defaultBaseUrl, allowInsecureHttp = false) {
   return String(raw || '')
     .split(/[\s,;]+/)
     .map(t => t.trim())
@@ -2784,10 +2991,22 @@ function parseTokens(raw, defaultBaseUrl) {
       const atIndex = item.indexOf('@');
       const hasBoundUrl = atIndex !== -1 && /^https?:\/\//i.test(item.substring(atIndex + 1));
       const token = hasBoundUrl ? item.substring(0, atIndex).trim() : item;
-      const baseUrl = (hasBoundUrl ? item.substring(atIndex + 1) : defaultBaseUrl || '').trim().replace(/\/+$/, '');
+      const rawBaseUrl = hasBoundUrl ? item.substring(atIndex + 1) : defaultBaseUrl || '';
+      const baseUrl = normalizeUpstreamBaseUrl(rawBaseUrl, allowInsecureHttp);
       return { id: `${token}@${baseUrl}`, token, baseUrl };
     })
     .filter(ep => ep.token && ep.baseUrl);
+}
+
+function normalizeUpstreamBaseUrl(value, allowInsecureHttp = false) {
+  try {
+    const parsed = new URL(String(value || '').trim());
+    if (parsed.protocol !== 'https:' && !(allowInsecureHttp && parsed.protocol === 'http:')) return '';
+    parsed.pathname = parsed.pathname.replace(/\/+$/, '');
+    return parsed.toString();
+  } catch {
+    return '';
+  }
 }
 
 function parseBearer(value) {

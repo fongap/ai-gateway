@@ -1,6 +1,6 @@
 @echo off
 cd /d "%~dp0.."
-set "GIT_EXE=C:\Portable Files\PortableGit\bin\git.exe"
+set "GIT_EXE=C:\Program Files\Git\git-bash.exe"
 
 if not exist ".git" (
     echo [Error] Cannot find .git folder!

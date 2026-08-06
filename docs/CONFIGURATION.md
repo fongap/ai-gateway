@@ -4,19 +4,47 @@
 
 ### `GATEWAY_ACCESS_KEY`
 
-客户端访问网关时使用的密钥。OpenAI 客户端通常使用：
+客户端访问网关使用的密钥。支持：
 
 ```http
 Authorization: Bearer <GATEWAY_ACCESS_KEY>
 ```
 
-也支持：
+或：
 
 ```http
 x-api-key: <GATEWAY_ACCESS_KEY>
 ```
 
-该密钥与上游 API Token 完全不同，必须作为 Cloudflare Secret 保存。
+该密钥与上游 API Token 不同，必须保存为 Cloudflare Secret。
+
+## 默认安全策略
+
+| 变量 | 默认值 | 说明 |
+|---|---:|---|
+| `ALLOW_UNSAFE_PROXY_ROUTES` | `false` | 只允许文档列出的路径和方法；设为 `true` 才允许其他路径透传 |
+| `ALLOW_INSECURE_HTTP_UPSTREAM` | `false` | Primary 与 Fallback 默认只接受 HTTPS |
+| `STRICT_MODEL_MAPPING` | `false` | 设为 `true` 后，只允许 `MODEL_MAPPING` 和 Fallback 中声明的模型名 |
+| `EXPOSE_UPSTREAM_INFO` | `false` | 默认隐藏诊断和响应头中的上游 host、Base URL 与基础设施信息 |
+| `FAKE_STREAM_PROTECTION` | `false` | 默认不把非流式请求改成上游流式请求 |
+
+默认允许的接口：
+
+```text
+GET  /version
+GET  /v1/models
+GET  /models
+GET  /health
+GET  /metrics
+POST /v1/chat/completions
+POST /chat/completions
+POST /v1/messages
+POST /messages
+POST /v1/messages/count_tokens
+POST /messages/count_tokens
+```
+
+`/` 仅用于浏览器 Dashboard。白名单外路径默认返回 404，不会转发到上游。
 
 ## Primary
 
@@ -25,36 +53,55 @@ x-api-key: <GATEWAY_ACCESS_KEY>
 共享 Base URL：
 
 ```text
-TOKEN_A,TOKEN_B
+PRIMARY_API_TOKENS=TOKEN_A,TOKEN_B
 PRIMARY_BASE_URL=https://primary.example/v1
 ```
 
 每个 Token 独立绑定地址：
 
 ```text
-TOKEN_A@https://primary-a.example/v1,TOKEN_B@https://primary-b.example/v1
+PRIMARY_API_TOKENS=TOKEN_A@https://primary-a.example/v1,TOKEN_B@https://primary-b.example/v1
 ```
 
-`PRIMARY_API_TOKENS` 包含 Token，因此整体必须保存为 Secret。
+`PRIMARY_API_TOKENS` 含凭据，必须保存为 Secret。默认仅接受 HTTPS。只有明确设置：
 
-### 常用 Primary 参数
+```text
+ALLOW_INSECURE_HTTP_UPSTREAM=true
+```
+
+才允许 HTTP；该开关仅适合本地受控测试。
+
+Base URL 可包含供应商要求的固定查询参数，例如：
+
+```text
+https://api.example/v1?api-version=2026-01-01
+```
+
+网关会保留这些参数，并合并客户端请求中的查询参数；客户端同名参数优先。
+
+### Primary 调度参数
 
 | 变量 | 默认值 | 说明 |
 |---|---:|---|
-| `PRIMARY_ENABLED` | 自动判断 | 根据 `PRIMARY_API_TOKENS` 是否存在自动判断 |
-| `PRIMARY_MAX_ATTEMPTS` | `min(端点数, 3)` | 单次客户端请求最多尝试的 Primary 端点数 |
-| `PRIMARY_ROTATION_WINDOW_MS` | `60000` | 当前 isolate 的滑动窗口长度 |
-| `PRIMARY_ROTATION_MAX_PER_WINDOW` | `15` | 单端点窗口请求上限 |
-| `PRIMARY_MAX_CONCURRENCY_PER_ENDPOINT` | `3` | 单端点并发上限 |
+| `PRIMARY_ENABLED` | 自动判断 | 根据 `PRIMARY_API_TOKENS` 是否存在判断 |
+| `PRIMARY_MAX_ATTEMPTS` | `min(端点数, 3)` | 单次请求最多尝试的 Primary 数量 |
+| `PRIMARY_ROTATION_WINDOW_MS` | `60000` | 当前 isolate 的请求窗口 |
+| `PRIMARY_ROTATION_MAX_PER_WINDOW` | `15` | 达到后该端点在当前窗口内不再被选择 |
+| `PRIMARY_MAX_CONCURRENCY_PER_ENDPOINT` | `3` | 达到后该端点在并发释放前不再被选择 |
+| `AUTH_FAIL_COOLDOWN_MS` | `86400000` | 401/403 冷却时间 |
+| `RATE_LIMIT_COOLDOWN_MS` | `60000` | 429 冷却时间 |
+
+冷却中的端点会被排除，而不是只放到队列末尾。所有 Primary 都不可用时，网关尝试 Fallback；没有可用 Fallback 时返回 429。
 
 ## Fallback
 
 最小配置：
 
 ```text
-FALLBACK_API_TOKEN
-FALLBACK_BASE_URL
-FALLBACK_PRIMARY_MODEL
+FALLBACK_ENABLED=true
+FALLBACK_API_TOKEN=<secret>
+FALLBACK_BASE_URL=https://fallback.example/v1
+FALLBACK_PRIMARY_MODEL=model-pro
 ```
 
 第二兜底：
@@ -64,7 +111,27 @@ FALLBACK_SECONDARY_MODEL=model-flash  # 启用
 FALLBACK_SECONDARY_MODEL=off          # 显式关闭
 ```
 
-不设置或填写空值时默认关闭。`none`、`disabled` 和 `false` 会被视为普通模型名。
+不设置或空值时默认关闭。`none`、`disabled`、`false` 会被当作普通模型名。
+
+关闭整个 Fallback：
+
+```text
+FALLBACK_ENABLED=false
+```
+
+仓库提供：
+
+```bash
+./scripts/disable-fallback.sh
+```
+
+或：
+
+```powershell
+.\scripts\disable-fallback.ps1
+```
+
+脚本会显式写入关闭状态。旧 Fallback 变量即使仍保留，也不会参与路由。
 
 可分别覆盖两个兜底的 Token 和 URL：
 
@@ -80,30 +147,20 @@ FALLBACK_SECONDARY_BASE_URL
 | 变量 | 默认值 | 说明 |
 |---|---|---|
 | `FALLBACK_CLIENT_NOTICE_MODE` | `headers` | `headers`、`visible` 或 `off` |
-| `FALLBACK_CLIENT_NOTICE_TEXT` | 内置模板 | 可使用 provider、model、tier 等占位符 |
+| `FALLBACK_CLIENT_NOTICE_TEXT` | 内置模板 | 支持 provider、model、tier 等占位符 |
+
+`visible` 会修改模型正文，不适合严格 JSON、JSON Schema 或其他结构化输出；此类场景应使用默认 `headers`。
 
 ## 模型映射
 
 `MODEL_MAPPING` 按实际上游 hostname 分组。示例见 [../config/model-mapping.example.json](../config/model-mapping.example.json)。
-
-简单映射：
-
-```json
-{
-  "api.example.com": {
-    "model-alias": "vendor/actual-model-id"
-  }
-}
-```
-
-带能力和独立调用地址：
 
 ```json
 {
   "api.example.com": {
     "model-alias": {
       "model": "vendor/actual-model-id",
-      "invoke_url": "https://api.example.com/v1/chat/completions",
+      "invoke_url": "https://api.example.com/v1/chat/completions?api-version=2026-01-01",
       "capabilities": {
         "tools": true,
         "stream_usage": true,
@@ -114,44 +171,65 @@ FALLBACK_SECONDARY_BASE_URL
 }
 ```
 
-`stream_usage: true` 只是请求上游在流结束时返回 usage。上游不支持或不返回时，网关无法得到准确 Token 数。
+`STRICT_MODEL_MAPPING=true` 时，请求中的 `model` 必须是当前端点映射中的别名或已配置的 Fallback 模型名，否则返回 400。大体积、压缩或无法解析为 JSON 的请求在严格模式下也会被拒绝。
 
-## 请求与运行保护
+`stream_usage: true` 只是要求上游在流结束时返回 usage；上游不支持或不返回时，网关无法得到准确 Token 数。
+
+## 模型列表
+
+| 变量 | 默认值 | 说明 |
+|---|---:|---|
+| `MODEL_LIST_TIMEOUT_MS` | `5000` | 每个上游模型列表请求的超时，范围 1000–30000 ms |
+| `MODEL_LIST_MAX_ATTEMPTS` | `3` | 最多尝试的 Primary 数量 |
+
+`/v1/models` 会跳过冷却中的 Primary，并把首个有效上游列表与本地模型别名合并。所有上游都不可用时，只要存在 `MODEL_MAPPING` 或 Fallback 模型，仍返回本地配置模型。
+
+## 请求体与协议
 
 | 变量 | 默认值 | 说明 |
 |---|---:|---|
 | `REQUEST_TIMEOUT_MS` | `60000` | 上游首字节超时，范围 5000–180000 ms |
 | `MAX_BODY_BYTES` | 20 MiB | OpenAI 请求体上限 |
 | `ANTHROPIC_MAX_BODY_BYTES` | 20 MiB | Anthropic 请求体上限 |
-| `AUTH_FAIL_COOLDOWN_MS` | `86400000` | 401/403 冷却 |
-| `RATE_LIMIT_COOLDOWN_MS` | `60000` | 429 冷却 |
+| `ANTHROPIC_COUNT_TOKENS_MODE` | `approximate` | `approximate` 或 `disabled` |
+| `ANTHROPIC_REASONING_REQUEST_MODE` | `none` | reasoning 参数桥接方式 |
 | `ALLOWED_ORIGIN` | `*` | CORS 来源 |
+
+`FAKE_STREAM_PROTECTION=true` 会把非流式 Chat Completions 请求改成上游流式请求，再在 Worker 中重组。该模式可能改变 usage、结构化输出和超长响应行为，因此默认关闭。
+
+## 缓存
+
+缓存默认关闭。可选变量：
+
+```text
+CACHE_ENABLED
+CACHE_STREAM
+CACHE_MAX_AGE_SEC
+CACHE_MAX_BODY_BYTES
+```
+
+仅建议缓存具有确定性的请求，例如显式 `temperature=0` 或提供固定 `seed` 的请求。
 
 ## 诊断端点
 
 ### `/version`
 
-公开端点，返回项目名、版本、运行环境、协议和仓库地址。它不返回任何运行时密钥或上游配置。
-
-### `/v1/models`
-
-需要鉴权。网关依次尝试 Primary 上游的模型列表接口；遇到不支持、鉴权失败或无效响应时继续尝试下一个。成功结果会与当前已配置 hostname 对应的 `MODEL_MAPPING` 别名及 Fallback 模型名合并。
-
-响应头 `x-edge-gateway-model-source` 表示来源：
-
-- `upstream`：仅来自上游；
-- `upstream+configured`：上游结果与本地配置合并；
-- `configured`：上游均不可用，仅返回本地配置。
+公开端点，只返回项目名、版本、协议和仓库地址。
 
 ### `/health`
 
-需要鉴权，返回当前 isolate 的端点调用次数、成功/失败、健康分、冷却和延迟。
+需要鉴权。默认不返回上游 Base URL 或真实 provider host；设置 `EXPOSE_UPSTREAM_INFO=true` 后才显示。
 
 ### `/metrics`
 
-需要鉴权，输出当前 isolate 的 Prometheus 文本指标。
+需要鉴权。输出当前 isolate 的两组数据：
 
-这些数据会随 isolate 回收而消失，也不会自动汇总全球节点。一次客户端请求可能重试多个上游，因此端点尝试次数不等于客户端请求次数。
+- 客户端 API 请求、成功、失败、Fallback 触发与 Fallback 成功；
+- 各端点尝试、成功、失败、活动连接、平均首字节时间、健康分和冷却状态。
+
+流式连接在响应体结束或客户端取消后才释放活动计数。客户端统计按最终 HTTP 状态划分：小于 400 计为成功，400 及以上计为失败。
+
+这些数据随 isolate 回收而重置，也不会自动汇总全球节点。一次客户端请求可能尝试多个上游，因此端点尝试数不等于客户端请求数。
 
 ## Analytics Engine（可选）
 
@@ -168,4 +246,4 @@ FALLBACK_SECONDARY_BASE_URL
 }
 ```
 
-该功能默认关闭。启用后每次记录会产生 Analytics Engine 写入，应先评估实际需求。
+默认不开启，启用后每次写入会产生额外资源消耗。

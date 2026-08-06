@@ -1,6 +1,6 @@
 {
   "name": "smart-edge-gateway",
-  "version": "5.12.0",
+  "version": "5.13.0",
   "private": true,
   "description": "A lightweight OpenAI and Anthropic-compatible AI gateway for Cloudflare Workers with resilient Primary and Fallback routing.",
   "type": "module",
@@ -16,14 +16,13 @@
     "security:scan": "node scripts/secret-scan.mjs",
     "verify": "npm run check && npm run check:version && npm run check:links && npm test && npm run security:scan",
     "checksums": "node scripts/generate-checksums.mjs",
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "tail": "wrangler tail",
-    "cf:login": "wrangler login",
-    "cf:whoami": "wrangler whoami"
-  },
-  "devDependencies": {
-    "wrangler": "4.114.0"
+    "dev": "npx --yes wrangler@4.114.0 dev",
+    "deploy": "npx --yes wrangler@4.114.0 deploy --keep-vars",
+    "tail": "npx --yes wrangler@4.114.0 tail",
+    "cf:login": "npx --yes wrangler@4.114.0 login",
+    "cf:whoami": "npx --yes wrangler@4.114.0 whoami",
+    "check:deploy": "npx --yes wrangler@4.114.0 deploy --dry-run --keep-vars --outdir .wrangler-dry-run",
+    "verify:release": "npm run verify && npm run check:deploy"
   },
   "repository": {
     "type": "git",

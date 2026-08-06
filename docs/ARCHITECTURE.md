@@ -8,10 +8,10 @@
 OpenAI / Anthropic Client
            |
            v
-Authentication and request validation
+Authentication, route allowlist, and body validation
            |
            v
-Protocol conversion and model mapping
+HTTPS enforcement, protocol conversion, and model mapping
            |
            v
      Primary endpoint pool
@@ -29,13 +29,13 @@ Protocol conversion and model mapping
 
 Primary 端点参与正常流量调度。选择时综合：
 
-- 当前冷却状态；
+- 当前冷却状态（冷却中直接排除）；
 - 健康评分；
-- 滑动窗口请求量；
-- 当前并发；
+- 滑动窗口请求量（达到上限直接排除）；
+- 当前并发（达到上限直接排除）；
 - 平滑响应延迟。
 
-单次客户端请求最多尝试 `PRIMARY_MAX_ATTEMPTS` 个符合条件的 Primary 端点。端点失败后，网关根据状态码设置健康扣分和冷却。
+单次客户端请求最多尝试 `PRIMARY_MAX_ATTEMPTS` 个符合条件的 Primary 端点。端点失败后，网关根据状态码设置健康扣分和冷却。流式请求会一直占用并发计数，直到响应体结束或客户端取消。
 
 ## Fallback
 
@@ -63,6 +63,10 @@ Anthropic Messages 请求会转换为 OpenAI Chat Completions 请求；响应再
 
 需要跨 isolate 趋势时，可选接入 Analytics Engine。需要严格全局一致性时，应使用 Durable Objects 或外部协调存储。
 
+## 默认路由策略
+
+白名单外路径和 `PUT`、`PATCH`、`DELETE` 等方法默认不会被转发。只有显式设置 `ALLOW_UNSAFE_PROXY_ROUTES=true` 才恢复通用透传模式。Primary 和 Fallback 默认只允许 HTTPS。
+
 ## Public and protected endpoints
 
 | Endpoint | Authentication | Purpose |
@@ -75,3 +79,7 @@ Anthropic Messages 请求会转换为 OpenAI Chat Completions 请求；响应再
 | `/v1/chat/completions` | Yes | OpenAI-compatible gateway |
 | `/v1/messages` | Yes | Anthropic-compatible gateway |
 | `/v1/messages/count_tokens` | Yes | Approximate or disabled token count mode |
+
+## 统计边界
+
+`/health` 和 `/metrics` 分别记录客户端 API 请求与上游端点尝试。一次客户端请求可能触发多个 Primary 尝试和一次 Fallback 链，因此端点尝试数通常大于客户端请求数。所有计数仅属于当前 isolate。

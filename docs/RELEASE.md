@@ -53,16 +53,16 @@ PowerShell 在系统没有 `tar` 命令时只生成 ZIP。
 
 ```bash
 git add .
-git commit -m "Release v5.12.0"
-git tag v5.12.0
+git commit -m "Release v5.13.0"
+git tag v5.13.0
 git push origin main
-git push origin v5.12.0
+git push origin v5.13.0
 ```
 
 `.github/workflows/release.yml` 会：
 
 1. 安装锁定依赖；
-2. 执行完整验证；
+2. 执行完整验证与 Wrangler dry-run；
 3. 验证 Tag 与版本号一致；
 4. 生成 ZIP、TAR.GZ 和 SHA-256；
 5. 创建 GitHub Release 并上传资产。

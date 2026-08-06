@@ -43,7 +43,9 @@ Primary 负责正常流量。Fallback 不参与日常轮询，只在 Primary 尝
 ## 核心能力
 
 - OpenAI 与 Anthropic 双协议接入；
-- Primary 多端点轮换、重试、健康评分与冷却；
+- 默认启用路径与方法白名单，避免把上游管理接口暴露给网关客户端；
+- Primary 与 Fallback 默认强制 HTTPS；
+- Primary 多端点轮换、重试、健康评分、硬并发上限与真实冷却排除；
 - Primary 全部失败后自动进入两级 Fallback；
 - 按实际上游 hostname 配置模型映射、能力和独立 `invoke_url`；
 - 支持普通响应、流式响应、图片和工具调用转换；
@@ -57,7 +59,9 @@ Primary 负责正常流量。Fallback 不参与日常轮询，只在 Primary 尝
 
 该项目用于把多个 OpenAI 兼容上游统一为一个稳定入口。它不是 Anthropic 官方代理，也不能让第三方模型自动获得 Anthropic 原生 thinking 签名、精确 Token 统计或全部协议语义。
 
-`/health` 与 `/metrics` 展示的是当前 Worker isolate 的局部运行状态，不是 Cloudflare 全球节点聚合统计，也不等同于费用统计。
+`/health` 与 `/metrics` 展示的是当前 Worker isolate 的局部运行状态，不是 Cloudflare 全球节点聚合统计，也不等同于费用统计。流式连接在响应体结束或客户端取消后才释放活动计数。
+
+客户端提供 `Idempotency-Key` 时，网关会向上游转发；但网关重试仍无法保证所有第三方供应商都支持幂等性。上游已经收到请求但网关在首字节前超时时，后续重试可能造成重复调用或重复计费。
 
 ## 仓库结构
 
@@ -70,7 +74,7 @@ Primary 负责正常流量。Fallback 不参与日常轮询，只在 Primary 尝
 ├─ .github/workflows/            CI 与 GitHub Release
 ├─ .github/ISSUE_TEMPLATE/       Issue 模板
 ├─ wrangler.jsonc                Wrangler 配置
-├─ package.json                  npm 命令和固定依赖版本
+├─ package.json                  npm 命令与固定 Wrangler 调用版本
 ├─ package-lock.json             可重复安装锁文件
 ├─ README.md                     中文说明
 ├─ README_EN.md                  English documentation
@@ -96,7 +100,7 @@ chmod +x scripts/*.sh
 ./scripts/setup-and-deploy.sh
 ```
 
-脚本会完成 Node.js 检查、依赖安装、Cloudflare 登录、配置收集、密钥临时文件生成、Worker 与 Secrets 一次上传，并在部署结束后删除临时密钥文件。
+脚本会完成 Node.js 检查、锁文件验证、Primary HTTPS 完整性检查、Worker dry-run、Cloudflare 登录、配置收集、安全默认值写入、密钥临时文件生成、Worker 与 Secrets 一次上传，并在部署结束后删除临时密钥文件。未配置 Fallback 时会显式关闭旧 Fallback。
 
 真实凭据不会写入仓库。
 
@@ -111,8 +115,8 @@ chmod +x scripts/*.sh
 ```text
 Root directory: /
 Build command: npm run verify
-Deploy command: npx wrangler deploy
-Non-production deploy command: npx wrangler versions upload
+Deploy command: npx --yes wrangler@4.114.0 deploy --keep-vars
+Non-production deploy command: npx --yes wrangler@4.114.0 versions upload --keep-vars
 ```
 
 6. 首次部署后，在 Worker 的 **Settings → Variables and Secrets** 中添加真实配置；
@@ -132,6 +136,9 @@ Non-production deploy command: npx wrangler versions upload
 | `PRIMARY_API_TOKENS` | 是 | 一个或多个上游 Token；支持 `Token@BaseURL` |
 | `PRIMARY_BASE_URL` | 条件必需 | Token 未绑定 URL 时使用 |
 | `MODEL_MAPPING` | 否 | 客户端模型名到实际上游模型 ID 的映射 |
+| `STRICT_MODEL_MAPPING` | 否 | `true` 时只允许配置中的模型名 |
+| `ALLOW_UNSAFE_PROXY_ROUTES` | 否 | 默认 `false`，只开放已支持接口 |
+| `FAKE_STREAM_PROTECTION` | 否 | 默认 `false`，按需启用非流式重组 |
 
 Fallback 至少需要：
 
@@ -191,7 +198,7 @@ curl https://YOUR-WORKER.workers.dev/v1/models \
   -H "Authorization: Bearer YOUR_GATEWAY_ACCESS_KEY"
 ```
 
-网关会依次尝试已配置的 Primary 上游。某个上游不支持 `/v1/models` 时会继续尝试下一个，并把成功返回的模型与 `MODEL_MAPPING` 中面向客户端的模型别名合并。上游均不提供模型列表时，只要已配置模型映射或 Fallback 模型，仍可返回本地配置的可用模型。
+网关会跳过冷却中的端点，并在独立超时与最大尝试次数内依次尝试 Primary 上游。某个上游不支持 `/v1/models` 时会继续尝试下一个，并把成功返回的模型与 `MODEL_MAPPING` 中面向客户端的模型别名合并。上游均不提供模型列表时，只要已配置模型映射或 Fallback 模型，仍可返回本地配置的可用模型。
 
 也可以运行：
 
@@ -231,13 +238,19 @@ curl https://YOUR-WORKER.workers.dev/metrics \
   -H "Authorization: Bearer YOUR_GATEWAY_ACCESS_KEY"
 ```
 
-这些指标用于临时诊断端点稳定性。一次客户端请求可能产生多次上游尝试，因此端点请求次数不等于客户端请求次数。
+`/health` 和 `/metrics` 同时提供两组当前 isolate 统计：
+
+- 客户端请求数、成功数、失败数、Fallback 触发数与 Fallback 成功数；
+- 各上游端点的尝试数、成功数、失败数、活动连接和平均首字节时间。
+
+一次客户端请求可能产生多次上游尝试，因此两组数字不会相同。所有数据随 isolate 回收而重置，不是全球节点的每日累计值。
 
 ## 本地验证
 
 ```bash
 npm ci
 npm run verify
+npm run check:deploy
 ```
 
 验证内容包括：
@@ -258,8 +271,8 @@ npm run verify
 4. 创建 GitHub Release 并上传资产。
 
 ```bash
-git tag v5.12.0
-git push origin v5.12.0
+git tag v5.13.0
+git push origin v5.13.0
 ```
 
 发布规则见 [docs/RELEASE.md](docs/RELEASE.md)。
@@ -269,6 +282,8 @@ git push origin v5.12.0
 - 不要提交 `.dev.vars`、`.env`、`secrets*.json`；
 - 不要在 Issue 中粘贴真实 Token、完整鉴权头或用户请求正文；
 - 不要通过 URL 查询参数传递网关密钥；
+- 正式更新已有 Worker 使用 `scripts/deploy.*`，它会保留现有普通变量和 Secrets；
+- 关闭 Fallback 使用 `scripts/disable-fallback.*`，不要只把新值留空；
 - 已泄露的密钥必须立即作废并重新生成；
 - 漏洞请通过 GitHub Security Advisory 私密报告。
 
