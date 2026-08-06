@@ -1,8 +1,8 @@
 {
   "name": "smart-edge-gateway",
-  "version": "5.11.0",
+  "version": "5.12.0",
   "private": true,
-  "description": "OpenAI Chat Completions 与 Anthropic Messages / Claude Code 双协议智能边缘网关。",
+  "description": "A lightweight OpenAI and Anthropic-compatible AI gateway for Cloudflare Workers with resilient Primary and Fallback routing.",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -10,16 +10,38 @@
   },
   "scripts": {
     "check": "node --check src/index.js",
+    "check:version": "node scripts/version-check.mjs",
+    "check:links": "node scripts/link-check.mjs",
     "test": "node scripts/smoke-test.mjs",
-    "verify": "npm run check && npm test && npm run security:scan",
+    "security:scan": "node scripts/secret-scan.mjs",
+    "verify": "npm run check && npm run check:version && npm run check:links && npm test && npm run security:scan",
+    "checksums": "node scripts/generate-checksums.mjs",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
     "cf:login": "wrangler login",
-    "cf:whoami": "wrangler whoami",
-    "security:scan": "node scripts/secret-scan.mjs"
+    "cf:whoami": "wrangler whoami"
   },
   "devDependencies": {
     "wrangler": "4.114.0"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fongap/smart-edge-gateway.git"
+  },
+  "homepage": "https://github.com/fongap/smart-edge-gateway#readme",
+  "bugs": {
+    "url": "https://github.com/fongap/smart-edge-gateway/issues"
+  },
+  "keywords": [
+    "cloudflare-workers",
+    "ai-gateway",
+    "openai-api",
+    "anthropic-api",
+    "claude-code",
+    "llm",
+    "api-proxy",
+    "edge-computing",
+    "serverless"
+  ]
 }

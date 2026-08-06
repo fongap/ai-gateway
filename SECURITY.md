@@ -1,23 +1,32 @@
 # Security Policy
 
-## 支持范围
+## Supported versions
 
-仅维护当前主分支和最新发布版本。历史版本可能不再接收安全修复。
+Only the current `main` branch and the latest published release are actively maintained. Older releases may not receive security fixes.
 
-## 报告漏洞
+## Reporting a vulnerability
 
-请不要在公开 Issue 中提交以下内容：
+Do not disclose exploitable details in a public Issue. Use the repository's **Security → Report a vulnerability** flow to create a private GitHub Security Advisory.
 
-- API Token 或网关访问密钥
-- 可直接利用的漏洞细节
-- 用户数据、请求正文或内部域名
+Never include:
 
-优先通过 GitHub 仓库的 **Security → Report a vulnerability** 私密报告。仓库未启用 Security Advisories 时，请先创建不含利用细节的普通 Issue，请求维护者提供私密联系渠道。
+- API tokens or `GATEWAY_ACCESS_KEY` values;
+- full authorization headers;
+- private upstream URLs;
+- user prompts, request bodies, or personal data;
+- live exploit details in a public thread.
 
-## 部署者责任
+If private advisories are unavailable, open a public Issue containing only a request for a private reporting channel.
 
-- `GATEWAY_ACCESS_KEY`、`PRIMARY_API_TOKENS` 和 Fallback Token 必须使用 Cloudflare Secrets；
-- 不要把 `.dev.vars`、`.env`、`secrets*.json` 提交到 Git；
-- 不要通过 URL 查询参数传递密钥；
-- 定期轮换已暴露或疑似泄露的密钥；
-- `/health` 与 `/metrics` 必须保持鉴权。
+## Deployment responsibilities
+
+- Store `GATEWAY_ACCESS_KEY`, `PRIMARY_API_TOKENS`, and Fallback tokens as Cloudflare Secrets;
+- never commit `.dev.vars`, `.env`, or `secrets*.json`;
+- never pass credentials through URL query parameters;
+- keep `/health` and `/metrics` protected;
+- revoke and rotate exposed or suspected credentials immediately;
+- review Worker logs before sharing them publicly.
+
+## 中文说明
+
+仅维护主分支和最新发布版本。漏洞应通过 GitHub Security Advisory 私密报告，不要在公开 Issue 中粘贴 Token、完整请求头、私有地址、用户请求正文或可直接利用的漏洞细节。

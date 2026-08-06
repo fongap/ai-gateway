@@ -1,0 +1,18 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
+const root = path.resolve(import.meta.dirname, '..');
+const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+const source = fs.readFileSync(path.join(root, 'src', 'index.js'), 'utf8');
+const changelog = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
+
+const sourceVersion = source.match(/version:\s*'([^']+)'/)?.[1];
+if (!sourceVersion) throw new Error('APP_META.version was not found in src/index.js.');
+if (sourceVersion !== pkg.version) {
+  throw new Error(`Version mismatch: package.json=${pkg.version}, src/index.js=${sourceVersion}`);
+}
+if (!changelog.includes(`## ${pkg.version} -`)) {
+  throw new Error(`CHANGELOG.md does not contain a ${pkg.version} release heading.`);
+}
+
+console.log(`Version check passed: ${pkg.version}`);

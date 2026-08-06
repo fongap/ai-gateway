@@ -59,6 +59,8 @@
  * - AE_DATASET                 : 可选 Workers Analytics Engine binding
  *
  * 内置端点：
+ * - GET /version              : 公开的项目版本信息
+ * - GET /v1/models            : 汇总可用模型；需要网关鉴权
  * - GET /health               : 当前 isolate 的端点健康快照
  * - GET /metrics              : 当前 isolate 的 Prometheus 指标
  *
@@ -66,8 +68,15 @@
  * 不代表跨全部边缘节点的严格全局状态。大体积直通请求不会执行模型映射或多端点重试。
  */
 
+const APP_META = Object.freeze({
+  name: 'Smart Edge Gateway',
+  displayName: '智能边缘网关',
+  version: '5.12.0',
+  repository: 'https://github.com/fongap/smart-edge-gateway',
+});
+
 // ============ 管理首页 ============
-const DASHBOARD_HTML = "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"UTF-8\">\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<meta name=\"color-scheme\" content=\"light\">\n<title>智能边缘网关</title>\n<style>\n:root{--brand:#48636f;--brand-strong:#2d424c;--brand-soft:rgba(72,99,111,.08);--brand-line:rgba(72,99,111,.18);--bg:#fff;--bg-soft:#f7f9fa;--bg-code:#171a1d;--text:#111827;--muted:#59636e;--subtle:#7b8490;--line:#e4e8eb;--shadow:0 18px 55px rgba(17,24,39,.07);--radius:12px;--font:-apple-system,BlinkMacSystemFont,\"Segoe UI\",\"PingFang SC\",\"Hiragino Sans GB\",\"Microsoft YaHei\",sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,\"Liberation Mono\",monospace}\n*{box-sizing:border-box;margin:0;padding:0}html{scroll-behavior:smooth}body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:1.7;-webkit-font-smoothing:antialiased;overflow-x:hidden}a{color:inherit}code{font-family:var(--mono);font-size:.92em}header{position:fixed;inset:0 0 auto;height:64px;display:flex;align-items:center;justify-content:space-between;padding:0 max(5%,24px);background:rgba(255,255,255,.88);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border-bottom:1px solid rgba(228,232,235,.88);z-index:100}.brand{display:flex;align-items:center;gap:11px;font-size:17px;font-weight:650;letter-spacing:.1px}.brand-icon{width:28px;height:28px;display:grid;place-items:center;border-radius:8px;background:var(--brand);box-shadow:0 6px 18px rgba(72,99,111,.22)}.source-link{display:flex;align-items:center;gap:8px;padding:7px 14px;border:1px solid var(--line);border-radius:999px;text-decoration:none;font-size:13px;font-weight:600;transition:.2s ease}.source-link:hover{border-color:var(--brand);background:var(--brand-soft);color:var(--brand-strong);transform:translateY(-1px)}.source-link svg{width:18px;height:18px;flex:none}main{padding-top:64px;min-height:100vh}.doc-container{width:100%;max-width:960px;margin:0 auto;padding:70px 5% 64px}.doc-hero{text-align:center;margin:0 auto 64px;max-width:800px}.doc-hero h1{font-size:clamp(1.85rem,4.2vw,2.65rem);line-height:1.18;letter-spacing:-.035em;font-weight:700;margin-bottom:18px}.doc-hero h1 span{color:var(--brand)}.doc-hero p{max-width:730px;margin:0 auto;color:var(--muted);font-size:1.06rem}.hero-chips{display:flex;flex-wrap:wrap;justify-content:center;gap:9px;margin-top:24px}.chip{padding:6px 10px;border-radius:8px;background:var(--bg-soft);border:1px solid var(--line);font-size:12px;font-weight:650;color:var(--muted)}.flow{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;align-items:center;gap:12px;margin:30px 0 0;padding:17px 20px;border:1px solid var(--line);border-radius:var(--radius);background:linear-gradient(180deg,#fff,var(--bg-soft));box-shadow:0 12px 32px rgba(17,24,39,.04)}.flow-node{text-align:center}.flow-node strong{display:block;font-size:13px}.flow-node small{display:block;margin-top:2px;color:var(--subtle);font-size:11px}.flow-arrow{color:var(--brand);font-weight:800}.section{margin-bottom:58px;scroll-margin-top:92px}.section-title{display:flex;align-items:center;gap:11px;margin-bottom:22px;padding-bottom:12px;border-bottom:1px solid var(--line);font-size:1.42rem;font-weight:680;letter-spacing:-.02em}.section-title svg{width:23px;height:23px;color:var(--brand);flex:none}.section-content{font-size:15px;color:var(--muted)}.section-content>p{margin-bottom:13px}.section-content strong{color:var(--text)}.section-content ul{padding-left:21px;margin:10px 0 18px}.section-content li{margin:7px 0}.step-list{counter-reset:step;margin-top:18px}.step-item{position:relative;padding:0 0 25px 48px}.step-item:last-child{padding-bottom:0}.step-item:before{counter-increment:step;content:counter(step);position:absolute;left:0;top:0;width:30px;height:30px;display:grid;place-items:center;border-radius:9px;background:var(--brand);color:#fff;font-size:13px;font-weight:750;box-shadow:0 7px 17px rgba(72,99,111,.18)}.step-item:after{content:\"\";position:absolute;left:14px;top:36px;bottom:5px;width:1px;background:var(--line)}.step-item:last-child:after{display:none}.step-item h4{margin-bottom:5px;color:var(--text);font-size:16px}.step-item p{font-size:14px}.callout{margin:16px 0;padding:15px 17px;border:1px solid var(--brand-line);border-left:3px solid var(--brand);border-radius:10px;background:var(--brand-soft);color:var(--muted)}.callout strong{display:block;margin-bottom:3px}.code-editor{margin:17px 0;border:1px solid #2b3035;border-radius:11px;overflow:hidden;background:var(--bg-code);box-shadow:var(--shadow)}.code-header{height:38px;display:flex;align-items:center;gap:7px;padding:0 14px;background:#202429;border-bottom:1px solid #30353a}.mac-dot{width:9px;height:9px;border-radius:50%}.dot-r{background:#ff605c}.dot-y{background:#ffbd44}.dot-g{background:#00ca4e}.code-header span{margin-left:7px;color:#939aa3;font-family:var(--mono);font-size:11px}.code-editor pre{padding:19px 20px;overflow:auto;color:#d7dce2;font-family:var(--mono);font-size:12.5px;line-height:1.68;tab-size:2}.kw{color:#79b8ff}.str{color:#e6a57e}.brand-str{color:#92c5d6}.cmt{color:#7d9b72}.fun{color:#e4d28b}.num{color:#b8d7a3}.var{color:#9cc7f1}.grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.mini-card{padding:20px;border:1px solid var(--line);border-radius:var(--radius);background:#fff}.mini-card h3{margin-bottom:7px;color:var(--text);font-size:16px}.mini-card p{font-size:13.5px}.table-wrapper{overflow:auto;margin:17px 0;border:1px solid var(--line);border-radius:11px}table{width:100%;border-collapse:collapse;font-size:13.5px}th{padding:12px 15px;background:var(--bg-soft);border-bottom:1px solid var(--line);color:var(--text);text-align:left;font-weight:700;white-space:nowrap}td{padding:12px 15px;border-bottom:1px solid var(--line);vertical-align:top}tr:last-child td{border-bottom:0}td code{color:var(--brand-strong)}.tag{display:inline-block;padding:2px 7px;border-radius:6px;font-size:11px;font-weight:700}.tag-req{background:#fff0ef;color:#b42318}.tag-opt{background:#eaf5f9;color:#276071}.tag-safe{background:#eef7ef;color:#397143}.features-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:17px;margin-top:18px}.feature-card{padding:22px;border:1px solid var(--line);border-radius:var(--radius);background:#fff;transition:.22s ease}.feature-card:hover{transform:translateY(-2px);box-shadow:0 14px 36px rgba(17,24,39,.06);border-color:var(--brand-line)}.feature-icon{width:38px;height:38px;display:grid;place-items:center;margin-bottom:14px;border-radius:10px;background:var(--brand-soft);color:var(--brand)}.feature-card h3{margin-bottom:7px;font-size:15.5px}.feature-card p{color:var(--muted);font-size:13px;line-height:1.6}.subheading{margin:27px 0 9px;color:var(--text);font-size:16px}.header-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin:13px 0 17px}.header-item{padding:11px 13px;border:1px solid var(--line);border-radius:9px;background:var(--bg-soft);font-family:var(--mono);font-size:12px;color:var(--brand-strong)}footer{text-align:center;padding:34px 20px;border-top:1px solid var(--line);background:var(--bg-soft);color:var(--subtle);font-size:12.5px}.footer-link{text-decoration:none}.footer-link:hover{color:var(--brand-strong)}\n@media(max-width:760px){header{height:56px;padding:0 18px}.brand{font-size:15px}.brand-icon{width:25px;height:25px}.source-link{padding:6px 10px}.source-link span{display:none}main{padding-top:56px}.doc-container{padding:48px 20px 50px}.doc-hero{margin-bottom:48px}.doc-hero p{font-size:.98rem}.flow{grid-template-columns:1fr;padding:15px}.flow-arrow{transform:rotate(90deg)}.grid-2,.features-grid,.header-list{grid-template-columns:1fr}.section{margin-bottom:48px}.section-title{font-size:1.25rem}.code-editor pre{padding:16px;font-size:11.8px}.table-wrapper{margin-left:-4px;margin-right:-4px}}\n</style>\n</head>\n<body>\n<header><div class=\"brand\"><div class=\"brand-icon\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"white\" stroke-width=\"2.4\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z\"/><polyline points=\"3.27 6.96 12 12.01 20.73 6.96\"/><line x1=\"12\" y1=\"22.08\" x2=\"12\" y2=\"12\"/></svg></div>智能边缘网关</div><a href=\"https://github.com/fongap/ai-gateway\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"source-link\" aria-label=\"查看源码\"><svg viewBox=\"0 0 24 24\" fill=\"currentColor\" aria-hidden=\"true\"><path d=\"M12 .7a11.3 11.3 0 0 0-3.6 22c.6.1.8-.2.8-.6v-2.2c-3.3.7-4-1.4-4-1.4-.5-1.4-1.3-1.8-1.3-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1.1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.5-1.3-5.5-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.6.1-3.2 0 0 1-.3 3.3 1.2a11.4 11.4 0 0 1 6 0C17.3 4.9 18.3 5.2 18.3 5.2c.6 1.6.2 2.9.1 3.2.8.9 1.2 1.9 1.2 3.2 0 4.6-2.8 5.6-5.5 5.9.4.4.8 1.1.8 2.2v3.3c0 .4.2.7.8.6A11.3 11.3 0 0 0 12 .7Z\"/></svg><span>源码</span></a></header>\n<main><div class=\"doc-container\">\n<section class=\"doc-hero\"><h1>双协议接入，<span>Primary → Fallback</span> 稳定路由</h1><p>同时兼容 OpenAI Chat Completions 与 Anthropic Messages / Claude Code。主端点负责日常调度，兜底端点仅在主链路不可用时接管，并通过响应头或可选正文提示向客户端反馈实际路由。</p><div class=\"hero-chips\"><span class=\"chip\">OpenAI SDK</span><span class=\"chip\">Claude Code</span><span class=\"chip\">模型映射</span><span class=\"chip\">健康轮换</span><span class=\"chip\">双级兜底</span></div><div class=\"flow\"><div class=\"flow-node\"><strong>Client</strong><small>OpenAI / Anthropic</small></div><div class=\"flow-arrow\">→</div><div class=\"flow-node\"><strong>Primary Pool</strong><small>轮换 · 健康评分 · 重试</small></div><div class=\"flow-arrow\">→</div><div class=\"flow-node\"><strong>Fallback</strong><small>Primary / Secondary</small></div></div></section>\n\n<section class=\"section\" id=\"deploy\"><h2 class=\"section-title\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M13 2L3 14h9l-1 8 10-12h-9l1-8z\"/></svg>部署步骤</h2><div class=\"section-content\"><div class=\"step-list\"><div class=\"step-item\"><h4>创建并部署 Worker</h4><p>在 Cloudflare Workers & Pages 中创建 Worker，用完整源码覆盖默认代码并部署。</p></div><div class=\"step-item\"><h4>设置网关鉴权</h4><p>将 <code>GATEWAY_ACCESS_KEY</code> 设置为机密。客户端通过 Bearer Token 或 <code>x-api-key</code> 提交该访问密钥。</p></div><div class=\"step-item\"><h4>配置 Primary 端点</h4><p>设置 <code>PRIMARY_API_TOKENS</code>，并通过共享 <code>PRIMARY_BASE_URL</code> 或 <code>Token@BaseURL</code> 绑定 OpenAI 兼容上游。</p></div><div class=\"step-item\"><h4>配置可选 Fallback</h4><p>设置兜底 Token、Base URL 与主副模型。兜底不会参与日常轮询，仅在 Primary 尝试失败后依次接管。</p></div><div class=\"step-item\"><h4>绑定域名并验证</h4><p>绑定自定义域名后访问 <code>/health</code>；再分别测试 <code>/v1/chat/completions</code> 与 <code>/v1/messages</code>。</p></div></div></div></section>\n\n<section class=\"section\" id=\"clients\"><h2 class=\"section-title\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M16 18l6-6-6-6\"/><path d=\"M8 6l-6 6 6 6\"/></svg>客户端接入</h2><div class=\"section-content\"><div class=\"grid-2\"><div class=\"mini-card\"><h3>OpenAI 兼容客户端</h3><p>Base URL 使用网关的 <code>/v1</code>，接口保持 <code>/chat/completions</code>。</p></div><div class=\"mini-card\"><h3>Claude Code</h3><p><code>ANTHROPIC_BASE_URL</code> 只填写域名根地址，不附加 <code>/v1</code>。</p></div></div><h3 class=\"subheading\">Claude Code 配置</h3><div class=\"code-editor\"><div class=\"code-header\"><i class=\"mac-dot dot-r\"></i><i class=\"mac-dot dot-y\"></i><i class=\"mac-dot dot-g\"></i><span>settings.json</span></div><pre><code>{\n  <span class=\"str\">\"env\"</span>: {\n    <span class=\"str\">\"ANTHROPIC_BASE_URL\"</span>: <span class=\"brand-str\">\"https://api.yourdomain.com\"</span>,\n    <span class=\"str\">\"ANTHROPIC_AUTH_TOKEN\"</span>: <span class=\"brand-str\">\"your-gateway-access-key\"</span>,\n    <span class=\"str\">\"ANTHROPIC_MODEL\"</span>: <span class=\"brand-str\">\"model-alias\"</span>,\n    <span class=\"str\">\"ANTHROPIC_DEFAULT_OPUS_MODEL\"</span>: <span class=\"brand-str\">\"model-alias\"</span>,\n    <span class=\"str\">\"ANTHROPIC_DEFAULT_SONNET_MODEL\"</span>: <span class=\"brand-str\">\"model-alias\"</span>,\n    <span class=\"str\">\"ANTHROPIC_DEFAULT_HAIKU_MODEL\"</span>: <span class=\"brand-str\">\"model-alias-fast\"</span>,\n    <span class=\"str\">\"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS\"</span>: <span class=\"brand-str\">\"1\"</span>\n  }\n}</code></pre></div><h3 class=\"subheading\">OpenAI cURL</h3><div class=\"code-editor\"><div class=\"code-header\"><i class=\"mac-dot dot-r\"></i><i class=\"mac-dot dot-y\"></i><i class=\"mac-dot dot-g\"></i><span>Terminal</span></div><pre><code><span class=\"fun\">curl</span> https://api.yourdomain.com/v1/chat/completions \\\\\n  -H <span class=\"str\">\"Authorization: Bearer your-gateway-access-key\"</span> \\\\\n  -H <span class=\"str\">\"Content-Type: application/json\"</span> \\\\\n  -d <span class=\"str\">'{\"model\":\"model-alias\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}]}'</span></code></pre></div><div class=\"callout\"><strong>协议桥接</strong>Claude Code 请求的 <code>/v1/messages</code> 会被转换为上游 <code>/v1/chat/completions</code>；工具调用、图片、thinking、usage 与 SSE 事件在网关内完成双向适配。</div></div></section>\n\n<section class=\"section\" id=\"env\"><h2 class=\"section-title\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><circle cx=\"12\" cy=\"12\" r=\"3\"/><path d=\"M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1h.1a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z\"/></svg>环境变量</h2><div class=\"section-content\"><div class=\"table-wrapper\"><table><thead><tr><th>变量</th><th>类型</th><th>用途</th></tr></thead><tbody><tr><td><code>GATEWAY_ACCESS_KEY</code></td><td><span class=\"tag tag-req\">必填</span></td><td>客户端访问网关所使用的鉴权密钥。</td></tr><tr><td><code>PRIMARY_API_TOKENS</code></td><td><span class=\"tag tag-req\">必填</span></td><td>Primary Token 列表；支持 <code>Token@BaseURL</code>。</td></tr><tr><td><code>PRIMARY_BASE_URL</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>未单独绑定 URL 时使用的共享上游地址。</td></tr><tr><td><code>MODEL_MAPPING</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>按上游 hostname 映射客户端模型别名。</td></tr><tr><td><code>FALLBACK_API_TOKEN</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>主副兜底共用 Token，也可分别覆盖。</td></tr><tr><td><code>FALLBACK_BASE_URL</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>主副兜底共用 OpenAI 兼容 Base URL。</td></tr><tr><td><code>FALLBACK_PRIMARY_MODEL</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>第一兜底模型。</td></tr><tr><td><code>FALLBACK_SECONDARY_MODEL</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>第二兜底模型；默认关闭，填写模型名启用，填写 <code>off</code> 显式关闭。</td></tr><tr><td><code>FALLBACK_CLIENT_NOTICE_MODE</code></td><td><span class=\"tag tag-safe\">推荐</span></td><td><code>headers</code>、<code>visible</code> 或 <code>off</code>；默认 headers。</td></tr><tr><td><code>REQUEST_TIMEOUT_MS</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>上游首字节超时，代码最大限制为 180000 ms。</td></tr></tbody></table></div><h3 class=\"subheading\">Primary 与 Fallback</h3><div class=\"code-editor\"><div class=\"code-header\"><i class=\"mac-dot dot-r\"></i><i class=\"mac-dot dot-y\"></i><i class=\"mac-dot dot-g\"></i><span>环境变量</span></div><pre><code><span class=\"var\">PRIMARY_API_TOKENS</span>=<span class=\"str\">token-a@https://primary-a.example/v1,token-b@https://primary-b.example/v1</span>\n\n<span class=\"var\">FALLBACK_API_TOKEN</span>=<span class=\"str\">fallback-token</span>\n<span class=\"var\">FALLBACK_BASE_URL</span>=<span class=\"str\">https://fallback.example/v1</span>\n<span class=\"var\">FALLBACK_PRIMARY_MODEL</span>=<span class=\"str\">model-pro</span>\n<span class=\"var\">FALLBACK_SECONDARY_MODEL</span>=<span class=\"str\">model-flash</span>\n<span class=\"var\">FALLBACK_CLIENT_NOTICE_MODE</span>=<span class=\"str\">headers</span></code></pre></div><div class=\"callout\"><strong>第二兜底开关</strong>不设置 <code>FALLBACK_SECONDARY_MODEL</code> 时默认关闭；填写具体模型名后启用；需要显式关闭时只使用 <code>off</code>。</div><h3 class=\"subheading\">模型映射</h3><div class=\"code-editor\"><div class=\"code-header\"><i class=\"mac-dot dot-r\"></i><i class=\"mac-dot dot-y\"></i><i class=\"mac-dot dot-g\"></i><span>MODEL_MAPPING</span></div><pre><code>{\n  <span class=\"str\">\"primary-a.example\"</span>: {\n    <span class=\"str\">\"model-alias\"</span>: <span class=\"str\">\"vendor/model-large\"</span>,\n    <span class=\"str\">\"model-alias-fast\"</span>: <span class=\"str\">\"vendor/model-fast\"</span>\n  },\n  <span class=\"str\">\"fallback.example\"</span>: {\n    <span class=\"str\">\"model-pro\"</span>: {\n      <span class=\"str\">\"model\"</span>: <span class=\"str\">\"actual-pro-id\"</span>,\n      <span class=\"str\">\"capabilities\"</span>: { <span class=\"str\">\"tools\"</span>: <span class=\"kw\">true</span>, <span class=\"str\">\"expose_reasoning\"</span>: <span class=\"kw\">true</span> }\n    }\n  }\n}</code></pre></div></div></section>\n\n<section class=\"section\" id=\"feedback\"><h2 class=\"section-title\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z\"/><path d=\"M8 9h8M8 13h5\"/></svg>兜底反馈</h2><div class=\"section-content\"><p>当 Primary 链路耗尽并切换至 Fallback 时，网关会向客户端返回结构化路由信息。浏览器客户端可直接读取这些响应头，因为页面已配置 <code>Access-Control-Expose-Headers</code>。</p><div class=\"header-list\"><div class=\"header-item\">x-edge-gateway-route: fallback</div><div class=\"header-item\">x-edge-gateway-fallback-provider</div><div class=\"header-item\">x-edge-gateway-fallback-tier</div><div class=\"header-item\">x-edge-gateway-fallback-model</div><div class=\"header-item\">x-edge-gateway-requested-model</div><div class=\"header-item\">x-edge-gateway-primary-attempts</div></div><div class=\"grid-2\"><div class=\"mini-card\"><h3>headers（默认）</h3><p>仅返回响应头，不改变模型正文，适合 Claude Code 与自动化 Agent。</p></div><div class=\"mini-card\"><h3>visible</h3><p>除响应头外，在普通文本回答首段加入提示；纯工具调用自动跳过，避免影响工具解析。</p></div></div><div class=\"code-editor\"><div class=\"code-header\"><i class=\"mac-dot dot-r\"></i><i class=\"mac-dot dot-y\"></i><i class=\"mac-dot dot-g\"></i><span>可选提示</span></div><pre><code><span class=\"var\">FALLBACK_CLIENT_NOTICE_MODE</span>=<span class=\"str\">visible</span>\n<span class=\"var\">FALLBACK_CLIENT_NOTICE_TEXT</span>=<span class=\"str\">[智能边缘网关] 主端点不可用，已切换至 {provider} / {model}（{tier}）。</span></code></pre></div><div class=\"callout\"><strong>安全规则</strong>Anthropic 响应的 <code>model</code> 字段会报告实际兜底模型。可见提示只注入文本内容；工具调用、tool_result 与 JSON 参数不做任何改写。</div></div></section>\n\n<section class=\"section\" id=\"diagnostics\"><h2 class=\"section-title\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z\"/><path d=\"M9 12l2 2 4-4\"/></svg>诊断与能力</h2><div class=\"section-content\"><div class=\"features-grid\"><article class=\"feature-card\"><div class=\"feature-icon\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M22 12h-4l-3 9L9 3l-3 9H2\"/></svg></div><h3>健康轮换</h3><p>综合健康分、滑动窗口、并发与延迟排序，Primary 端点发生异常时自动降级。</p></article><article class=\"feature-card\"><div class=\"feature-icon\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M21 12a9 9 0 1 1-9-9\"/><path d=\"M21 3v6h-6\"/></svg></div><h3>严格兜底</h3><p>Fallback 不参与正常轮询；第一兜底失败后才尝试第二兜底，并分别维护冷却状态。</p></article><article class=\"feature-card\"><div class=\"feature-icon\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M4 4h16v16H4z\"/><path d=\"M8 9h8M8 13h5\"/></svg></div><h3>双协议桥接</h3><p>支持文本、图片、工具、并行工具、thinking、usage、错误体和 Anthropic SSE 事件序列。</p></article><article class=\"feature-card\"><div class=\"feature-icon\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6\"/></svg></div><h3>长文保护</h3><p>OpenAI 非流式请求可转为上游流式并在边缘重组，降低慢模型首字节超时风险。</p></article><article class=\"feature-card\"><div class=\"feature-icon\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M3 12h18M12 3v18\"/></svg></div><h3>动态映射</h3><p>按实际上游 hostname 翻译模型别名，并支持独立 invoke URL 与模型能力声明。</p></article><article class=\"feature-card\"><div class=\"feature-icon\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M12 8v4l3 2\"/></svg></div><h3>实时诊断</h3><p><code>/health</code> 查看 isolate 状态，<code>/metrics</code> 输出 Prometheus 指标；均需网关鉴权。</p></article></div><div class=\"callout\"><strong>兼容边界</strong>非 Anthropic 上游无法提供 Anthropic 原生可验证 thinking 签名与精确 token 计数。网关采用兼容签名和近似统计，适合协议桥接，不等同于 Anthropic 原生服务。</div></div></section>\n</div></main>\n<footer><p>&copy; <script>document.write(new Date().getFullYear())</script> <a href=\"https://www.fongap.com\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"footer-link\">Fongap EngineSuite WorkGroup</a></p></footer>\n</body>\n</html>";
+const DASHBOARD_HTML = "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"UTF-8\">\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<meta name=\"color-scheme\" content=\"light\">\n<title>智能边缘网关</title>\n<style>\n:root{--brand:#48636f;--brand-strong:#2d424c;--brand-soft:rgba(72,99,111,.08);--brand-line:rgba(72,99,111,.18);--bg:#fff;--bg-soft:#f7f9fa;--bg-code:#171a1d;--text:#111827;--muted:#59636e;--subtle:#7b8490;--line:#e4e8eb;--shadow:0 18px 55px rgba(17,24,39,.07);--radius:12px;--font:-apple-system,BlinkMacSystemFont,\"Segoe UI\",\"PingFang SC\",\"Hiragino Sans GB\",\"Microsoft YaHei\",sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,\"Liberation Mono\",monospace}\n*{box-sizing:border-box;margin:0;padding:0}html{scroll-behavior:smooth}body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:1.7;-webkit-font-smoothing:antialiased;overflow-x:hidden}a{color:inherit}code{font-family:var(--mono);font-size:.92em}header{position:fixed;inset:0 0 auto;height:64px;display:flex;align-items:center;justify-content:space-between;padding:0 max(5%,24px);background:rgba(255,255,255,.88);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border-bottom:1px solid rgba(228,232,235,.88);z-index:100}.brand{display:flex;align-items:center;gap:11px;font-size:17px;font-weight:650;letter-spacing:.1px}.brand-icon{width:28px;height:28px;display:grid;place-items:center;border-radius:8px;background:var(--brand);box-shadow:0 6px 18px rgba(72,99,111,.22)}.source-link{display:flex;align-items:center;gap:8px;padding:7px 14px;border:1px solid var(--line);border-radius:999px;text-decoration:none;font-size:13px;font-weight:600;transition:.2s ease}.source-link:hover{border-color:var(--brand);background:var(--brand-soft);color:var(--brand-strong);transform:translateY(-1px)}.source-link svg{width:18px;height:18px;flex:none}main{padding-top:64px;min-height:100vh}.doc-container{width:100%;max-width:960px;margin:0 auto;padding:70px 5% 64px}.doc-hero{text-align:center;margin:0 auto 64px;max-width:800px}.doc-hero h1{font-size:clamp(1.85rem,4.2vw,2.65rem);line-height:1.18;letter-spacing:-.035em;font-weight:700;margin-bottom:18px}.doc-hero h1 span{color:var(--brand)}.doc-hero p{max-width:730px;margin:0 auto;color:var(--muted);font-size:1.06rem}.hero-chips{display:flex;flex-wrap:wrap;justify-content:center;gap:9px;margin-top:24px}.chip{padding:6px 10px;border-radius:8px;background:var(--bg-soft);border:1px solid var(--line);font-size:12px;font-weight:650;color:var(--muted)}.flow{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;align-items:center;gap:12px;margin:30px 0 0;padding:17px 20px;border:1px solid var(--line);border-radius:var(--radius);background:linear-gradient(180deg,#fff,var(--bg-soft));box-shadow:0 12px 32px rgba(17,24,39,.04)}.flow-node{text-align:center}.flow-node strong{display:block;font-size:13px}.flow-node small{display:block;margin-top:2px;color:var(--subtle);font-size:11px}.flow-arrow{color:var(--brand);font-weight:800}.section{margin-bottom:58px;scroll-margin-top:92px}.section-title{display:flex;align-items:center;gap:11px;margin-bottom:22px;padding-bottom:12px;border-bottom:1px solid var(--line);font-size:1.42rem;font-weight:680;letter-spacing:-.02em}.section-title svg{width:23px;height:23px;color:var(--brand);flex:none}.section-content{font-size:15px;color:var(--muted)}.section-content>p{margin-bottom:13px}.section-content strong{color:var(--text)}.section-content ul{padding-left:21px;margin:10px 0 18px}.section-content li{margin:7px 0}.step-list{counter-reset:step;margin-top:18px}.step-item{position:relative;padding:0 0 25px 48px}.step-item:last-child{padding-bottom:0}.step-item:before{counter-increment:step;content:counter(step);position:absolute;left:0;top:0;width:30px;height:30px;display:grid;place-items:center;border-radius:9px;background:var(--brand);color:#fff;font-size:13px;font-weight:750;box-shadow:0 7px 17px rgba(72,99,111,.18)}.step-item:after{content:\"\";position:absolute;left:14px;top:36px;bottom:5px;width:1px;background:var(--line)}.step-item:last-child:after{display:none}.step-item h4{margin-bottom:5px;color:var(--text);font-size:16px}.step-item p{font-size:14px}.callout{margin:16px 0;padding:15px 17px;border:1px solid var(--brand-line);border-left:3px solid var(--brand);border-radius:10px;background:var(--brand-soft);color:var(--muted)}.callout strong{display:block;margin-bottom:3px}.code-editor{margin:17px 0;border:1px solid #2b3035;border-radius:11px;overflow:hidden;background:var(--bg-code);box-shadow:var(--shadow)}.code-header{height:38px;display:flex;align-items:center;gap:7px;padding:0 14px;background:#202429;border-bottom:1px solid #30353a}.mac-dot{width:9px;height:9px;border-radius:50%}.dot-r{background:#ff605c}.dot-y{background:#ffbd44}.dot-g{background:#00ca4e}.code-header span{margin-left:7px;color:#939aa3;font-family:var(--mono);font-size:11px}.code-editor pre{padding:19px 20px;overflow:auto;color:#d7dce2;font-family:var(--mono);font-size:12.5px;line-height:1.68;tab-size:2}.kw{color:#79b8ff}.str{color:#e6a57e}.brand-str{color:#92c5d6}.cmt{color:#7d9b72}.fun{color:#e4d28b}.num{color:#b8d7a3}.var{color:#9cc7f1}.grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.mini-card{padding:20px;border:1px solid var(--line);border-radius:var(--radius);background:#fff}.mini-card h3{margin-bottom:7px;color:var(--text);font-size:16px}.mini-card p{font-size:13.5px}.table-wrapper{overflow:auto;margin:17px 0;border:1px solid var(--line);border-radius:11px}table{width:100%;border-collapse:collapse;font-size:13.5px}th{padding:12px 15px;background:var(--bg-soft);border-bottom:1px solid var(--line);color:var(--text);text-align:left;font-weight:700;white-space:nowrap}td{padding:12px 15px;border-bottom:1px solid var(--line);vertical-align:top}tr:last-child td{border-bottom:0}td code{color:var(--brand-strong)}.tag{display:inline-block;padding:2px 7px;border-radius:6px;font-size:11px;font-weight:700}.tag-req{background:#fff0ef;color:#b42318}.tag-opt{background:#eaf5f9;color:#276071}.tag-safe{background:#eef7ef;color:#397143}.features-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:17px;margin-top:18px}.feature-card{padding:22px;border:1px solid var(--line);border-radius:var(--radius);background:#fff;transition:.22s ease}.feature-card:hover{transform:translateY(-2px);box-shadow:0 14px 36px rgba(17,24,39,.06);border-color:var(--brand-line)}.feature-icon{width:38px;height:38px;display:grid;place-items:center;margin-bottom:14px;border-radius:10px;background:var(--brand-soft);color:var(--brand)}.feature-card h3{margin-bottom:7px;font-size:15.5px}.feature-card p{color:var(--muted);font-size:13px;line-height:1.6}.subheading{margin:27px 0 9px;color:var(--text);font-size:16px}.header-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin:13px 0 17px}.header-item{padding:11px 13px;border:1px solid var(--line);border-radius:9px;background:var(--bg-soft);font-family:var(--mono);font-size:12px;color:var(--brand-strong)}footer{text-align:center;padding:34px 20px;border-top:1px solid var(--line);background:var(--bg-soft);color:var(--subtle);font-size:12.5px}.footer-link{text-decoration:none}.footer-link:hover{color:var(--brand-strong)}\n@media(max-width:760px){header{height:56px;padding:0 18px}.brand{font-size:15px}.brand-icon{width:25px;height:25px}.source-link{padding:6px 10px}.source-link span{display:none}main{padding-top:56px}.doc-container{padding:48px 20px 50px}.doc-hero{margin-bottom:48px}.doc-hero p{font-size:.98rem}.flow{grid-template-columns:1fr;padding:15px}.flow-arrow{transform:rotate(90deg)}.grid-2,.features-grid,.header-list{grid-template-columns:1fr}.section{margin-bottom:48px}.section-title{font-size:1.25rem}.code-editor pre{padding:16px;font-size:11.8px}.table-wrapper{margin-left:-4px;margin-right:-4px}}\n</style>\n</head>\n<body>\n<header><div class=\"brand\"><div class=\"brand-icon\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"white\" stroke-width=\"2.4\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z\"/><polyline points=\"3.27 6.96 12 12.01 20.73 6.96\"/><line x1=\"12\" y1=\"22.08\" x2=\"12\" y2=\"12\"/></svg></div>智能边缘网关</div><a href=\"https://github.com/fongap/smart-edge-gateway\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"source-link\" aria-label=\"查看源码\"><svg viewBox=\"0 0 24 24\" fill=\"currentColor\" aria-hidden=\"true\"><path d=\"M12 .7a11.3 11.3 0 0 0-3.6 22c.6.1.8-.2.8-.6v-2.2c-3.3.7-4-1.4-4-1.4-.5-1.4-1.3-1.8-1.3-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1.1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.5-1.3-5.5-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.6.1-3.2 0 0 1-.3 3.3 1.2a11.4 11.4 0 0 1 6 0C17.3 4.9 18.3 5.2 18.3 5.2c.6 1.6.2 2.9.1 3.2.8.9 1.2 1.9 1.2 3.2 0 4.6-2.8 5.6-5.5 5.9.4.4.8 1.1.8 2.2v3.3c0 .4.2.7.8.6A11.3 11.3 0 0 0 12 .7Z\"/></svg><span>源码</span></a></header>\n<main><div class=\"doc-container\">\n<section class=\"doc-hero\"><h1>双协议接入，<span>Primary → Fallback</span> 稳定路由</h1><p>同时兼容 OpenAI Chat Completions 与 Anthropic Messages / Claude Code。主端点负责日常调度，兜底端点仅在主链路不可用时接管，并通过响应头或可选正文提示向客户端反馈实际路由。</p><div class=\"hero-chips\"><span class=\"chip\">OpenAI SDK</span><span class=\"chip\">Claude Code</span><span class=\"chip\">模型映射</span><span class=\"chip\">健康轮换</span><span class=\"chip\">双级兜底</span></div><div class=\"flow\"><div class=\"flow-node\"><strong>Client</strong><small>OpenAI / Anthropic</small></div><div class=\"flow-arrow\">→</div><div class=\"flow-node\"><strong>Primary Pool</strong><small>轮换 · 健康评分 · 重试</small></div><div class=\"flow-arrow\">→</div><div class=\"flow-node\"><strong>Fallback</strong><small>Primary / Secondary</small></div></div></section>\n\n<section class=\"section\" id=\"deploy\"><h2 class=\"section-title\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M13 2L3 14h9l-1 8 10-12h-9l1-8z\"/></svg>部署步骤</h2><div class=\"section-content\"><div class=\"step-list\"><div class=\"step-item\"><h4>创建并部署 Worker</h4><p>在 Cloudflare Workers & Pages 中创建 Worker，用完整源码覆盖默认代码并部署。</p></div><div class=\"step-item\"><h4>设置网关鉴权</h4><p>将 <code>GATEWAY_ACCESS_KEY</code> 设置为机密。客户端通过 Bearer Token 或 <code>x-api-key</code> 提交该访问密钥。</p></div><div class=\"step-item\"><h4>配置 Primary 端点</h4><p>设置 <code>PRIMARY_API_TOKENS</code>，并通过共享 <code>PRIMARY_BASE_URL</code> 或 <code>Token@BaseURL</code> 绑定 OpenAI 兼容上游。</p></div><div class=\"step-item\"><h4>配置可选 Fallback</h4><p>设置兜底 Token、Base URL 与主副模型。兜底不会参与日常轮询，仅在 Primary 尝试失败后依次接管。</p></div><div class=\"step-item\"><h4>绑定域名并验证</h4><p>绑定自定义域名后访问 <code>/health</code>；再分别测试 <code>/v1/chat/completions</code> 与 <code>/v1/messages</code>。</p></div></div></div></section>\n\n<section class=\"section\" id=\"clients\"><h2 class=\"section-title\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M16 18l6-6-6-6\"/><path d=\"M8 6l-6 6 6 6\"/></svg>客户端接入</h2><div class=\"section-content\"><div class=\"grid-2\"><div class=\"mini-card\"><h3>OpenAI 兼容客户端</h3><p>Base URL 使用网关的 <code>/v1</code>，接口保持 <code>/chat/completions</code>。</p></div><div class=\"mini-card\"><h3>Claude Code</h3><p><code>ANTHROPIC_BASE_URL</code> 只填写域名根地址，不附加 <code>/v1</code>。</p></div></div><h3 class=\"subheading\">Claude Code 配置</h3><div class=\"code-editor\"><div class=\"code-header\"><i class=\"mac-dot dot-r\"></i><i class=\"mac-dot dot-y\"></i><i class=\"mac-dot dot-g\"></i><span>settings.json</span></div><pre><code>{\n  <span class=\"str\">\"env\"</span>: {\n    <span class=\"str\">\"ANTHROPIC_BASE_URL\"</span>: <span class=\"brand-str\">\"https://api.yourdomain.com\"</span>,\n    <span class=\"str\">\"ANTHROPIC_AUTH_TOKEN\"</span>: <span class=\"brand-str\">\"your-gateway-access-key\"</span>,\n    <span class=\"str\">\"ANTHROPIC_MODEL\"</span>: <span class=\"brand-str\">\"model-alias\"</span>,\n    <span class=\"str\">\"ANTHROPIC_DEFAULT_OPUS_MODEL\"</span>: <span class=\"brand-str\">\"model-alias\"</span>,\n    <span class=\"str\">\"ANTHROPIC_DEFAULT_SONNET_MODEL\"</span>: <span class=\"brand-str\">\"model-alias\"</span>,\n    <span class=\"str\">\"ANTHROPIC_DEFAULT_HAIKU_MODEL\"</span>: <span class=\"brand-str\">\"model-alias-fast\"</span>,\n    <span class=\"str\">\"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS\"</span>: <span class=\"brand-str\">\"1\"</span>\n  }\n}</code></pre></div><h3 class=\"subheading\">OpenAI cURL</h3><div class=\"code-editor\"><div class=\"code-header\"><i class=\"mac-dot dot-r\"></i><i class=\"mac-dot dot-y\"></i><i class=\"mac-dot dot-g\"></i><span>Terminal</span></div><pre><code><span class=\"fun\">curl</span> https://api.yourdomain.com/v1/chat/completions \\\\\n  -H <span class=\"str\">\"Authorization: Bearer your-gateway-access-key\"</span> \\\\\n  -H <span class=\"str\">\"Content-Type: application/json\"</span> \\\\\n  -d <span class=\"str\">'{\"model\":\"model-alias\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}]}'</span></code></pre></div><div class=\"callout\"><strong>协议桥接</strong>Claude Code 请求的 <code>/v1/messages</code> 会被转换为上游 <code>/v1/chat/completions</code>；工具调用、图片、thinking、usage 与 SSE 事件在网关内完成双向适配。</div></div></section>\n\n<section class=\"section\" id=\"env\"><h2 class=\"section-title\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><circle cx=\"12\" cy=\"12\" r=\"3\"/><path d=\"M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1h.1a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z\"/></svg>环境变量</h2><div class=\"section-content\"><div class=\"table-wrapper\"><table><thead><tr><th>变量</th><th>类型</th><th>用途</th></tr></thead><tbody><tr><td><code>GATEWAY_ACCESS_KEY</code></td><td><span class=\"tag tag-req\">必填</span></td><td>客户端访问网关所使用的鉴权密钥。</td></tr><tr><td><code>PRIMARY_API_TOKENS</code></td><td><span class=\"tag tag-req\">必填</span></td><td>Primary Token 列表；支持 <code>Token@BaseURL</code>。</td></tr><tr><td><code>PRIMARY_BASE_URL</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>未单独绑定 URL 时使用的共享上游地址。</td></tr><tr><td><code>MODEL_MAPPING</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>按上游 hostname 映射客户端模型别名。</td></tr><tr><td><code>FALLBACK_API_TOKEN</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>主副兜底共用 Token，也可分别覆盖。</td></tr><tr><td><code>FALLBACK_BASE_URL</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>主副兜底共用 OpenAI 兼容 Base URL。</td></tr><tr><td><code>FALLBACK_PRIMARY_MODEL</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>第一兜底模型。</td></tr><tr><td><code>FALLBACK_SECONDARY_MODEL</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>第二兜底模型；默认关闭，填写模型名启用，填写 <code>off</code> 显式关闭。</td></tr><tr><td><code>FALLBACK_CLIENT_NOTICE_MODE</code></td><td><span class=\"tag tag-safe\">推荐</span></td><td><code>headers</code>、<code>visible</code> 或 <code>off</code>；默认 headers。</td></tr><tr><td><code>REQUEST_TIMEOUT_MS</code></td><td><span class=\"tag tag-opt\">可选</span></td><td>上游首字节超时，代码最大限制为 180000 ms。</td></tr></tbody></table></div><h3 class=\"subheading\">Primary 与 Fallback</h3><div class=\"code-editor\"><div class=\"code-header\"><i class=\"mac-dot dot-r\"></i><i class=\"mac-dot dot-y\"></i><i class=\"mac-dot dot-g\"></i><span>环境变量</span></div><pre><code><span class=\"var\">PRIMARY_API_TOKENS</span>=<span class=\"str\">token-a@https://primary-a.example/v1,token-b@https://primary-b.example/v1</span>\n\n<span class=\"var\">FALLBACK_API_TOKEN</span>=<span class=\"str\">fallback-token</span>\n<span class=\"var\">FALLBACK_BASE_URL</span>=<span class=\"str\">https://fallback.example/v1</span>\n<span class=\"var\">FALLBACK_PRIMARY_MODEL</span>=<span class=\"str\">model-pro</span>\n<span class=\"var\">FALLBACK_SECONDARY_MODEL</span>=<span class=\"str\">model-flash</span>\n<span class=\"var\">FALLBACK_CLIENT_NOTICE_MODE</span>=<span class=\"str\">headers</span></code></pre></div><div class=\"callout\"><strong>第二兜底开关</strong>不设置 <code>FALLBACK_SECONDARY_MODEL</code> 时默认关闭；填写具体模型名后启用；需要显式关闭时只使用 <code>off</code>。</div><h3 class=\"subheading\">模型映射</h3><div class=\"code-editor\"><div class=\"code-header\"><i class=\"mac-dot dot-r\"></i><i class=\"mac-dot dot-y\"></i><i class=\"mac-dot dot-g\"></i><span>MODEL_MAPPING</span></div><pre><code>{\n  <span class=\"str\">\"primary-a.example\"</span>: {\n    <span class=\"str\">\"model-alias\"</span>: <span class=\"str\">\"vendor/model-large\"</span>,\n    <span class=\"str\">\"model-alias-fast\"</span>: <span class=\"str\">\"vendor/model-fast\"</span>\n  },\n  <span class=\"str\">\"fallback.example\"</span>: {\n    <span class=\"str\">\"model-pro\"</span>: {\n      <span class=\"str\">\"model\"</span>: <span class=\"str\">\"actual-pro-id\"</span>,\n      <span class=\"str\">\"capabilities\"</span>: { <span class=\"str\">\"tools\"</span>: <span class=\"kw\">true</span>, <span class=\"str\">\"expose_reasoning\"</span>: <span class=\"kw\">true</span> }\n    }\n  }\n}</code></pre></div></div></section>\n\n<section class=\"section\" id=\"feedback\"><h2 class=\"section-title\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z\"/><path d=\"M8 9h8M8 13h5\"/></svg>兜底反馈</h2><div class=\"section-content\"><p>当 Primary 链路耗尽并切换至 Fallback 时，网关会向客户端返回结构化路由信息。浏览器客户端可直接读取这些响应头，因为页面已配置 <code>Access-Control-Expose-Headers</code>。</p><div class=\"header-list\"><div class=\"header-item\">x-edge-gateway-route: fallback</div><div class=\"header-item\">x-edge-gateway-fallback-provider</div><div class=\"header-item\">x-edge-gateway-fallback-tier</div><div class=\"header-item\">x-edge-gateway-fallback-model</div><div class=\"header-item\">x-edge-gateway-requested-model</div><div class=\"header-item\">x-edge-gateway-primary-attempts</div></div><div class=\"grid-2\"><div class=\"mini-card\"><h3>headers（默认）</h3><p>仅返回响应头，不改变模型正文，适合 Claude Code 与自动化 Agent。</p></div><div class=\"mini-card\"><h3>visible</h3><p>除响应头外，在普通文本回答首段加入提示；纯工具调用自动跳过，避免影响工具解析。</p></div></div><div class=\"code-editor\"><div class=\"code-header\"><i class=\"mac-dot dot-r\"></i><i class=\"mac-dot dot-y\"></i><i class=\"mac-dot dot-g\"></i><span>可选提示</span></div><pre><code><span class=\"var\">FALLBACK_CLIENT_NOTICE_MODE</span>=<span class=\"str\">visible</span>\n<span class=\"var\">FALLBACK_CLIENT_NOTICE_TEXT</span>=<span class=\"str\">[智能边缘网关] 主端点不可用，已切换至 {provider} / {model}（{tier}）。</span></code></pre></div><div class=\"callout\"><strong>安全规则</strong>Anthropic 响应的 <code>model</code> 字段会报告实际兜底模型。可见提示只注入文本内容；工具调用、tool_result 与 JSON 参数不做任何改写。</div></div></section>\n\n<section class=\"section\" id=\"diagnostics\"><h2 class=\"section-title\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z\"/><path d=\"M9 12l2 2 4-4\"/></svg>诊断与能力</h2><div class=\"section-content\"><div class=\"features-grid\"><article class=\"feature-card\"><div class=\"feature-icon\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M22 12h-4l-3 9L9 3l-3 9H2\"/></svg></div><h3>健康轮换</h3><p>综合健康分、滑动窗口、并发与延迟排序，Primary 端点发生异常时自动降级。</p></article><article class=\"feature-card\"><div class=\"feature-icon\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M21 12a9 9 0 1 1-9-9\"/><path d=\"M21 3v6h-6\"/></svg></div><h3>严格兜底</h3><p>Fallback 不参与正常轮询；第一兜底失败后才尝试第二兜底，并分别维护冷却状态。</p></article><article class=\"feature-card\"><div class=\"feature-icon\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M4 4h16v16H4z\"/><path d=\"M8 9h8M8 13h5\"/></svg></div><h3>双协议桥接</h3><p>支持文本、图片、工具、并行工具、thinking、usage、错误体和 Anthropic SSE 事件序列。</p></article><article class=\"feature-card\"><div class=\"feature-icon\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6\"/></svg></div><h3>长文保护</h3><p>OpenAI 非流式请求可转为上游流式并在边缘重组，降低慢模型首字节超时风险。</p></article><article class=\"feature-card\"><div class=\"feature-icon\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M3 12h18M12 3v18\"/></svg></div><h3>动态映射</h3><p>按实际上游 hostname 翻译模型别名，并支持独立 invoke URL 与模型能力声明。</p></article><article class=\"feature-card\"><div class=\"feature-icon\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M12 8v4l3 2\"/></svg></div><h3>实时诊断</h3><p><code>/health</code> 查看 isolate 状态，<code>/metrics</code> 输出 Prometheus 指标；均需网关鉴权。</p></article></div><div class=\"callout\"><strong>兼容边界</strong>非 Anthropic 上游无法提供 Anthropic 原生可验证 thinking 签名与精确 token 计数。网关采用兼容签名和近似统计，适合协议桥接，不等同于 Anthropic 原生服务。</div></div></section>\n</div></main>\n<footer><p>&copy; <script>document.write(new Date().getFullYear())</script> <a href=\"https://www.fongap.com\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"footer-link\">Fongap EngineSuite WorkGroup</a></p></footer>\n</body>\n</html>";
 
 // ============ 运行参数 ============
 
@@ -176,6 +185,10 @@ export default {
 
     if (request.method === 'GET' && requestUrl.pathname === '/' && acceptsHtml(request)) {
       return html(DASHBOARD_HTML);
+    }
+
+    if (request.method === 'GET' && requestUrl.pathname === '/version') {
+      return versionResponse(request, env);
     }
 
     const expectedGatewayAccessKey = readOptionalEnv(env, 'GATEWAY_ACCESS_KEY');
@@ -328,6 +341,17 @@ export default {
           `Gateway misconfigured: MODEL_MAPPING is invalid JSON (${error.message}).`,
           undefined, requestId);
       }
+    }
+
+    if (isModelsListRoute(request.method, requestUrl.pathname)) {
+      return await modelsListResponse({
+        request,
+        env,
+        requestId,
+        primaryEndpoints,
+        fallbackEndpoints,
+        modelMapping,
+      });
     }
 
     const cacheEnabled = readOptionalEnv(env, 'CACHE_ENABLED') === 'true';
@@ -758,6 +782,12 @@ function detectGatewayRoute(method, pathname) {
   if (path === '/v1/messages/count_tokens' || path === '/messages/count_tokens') return 'anthropic_count_tokens';
   if (path === '/v1/messages' || path === '/messages') return 'anthropic_messages';
   return 'openai';
+}
+
+function isModelsListRoute(method, pathname) {
+  if (String(method).toUpperCase() !== 'GET') return false;
+  const path = String(pathname || '/').replace(/\/+$/, '').toLowerCase() || '/';
+  return path === '/v1/models' || path === '/models';
 }
 
 function validateAnthropicMessagesRequest(body) {
@@ -2244,6 +2274,185 @@ async function writeAnalytics(env, { endpointId, status, latencyMs, attempt, cac
   }
 }
 
+// ============ 模型列表 ============
+
+async function modelsListResponse({ request, env, requestId, primaryEndpoints, fallbackEndpoints, modelMapping }) {
+  const timeoutMs = clampInt(
+    readOptionalEnv(env, 'REQUEST_TIMEOUT_MS'),
+    MIN_TIMEOUT_MS,
+    MAX_TIMEOUT_MS,
+    DEFAULT_TIMEOUT_MS
+  );
+
+  const configuredModels = collectConfiguredModelEntries(primaryEndpoints, fallbackEndpoints, modelMapping);
+  const attempts = [];
+
+  for (const endpoint of primaryEndpoints) {
+    let targetUrl;
+    try {
+      targetUrl = buildTargetUrl(new URL(request.url), endpoint.baseUrl);
+    } catch (error) {
+      attempts.push({
+        provider: endpoint.providerName,
+        status: 0,
+        error: `Invalid upstream URL: ${error.message || String(error)}`,
+      });
+      continue;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const upstream = await fetch(targetUrl, {
+        method: 'GET',
+        headers: buildStandardOpenAIHeaders(request, endpoint.token, requestId),
+        redirect: 'manual',
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      if (!upstream.ok) {
+        attempts.push({
+          provider: endpoint.providerName,
+          status: upstream.status,
+          error: extractUpstreamErrorMessage(await safeReadText(upstream)) || `HTTP ${upstream.status}`,
+        });
+        continue;
+      }
+
+      let payload;
+      try {
+        payload = await upstream.json();
+      } catch (error) {
+        attempts.push({
+          provider: endpoint.providerName,
+          status: upstream.status,
+          error: 'Upstream model list is not valid JSON.',
+        });
+        continue;
+      }
+
+      const upstreamModels = normalizeOpenAIModelEntries(payload?.data);
+      const models = mergeModelEntries(upstreamModels, configuredModels);
+      if (models.length === 0) {
+        attempts.push({
+          provider: endpoint.providerName,
+          status: upstream.status,
+          error: 'Upstream returned an empty model list.',
+        });
+        continue;
+      }
+
+      return new Response(JSON.stringify({ object: 'list', data: models }), {
+        status: 200,
+        headers: {
+          'content-type': 'application/json;charset=UTF-8',
+          'cache-control': 'no-store',
+          'x-request-id': requestId,
+          'x-edge-gateway-model-source': configuredModels.length > 0 ? 'upstream+configured' : 'upstream',
+          ...corsHeaders(request, env),
+        },
+      });
+    } catch (error) {
+      clearTimeout(timeoutId);
+      attempts.push({
+        provider: endpoint.providerName,
+        status: 0,
+        error: error?.name === 'AbortError' ? 'Upstream model-list request timed out.' : (error.message || String(error)),
+      });
+    }
+  }
+
+  if (configuredModels.length > 0) {
+    return new Response(JSON.stringify({ object: 'list', data: configuredModels }), {
+      status: 200,
+      headers: {
+        'content-type': 'application/json;charset=UTF-8',
+        'cache-control': 'no-store',
+        'x-request-id': requestId,
+        'x-edge-gateway-model-source': 'configured',
+        ...corsHeaders(request, env),
+      },
+    });
+  }
+
+  return gatewayError(request, env, false, 502,
+    'Unable to obtain a model list from any configured Primary endpoint.', {
+      attempts: attempts.map(item => ({
+        provider: item.provider,
+        status: item.status,
+        error: item.error,
+      })),
+    }, requestId);
+}
+
+function collectConfiguredModelEntries(primaryEndpoints, fallbackEndpoints, modelMapping) {
+  const models = new Map();
+  const configuredHosts = new Set();
+
+  for (const endpoint of [...primaryEndpoints, ...fallbackEndpoints]) {
+    try {
+      configuredHosts.add(new URL(endpoint.baseUrl).hostname);
+    } catch {}
+  }
+
+  for (const host of configuredHosts) {
+    const hostMapping = modelMapping?.[host];
+    if (!isPlainObject(hostMapping)) continue;
+    for (const alias of Object.keys(hostMapping)) {
+      addModelEntry(models, {
+        id: alias,
+        object: 'model',
+        created: 0,
+        owned_by: 'smart-edge-gateway',
+      });
+    }
+  }
+
+  for (const endpoint of fallbackEndpoints) {
+    if (!endpoint.configuredModel) continue;
+    addModelEntry(models, {
+      id: endpoint.configuredModel,
+      object: 'model',
+      created: 0,
+      owned_by: 'smart-edge-gateway',
+    });
+  }
+
+  return [...models.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function normalizeOpenAIModelEntries(data) {
+  if (!Array.isArray(data)) return [];
+  const models = new Map();
+  for (const item of data) {
+    if (!item || typeof item !== 'object' || typeof item.id !== 'string' || !item.id.trim()) continue;
+    addModelEntry(models, {
+      ...item,
+      id: item.id.trim(),
+      object: item.object || 'model',
+      created: Number.isFinite(Number(item.created)) ? Number(item.created) : 0,
+      owned_by: item.owned_by || 'upstream',
+    });
+  }
+  return [...models.values()];
+}
+
+function mergeModelEntries(...groups) {
+  const models = new Map();
+  for (const group of groups) {
+    for (const item of group || []) addModelEntry(models, item);
+  }
+  return [...models.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function addModelEntry(models, item) {
+  const id = String(item?.id || '').trim();
+  if (!id || models.has(id)) return;
+  models.set(id, { ...item, id });
+}
+
 // ============ HTTP 处理 ============
 
 function buildStandardOpenAIHeaders(request, token, requestId) {
@@ -2593,6 +2802,24 @@ function html(content) {
   return new Response(content, {
     status: 200,
     headers: { 'content-type': 'text/html;charset=UTF-8', 'cache-control': 'public, max-age=3600' },
+  });
+}
+
+function versionResponse(request, env) {
+  return new Response(JSON.stringify({
+    name: APP_META.name,
+    display_name: APP_META.displayName,
+    version: APP_META.version,
+    runtime: 'Cloudflare Workers',
+    protocols: ['OpenAI Chat Completions', 'Anthropic Messages'],
+    repository: APP_META.repository,
+  }, null, 2), {
+    status: 200,
+    headers: {
+      'content-type': 'application/json;charset=UTF-8',
+      'cache-control': 'public, max-age=300',
+      ...corsHeaders(request, env),
+    },
   });
 }
 

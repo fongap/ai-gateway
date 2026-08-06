@@ -1,0 +1,56 @@
+name: Bug report
+description: Report a reproducible gateway defect
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not paste real API tokens, authorization headers, private URLs, or user data.
+
+  - type: input
+    id: version
+    attributes:
+      label: Gateway version
+      description: Open the public `/version` endpoint and provide only the version number.
+      placeholder: 5.12.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: protocol
+    attributes:
+      label: Client protocol
+      options:
+        - OpenAI Chat Completions
+        - Anthropic Messages / Claude Code
+        - Health or metrics endpoint
+        - Deployment or configuration
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the expected and actual behavior with sensitive values removed.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Configure ...
+        2. Send ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs
+      description: Remove tokens, full request bodies, private domains, and user data.
+      render: shell

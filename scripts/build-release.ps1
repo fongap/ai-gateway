@@ -1,17 +1,55 @@
 [CmdletBinding()]
 param()
+
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $ProjectRoot
+
 npm run verify
 if ($LASTEXITCODE -ne 0) { throw "项目验证失败。" }
+
+npm run checksums
+if ($LASTEXITCODE -ne 0) { throw "校验值生成失败。" }
+
+$version = node -p "require('./package.json').version"
+if ($LASTEXITCODE -ne 0) { throw "无法读取 package.json 版本。" }
+$version = $version.Trim()
+$baseName = "smart-edge-gateway-v$version"
+
+node scripts/prepare-release.mjs | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "发布目录准备失败。" }
+
 $releaseDir = Join-Path $ProjectRoot "release"
-New-Item -ItemType Directory -Force $releaseDir | Out-Null
-$outFile = Join-Path $releaseDir "smart-edge-gateway-v5.11.0.zip"
-if (Test-Path $outFile) { Remove-Item $outFile -Force }
-$items = Get-ChildItem -Force | Where-Object {
-  $_.Name -notin @('node_modules', '.wrangler', '.git', 'release', '.dev.vars') -and
-  $_.Name -notmatch '^secrets.*\.json$'
+$stageRoot = Join-Path $releaseDir ".staging"
+$stageDir = Join-Path $stageRoot $baseName
+$zipFile = Join-Path $releaseDir "$baseName.zip"
+$tarFile = Join-Path $releaseDir "$baseName.tar.gz"
+
+Compress-Archive -Path $stageDir -DestinationPath $zipFile -CompressionLevel Optimal -Force
+
+$tarCommand = Get-Command tar -ErrorAction SilentlyContinue
+if ($tarCommand) {
+  Push-Location $stageRoot
+  try {
+    tar -czf $tarFile $baseName
+    if ($LASTEXITCODE -ne 0) { throw "TAR.GZ 生成失败。" }
+  } finally {
+    Pop-Location
+  }
 }
-Compress-Archive -Path $items.FullName -DestinationPath $outFile -CompressionLevel Optimal
-Write-Host "已生成 $outFile"
+
+Remove-Item $stageRoot -Recurse -Force
+
+$checksumLines = @()
+foreach ($file in @($zipFile, $tarFile)) {
+  if (Test-Path $file) {
+    $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant()
+    $checksumLines += "$hash  $([IO.Path]::GetFileName($file))"
+  }
+}
+[IO.File]::WriteAllLines((Join-Path $releaseDir "SHA256SUMS"), $checksumLines, [Text.UTF8Encoding]::new($false))
+
+Write-Host "已生成："
+Write-Host "  $zipFile"
+if (Test-Path $tarFile) { Write-Host "  $tarFile" }
+Write-Host "  $(Join-Path $releaseDir 'SHA256SUMS')"

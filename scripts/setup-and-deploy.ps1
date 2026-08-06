@@ -33,8 +33,8 @@ if ([string]::IsNullOrWhiteSpace($workerName)) { $workerName = "smart-edge-gatew
 Set-WorkerName $workerName
 
 Write-Host "安装依赖..."
-npm install
-if ($LASTEXITCODE -ne 0) { throw "npm install 失败。" }
+npm ci
+if ($LASTEXITCODE -ne 0) { throw "npm ci 失败。" }
 npm run verify
 if ($LASTEXITCODE -ne 0) { throw "项目验证失败。" }
 

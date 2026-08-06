@@ -22,7 +22,7 @@ const content = fs.readFileSync(path, 'utf8').replace(/"name"\s*:\s*"[^"]+"/, `"
 fs.writeFileSync(path, content);
 NODE
 
-npm install
+npm ci
 npm run verify
 
 if ! npx wrangler whoami >/dev/null 2>&1; then

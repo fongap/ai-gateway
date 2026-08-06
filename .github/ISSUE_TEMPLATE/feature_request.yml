@@ -1,0 +1,26 @@
+name: Feature request
+description: Suggest a focused gateway improvement
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: Describe the concrete limitation or workflow problem.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Explain the expected behavior and configuration surface.
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Compatibility and resource impact
+      description: Note any protocol, security, latency, storage, or Cloudflare resource implications.

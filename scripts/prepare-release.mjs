@@ -1,0 +1,40 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
+const root = path.resolve(import.meta.dirname, '..');
+const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+const baseName = `smart-edge-gateway-v${pkg.version}`;
+const releaseDir = path.join(root, 'release');
+const stageRoot = path.join(releaseDir, '.staging');
+const stageDir = path.join(stageRoot, baseName);
+const excludedDirs = new Set(['.git', 'node_modules', '.wrangler', 'release']);
+const excludedNames = new Set(['.dev.vars']);
+
+fs.rmSync(releaseDir, { recursive: true, force: true });
+fs.mkdirSync(stageDir, { recursive: true });
+
+function shouldExclude(name) {
+  if (excludedNames.has(name)) return true;
+  if (/^\.env(?:\..+)?$/.test(name) && name !== '.env.example') return true;
+  if (/^secrets.*\.json$/i.test(name)) return true;
+  if (/\.(zip|tar\.gz)$/i.test(name)) return true;
+  return false;
+}
+
+function copyTree(src, dest) {
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    if (entry.isDirectory() && excludedDirs.has(entry.name)) continue;
+    if (shouldExclude(entry.name)) continue;
+    const from = path.join(src, entry.name);
+    const to = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      fs.mkdirSync(to, { recursive: true });
+      copyTree(from, to);
+    } else {
+      fs.copyFileSync(from, to);
+    }
+  }
+}
+
+copyTree(root, stageDir);
+console.log(JSON.stringify({ version: pkg.version, baseName, releaseDir, stageRoot, stageDir }));
