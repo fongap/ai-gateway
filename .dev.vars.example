@@ -24,6 +24,7 @@ MODEL_LIST_MAX_ATTEMPTS="3"
 # 可选：Fallback。关闭时建议显式配置。
 FALLBACK_ENABLED="false"
 FALLBACK_SECONDARY_MODEL="off"
+FALLBACK_MAX_CONCURRENCY_PER_ENDPOINT="3"
 # FALLBACK_API_TOKEN="replace-with-fallback-token"
 # FALLBACK_BASE_URL="https://fallback.example/v1"
 # FALLBACK_PRIMARY_MODEL="model-pro"

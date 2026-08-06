@@ -90,14 +90,14 @@ The gateway forwards a client-supplied `Idempotency-Key`, but retries still cann
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-.\scripts\setup-and-deploy.ps1
+.\scripts\install.ps1
 ```
 
 ### Linux / macOS
 
 ```bash
 chmod +x scripts/*.sh
-./scripts/setup-and-deploy.sh
+./scripts/install.sh
 ```
 
 The script checks Node.js, installs dependencies, signs in to Cloudflare, collects configuration, writes credentials to a temporary file, uploads the Worker and secrets together, and removes the temporary file after deployment.
@@ -119,10 +119,18 @@ Deploy command: npx --yes wrangler@4.114.0 deploy --keep-vars
 Non-production deploy command: npx --yes wrangler@4.114.0 versions upload --keep-vars
 ```
 
-6. after the first deployment, add real values under **Settings → Variables and Secrets**;
-7. redeploy or push another commit.
+6. add the runtime Worker Secrets under **Settings → Variables and Secrets**:
 
-Future pushes to `main` can be verified and deployed automatically by Cloudflare Workers Builds. Non-production branches can produce preview versions.
+```text
+GATEWAY_ACCESS_KEY
+PRIMARY_API_TOKENS
+```
+
+7. retry the deployment after both required Secrets exist.
+
+The first deployment may be blocked by `secrets.required` until the Worker/project exists and both runtime Secrets have been added. Future pushes to `main` can then be verified and deployed automatically by Cloudflare Workers Builds. Non-production branches can produce preview versions.
+
+> Preview deployments also need both required runtime Secrets in the corresponding preview environment; otherwise `secrets.required` blocks the upload.
 
 > Store real tokens as Cloudflare Worker Secrets. Do not commit them to GitHub. Build-time variables are not a substitute for runtime Worker Secrets.
 
@@ -271,8 +279,8 @@ Pushing a semantic version tag automatically triggers GitHub Actions to:
 4. create a GitHub Release and upload the assets.
 
 ```bash
-git tag v5.13.0
-git push origin v5.13.0
+git tag v5.14.0
+git push origin v5.14.0
 ```
 
 See [docs/RELEASE.md](docs/RELEASE.md).

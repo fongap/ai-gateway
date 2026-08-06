@@ -19,7 +19,7 @@ const version = await worker.fetch(
 assert.equal(version.status, 200);
 const versionJson = await version.json();
 assert.equal(versionJson.name, 'Smart Edge Gateway');
-assert.equal(versionJson.version, '5.13.0');
+assert.equal(versionJson.version, '5.14.0');
 
 const env = {
   GATEWAY_ACCESS_KEY: 'test-gateway-key',
@@ -154,7 +154,7 @@ const queryEnv = {
   PRIMARY_API_TOKENS: 'query-token@https://query-upstream.example/v1?api-version=2026-01-01&mode=base',
 };
 const queryResponse = await worker.fetch(
-  new Request('https://gateway.example/v1/chat/completions?mode=client&trace=1', {
+  new Request('https://gateway.example/v1/chat/completions?mode=client&trace=1&tag=a&tag=b', {
     method: 'POST',
     headers: { Authorization: 'Bearer test-gateway-key', 'content-type': 'application/json' },
     body: JSON.stringify({ model: 'upstream-model', messages: [{ role: 'user', content: 'hi' }] }),
@@ -166,6 +166,7 @@ assert.equal(captured.pathname, '/v1/chat/completions');
 assert.equal(captured.searchParams.get('api-version'), '2026-01-01');
 assert.equal(captured.searchParams.get('mode'), 'client');
 assert.equal(captured.searchParams.get('trace'), '1');
+assert.deepEqual(captured.searchParams.getAll('tag'), ['a', 'b']);
 assert.equal(queryResponse.headers.get('server'), null);
 
 // Primary 默认只接受 HTTPS。

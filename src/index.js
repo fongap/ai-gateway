@@ -35,6 +35,7 @@
  * - FALLBACK_SECONDARY_MODEL   : 第二兜底模型；默认关闭；填写模型名启用；仅 off 显式关闭
  * - FALLBACK_PRIMARY_TOKEN / FALLBACK_PRIMARY_BASE_URL: 第一兜底独立覆盖
  * - FALLBACK_SECONDARY_TOKEN / FALLBACK_SECONDARY_BASE_URL: 第二兜底独立覆盖
+ * - FALLBACK_MAX_CONCURRENCY_PER_ENDPOINT: 单个 Fallback 端点并发上限；默认 3
  * - FALLBACK_CLIENT_NOTICE_MODE: headers/visible/off；默认 headers
  * - FALLBACK_CLIENT_NOTICE_TEXT: 可见提示模板；支持 provider、model、tier 等占位符
  *
@@ -47,7 +48,8 @@
  *
  * 运行保护：
  * - REQUEST_TIMEOUT_MS         : 上游首字节超时；默认 60000，范围 5000-180000
- * - MAX_BODY_BYTES             : OpenAI 请求体上限；默认 20 MiB
+ * - MAX_BODY_BYTES             : OpenAI 请求体上限；默认 20 MiB；无 Content-Length 同样生效
+ * - 压缩请求体                  : 不支持 gzip/br/deflate 请求体，统一返回 415
  * - AUTH_FAIL_COOLDOWN_MS      : 401/403 冷却；默认 86400000
  * - RATE_LIMIT_COOLDOWN_MS     : 429 冷却；默认 60000
  * - ALLOWED_ORIGIN             : CORS 来源；默认 *
@@ -56,7 +58,7 @@
  * - ALLOW_INSECURE_HTTP_UPSTREAM: true 时允许 HTTP 上游；默认 false
  *
  * 缓存与诊断：
- * - CACHE_ENABLED / CACHE_STREAM / CACHE_MAX_AGE_SEC / CACHE_MAX_BODY_BYTES
+ * - CACHE_ENABLED / CACHE_MAX_AGE_SEC / CACHE_MAX_BODY_BYTES
  * - LOG_LEVEL                  : none/error/info/debug；默认 info
  * - EXPOSE_UPSTREAM_INFO       : true 时在诊断中暴露上游 host/path；默认 false
  * - AE_DATASET                 : 可选 Workers Analytics Engine binding
@@ -76,7 +78,7 @@
 const APP_META = Object.freeze({
   name: 'Smart Edge Gateway',
   displayName: '智能边缘网关',
-  version: '5.13.0',
+  version: '5.14.0',
   repository: 'https://github.com/fongap/smart-edge-gateway',
 });
 
@@ -98,6 +100,7 @@ const MAX_DIAGNOSTIC_BYTES = 4096;
 const DEFAULT_PRIMARY_MAX_ATTEMPTS = 3;
 const DEFAULT_MODEL_LIST_TIMEOUT_MS = 5_000;
 const DEFAULT_MODEL_LIST_MAX_ATTEMPTS = 3;
+const DEFAULT_MODEL_LIST_MAX_BYTES = 5 * 1024 * 1024;
 
 const DEFAULT_AUTH_FAIL_COOLDOWN = 86_400_000;
 const DEFAULT_RATE_LIMIT_COOLDOWN = 60_000;
@@ -125,6 +128,7 @@ const LOG_LEVELS = { none: 0, error: 1, info: 2, debug: 3 };
 
 const ASSEMBLE_TIMEOUT_MS = 180_000;
 const MAX_SAFE_BYTES = 2 * 1024 * 1024;
+const DEFAULT_MAX_UPSTREAM_JSON_BYTES = 20 * 1024 * 1024;
 
 
 // ============ 主端点请求窗口 ============
@@ -151,6 +155,21 @@ class RequestRingBuffer {
     }
     return validCount;
   }
+
+  resize(maxSize) {
+    const nextSize = Math.max(RING_BUFFER_MIN_SIZE, Number(maxSize) || RING_BUFFER_MIN_SIZE);
+    if (nextSize === this.buffer.length) return;
+    const values = [];
+    for (let i = 0; i < this.count; i++) {
+      const index = (this.head - this.count + i + this.buffer.length) % this.buffer.length;
+      values.push(this.buffer[index]);
+    }
+    const kept = values.slice(-nextSize);
+    this.buffer = new Float64Array(nextSize);
+    this.head = 0;
+    this.count = 0;
+    for (const value of kept) this.record(value);
+  }
 }
 
 // ============ 请求体限制 ============
@@ -171,6 +190,8 @@ const gatewayStats = {
   clientRequests: 0,
   clientSuccesses: 0,
   clientFailures: 0,
+  clientActiveRequests: 0,
+  clientCancellations: 0,
   fallbackActivations: 0,
   fallbackSuccesses: 0,
 };
@@ -184,7 +205,8 @@ async function handleRequest(request, env, ctx) {
     const logger = getLogger(env);
     const requestId = crypto.randomUUID();
     const requestUrl = new URL(request.url);
-    const route = detectGatewayRoute(request.method, requestUrl.pathname);
+    const normalizedPath = normalizeGatewayPath(requestUrl.pathname);
+    const route = detectGatewayRoute(request.method, normalizedPath);
     const isAnthropicClient = route === 'anthropic_messages' || route === 'anthropic_count_tokens';
 
     const now = Date.now();
@@ -194,14 +216,19 @@ async function handleRequest(request, env, ctx) {
     }
 
     if (request.method === 'OPTIONS') {
+      const intendedMethod = request.headers.get('Access-Control-Request-Method') || 'POST';
+      const allowUnsafeProxyRoutes = readBooleanEnv(env, 'ALLOW_UNSAFE_PROXY_ROUTES', false);
+      if (!allowUnsafeProxyRoutes && !isSupportedGatewayRoute(intendedMethod, normalizedPath)) {
+        return new Response(null, { status: 404, headers: corsHeaders(request, env) });
+      }
       return new Response(null, { status: 204, headers: corsHeaders(request, env) });
     }
 
-    if (request.method === 'GET' && requestUrl.pathname === '/' && acceptsHtml(request)) {
+    if (request.method === 'GET' && normalizedPath === '/' && acceptsHtml(request)) {
       return html(DASHBOARD_HTML);
     }
 
-    if (request.method === 'GET' && requestUrl.pathname === '/version') {
+    if (request.method === 'GET' && normalizedPath === '/version') {
       return versionResponse(request, env);
     }
 
@@ -213,14 +240,17 @@ async function handleRequest(request, env, ctx) {
 
     const bearerKey = parseBearer(request.headers.get('Authorization'));
     const xApiKey = String(request.headers.get('x-api-key') || '').trim();
-    const providedGatewayAccessKey = bearerKey || xApiKey;
-    if (!(await timingSafeEqual(providedGatewayAccessKey, expectedGatewayAccessKey))) {
+    const [bearerMatches, xApiKeyMatches] = await Promise.all([
+      timingSafeEqual(bearerKey, expectedGatewayAccessKey),
+      timingSafeEqual(xApiKey, expectedGatewayAccessKey),
+    ]);
+    if (!bearerMatches && !xApiKeyMatches) {
       return gatewayError(request, env, isAnthropicClient, 401,
         'Unauthorized: gateway access key is invalid or missing.', undefined, requestId);
     }
 
-    const allowUnsafeProxyRoutes = readOptionalEnv(env, 'ALLOW_UNSAFE_PROXY_ROUTES') === 'true';
-    if (!allowUnsafeProxyRoutes && !isSupportedGatewayRoute(request.method, requestUrl.pathname)) {
+    const allowUnsafeProxyRoutes = readBooleanEnv(env, 'ALLOW_UNSAFE_PROXY_ROUTES', false);
+    if (!allowUnsafeProxyRoutes && !isSupportedGatewayRoute(request.method, normalizedPath)) {
       return gatewayError(request, env, isAnthropicClient, 404,
         'Route not found or not allowed by the gateway route policy.', {
           method: request.method,
@@ -228,12 +258,12 @@ async function handleRequest(request, env, ctx) {
         }, requestId);
     }
 
-    if (request.method === 'GET' && requestUrl.pathname === '/health') {
-      return await healthCheck(env, requestId);
+    if (request.method === 'GET' && normalizedPath === '/health') {
+      return await healthCheck(request, env, requestId);
     }
 
-    if (request.method === 'GET' && requestUrl.pathname === '/metrics') {
-      return await metricsCheck(env);
+    if (request.method === 'GET' && normalizedPath === '/metrics') {
+      return await metricsCheck(request, env);
     }
 
     const maxBodyBytes = clampInt(
@@ -255,70 +285,68 @@ async function handleRequest(request, env, ctx) {
     let targetWasNonStream = false;
     let isDirectStream = false;
 
-    const DIRECT_STREAM_THRESHOLD = 2 * 1024 * 1024;
-    const isChunked = (request.headers.get('transfer-encoding') || '').toLowerCase().includes('chunked');
-    const isLargePayload = declaredLength > DIRECT_STREAM_THRESHOLD || isChunked;
-
     if (canHaveBody(request.method)) {
       const ct = (request.headers.get('content-type') || '').toLowerCase();
       const contentEncoding = (request.headers.get('content-encoding') || '').toLowerCase();
+      const jsonRoute = route === 'openai_chat' || route === 'anthropic_messages' || route === 'anthropic_count_tokens';
+
+      if (contentEncoding && contentEncoding !== 'identity') {
+        return gatewayError(request, env, isAnthropicClient, 415,
+          'Compressed request bodies are not supported by this gateway.', undefined, requestId);
+      }
 
       try {
-        if (isAnthropicClient) {
+        if (jsonRoute) {
           if (!ct.includes('application/json')) {
-            return anthropicErrorResponse(request, env, 400,
-              'Anthropic Messages endpoints require Content-Type: application/json.', requestId,
-              undefined, 'invalid_request_error');
-          }
-          if (contentEncoding) {
-            return anthropicErrorResponse(request, env, 415,
-              'Compressed Anthropic request bodies are not supported by this gateway.', requestId,
-              undefined, 'invalid_request_error');
+            return gatewayError(request, env, isAnthropicClient, 415,
+              'This endpoint requires Content-Type: application/json.', undefined, requestId);
           }
           originalBodyText = await readTextWithLimit(request, maxBodyBytes);
           try {
             originalBodyJson = JSON.parse(originalBodyText || '{}');
             bodyParsed = true;
-          } catch (e) {
-            return anthropicErrorResponse(request, env, 400,
-              `Invalid JSON request body: ${e.message}`, requestId,
-              undefined, 'invalid_request_error');
+          } catch (error) {
+            return gatewayError(request, env, isAnthropicClient, 400,
+              `Invalid JSON request body: ${error.message}`, undefined, requestId);
           }
-        } else if (!isLargePayload && ct.includes('application/json') && !contentEncoding) {
-          originalBodyText = await readTextWithLimit(request, maxBodyBytes);
-          if (originalBodyText) {
-            try {
-              originalBodyJson = JSON.parse(originalBodyText);
-              bodyParsed = true;
 
-              const isChatCompletions = requestUrl.pathname.includes('/chat/completions');
-              const fakeStreamEnabled = readOptionalEnv(env, 'FAKE_STREAM_PROTECTION') === 'true';
-              if (isChatCompletions && fakeStreamEnabled && originalBodyJson.stream !== true) {
-                targetWasNonStream = true;
-                originalBodyJson.stream = true;
-                originalBodyText = JSON.stringify(originalBodyJson);
-              }
-            } catch {}
+          if (route === 'openai_chat') {
+            const fakeStreamEnabled = readBooleanEnv(env, 'FAKE_STREAM_PROTECTION', false);
+            if (fakeStreamEnabled && originalBodyJson.stream !== true) {
+              targetWasNonStream = true;
+              originalBodyJson.stream = true;
+              originalBodyText = JSON.stringify(originalBodyJson);
+            }
           }
         } else {
-          requestBodyBuffer = request.body;
-          isDirectStream = true;
+          requestBodyBuffer = createLimitedRequestBodyStream(request.body, maxBodyBytes);
+          isDirectStream = Boolean(request.body);
         }
-      } catch (e) {
-        if (e instanceof BodyTooLargeError) {
+      } catch (error) {
+        if (error instanceof BodyTooLargeError) {
           return gatewayError(request, env, isAnthropicClient, 413,
             'Request body exceeds limit.', undefined, requestId);
         }
-        throw e;
+        throw error;
       }
     }
 
     if (route === 'anthropic_count_tokens') {
       const mode = (readOptionalEnv(env, 'ANTHROPIC_COUNT_TOKENS_MODE') || 'approximate').toLowerCase();
+      if (!['approximate', 'disabled'].includes(mode)) {
+        return anthropicErrorResponse(request, env, 500,
+          'Gateway misconfigured: ANTHROPIC_COUNT_TOKENS_MODE must be approximate or disabled.',
+          requestId, undefined, 'api_error');
+      }
       if (mode === 'disabled') {
         return anthropicErrorResponse(request, env, 404,
           'Token counting is disabled on this gateway.', requestId,
           undefined, 'not_found_error');
+      }
+      const validationError = validateAnthropicCountTokensRequest(originalBodyJson);
+      if (validationError) {
+        return anthropicErrorResponse(request, env, 400, validationError, requestId,
+          undefined, 'invalid_request_error');
       }
       const inputTokens = estimateAnthropicInputTokens(originalBodyJson || {});
       return new Response(JSON.stringify({ input_tokens: inputTokens }), {
@@ -340,8 +368,11 @@ async function handleRequest(request, env, ctx) {
       }
     }
 
-    if (isLargePayload && !isAnthropicClient) {
-      targetWasNonStream = false;
+    if (route === 'openai_chat') {
+      const validationError = validateOpenAIChatRequest(originalBodyJson);
+      if (validationError) {
+        return gatewayError(request, env, false, 400, validationError, undefined, requestId);
+      }
     }
 
     const primaryEndpoints = buildPrimaryEndpoints(env);
@@ -356,17 +387,16 @@ async function handleRequest(request, env, ctx) {
     const mappingRaw = readOptionalEnv(env, 'MODEL_MAPPING');
     if (mappingRaw) {
       try {
-        modelMapping = JSON.parse(mappingRaw);
-        if (!isPlainObject(modelMapping)) throw new Error('root value must be a JSON object');
+        modelMapping = parseAndValidateModelMapping(mappingRaw, env);
       } catch (error) {
         logger.error('MODEL_MAPPING parse error:', error.message);
         return gatewayError(request, env, isAnthropicClient, 500,
-          `Gateway misconfigured: MODEL_MAPPING is invalid JSON (${error.message}).`,
+          `Gateway misconfigured: MODEL_MAPPING is invalid (${error.message}).`,
           undefined, requestId);
       }
     }
 
-    if (isModelsListRoute(request.method, requestUrl.pathname)) {
+    if (isModelsListRoute(request.method, normalizedPath)) {
       return await modelsListResponse({
         request,
         env,
@@ -377,7 +407,8 @@ async function handleRequest(request, env, ctx) {
       });
     }
 
-    if (readOptionalEnv(env, 'STRICT_MODEL_MAPPING') === 'true') {
+    const strictModelMapping = readBooleanEnv(env, 'STRICT_MODEL_MAPPING', false);
+    if (strictModelMapping) {
       if (!bodyParsed || !originalBodyJson || typeof originalBodyJson.model !== 'string') {
         return gatewayError(request, env, isAnthropicClient, 400,
           'STRICT_MODEL_MAPPING requires a JSON request body with a model field.', undefined, requestId);
@@ -388,15 +419,14 @@ async function handleRequest(request, env, ctx) {
       }
     }
 
-    const cacheEnabled = readOptionalEnv(env, 'CACHE_ENABLED') === 'true';
-    const cacheStreamAllowed = readOptionalEnv(env, 'CACHE_STREAM') === 'true';
+    const cacheEnabled = readBooleanEnv(env, 'CACHE_ENABLED', false);
     const isStreamRequest = bodyParsed && originalBodyJson && originalBodyJson.stream === true;
     const cacheEligible = !isAnthropicClient
       && cacheEnabled
       && request.method === 'POST'
       && bodyParsed
-      && (!targetWasNonStream)
-      && (!isStreamRequest || cacheStreamAllowed);
+      && !targetWasNonStream
+      && !isStreamRequest;
 
     let cacheUrl = null;
     if (cacheEligible) {
@@ -429,7 +459,7 @@ async function handleRequest(request, env, ctx) {
       MAX_TIMEOUT_MS,
       DEFAULT_TIMEOUT_MS
     );
-    const exposeUpstreamInfo = readOptionalEnv(env, 'EXPOSE_UPSTREAM_INFO') === 'true';
+    const exposeUpstreamInfo = readBooleanEnv(env, 'EXPOSE_UPSTREAM_INFO', false);
 
     const primarySelectionConfig = {
       rotationWindowMs: clampInt(readOptionalEnv(env, 'PRIMARY_ROTATION_WINDOW_MS'), 10_000, 18_000_000, DEFAULT_PRIMARY_ROTATION_WINDOW_MS),
@@ -438,18 +468,42 @@ async function handleRequest(request, env, ctx) {
     };
 
     g_ringBufferSize = Math.max(RING_BUFFER_MIN_SIZE, primarySelectionConfig.rotationMaxPerWindow * 4);
-    const primaryCandidates = primaryEndpoints.length > 0
-      ? selectPrimaryEndpoints(primaryEndpoints, primaryMaxAttempts, primarySelectionConfig, originalBodyJson)
+    const strictEligiblePrimaryEndpoints = strictModelMapping && originalBodyJson?.model
+      ? primaryEndpoints.filter(endpoint => isModelAllowedForEndpoint(
+          originalBodyJson.model,
+          endpoint,
+          modelMapping
+        ))
+      : primaryEndpoints;
+    const primaryCandidates = strictEligiblePrimaryEndpoints.length > 0
+      ? selectPrimaryEndpoints(strictEligiblePrimaryEndpoints, Math.min(primaryMaxAttempts, strictEligiblePrimaryEndpoints.length), primarySelectionConfig, originalBodyJson)
       : [];
     const candidates = [...primaryCandidates];
 
     // Fallback 不参与 Primary 轮询，并按 primary → secondary 顺序尝试。
     // 大体积直通请求体不可重复消费，因此最多发送至一个候选端点。
-    const fallbackEligible = isFallbackEligible(route, requestUrl.pathname)
+    const fallbackEligible = isFallbackEligible(route, normalizedPath)
       && (!isDirectStream || primaryCandidates.length === 0);
     if (fallbackEligible) {
-      const availableFallbacks = fallbackEndpoints.filter(ep => !isCoolingDown(ep.id));
+      const fallbackMaxConcurrency = clampInt(
+        readOptionalEnv(env, 'FALLBACK_MAX_CONCURRENCY_PER_ENDPOINT'),
+        1,
+        100,
+        DEFAULT_PRIMARY_MAX_CONCURRENCY_PER_ENDPOINT
+      );
+      const availableFallbacks = fallbackEndpoints.filter(ep => {
+        const state = getEndpointState(ep.id);
+        if (isCoolingDown(ep.id)) return false;
+        if (state.activeRequests >= fallbackMaxConcurrency) return false;
+        return true;
+      });
       candidates.push(...(isDirectStream ? availableFallbacks.slice(0, 1) : availableFallbacks));
+    }
+
+    if (candidates.length === 0 && strictModelMapping && originalBodyJson?.model) {
+      return gatewayError(request, env, isAnthropicClient, 400,
+        `Model "${originalBodyJson.model}" is allowed globally but no currently available endpoint can route it.`,
+        undefined, requestId);
     }
 
     if (candidates.length === 0) {
@@ -464,7 +518,7 @@ async function handleRequest(request, env, ctx) {
           fallback_endpoints: fallbackEndpoints.map(ep => ({
             tier: ep.fallbackTier,
             order: ep.fallbackOrder,
-            provider: ep.providerName,
+            provider: exposeUpstreamInfo ? ep.providerName : getEndpointRole(ep),
             model: ep.configuredModel,
             cooling: isCoolingDown(ep.id),
           })),
@@ -496,13 +550,18 @@ async function handleRequest(request, env, ctx) {
           : resolveModelConfig(modelMapping, targetHost, requestedModel);
 
         const upstreamRequestUrl = new URL(requestUrl.toString());
-        if (route === 'anthropic_messages') {
+        if (route === 'openai_chat' || route === 'anthropic_messages') {
           upstreamRequestUrl.pathname = '/v1/chat/completions';
         }
 
         targetUrl = buildTargetUrl(upstreamRequestUrl, endpoint.baseUrl);
         if (modelConfig.invoke_url) {
-          const forced = new URL(modelConfig.invoke_url);
+          const forcedUrl = normalizeInvokeUrl(
+            modelConfig.invoke_url,
+            readBooleanEnv(env, 'ALLOW_INSECURE_HTTP_UPSTREAM', false)
+          );
+          if (!forcedUrl) throw new Error('MODEL_MAPPING invoke_url must be an absolute HTTPS URL without embedded credentials.');
+          const forced = new URL(forcedUrl);
           mergeSearchParams(forced, requestUrl);
           targetUrl = forced.toString();
           targetHost = forced.hostname;
@@ -535,12 +594,21 @@ async function handleRequest(request, env, ctx) {
 
       const headers = buildStandardOpenAIHeaders(request, endpoint.token, requestId);
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-      const onClientAbort = () => controller.abort();
+      let timeoutTriggered = false;
+      let clientAbortTriggered = false;
+      const timeoutId = setTimeout(() => {
+        timeoutTriggered = true;
+        controller.abort();
+      }, timeoutMs);
+      const onClientAbort = () => {
+        clientAbortTriggered = true;
+        controller.abort();
+      };
       let clientAbortListener = null;
       if (request.signal) {
         clientAbortListener = onClientAbort;
-        request.signal.addEventListener('abort', clientAbortListener);
+        if (request.signal.aborted) onClientAbort();
+        else request.signal.addEventListener('abort', clientAbortListener, { once: true });
       }
 
       const requestStartTime = Date.now();
@@ -556,7 +624,7 @@ async function handleRequest(request, env, ctx) {
         clearTimeout(timeoutId);
         const elapsedMs = Date.now() - requestStartTime;
 
-        if (upstream.ok || !RETRYABLE_STATUS.has(upstream.status)) {
+        if (upstream.ok || (upstream.status >= 400 && !RETRYABLE_STATUS.has(upstream.status))) {
           const isStreaming = isStreamingResponse(upstream);
           const primaryFailureCount = attempts.filter(item => item.endpoint_role === 'primary').length;
           const fallbackFeedback = endpoint.role === 'fallback'
@@ -596,7 +664,7 @@ async function handleRequest(request, env, ctx) {
 
             if (env && env.AE_DATASET) {
               ctx.waitUntil(writeAnalytics(env, {
-                endpointId: await fingerprint(endpoint.token),
+                endpointId: await fingerprint(endpoint.id),
                 status: upstream.status,
                 latencyMs: elapsedMs,
                 attempt: index + 1,
@@ -680,7 +748,7 @@ async function handleRequest(request, env, ctx) {
 
           if (env && env.AE_DATASET) {
             ctx.waitUntil(writeAnalytics(env, {
-              endpointId: await fingerprint(endpoint.token),
+              endpointId: await fingerprint(endpoint.id),
               status: upstream.status,
               latencyMs: elapsedMs,
               attempt: index + 1,
@@ -758,7 +826,7 @@ async function handleRequest(request, env, ctx) {
 
         if (env && env.AE_DATASET) {
           ctx.waitUntil(writeAnalytics(env, {
-            endpointId: await fingerprint(endpoint.token),
+            endpointId: await fingerprint(endpoint.id),
             status: upstream.status,
             latencyMs: elapsedMs,
             attempt: index + 1,
@@ -767,11 +835,22 @@ async function handleRequest(request, env, ctx) {
         }
       } catch (error) {
         clearTimeout(timeoutId);
+        if (error instanceof BodyTooLargeError) {
+          recordNeutralEnd(endpoint.id);
+          return gatewayError(request, env, isAnthropicClient, 413,
+            error.message || 'Request body exceeds limit.', undefined, requestId);
+        }
         if (request.signal && clientAbortListener) {
           request.signal.removeEventListener('abort', clientAbortListener);
         }
         const elapsedMs = Date.now() - requestStartTime;
-        const isTimeout = error?.name === 'AbortError';
+        if (clientAbortTriggered || (request.signal?.aborted && !timeoutTriggered)) {
+          recordNeutralEnd(endpoint.id);
+          gatewayStats.clientCancellations++;
+          return gatewayError(request, env, isAnthropicClient, 499,
+            'Client closed the request before the upstream response started.', undefined, requestId);
+        }
+        const isTimeout = timeoutTriggered || error?.name === 'TimeoutError';
         const errorMessage = isTimeout
           ? `Upstream timed out after ${timeoutMs}ms.`
           : error?.message || String(error);
@@ -824,7 +903,7 @@ async function handleRequest(request, env, ctx) {
 
 function isCountedClientRoute(method, pathname) {
   const verb = String(method || '').toUpperCase();
-  const path = String(pathname || '/').replace(/\/+$/, '').toLowerCase() || '/';
+  const path = normalizeGatewayPath(pathname);
   if (verb === 'GET') return path === '/v1/models' || path === '/models';
   if (verb !== 'POST') return false;
   return [
@@ -838,29 +917,88 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const counted = isCountedClientRoute(request.method, url.pathname);
-    if (counted) gatewayStats.clientRequests++;
+    if (counted) {
+      gatewayStats.clientRequests++;
+      gatewayStats.clientActiveRequests++;
+    }
     try {
       const response = await handleRequest(request, env, ctx);
-      if (counted) {
-        if (response.status < 400) gatewayStats.clientSuccesses++;
-        else gatewayStats.clientFailures++;
-        if (response.status < 400 && response.headers.get('x-edge-gateway-fallback') === 'true') {
-          gatewayStats.fallbackSuccesses++;
-        }
-      }
-      return response;
+      if (!counted) return response;
+      return trackClientResponse(response);
     } catch (error) {
-      if (counted) gatewayStats.clientFailures++;
+      if (counted) {
+        gatewayStats.clientActiveRequests = Math.max(0, gatewayStats.clientActiveRequests - 1);
+        gatewayStats.clientFailures++;
+        if (request.signal?.aborted) gatewayStats.clientCancellations++;
+      }
       throw error;
     }
   },
 };
 
+function trackClientResponse(response) {
+  const fallbackUsed = response.headers.get('x-edge-gateway-fallback') === 'true';
+  const successfulStatus = response.status < 400;
+  const streaming = successfulStatus && isStreamingResponse(response) && response.body;
+
+  if (!streaming) {
+    gatewayStats.clientActiveRequests = Math.max(0, gatewayStats.clientActiveRequests - 1);
+    if (successfulStatus) {
+      gatewayStats.clientSuccesses++;
+      if (fallbackUsed) gatewayStats.fallbackSuccesses++;
+    } else {
+      gatewayStats.clientFailures++;
+    }
+    return response;
+  }
+
+  const reader = response.body.getReader();
+  let finalized = false;
+  const finalize = (result) => {
+    if (finalized) return;
+    finalized = true;
+    gatewayStats.clientActiveRequests = Math.max(0, gatewayStats.clientActiveRequests - 1);
+    if (result === 'success') {
+      gatewayStats.clientSuccesses++;
+      if (fallbackUsed) gatewayStats.fallbackSuccesses++;
+    } else {
+      gatewayStats.clientFailures++;
+      if (result === 'cancelled') gatewayStats.clientCancellations++;
+    }
+  };
+
+  const body = new ReadableStream({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          finalize('success');
+          controller.close();
+        } else {
+          controller.enqueue(value);
+        }
+      } catch (error) {
+        finalize('failure');
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      finalize('cancelled');
+      try { await reader.cancel(reason); } catch {}
+    },
+  });
+  return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+}
+
 // ============ Anthropic / OpenAI 协议转换 ============
+
+function normalizeGatewayPath(pathname) {
+  return String(pathname || '/').replace(/\/+$/, '').toLowerCase() || '/';
+}
 
 function detectGatewayRoute(method, pathname) {
   if (String(method).toUpperCase() !== 'POST') return 'other';
-  const path = String(pathname || '/').replace(/\/+$/, '').toLowerCase() || '/';
+  const path = normalizeGatewayPath(pathname);
   if (path === '/v1/messages/count_tokens' || path === '/messages/count_tokens') return 'anthropic_count_tokens';
   if (path === '/v1/messages' || path === '/messages') return 'anthropic_messages';
   if (path === '/v1/chat/completions' || path === '/chat/completions') return 'openai_chat';
@@ -869,7 +1007,7 @@ function detectGatewayRoute(method, pathname) {
 
 function isSupportedGatewayRoute(method, pathname) {
   const verb = String(method || '').toUpperCase();
-  const path = String(pathname || '/').replace(/\/+$/, '').toLowerCase() || '/';
+  const path = normalizeGatewayPath(pathname);
   if (verb === 'GET') return ['/version', '/health', '/metrics', '/v1/models', '/models'].includes(path);
   if (verb === 'POST') return [
     '/v1/chat/completions', '/chat/completions',
@@ -881,8 +1019,15 @@ function isSupportedGatewayRoute(method, pathname) {
 
 function isModelsListRoute(method, pathname) {
   if (String(method).toUpperCase() !== 'GET') return false;
-  const path = String(pathname || '/').replace(/\/+$/, '').toLowerCase() || '/';
+  const path = normalizeGatewayPath(pathname);
   return path === '/v1/models' || path === '/models';
+}
+
+function validateAnthropicCountTokensRequest(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return 'Request body must be a JSON object.';
+  if (!body.model || typeof body.model !== 'string' || !body.model.trim()) return 'model is required and must be a non-empty string.';
+  if (!Array.isArray(body.messages)) return 'messages is required and must be an array.';
+  return null;
 }
 
 function validateAnthropicMessagesRequest(body) {
@@ -891,6 +1036,78 @@ function validateAnthropicMessagesRequest(body) {
   if (!Number.isFinite(Number(body.max_tokens)) || Number(body.max_tokens) <= 0) return 'max_tokens is required and must be greater than 0.';
   if (!Array.isArray(body.messages)) return 'messages is required and must be an array.';
   return null;
+}
+
+function validateOpenAIChatRequest(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return 'Request body must be a JSON object.';
+  if (!body.model || typeof body.model !== 'string' || !body.model.trim()) return 'model is required and must be a non-empty string.';
+  if (!Array.isArray(body.messages)) return 'messages is required and must be an array.';
+  return null;
+}
+
+function parseAndValidateModelMapping(raw, env) {
+  const parsed = JSON.parse(raw);
+  if (!isPlainObject(parsed)) throw new Error('root value must be a JSON object');
+  const allowInsecureHttp = readBooleanEnv(env, 'ALLOW_INSECURE_HTTP_UPSTREAM', false);
+  const normalized = {};
+  for (const [rawHost, hostMapping] of Object.entries(parsed)) {
+    const host = String(rawHost || '').trim().toLowerCase();
+    if (!host || !isPlainObject(hostMapping)) throw new Error(`mapping for host "${rawHost}" must be an object`);
+    if (Object.prototype.hasOwnProperty.call(normalized, host)) {
+      throw new Error(`duplicate mapping host after case normalization: "${rawHost}"`);
+    }
+    const normalizedHostMapping = {};
+    for (const [rawAlias, config] of Object.entries(hostMapping)) {
+      const alias = String(rawAlias || '').trim();
+      if (!alias) throw new Error(`host "${rawHost}" contains an empty model alias`);
+      if (Object.prototype.hasOwnProperty.call(normalizedHostMapping, alias)) {
+        throw new Error(`host "${rawHost}" contains duplicate model alias "${alias}"`);
+      }
+      if (typeof config === 'string') {
+        if (!config.trim()) throw new Error(`mapping "${rawHost}.${alias}" must not be empty`);
+        normalizedHostMapping[alias] = config.trim();
+        continue;
+      }
+      if (!isPlainObject(config)) throw new Error(`mapping "${rawHost}.${alias}" must be a string or object`);
+      if (config.model !== undefined && (typeof config.model !== 'string' || !config.model.trim())) {
+        throw new Error(`mapping "${rawHost}.${alias}.model" must be a non-empty string`);
+      }
+      if (config.invoke_url !== undefined && !normalizeInvokeUrl(config.invoke_url, allowInsecureHttp)) {
+        throw new Error(`mapping "${rawHost}.${alias}.invoke_url" must be an absolute HTTPS URL without embedded credentials`);
+      }
+      if (config.capabilities !== undefined && !isPlainObject(config.capabilities)) {
+        throw new Error(`mapping "${rawHost}.${alias}.capabilities" must be an object`);
+      }
+      if (config.request_overrides !== undefined && !isPlainObject(config.request_overrides)) {
+        throw new Error(`mapping "${rawHost}.${alias}.request_overrides" must be an object`);
+      }
+      const protectedRequestFields = new Set(['model', 'messages', 'stream']);
+      if (config.request_overrides && Object.keys(config.request_overrides).some(key => protectedRequestFields.has(key))) {
+        throw new Error(`mapping "${rawHost}.${alias}.request_overrides" must not override model, messages, or stream`);
+      }
+      if (config.drop_params !== undefined && (!Array.isArray(config.drop_params) || config.drop_params.some(item => typeof item !== 'string'))) {
+        throw new Error(`mapping "${rawHost}.${alias}.drop_params" must be an array of strings`);
+      }
+      if (Array.isArray(config.drop_params) && config.drop_params.some(key => protectedRequestFields.has(key))) {
+        throw new Error(`mapping "${rawHost}.${alias}.drop_params" must not remove model, messages, or stream`);
+      }
+      normalizedHostMapping[alias] = {
+        ...config,
+        ...(typeof config.model === 'string' ? { model: config.model.trim() } : {}),
+      };
+    }
+    normalized[host] = normalizedHostMapping;
+  }
+  return normalized;
+}
+
+function isModelAllowedForEndpoint(requestedModel, endpoint, modelMapping) {
+  if (!requestedModel || !endpoint) return false;
+  if (endpoint.role === 'fallback' && endpoint.configuredModel === requestedModel) return true;
+  let host = '';
+  try { host = new URL(endpoint.baseUrl).hostname; } catch { return false; }
+  const hostMapping = modelMapping?.[host];
+  return isPlainObject(hostMapping) && Object.prototype.hasOwnProperty.call(hostMapping, requestedModel);
 }
 
 function resolveModelConfig(modelMapping, host, requestedModel) {
@@ -911,8 +1128,9 @@ function resolveModelConfig(modelMapping, host, requestedModel) {
 }
 
 function applyModelRequestConfig(body, modelConfig) {
-  let result = { ...body, ...(modelConfig?.request_overrides || {}) };
+  const result = { ...body, ...(modelConfig?.request_overrides || {}) };
   for (const key of modelConfig?.drop_params || []) delete result[key];
+  if (modelConfig?.model) result.model = modelConfig.model;
   return result;
 }
 
@@ -929,7 +1147,7 @@ function anthropicToOpenAIRequest(body, modelConfig, env) {
     for (const item of converted) messages.push(item);
   }
 
-  const fakeStreamEnabled = readOptionalEnv(env, 'FAKE_STREAM_PROTECTION') === 'true';
+  const fakeStreamEnabled = readBooleanEnv(env, 'FAKE_STREAM_PROTECTION', false);
   const clientWantsStream = body.stream === true;
   const upstreamStream = clientWantsStream || fakeStreamEnabled;
   const maxField = caps.max_tokens_field === 'max_completion_tokens'
@@ -1219,7 +1437,9 @@ function normalizeReasoningEffort(value) {
 function buildFallbackClientFeedback(env, endpoint, requestedModel, actualModel, primaryAttempts) {
   const rawMode = String(readOptionalEnv(env, 'FALLBACK_CLIENT_NOTICE_MODE') || 'headers').toLowerCase();
   const mode = ['headers', 'visible', 'off'].includes(rawMode) ? rawMode : 'headers';
-  const provider = endpoint?.providerName || inferProviderName(endpoint?.baseUrl) || 'custom-openai';
+  const provider = readBooleanEnv(env, 'EXPOSE_UPSTREAM_INFO', false)
+    ? (endpoint?.providerName || inferProviderName(endpoint?.baseUrl) || 'custom-openai')
+    : getEndpointRole(endpoint);
   const tier = endpoint?.fallbackTier || 'primary';
   const model = actualModel || endpoint?.configuredModel || requestedModel || 'unknown';
   const attempts = Math.max(0, Number(primaryAttempts || 0));
@@ -1533,6 +1753,7 @@ function transformOpenAIStreamToAnthropic(upstream, requestedModel, requestId, m
   let openBlock = null;
   let finishReason = null;
   let usage = { input_tokens: 0, output_tokens: 0 };
+  let validChoiceSeen = false;
   const pendingTools = new Map();
 
   const cleanup = async () => {
@@ -1600,6 +1821,7 @@ function transformOpenAIStreamToAnthropic(upstream, requestedModel, requestId, m
         if (json?.usage) usage = mapOpenAIUsageToAnthropic(json.usage);
         const choice = json?.choices?.[0];
         if (!choice) return;
+        validChoiceSeen = true;
         const delta = choice.delta || {};
         const reasoning = delta.reasoning_content ?? delta.reasoning;
         if (typeof reasoning === 'string' && reasoning && caps.expose_reasoning !== false) {
@@ -1639,6 +1861,15 @@ function transformOpenAIStreamToAnthropic(upstream, requestedModel, requestId, m
       };
       const finalize = () => {
         if (finished) return;
+        if (!validChoiceSeen && pendingTools.size === 0 && !openBlock) {
+          finished = true;
+          emit('error', {
+            type: 'error',
+            error: { type: 'api_error', message: 'Upstream returned an empty or malformed stream.' },
+          });
+          controller.close();
+          return;
+        }
         finished = true;
         closeOpenBlock();
 
@@ -1820,6 +2051,17 @@ async function collectOpenAIStream(upstream, requestSignal) {
     }
   }
 
+  if (buffer.trim()) {
+    const data = buffer.split(/\r?\n/)
+      .filter(line => line.startsWith('data:'))
+      .map(line => line.slice(5).trimStart())
+      .join('\n');
+    if (data && data !== '[DONE]') {
+      try { processChunk(JSON.parse(data)); } catch {}
+    }
+  }
+  if (choices.size === 0) throw new Error('Upstream returned an empty or malformed stream.');
+
   const finalChoices = [...choices.entries()].sort((a, b) => a[0] - b[0]).map(([index, state]) => {
     const message = { role: 'assistant', content: state.content || null };
     if (state.reasoning_content) message.reasoning_content = state.reasoning_content;
@@ -1881,10 +2123,30 @@ function anthropicMessageToSseResponse(message) {
   });
 }
 
-async function safeJsonResponse(response) {
-  const text = await response.text();
+async function safeJsonResponse(response, maxBytes = DEFAULT_MAX_UPSTREAM_JSON_BYTES) {
+  const text = await readResponseTextWithLimit(response, maxBytes);
   try { return JSON.parse(text); }
   catch { throw new Error(`Upstream returned invalid JSON: ${trimDiagnostic(text)}`); }
+}
+
+async function readResponseTextWithLimit(response, maxBytes) {
+  const reader = response.body?.getReader();
+  if (!reader) return '';
+  const decoder = new TextDecoder();
+  let text = '';
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {});
+      throw new BodyTooLargeError('Upstream JSON response exceeds the configured safety limit.');
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  text += decoder.decode();
+  return text;
 }
 
 function estimateAnthropicInputTokens(body) {
@@ -2060,53 +2322,37 @@ function simpleHash(str) {
 function selectPrimaryEndpoints(primaryEndpoints, maxAttempts, config, originalBodyJson) {
   const now = Date.now();
   const { rotationWindowMs, rotationMaxPerWindow, maxConcurrencyPerEndpoint } = config;
+  const requestSalt = originalBodyJson && Array.isArray(originalBodyJson.messages)
+    ? stableStringify(originalBodyJson.messages.slice(0, 2))
+    : String(selectionCounter++);
 
-  const tiers = { ready: [], degraded: [] };
+  const candidates = [];
   for (const ep of primaryEndpoints) {
     const state = getEndpointState(ep.id);
+    state.requestBuffer.resize(g_ringBufferSize);
     if (state.cooldownUntil > 0 && state.cooldownUntil <= now) {
       state.cooldownUntil = 0;
       state.cooldownReason = null;
       state.consecutiveFailures = 0;
       state.healthScore = Math.min(HEALTH_SCORE_MAX, state.healthScore + HEALTH_SCORE_COOLDOWN_RECOVERY);
     }
-
     const recentRequests = state.requestBuffer.getRecentCount(rotationWindowMs, now);
     if (state.cooldownUntil > now) continue;
     if (state.activeRequests >= maxConcurrencyPerEndpoint) continue;
     if (recentRequests >= rotationMaxPerWindow) continue;
-
-    if (state.healthScore < 30) tiers.degraded.push({ ep, state });
-    else tiers.ready.push({ ep, state });
+    candidates.push({ ep, state, recentRequests });
   }
 
-  const sortByHealthAndLoad = (a, b) => {
+  candidates.sort((a, b) => {
     if (b.state.healthScore !== a.state.healthScore) return b.state.healthScore - a.state.healthScore;
-    const aReq = a.state.requestBuffer.getRecentCount(rotationWindowMs, now);
-    const bReq = b.state.requestBuffer.getRecentCount(rotationWindowMs, now);
-    if (aReq !== bReq) return aReq - bReq;
+    if (a.recentRequests !== b.recentRequests) return a.recentRequests - b.recentRequests;
     if (a.state.activeRequests !== b.state.activeRequests) return a.state.activeRequests - b.state.activeRequests;
-    return (a.state.avgLatencyMs || 999999) - (b.state.avgLatencyMs || 999999);
-  };
+    const latencyDiff = (a.state.avgLatencyMs || 999999) - (b.state.avgLatencyMs || 999999);
+    if (latencyDiff !== 0) return latencyDiff;
+    return simpleHash(`${a.ep.id}|${requestSalt}`) - simpleHash(`${b.ep.id}|${requestSalt}`);
+  });
 
-  tiers.ready.sort(sortByHealthAndLoad);
-  tiers.degraded.sort(sortByHealthAndLoad);
-  const ordered = [...tiers.ready, ...tiers.degraded];
-  if (ordered.length === 0) return [];
-
-  const readyCount = tiers.ready.length;
-  if (readyCount > 1) {
-    let offset = 0;
-    if (originalBodyJson && Array.isArray(originalBodyJson.messages) && originalBodyJson.messages.length > 0) {
-      offset = simpleHash(stableStringify(originalBodyJson.messages.slice(0, 2))) % readyCount;
-    } else {
-      offset = selectionCounter++ % readyCount;
-    }
-    const rotatedReady = [...tiers.ready.slice(offset), ...tiers.ready.slice(0, offset)];
-    return [...rotatedReady, ...tiers.degraded].slice(0, maxAttempts).map(x => x.ep);
-  }
-
-  return ordered.slice(0, maxAttempts).map(x => x.ep);
+  return candidates.slice(0, maxAttempts).map(item => item.ep);
 }
 
 function getEndpointState(id) {
@@ -2215,20 +2461,20 @@ function cleanupStaleState() {
   }
 }
 
-async function healthCheck(env, requestId) {
+async function healthCheck(request, env, requestId) {
   const primaryEndpoints = buildPrimaryEndpoints(env);
   const fallbackEndpoints = buildFallbackEndpoints(env);
   const endpoints = [...primaryEndpoints, ...fallbackEndpoints];
   const now = Date.now();
   const rotationWindowMs = clampInt(readOptionalEnv(env, 'PRIMARY_ROTATION_WINDOW_MS'), 10_000, 18_000_000, DEFAULT_PRIMARY_ROTATION_WINDOW_MS);
-  const exposeUpstreamInfo = readOptionalEnv(env, 'EXPOSE_UPSTREAM_INFO') === 'true';
+  const exposeUpstreamInfo = readBooleanEnv(env, 'EXPOSE_UPSTREAM_INFO', false);
 
   // 端点标识使用异步 SHA-256 指纹，因此并行生成后再序列化。
   const endpointDetails = await Promise.all(endpoints.map(async ep => {
     const s = getEndpointState(ep.id);
     const cooling = s.cooldownUntil > now;
     return {
-      id: await fingerprint(ep.role === 'fallback' ? `${ep.token}|${ep.configuredModel}` : ep.token),
+      id: await fingerprint(ep.id),
       ...(exposeUpstreamInfo ? { base_url: ep.baseUrl } : {}),
       role: getEndpointRole(ep),
       provider: exposeUpstreamInfo ? (ep.providerName || inferProviderName(ep.baseUrl)) : getEndpointRole(ep),
@@ -2283,6 +2529,8 @@ async function healthCheck(env, requestId) {
       requests_total: gatewayStats.clientRequests,
       successes_total: gatewayStats.clientSuccesses,
       failures_total: gatewayStats.clientFailures,
+      active_requests: gatewayStats.clientActiveRequests,
+      cancellations_total: gatewayStats.clientCancellations,
       fallback_activations_total: gatewayStats.fallbackActivations,
       fallback_successes_total: gatewayStats.fallbackSuccesses,
       success_rate: gatewayStats.clientRequests > 0
@@ -2306,18 +2554,19 @@ async function healthCheck(env, requestId) {
       'content-type': 'application/json;charset=UTF-8',
       'cache-control': 'no-store',
       'x-request-id': requestId,
+      ...corsHeaders(request, env),
     },
   });
 }
 
 // Prometheus 指标仅反映当前 isolate，适合趋势观察，不代表全局精确值。
-async function metricsCheck(env) {
+async function metricsCheck(request, env) {
   const primaryEndpoints = buildPrimaryEndpoints(env);
   const fallbackEndpoints = buildFallbackEndpoints(env);
   const endpoints = [...primaryEndpoints, ...fallbackEndpoints];
   const now = Date.now();
   const rotationWindowMs = clampInt(readOptionalEnv(env, 'PRIMARY_ROTATION_WINDOW_MS'), 10_000, 18_000_000, DEFAULT_PRIMARY_ROTATION_WINDOW_MS);
-  const exposeUpstreamInfo = readOptionalEnv(env, 'EXPOSE_UPSTREAM_INFO') === 'true';
+  const exposeUpstreamInfo = readBooleanEnv(env, 'EXPOSE_UPSTREAM_INFO', false);
 
   const lines = [];
   lines.push('# HELP edge_gateway_client_requests_total Counted client API requests since isolate start.');
@@ -2329,6 +2578,12 @@ async function metricsCheck(env) {
   lines.push('# HELP edge_gateway_client_failures_total Client API responses with HTTP status 400 or above, including thrown errors, since isolate start.');
   lines.push('# TYPE edge_gateway_client_failures_total counter');
   lines.push(`edge_gateway_client_failures_total ${gatewayStats.clientFailures}`);
+  lines.push('# HELP edge_gateway_client_active_requests Current counted client API requests still active in this isolate.');
+  lines.push('# TYPE edge_gateway_client_active_requests gauge');
+  lines.push(`edge_gateway_client_active_requests ${gatewayStats.clientActiveRequests}`);
+  lines.push('# HELP edge_gateway_client_cancellations_total Counted streaming client responses cancelled before completion.');
+  lines.push('# TYPE edge_gateway_client_cancellations_total counter');
+  lines.push(`edge_gateway_client_cancellations_total ${gatewayStats.clientCancellations}`);
   lines.push('# HELP edge_gateway_fallback_activations_total Requests that entered the Fallback chain since isolate start.');
   lines.push('# TYPE edge_gateway_fallback_activations_total counter');
   lines.push(`edge_gateway_fallback_activations_total ${gatewayStats.fallbackActivations}`);
@@ -2355,7 +2610,7 @@ async function metricsCheck(env) {
   for (const ep of endpoints) {
     const s = getEndpointState(ep.id);
     const cooling = s.cooldownUntil > now ? s.cooldownUntil - now : 0;
-    const id = await fingerprint(ep.role === 'fallback' ? `${ep.token}|${ep.configuredModel}` : ep.token);
+    const id = await fingerprint(ep.id);
     const role = getEndpointRole(ep);
     const fallbackTier = ep.role === 'fallback' ? ep.fallbackTier : '';
     const configuredModel = ep.role === 'fallback' ? ep.configuredModel : '';
@@ -2381,6 +2636,7 @@ async function metricsCheck(env) {
     headers: {
       'content-type': 'text/plain; version=0.0.4; charset=utf-8',
       'cache-control': 'no-store',
+      ...corsHeaders(request, env),
     },
   });
 }
@@ -2415,6 +2671,25 @@ async function modelsListResponse({ request, env, requestId, primaryEndpoints, f
   );
 
   const configuredModels = collectConfiguredModelEntries(primaryEndpoints, fallbackEndpoints, modelMapping);
+  const strictModelMapping = readBooleanEnv(env, 'STRICT_MODEL_MAPPING', false);
+  const exposeUpstreamInfo = readBooleanEnv(env, 'EXPOSE_UPSTREAM_INFO', false);
+  if (strictModelMapping) {
+    if (configuredModels.length === 0) {
+      return gatewayError(request, env, false, 500,
+        'Gateway misconfigured: STRICT_MODEL_MAPPING is enabled but no models are configured in MODEL_MAPPING or Fallback.',
+        undefined, requestId);
+    }
+    return new Response(JSON.stringify({ object: 'list', data: configuredModels }), {
+      status: 200,
+      headers: {
+        'content-type': 'application/json;charset=UTF-8',
+        'cache-control': 'no-store',
+        'x-request-id': requestId,
+        'x-edge-gateway-model-source': 'configured',
+        ...corsHeaders(request, env),
+      },
+    });
+  }
   const attempts = [];
   const modelListCandidates = primaryEndpoints.filter(endpoint => !isCoolingDown(endpoint.id)).slice(0, maxAttempts);
 
@@ -2424,7 +2699,7 @@ async function modelsListResponse({ request, env, requestId, primaryEndpoints, f
       targetUrl = buildTargetUrl(new URL(request.url), endpoint.baseUrl);
     } catch (error) {
       attempts.push({
-        provider: endpoint.providerName,
+        provider: exposeUpstreamInfo ? endpoint.providerName : 'primary',
         status: 0,
         error: `Invalid upstream URL: ${error.message || String(error)}`,
       });
@@ -2445,7 +2720,7 @@ async function modelsListResponse({ request, env, requestId, primaryEndpoints, f
 
       if (!upstream.ok) {
         attempts.push({
-          provider: endpoint.providerName,
+          provider: exposeUpstreamInfo ? endpoint.providerName : 'primary',
           status: upstream.status,
           error: extractUpstreamErrorMessage(await safeReadText(upstream)) || `HTTP ${upstream.status}`,
         });
@@ -2454,12 +2729,14 @@ async function modelsListResponse({ request, env, requestId, primaryEndpoints, f
 
       let payload;
       try {
-        payload = await upstream.json();
+        payload = await safeJsonResponse(upstream, DEFAULT_MODEL_LIST_MAX_BYTES);
       } catch (error) {
         attempts.push({
-          provider: endpoint.providerName,
+          provider: exposeUpstreamInfo ? endpoint.providerName : 'primary',
           status: upstream.status,
-          error: 'Upstream model list is not valid JSON.',
+          error: error instanceof BodyTooLargeError
+            ? 'Upstream model list exceeds the safety limit.'
+            : 'Upstream model list is not valid JSON.',
         });
         continue;
       }
@@ -2468,7 +2745,7 @@ async function modelsListResponse({ request, env, requestId, primaryEndpoints, f
       const models = mergeModelEntries(upstreamModels, configuredModels);
       if (models.length === 0) {
         attempts.push({
-          provider: endpoint.providerName,
+          provider: exposeUpstreamInfo ? endpoint.providerName : 'primary',
           status: upstream.status,
           error: 'Upstream returned an empty model list.',
         });
@@ -2488,7 +2765,7 @@ async function modelsListResponse({ request, env, requestId, primaryEndpoints, f
     } catch (error) {
       clearTimeout(timeoutId);
       attempts.push({
-        provider: endpoint.providerName,
+        provider: exposeUpstreamInfo ? endpoint.providerName : 'primary',
         status: 0,
         error: error?.name === 'AbortError' ? 'Upstream model-list request timed out.' : (error.message || String(error)),
       });
@@ -2513,7 +2790,9 @@ async function modelsListResponse({ request, env, requestId, primaryEndpoints, f
       attempts: attempts.map(item => ({
         provider: item.provider,
         status: item.status,
-        error: item.error,
+        error: exposeUpstreamInfo
+          ? item.error
+          : item.status > 0 ? `Upstream returned HTTP ${item.status}.` : 'Upstream model-list request failed.',
       })),
     }, requestId);
 }
@@ -2602,7 +2881,7 @@ function buildStandardOpenAIHeaders(request, token, requestId) {
   const accept = incoming.get('accept');
   headers.set('Accept', accept || 'application/json');
   headers.set('User-Agent', 'Smart-Edge-Gateway OpenAI-Compatible');
-  headers.set('Accept-Encoding', 'gzip, deflate');
+  headers.set('Accept-Encoding', 'identity');
   const orgId = incoming.get('openai-organization');
   if (orgId) headers.set('OpenAI-Organization', orgId);
   const idempotencyKey = incoming.get('idempotency-key');
@@ -2626,9 +2905,14 @@ function buildTargetUrl(incomingUrl, targetBaseUrl) {
 
 function mergeSearchParams(targetUrl, incomingUrl) {
   const merged = new URLSearchParams(targetUrl.search);
+  const incoming = new Map();
   for (const [key, value] of incomingUrl.searchParams.entries()) {
+    if (!incoming.has(key)) incoming.set(key, []);
+    incoming.get(key).push(value);
+  }
+  for (const [key, values] of incoming.entries()) {
     merged.delete(key);
-    merged.append(key, value);
+    for (const value of values) merged.append(key, value);
   }
   targetUrl.search = merged.toString();
 }
@@ -2698,15 +2982,20 @@ function createAbortableStream(upstreamBody, requestSignal, clientAbortListener)
 
 function sanitizeUpstreamResponseHeaders(sourceHeaders, exposeUpstreamInfo) {
   const headers = new Headers();
-  const blocked = new Set([
-    'server', 'via', 'x-powered-by', 'cf-ray', 'cf-cache-status',
-    'x-served-by', 'x-cache', 'x-cache-hits', 'x-envoy-upstream-service-time',
-    'alt-svc', 'report-to', 'nel'
+  const alwaysBlocked = new Set([
+    'set-cookie', 'content-encoding', 'content-length',
+    'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
+    'te', 'trailer', 'transfer-encoding', 'upgrade'
+  ]);
+  const publicAllowlist = new Set([
+    'content-type', 'cache-control', 'content-language', 'content-disposition',
+    'content-range', 'accept-ranges', 'etag', 'last-modified', 'expires',
+    'x-accel-buffering'
   ]);
   for (const [name, value] of sourceHeaders.entries()) {
     const lower = name.toLowerCase();
-    if (!exposeUpstreamInfo && blocked.has(lower)) continue;
-    if (lower === 'set-cookie') continue;
+    if (alwaysBlocked.has(lower)) continue;
+    if (!exposeUpstreamInfo && !publicAllowlist.has(lower)) continue;
     headers.append(name, value);
   }
   return headers;
@@ -2758,9 +3047,15 @@ function trackEndpointStream(response, endpointId, latencyMs) {
 }
 
 function withCors(response, request, env, extraHeaders = {}, streamOptions = null) {
-  const headers = sanitizeUpstreamResponseHeaders(response.headers, readOptionalEnv(env, 'EXPOSE_UPSTREAM_INFO') === 'true');
-  Object.entries(corsHeaders(request, env)).forEach(([k, v]) => headers.set(k, v));
-  Object.entries(extraHeaders).forEach(([k, v]) => headers.set(k, v));
+  const headers = sanitizeUpstreamResponseHeaders(response.headers, readBooleanEnv(env, 'EXPOSE_UPSTREAM_INFO', false));
+  Object.entries(corsHeaders(request, env)).forEach(([k, v]) => {
+    if (k.toLowerCase() === 'vary') headers.set(k, mergeVaryHeader(headers.get('vary'), v));
+    else headers.set(k, v);
+  });
+  const extraEntries = extraHeaders instanceof Headers
+    ? extraHeaders.entries()
+    : Object.entries(extraHeaders || {});
+  for (const [key, value] of extraEntries) headers.set(key, value);
 
   const ct = (headers.get('content-type') || '').toLowerCase();
   if (ct.includes('text/event-stream') || ct.includes('text/plain')) {
@@ -2777,17 +3072,49 @@ function withCors(response, request, env, extraHeaders = {}, streamOptions = nul
 }
 
 function corsHeaders(request, env) {
-  const requestedHeaders = request.headers.get('Access-Control-Request-Headers');
-  const allowedOrigin = readOptionalEnv(env, 'ALLOWED_ORIGIN') || '*';
+  const allowedOrigin = normalizeAllowedOrigin(readOptionalEnv(env, 'ALLOWED_ORIGIN'));
+  const allowedRequestHeaders = new Set([
+    'authorization', 'x-api-key', 'content-type', 'accept', 'idempotency-key',
+    'anthropic-version', 'anthropic-beta', 'x-claude-code-session-id',
+    'x-claude-code-agent-id', 'x-claude-code-parent-agent-id'
+  ]);
+  const requested = String(request.headers.get('Access-Control-Request-Headers') || '')
+    .split(',').map(value => value.trim()).filter(Boolean);
+  const accepted = requested.filter(value => allowedRequestHeaders.has(value.toLowerCase()));
+  const allowHeaders = accepted.length > 0
+    ? accepted.join(', ')
+    : 'Authorization,X-Api-Key,Content-Type,Accept,Idempotency-Key,Anthropic-Version,Anthropic-Beta,X-Claude-Code-Session-Id,X-Claude-Code-Agent-Id,X-Claude-Code-Parent-Agent-Id';
   const headers = {
     'Access-Control-Allow-Origin': allowedOrigin,
     'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-    'Access-Control-Allow-Headers': requestedHeaders || 'Authorization,X-Api-Key,Content-Type,Accept,Anthropic-Version,Anthropic-Beta,X-Claude-Code-Session-Id,X-Claude-Code-Agent-Id,X-Claude-Code-Parent-Agent-Id',
-    'Access-Control-Expose-Headers': 'X-Request-Id,X-Edge-Gateway-Attempts,X-Edge-Gateway-Upstream-Status,X-Edge-Gateway-Cache,X-Edge-Gateway-Health,X-Edge-Gateway-Route,X-Edge-Gateway-Fallback,X-Edge-Gateway-Fallback-Provider,X-Edge-Gateway-Fallback-Tier,X-Edge-Gateway-Fallback-Model,X-Edge-Gateway-Requested-Model,X-Edge-Gateway-Primary-Attempts,X-Edge-Gateway-Fallback-Reason',
+    'Access-Control-Allow-Headers': allowHeaders,
+    'Access-Control-Expose-Headers': 'X-Request-Id,X-Edge-Gateway-Attempts,X-Edge-Gateway-Upstream-Status,X-Edge-Gateway-Cache,X-Edge-Gateway-Health,X-Edge-Gateway-Route,X-Edge-Gateway-Fallback,X-Edge-Gateway-Fallback-Provider,X-Edge-Gateway-Fallback-Tier,X-Edge-Gateway-Fallback-Model,X-Edge-Gateway-Requested-Model,X-Edge-Gateway-Primary-Attempts,X-Edge-Gateway-Fallback-Reason,X-Edge-Gateway-Model-Source',
     'Access-Control-Max-Age': '86400',
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'no-referrer',
   };
-  if (allowedOrigin !== '*') headers['Vary'] = 'Origin';
+  if (allowedOrigin !== '*') headers.Vary = mergeVaryHeader('', 'Origin');
   return headers;
+}
+
+function normalizeAllowedOrigin(value) {
+  const raw = String(value || '*').trim();
+  if (raw === '*') return '*';
+  try {
+    const parsed = new URL(raw);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return 'null';
+    if (parsed.username || parsed.password) return 'null';
+    if (parsed.pathname !== '/' || parsed.search || parsed.hash) return 'null';
+    return parsed.origin;
+  } catch {
+    return 'null';
+  }
+}
+
+function mergeVaryHeader(existing, value) {
+  const values = new Set(String(existing || '').split(',').map(item => item.trim()).filter(Boolean));
+  values.add(value);
+  return [...values].join(', ');
 }
 
 // ============ 有界请求体读取 ============
@@ -2812,6 +3139,31 @@ async function readTextWithLimit(request, maxBytes) {
   return result;
 }
 
+function createLimitedRequestBodyStream(body, maxBytes) {
+  if (!body) return null;
+  const reader = body.getReader();
+  let total = 0;
+  return new ReadableStream({
+    async pull(controller) {
+      const { done, value } = await reader.read();
+      if (done) {
+        controller.close();
+        return;
+      }
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {});
+        controller.error(new BodyTooLargeError());
+        return;
+      }
+      controller.enqueue(value);
+    },
+    async cancel(reason) {
+      try { await reader.cancel(reason); } catch {}
+    },
+  });
+}
+
 // ============ 配置与通用工具 ============
 
 function buildPrimaryEndpoints(env) {
@@ -2819,11 +3171,11 @@ function buildPrimaryEndpoints(env) {
   const enabledRaw = readOptionalEnv(env, 'PRIMARY_ENABLED');
   const enabled = enabledRaw === null || enabledRaw === undefined || enabledRaw === ''
     ? Boolean(tokensRaw)
-    : String(enabledRaw).toLowerCase() !== 'false';
+    : parseBooleanValue(enabledRaw, false);
   if (!enabled || !tokensRaw) return [];
 
   const defaultBaseUrl = readOptionalEnv(env, 'PRIMARY_BASE_URL') || '';
-  const allowInsecureHttp = readOptionalEnv(env, 'ALLOW_INSECURE_HTTP_UPSTREAM') === 'true';
+  const allowInsecureHttp = readBooleanEnv(env, 'ALLOW_INSECURE_HTTP_UPSTREAM', false);
   return parseTokens(tokensRaw, defaultBaseUrl, allowInsecureHttp)
     .filter(endpoint => endpoint.token && endpoint.baseUrl)
     .map(endpoint => ({
@@ -2858,7 +3210,7 @@ function buildFallbackEndpoints(env) {
   );
   const enabled = enabledRaw === null || enabledRaw === undefined || enabledRaw === ''
     ? hasConfiguredFallback
-    : String(enabledRaw).toLowerCase() !== 'false';
+    : parseBooleanValue(enabledRaw, false);
   if (!enabled || !hasConfiguredFallback) return [];
 
   const definitions = [
@@ -2891,13 +3243,12 @@ function buildFallbackEndpoints(env) {
       normalizedBaseUrl,
       definition.model,
       definition.token,
-      definition.tier,
     ].join('|');
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
 
     endpoints.push({
-      id: `fallback:${simpleHash(dedupeKey).toString(16)}`,
+      id: `fallback:${dedupeKey}`,
       role: 'fallback',
       token: definition.token,
       baseUrl: normalizedBaseUrl,
@@ -2983,26 +3334,44 @@ function isFallbackEligible(route, pathname) {
 }
 
 function parseTokens(raw, defaultBaseUrl, allowInsecureHttp = false) {
-  return String(raw || '')
-    .split(/[\s,;]+/)
-    .map(t => t.trim())
-    .filter(Boolean)
-    .map(item => {
-      const atIndex = item.indexOf('@');
-      const hasBoundUrl = atIndex !== -1 && /^https?:\/\//i.test(item.substring(atIndex + 1));
-      const token = hasBoundUrl ? item.substring(0, atIndex).trim() : item;
-      const rawBaseUrl = hasBoundUrl ? item.substring(atIndex + 1) : defaultBaseUrl || '';
-      const baseUrl = normalizeUpstreamBaseUrl(rawBaseUrl, allowInsecureHttp);
-      return { id: `${token}@${baseUrl}`, token, baseUrl };
-    })
-    .filter(ep => ep.token && ep.baseUrl);
+  const unique = new Map();
+  const source = String(raw || '');
+  if (source.includes(';')) return [];
+  const items = source
+    .split(/[,\r\n]+/)
+    .map(item => item.trim())
+    .filter(Boolean);
+  for (const item of items) {
+    const match = item.match(/^(.*)@(https?:\/\/.+)$/i);
+    const token = match ? match[1].trim() : item;
+    const rawBaseUrl = match ? match[2] : defaultBaseUrl || '';
+    const baseUrl = normalizeUpstreamBaseUrl(rawBaseUrl, allowInsecureHttp);
+    if (!token || !baseUrl) continue;
+    const id = `primary:${token}|${baseUrl}`;
+    if (!unique.has(id)) unique.set(id, { id, token, baseUrl });
+  }
+  return [...unique.values()];
 }
 
 function normalizeUpstreamBaseUrl(value, allowInsecureHttp = false) {
   try {
     const parsed = new URL(String(value || '').trim());
     if (parsed.protocol !== 'https:' && !(allowInsecureHttp && parsed.protocol === 'http:')) return '';
+    if (parsed.username || parsed.password) return '';
+    parsed.hash = '';
     parsed.pathname = parsed.pathname.replace(/\/+$/, '');
+    return parsed.toString();
+  } catch {
+    return '';
+  }
+}
+
+function normalizeInvokeUrl(value, allowInsecureHttp = false) {
+  try {
+    const parsed = new URL(String(value || '').trim());
+    if (parsed.protocol !== 'https:' && !(allowInsecureHttp && parsed.protocol === 'http:')) return '';
+    if (parsed.username || parsed.password) return '';
+    parsed.hash = '';
     return parsed.toString();
   } catch {
     return '';
@@ -3020,7 +3389,15 @@ function acceptsHtml(request) { return (request.headers.get('Accept') || '').inc
 function html(content) {
   return new Response(content, {
     status: 200,
-    headers: { 'content-type': 'text/html;charset=UTF-8', 'cache-control': 'public, max-age=3600' },
+    headers: {
+      'content-type': 'text/html;charset=UTF-8',
+      'cache-control': 'public, max-age=3600',
+      'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+      'x-content-type-options': 'nosniff',
+      'referrer-policy': 'no-referrer',
+      'x-frame-options': 'DENY',
+      'permissions-policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
+    },
   });
 }
 
@@ -3032,11 +3409,16 @@ function versionResponse(request, env) {
     runtime: 'Cloudflare Workers',
     protocols: ['OpenAI Chat Completions', 'Anthropic Messages'],
     repository: APP_META.repository,
+    configuration: {
+      ready: Boolean(readOptionalEnv(env, 'GATEWAY_ACCESS_KEY') && readOptionalEnv(env, 'PRIMARY_API_TOKENS')),
+      gateway_access_key_bound: Boolean(readOptionalEnv(env, 'GATEWAY_ACCESS_KEY')),
+      primary_api_tokens_bound: Boolean(readOptionalEnv(env, 'PRIMARY_API_TOKENS')),
+    },
   }, null, 2), {
     status: 200,
     headers: {
       'content-type': 'application/json;charset=UTF-8',
-      'cache-control': 'public, max-age=300',
+      'cache-control': 'no-store',
       ...corsHeaders(request, env),
     },
   });
@@ -3065,10 +3447,13 @@ async function safeReadText(response) {
     while (total < MAX_DIAGNOSTIC_BYTES) {
       const { done, value } = await reader.read();
       if (done) break;
-      chunks.push(value);
-      total += value.byteLength;
+      const remaining = MAX_DIAGNOSTIC_BYTES - total;
+      const slice = value.byteLength > remaining ? value.subarray(0, remaining) : value;
+      chunks.push(slice);
+      total += slice.byteLength;
+      if (slice.byteLength < value.byteLength) break;
     }
-    reader.cancel();
+    await reader.cancel().catch(() => {});
     const combined = new Uint8Array(total);
     let offset = 0;
     for (const chunk of chunks) {
@@ -3108,12 +3493,19 @@ async function fingerprint(token) {
 }
 
 async function buildAttemptRecord({ attempt, status, endpoint, error, latencyMs, upstreamHost, upstreamPath, exposeUpstreamInfo, endpointRole }) {
+  const publicError = exposeUpstreamInfo
+    ? error
+    : status > 0
+      ? `Upstream returned HTTP ${status}.`
+      : String(error || '').toLowerCase().includes('timed out')
+        ? 'Upstream request timed out.'
+        : 'Upstream request failed.';
   const record = {
     attempt,
     status,
-    token: await fingerprint(endpoint.token),
+    token: await fingerprint(endpoint.id),
     endpoint_role: endpointRole || (getEndpointRole(endpoint)),
-    error,
+    error: publicError,
   };
   if (latencyMs !== undefined) record.latency_ms = latencyMs;
   // 默认隐藏上游域名与路径；仅在 EXPOSE_UPSTREAM_INFO=true 时用于诊断。
@@ -3139,6 +3531,18 @@ async function timingSafeEqual(a, b) {
 function readOptionalEnv(env, name) {
   const value = env?.[name];
   return typeof value === 'string' ? value.trim() : value;
+}
+
+function parseBooleanValue(value, fallback = false) {
+  if (value === undefined || value === null || value === '') return fallback;
+  const normalized = String(value).trim().toLowerCase();
+  if (['true', '1', 'yes', 'on'].includes(normalized)) return true;
+  if (['false', '0', 'no', 'off'].includes(normalized)) return false;
+  return fallback;
+}
+
+function readBooleanEnv(env, name, fallback = false) {
+  return parseBooleanValue(readOptionalEnv(env, name), fallback);
 }
 
 function clampInt(value, min, max, fallback) {
@@ -3265,6 +3669,30 @@ async function assembleNonStreamResponse(upstream, model, requestId, request, en
       if (isTruncated) break;
     }
 
+    if (buffer.trim()) {
+      const trimmed = buffer.trim();
+      if (trimmed.startsWith('data:')) {
+        const data = trimmed.slice(5).trim();
+        if (data && data !== '[DONE]') {
+          try {
+            const json = JSON.parse(data);
+            if (json.id) completionId = json.id;
+            if (json.created) created = json.created;
+            if (json.usage) usage = json.usage;
+            for (const choice of json.choices || []) {
+              const idx = choice.index ?? 0;
+              if (!choicesMap.has(idx)) choicesMap.set(idx, { content: '', reasoning_content: '', tool_calls_map: new Map(), finish_reason: null });
+              const c = choicesMap.get(idx);
+              const delta = choice.delta || {};
+              if (delta.content) c.content += delta.content;
+              if (delta.reasoning_content) c.reasoning_content += delta.reasoning_content;
+              if (choice.finish_reason) c.finish_reason = choice.finish_reason;
+            }
+          } catch {}
+        }
+      }
+    }
+
     // 空流视为上游异常，不返回伪造成功响应。
     if (choicesMap.size === 0) {
       logger.error('Stream assemble produced empty response (no choices)');
@@ -3312,7 +3740,10 @@ async function assembleNonStreamResponse(upstream, model, requestId, request, en
     const headers = new Headers();
     headers.set('Content-Type', 'application/json;charset=UTF-8');
     Object.entries(corsHeaders(request, env)).forEach(([k, v]) => headers.set(k, v));
-    Object.entries(extraHeaders).forEach(([k, v]) => headers.set(k, v));
+    const extraEntries = extraHeaders instanceof Headers
+    ? extraHeaders.entries()
+    : Object.entries(extraHeaders || {});
+  for (const [key, value] of extraEntries) headers.set(key, value);
 
     return new Response(responseStr, { status: 200, headers });
 

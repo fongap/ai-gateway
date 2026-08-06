@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const root = path.resolve(import.meta.dirname, '..');
-const excludedDirs = new Set(['.git', 'node_modules', '.wrangler', 'release']);
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const excludedDirs = new Set(['.git', 'node_modules', '.wrangler', '.wrangler-dry-run', 'release']);
 const excludedFiles = new Set(['SHA256SUMS', 'secret-scan.mjs']);
 const textExtensions = new Set([
   '.js', '.mjs', '.json', '.jsonc', '.md', '.txt', '.yml', '.yaml',
@@ -29,7 +30,7 @@ function walk(dir) {
       walk(full);
       continue;
     }
-    if (excludedFiles.has(entry.name)) continue;
+    if (excludedFiles.has(entry.name) || entry.name.startsWith('.wrangler-local-')) continue;
     if (sensitiveNames.some((pattern) => pattern.test(entry.name)) && !entry.name.endsWith('.example')) {
       findings.push(`${rel}: sensitive file must not be committed`);
       continue;

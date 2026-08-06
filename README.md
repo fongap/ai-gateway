@@ -90,19 +90,43 @@ Primary 负责正常流量。Fallback 不参与日常轮询，只在 Primary 尝
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-.\scripts\setup-and-deploy.ps1
+.\scripts\install.ps1
 ```
 
 ### Linux / macOS
 
 ```bash
 chmod +x scripts/*.sh
-./scripts/setup-and-deploy.sh
+./scripts/install.sh
 ```
 
-脚本会完成 Node.js 检查、锁文件验证、Primary HTTPS 完整性检查、Worker dry-run、Cloudflare 登录、配置收集、安全默认值写入、密钥临时文件生成、Worker 与 Secrets 一次上传，并在部署结束后删除临时密钥文件。未配置 Fallback 时会显式关闭旧 Fallback。
+安装脚本会完成 Node.js 检查、完整测试、Wrangler dry-run、Cloudflare 账户确认、配置校验、临时 Secrets 文件部署和可选在线验证。临时文件会在结束后删除。
 
 真实凭据不会写入仓库。
+
+### 已有 Worker 的更新与重新配置
+
+只更新代码并保留现有运行时变量和 Secret：
+
+```powershell
+.\scripts\update.ps1
+```
+
+```bash
+./scripts/update.sh
+```
+
+修改密钥、模型映射或 Fallback：
+
+```powershell
+.\scripts\reconfigure.ps1
+```
+
+```bash
+./scripts/reconfigure.sh
+```
+
+`wrangler.jsonc` 已声明 `keep_vars: true` 和两个必需 Secret。代码更新不会读取已有 Secret 明文；缺少 `GATEWAY_ACCESS_KEY` 或 `PRIMARY_API_TOKENS` 时，Wrangler 部署会被阻止。
 
 ## 从 GitHub 自动部署到 Cloudflare
 
@@ -119,10 +143,12 @@ Deploy command: npx --yes wrangler@4.114.0 deploy --keep-vars
 Non-production deploy command: npx --yes wrangler@4.114.0 versions upload --keep-vars
 ```
 
-6. 首次部署后，在 Worker 的 **Settings → Variables and Secrets** 中添加真实配置；
-7. 重新部署或再次推送提交。
+6. 在 Worker 的 **Settings → Variables and Secrets** 中添加 `GATEWAY_ACCESS_KEY` 与 `PRIMARY_API_TOKENS`；
+7. 重新运行失败的首次部署，或再次推送提交。
 
 后续每次推送 `main`，Cloudflare Workers Builds 都会自动验证并发布。非生产分支可生成预览版本。
+
+> 非生产分支若启用预览部署，也需要为对应预览环境配置两个必需运行时 Secret；否则 `secrets.required` 会阻止发布。
 
 > 真实 Token 必须存入 Cloudflare Secrets，不能提交到 GitHub。Cloudflare 的构建环境变量也不能替代 Worker 运行时 Secrets。
 
@@ -185,7 +211,7 @@ curl https://YOUR-WORKER.workers.dev/v1/chat/completions \
 
 ### 查看版本
 
-`/version` 不需要鉴权：
+`/version` 不需要鉴权，并会返回当前活动版本是否已绑定两个必需 Secret：
 
 ```bash
 curl https://YOUR-WORKER.workers.dev/version
@@ -198,7 +224,7 @@ curl https://YOUR-WORKER.workers.dev/v1/models \
   -H "Authorization: Bearer YOUR_GATEWAY_ACCESS_KEY"
 ```
 
-网关会跳过冷却中的端点，并在独立超时与最大尝试次数内依次尝试 Primary 上游。某个上游不支持 `/v1/models` 时会继续尝试下一个，并把成功返回的模型与 `MODEL_MAPPING` 中面向客户端的模型别名合并。上游均不提供模型列表时，只要已配置模型映射或 Fallback 模型，仍可返回本地配置的可用模型。
+`STRICT_MODEL_MAPPING=true` 时，模型列表只返回本地声明的客户端别名，不查询或暴露上游完整模型列表。非严格模式下，网关会跳过冷却中的端点，并在独立超时与最大尝试次数内依次尝试 Primary 上游。某个上游不支持 `/v1/models` 时会继续尝试下一个，并把成功返回的模型与 `MODEL_MAPPING` 中面向客户端的模型别名合并。上游均不提供模型列表时，只要已配置模型映射或 Fallback 模型，仍可返回本地配置的可用模型。
 
 也可以运行：
 
@@ -271,8 +297,8 @@ npm run check:deploy
 4. 创建 GitHub Release 并上传资产。
 
 ```bash
-git tag v5.13.0
-git push origin v5.13.0
+git tag v5.14.0
+git push origin v5.14.0
 ```
 
 发布规则见 [docs/RELEASE.md](docs/RELEASE.md)。

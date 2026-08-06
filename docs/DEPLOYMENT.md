@@ -7,73 +7,99 @@
 - Cloudflare 账户；
 - 至少一个 OpenAI 兼容上游 Token 和 HTTPS Base URL。
 
-仓库不把 Wrangler 安装到本地依赖中。所有脚本固定调用：
+项目固定调用：
 
 ```text
 npx --yes wrangler@4.114.0
 ```
 
-因此 `package-lock.json` 不包含大型 CLI 依赖，`npm ci` 只验证项目元数据和锁文件一致性。
+`wrangler.jsonc` 同时启用：
 
-## 方式一：首次安装
+```json
+{
+  "keep_vars": true,
+  "secrets": {
+    "required": [
+      "GATEWAY_ACCESS_KEY",
+      "PRIMARY_API_TOKENS"
+    ]
+  }
+}
+```
 
-### Windows
+`keep_vars` 用于在代码更新时保留控制台中的普通运行时变量；`secrets.required` 用于阻止缺少必需 Secret 的错误部署。脚本不会读取已有 Secret 明文，因为 Cloudflare 不提供已保存 Secret 的明文回读。
+
+## 三种操作模式
+
+### 1. 首次安装
+
+Windows：
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-.\scripts\setup-and-deploy.ps1
+.\scripts\install.ps1
 ```
 
-### Linux / macOS
+Linux / macOS：
 
 ```bash
 chmod +x scripts/*.sh
-./scripts/setup-and-deploy.sh
+./scripts/install.sh
 ```
 
-脚本会：
+兼容入口 `setup-and-deploy.ps1` 和 `setup-and-deploy.sh` 会转到同一安装脚本。
+
+安装脚本会：
 
 1. 检查 Node.js、npm 和 Worker 名称；
-2. 执行 `npm ci` 与本地测试；
-3. 登录 Cloudflare；
-4. 收集网关、Primary、模型映射和可选 Fallback；
-5. 显式写入默认安全开关；
-6. 使用临时 JSON 文件将代码与 Secrets 一次上传；
-7. 使用 `--keep-vars` 保留控制台已有普通变量；
-8. 部署结束后删除临时文件。
+2. 执行 `npm ci`、完整测试与 Wrangler dry-run；
+3. 显示当前 Cloudflare 登录账户；
+4. 校验 Primary、`MODEL_MAPPING` 和可选 Fallback；
+5. 使用权限受限的临时 JSON 文件部署代码与 Secrets；
+6. 结束后删除临时文件；
+7. 可选执行 `/version`、`/health` 和 `/v1/models` 在线验证。
 
-未启用 Fallback 时，脚本会明确写入：
+### 2. 安全更新代码
 
-```text
-FALLBACK_ENABLED=false
-FALLBACK_SECONDARY_MODEL=off
-```
-
-因此旧 Fallback 配置即使仍存在，也不会继续参与路由。
-
-## 方式二：安全更新已有 Worker
-
-只更新代码，不改现有 Secrets：
+Windows：
 
 ```powershell
-.\scripts\deploy.ps1
+.\scripts\update.ps1
 ```
 
-或：
+Linux / macOS：
 
 ```bash
-./scripts/deploy.sh
+./scripts/update.sh
 ```
 
-`wrangler.jsonc` 已设置：
+兼容入口 `deploy.ps1` 和 `deploy.sh` 会转到同一更新脚本。
 
-```json
-"keep_vars": true
+安全更新只执行代码部署：
+
+```text
+wrangler deploy --keep-vars
 ```
 
-部署命令同时显式使用 `--keep-vars`。控制台中的普通运行时变量不会因代码更新被删除；Cloudflare Secrets 也不会被普通部署删除。
+它不会尝试读取或重写已有 Secret。由于 `secrets.required` 已声明，当前 Worker 缺少 `GATEWAY_ACCESS_KEY` 或 `PRIMARY_API_TOKENS` 时，部署应直接失败，而不是发布一个运行后才报错的版本。
 
-要显式关闭旧 Fallback：
+### 3. 重新配置运行时变量
+
+Windows：
+
+```powershell
+.\scripts\reconfigure.ps1
+```
+
+Linux / macOS：
+
+```bash
+./scripts/reconfigure.sh
+```
+
+该脚本使用 `wrangler secret bulk` 更新运行时配置，不重新上传本地代码。关闭 Fallback 时会删除旧 Fallback Secret，而不是仅依赖“留空”。
+
+单独关闭 Fallback：
 
 ```powershell
 .\scripts\disable-fallback.ps1
@@ -85,115 +111,27 @@ FALLBACK_SECONDARY_MODEL=off
 ./scripts/disable-fallback.sh
 ```
 
-## 方式三：GitHub 自动部署
+## GitHub 自动部署到 Cloudflare
 
-### 1. 上传仓库
-
-仓库根目录必须直接包含：
-
-```text
-wrangler.jsonc
-package.json
-package-lock.json
-src/
-```
-
-### 2. 关联 Cloudflare
-
-进入：
+1. 将仓库推送到 GitHub；
+2. 在 Cloudflare 中导入仓库；
+3. Worker 名称必须与 `wrangler.jsonc` 的 `name` 一致；
+4. 使用：
 
 ```text
-Workers & Pages
-→ Create application
-→ Import a repository
-```
-
-建议配置：
-
-```text
-Production branch: main
-Root directory: /
 Build command: npm run verify
 Deploy command: npx --yes wrangler@4.114.0 deploy --keep-vars
 Non-production deploy command: npx --yes wrangler@4.114.0 versions upload --keep-vars
 ```
 
-Cloudflare Worker 名称必须与 `wrangler.jsonc` 的 `name` 一致。
-
-### 3. 配置运行时 Secrets
-
-进入：
+5. 在实际 Worker 的 **Settings → Variables and Secrets** 中添加运行时 Secret：
 
 ```text
-Worker
-→ Settings
-→ Variables and Secrets
+GATEWAY_ACCESS_KEY
+PRIMARY_API_TOKENS
 ```
 
-至少添加：
-
-```text
-GATEWAY_ACCESS_KEY   Secret
-PRIMARY_API_TOKENS   Secret
-```
-
-按需添加：
-
-```text
-PRIMARY_BASE_URL
-MODEL_MAPPING
-FALLBACK_ENABLED
-FALLBACK_API_TOKEN
-FALLBACK_BASE_URL
-FALLBACK_PRIMARY_MODEL
-FALLBACK_SECONDARY_MODEL
-```
-
-构建阶段变量不能替代 Worker 运行时变量。保存运行时配置后必须部署新版本。
-
-## 手动部署
-
-首次部署并同时写入 Secrets：
-
-```bash
-npm ci
-npm run verify
-npx --yes wrangler@4.114.0 login
-npx --yes wrangler@4.114.0 deploy --keep-vars --secrets-file ./secrets.production.json
-```
-
-示例：
-
-```json
-{
-  "GATEWAY_ACCESS_KEY": "replace-with-a-long-random-key",
-  "PRIMARY_API_TOKENS": "token@https://primary.example/v1",
-  "FALLBACK_ENABLED": "false",
-  "FALLBACK_SECONDARY_MODEL": "off",
-  "FAKE_STREAM_PROTECTION": "false",
-  "ALLOW_UNSAFE_PROXY_ROUTES": "false",
-  "ALLOW_INSECURE_HTTP_UPSTREAM": "false",
-  "EXPOSE_UPSTREAM_INFO": "false"
-}
-```
-
-使用后立即删除该文件，且不得提交到 Git。
-
-## 自定义域名与 workers.dev
-
-默认 `wrangler.jsonc` 设置：
-
-```json
-"workers_dev": true
-```
-
-这适合首次部署和开源演示。正式使用自定义域名且不希望保留 `workers.dev` 入口时，把它改为：
-
-```json
-"workers_dev": false
-```
-
-再部署。不要只在控制台关闭后保留配置文件中的 `true`，否则后续 Wrangler 部署可能重新启用该入口。
+构建变量不能替代 Worker 运行时 Secret。第一次构建因为必需 Secret 缺失而失败时，先创建 Worker/项目、添加上述 Secret，再重新运行部署。
 
 ## 本地开发
 
@@ -203,7 +141,7 @@ npm ci
 npm run dev
 ```
 
-`.dev.vars` 已加入 `.gitignore`。本地开发可按需填入普通变量和 Secret。
+项目的 `run-wrangler.mjs` 会为本地开发和 dry-run 临时移除 `secrets.required` 配置，使 `.dev.vars` 中的可选变量能够完整加载；临时配置写入项目根目录的随机隐藏文件，确保 Wrangler 能正确解析相对入口和 `.dev.vars`；命令结束后立即删除，且已被 Git 与 Release 打包规则排除。
 
 ## 部署前检查
 
@@ -213,30 +151,48 @@ npm run verify
 npm run check:deploy
 ```
 
-`check:deploy` 使用 Wrangler dry-run 编译项目，不会上传到 Cloudflare。
+`check:deploy` 只编译 Worker，不上传到 Cloudflare。
 
 ## 部署后验证
 
-公开版本接口：
+先检查公开版本与绑定状态：
 
 ```bash
-curl https://YOUR-WORKER.workers.dev/version
+curl https://YOUR-GATEWAY/version
 ```
 
-模型列表：
+返回中的：
+
+```json
+{
+  "configuration": {
+    "ready": true,
+    "gateway_access_key_bound": true,
+    "primary_api_tokens_bound": true
+  }
+}
+```
+
+表示当前活动版本已绑定两个必需 Secret。
+
+随后执行：
 
 ```bash
-./scripts/models-check.sh https://YOUR-WORKER.workers.dev
+curl https://YOUR-GATEWAY/health \
+  -H "Authorization: Bearer YOUR_GATEWAY_ACCESS_KEY"
+
+curl https://YOUR-GATEWAY/v1/models \
+  -H "Authorization: Bearer YOUR_GATEWAY_ACCESS_KEY"
 ```
 
-健康检查：
+Windows CMD 必须使用单行命令，或用 `^` 换行；不要使用 Linux 的反斜杠 `\` 作为 CMD 换行符。
 
-```bash
-./scripts/health-check.sh https://YOUR-WORKER.workers.dev
+## workers.dev 与自定义域名
+
+仓库默认保留：
+
+```json
+"workers_dev": true
 ```
 
-PowerShell 对应脚本名称相同，扩展名为 `.ps1`。脚本会先校验 URL，避免把占位文字传给 `curl` 后出现 `Bad hostname`。
-
-## 回滚建议
-
-更新生产 Worker 前，先在 Cloudflare Deployments 中确认上一个可用版本。新版本异常时，应优先使用 Cloudflare 的版本回滚，而不是立即修改多个运行时变量。
+这样首次部署后有可访问地址。正式只使用自定义域名时，可改为 `false` 后重新部署。该字段属于 Wrangler 声明式配置，不应只在控制台修改后继续保留仓库中的相反值。

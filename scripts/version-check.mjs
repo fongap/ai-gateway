@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const root = path.resolve(import.meta.dirname, '..');
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const source = fs.readFileSync(path.join(root, 'src', 'index.js'), 'utf8');
 const changelog = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');

@@ -7,7 +7,7 @@ cd "$PROJECT_ROOT"
 command -v zip >/dev/null 2>&1 || { echo "zip command is required." >&2; exit 1; }
 command -v tar >/dev/null 2>&1 || { echo "tar command is required." >&2; exit 1; }
 
-npm run verify
+npm run verify:release
 npm run checksums
 VERSION="$(node -p "require('./package.json').version")"
 BASE_NAME="smart-edge-gateway-v${VERSION}"

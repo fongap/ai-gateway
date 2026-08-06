@@ -5,7 +5,7 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $ProjectRoot
 
-npm run verify
+npm run verify:release
 if ($LASTEXITCODE -ne 0) { throw "项目验证失败。" }
 
 npm run checksums

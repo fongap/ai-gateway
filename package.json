@@ -1,6 +1,6 @@
 {
   "name": "smart-edge-gateway",
-  "version": "5.13.0",
+  "version": "5.14.0",
   "private": true,
   "description": "A lightweight OpenAI and Anthropic-compatible AI gateway for Cloudflare Workers with resilient Primary and Fallback routing.",
   "type": "module",
@@ -12,17 +12,18 @@
     "check": "node --check src/index.js",
     "check:version": "node scripts/version-check.mjs",
     "check:links": "node scripts/link-check.mjs",
-    "test": "node scripts/smoke-test.mjs",
+    "test": "node scripts/config-validation-test.mjs && node scripts/smoke-test.mjs && node scripts/hardening-test.mjs",
     "security:scan": "node scripts/secret-scan.mjs",
-    "verify": "npm run check && npm run check:version && npm run check:links && npm test && npm run security:scan",
+    "verify": "npm run check && npm run check:version && npm run check:deployment-config && npm run check:links && npm test && npm run security:scan",
     "checksums": "node scripts/generate-checksums.mjs",
-    "dev": "npx --yes wrangler@4.114.0 dev",
+    "dev": "node scripts/run-wrangler.mjs dev",
     "deploy": "npx --yes wrangler@4.114.0 deploy --keep-vars",
     "tail": "npx --yes wrangler@4.114.0 tail",
     "cf:login": "npx --yes wrangler@4.114.0 login",
     "cf:whoami": "npx --yes wrangler@4.114.0 whoami",
-    "check:deploy": "npx --yes wrangler@4.114.0 deploy --dry-run --keep-vars --outdir .wrangler-dry-run",
-    "verify:release": "npm run verify && npm run check:deploy"
+    "check:deploy": "node scripts/run-wrangler.mjs deploy --dry-run --keep-vars --outdir .wrangler-dry-run",
+    "verify:release": "npm run verify && npm run check:deploy",
+    "check:deployment-config": "node scripts/deployment-config-check.mjs"
   },
   "repository": {
     "type": "git",

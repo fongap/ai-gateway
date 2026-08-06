@@ -1,20 +1,21 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const root = path.resolve(import.meta.dirname, '..');
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const baseName = `smart-edge-gateway-v${pkg.version}`;
 const releaseDir = path.join(root, 'release');
 const stageRoot = path.join(releaseDir, '.staging');
 const stageDir = path.join(stageRoot, baseName);
-const excludedDirs = new Set(['.git', 'node_modules', '.wrangler', 'release']);
-const excludedNames = new Set(['.dev.vars']);
+const excludedDirs = new Set(['.git', 'node_modules', '.wrangler', '.wrangler-dry-run', 'release']);
+const excludedNames = new Set(['.dev.vars', '.wrangler-dry-run-config.jsonc']);
 
 fs.rmSync(releaseDir, { recursive: true, force: true });
 fs.mkdirSync(stageDir, { recursive: true });
 
 function shouldExclude(name) {
-  if (excludedNames.has(name)) return true;
+  if (excludedNames.has(name) || name.startsWith('.wrangler-local-')) return true;
   if (/^\.env(?:\..+)?$/.test(name) && name !== '.env.example') return true;
   if (/^secrets.*\.json$/i.test(name)) return true;
   if (/\.(zip|tar\.gz)$/i.test(name)) return true;

@@ -13,3 +13,7 @@ Thumbs.db
 release/
 *.zip
 *.tar.gz
+
+.wrangler-*-config*.jsonc
+
+.wrangler-local-*.jsonc

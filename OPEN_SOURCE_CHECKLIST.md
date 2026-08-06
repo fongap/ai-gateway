@@ -19,6 +19,9 @@
 - [ ] 已确认白名单外路径和危险 HTTP 方法不会被转发；
 - [ ] 已确认 Primary / Fallback 默认只接受 HTTPS；
 - [ ] 已确认更新部署保留已有普通变量和 Secrets；
+- [ ] 已确认 `wrangler.jsonc` 含 `keep_vars: true` 与两个 `secrets.required`；
+- [ ] 已确认重新配置脚本可用 `null` 删除旧 Fallback Secret；
+- [ ] 已确认 Release 不包含 `.wrangler-dry-run`、临时 Wrangler 配置或 Secrets 文件；
 - [ ] 已开启 GitHub Security Advisories；
 - [ ] 已确认 Security Advisory 私密报告链接可用。
 
@@ -45,7 +48,9 @@
 - [ ] 验证 OpenAI Chat Completions；
 - [ ] 验证 Anthropic Messages / Claude Code；
 - [ ] 验证 Primary 失败后 Fallback 接管；
-- [ ] 验证第二兜底关闭和启用两种状态。
+- [ ] 验证第二兜底关闭和启用两种状态；
+- [ ] 验证 `/version` 的三个配置状态均为 `true`；
+- [ ] 验证安全更新后原有运行时变量与 Secret 仍然有效。
 
 ## 特别提醒
 

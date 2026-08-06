@@ -88,6 +88,7 @@ https://api.example/v1?api-version=2026-01-01
 | `PRIMARY_ROTATION_WINDOW_MS` | `60000` | 当前 isolate 的请求窗口 |
 | `PRIMARY_ROTATION_MAX_PER_WINDOW` | `15` | 达到后该端点在当前窗口内不再被选择 |
 | `PRIMARY_MAX_CONCURRENCY_PER_ENDPOINT` | `3` | 达到后该端点在并发释放前不再被选择 |
+| `FALLBACK_MAX_CONCURRENCY_PER_ENDPOINT` | `3` | 每个 Fallback 端点的硬并发上限 |
 | `AUTH_FAIL_COOLDOWN_MS` | `86400000` | 401/403 冷却时间 |
 | `RATE_LIMIT_COOLDOWN_MS` | `60000` | 429 冷却时间 |
 
@@ -131,7 +132,7 @@ FALLBACK_ENABLED=false
 .\scripts\disable-fallback.ps1
 ```
 
-脚本会显式写入关闭状态。旧 Fallback 变量即使仍保留，也不会参与路由。
+脚本使用 `wrangler secret bulk` 写入关闭状态并删除旧 Fallback Secret，不会重新部署本地代码。
 
 可分别覆盖两个兜底的 Token 和 URL：
 
@@ -171,7 +172,9 @@ FALLBACK_SECONDARY_BASE_URL
 }
 ```
 
-`STRICT_MODEL_MAPPING=true` 时，请求中的 `model` 必须是当前端点映射中的别名或已配置的 Fallback 模型名，否则返回 400。大体积、压缩或无法解析为 JSON 的请求在严格模式下也会被拒绝。
+`STRICT_MODEL_MAPPING=true` 时，请求中的 `model` 必须是已声明的客户端别名或已配置的 Fallback 模型名，否则返回 400。网关会先筛选真正拥有该别名映射的 Primary，再应用最大尝试数；不会把别名原样发送给未配置该映射的上游。压缩请求体始终返回 415，无效 JSON 返回 400。
+
+Hostname 会统一转成小写。`request_overrides` 与 `drop_params` 不允许改写或删除 `model`、`messages`、`stream`，避免静态映射破坏模型路由、用户消息或流式语义。
 
 `stream_usage: true` 只是要求上游在流结束时返回 usage；上游不支持或不返回时，网关无法得到准确 Token 数。
 
@@ -182,28 +185,29 @@ FALLBACK_SECONDARY_BASE_URL
 | `MODEL_LIST_TIMEOUT_MS` | `5000` | 每个上游模型列表请求的超时，范围 1000–30000 ms |
 | `MODEL_LIST_MAX_ATTEMPTS` | `3` | 最多尝试的 Primary 数量 |
 
-`/v1/models` 会跳过冷却中的 Primary，并把首个有效上游列表与本地模型别名合并。所有上游都不可用时，只要存在 `MODEL_MAPPING` 或 Fallback 模型，仍返回本地配置模型。
+`STRICT_MODEL_MAPPING=true` 时，`/v1/models` 只返回本地配置的客户端别名，不访问上游模型目录；若未配置任何可用模型，接口直接返回配置错误，而不是误导性的空列表。非严格模式会跳过冷却中的 Primary，并把首个有效上游列表与本地模型别名合并。所有上游都不可用时，只要存在 `MODEL_MAPPING` 或 Fallback 模型，仍返回本地配置模型。默认错误详情不会暴露真实上游 hostname。
 
 ## 请求体与协议
 
 | 变量 | 默认值 | 说明 |
 |---|---:|---|
 | `REQUEST_TIMEOUT_MS` | `60000` | 上游首字节超时，范围 5000–180000 ms |
-| `MAX_BODY_BYTES` | 20 MiB | OpenAI 请求体上限 |
 | `ANTHROPIC_MAX_BODY_BYTES` | 20 MiB | Anthropic 请求体上限 |
 | `ANTHROPIC_COUNT_TOKENS_MODE` | `approximate` | `approximate` 或 `disabled` |
 | `ANTHROPIC_REASONING_REQUEST_MODE` | `none` | reasoning 参数桥接方式 |
-| `ALLOWED_ORIGIN` | `*` | CORS 来源 |
+| `ALLOWED_ORIGIN` | `*` | 单个允许的 HTTP/HTTPS Origin；无效值按 `null` 处理 |
+| `MAX_BODY_BYTES` | 20 MiB | OpenAI JSON 请求体上限，包含无 `Content-Length` 的流式上传 |
 
-`FAKE_STREAM_PROTECTION=true` 会把非流式 Chat Completions 请求改成上游流式请求，再在 Worker 中重组。该模式可能改变 usage、结构化输出和超长响应行为，因此默认关闭。
+OpenAI 与 Anthropic 支持接口要求 `Content-Type: application/json`。除 `Content-Encoding: identity` 外，压缩请求体不被接受，避免压缩字节被错误转发。`ANTHROPIC_COUNT_TOKENS_MODE` 填写其他值会直接返回配置错误。`FAKE_STREAM_PROTECTION=true` 会把非流式 Chat Completions 请求改成上游流式请求，再在 Worker 中重组。该模式可能改变 usage、结构化输出和超长响应行为，因此默认关闭。
 
 ## 缓存
 
 缓存默认关闭。可选变量：
 
+流式响应不会进入网关缓存；缓存仅适用于 OpenAI 非流式成功响应，避免长连接回放、客户端取消与上游生成状态之间出现不一致。
+
 ```text
 CACHE_ENABLED
-CACHE_STREAM
 CACHE_MAX_AGE_SEC
 CACHE_MAX_BODY_BYTES
 ```
@@ -214,7 +218,7 @@ CACHE_MAX_BODY_BYTES
 
 ### `/version`
 
-公开端点，只返回项目名、版本、协议和仓库地址。
+公开端点，返回项目名、版本、协议、仓库地址，以及当前活动版本是否已绑定 `GATEWAY_ACCESS_KEY` 与 `PRIMARY_API_TOKENS`。只返回布尔状态，不返回任何 Secret 内容。
 
 ### `/health`
 
@@ -227,7 +231,7 @@ CACHE_MAX_BODY_BYTES
 - 客户端 API 请求、成功、失败、Fallback 触发与 Fallback 成功；
 - 各端点尝试、成功、失败、活动连接、平均首字节时间、健康分和冷却状态。
 
-流式连接在响应体结束或客户端取消后才释放活动计数。客户端统计按最终 HTTP 状态划分：小于 400 计为成功，400 及以上计为失败。
+流式连接在响应体结束或客户端取消后才释放活动计数。非流式请求按最终 HTTP 状态划分；流式请求只有在响应体完整结束后才计为成功，中断或客户端取消会计入失败，并单独记录取消次数。
 
 这些数据随 isolate 回收而重置，也不会自动汇总全球节点。一次客户端请求可能尝试多个上游，因此端点尝试数不等于客户端请求数。
 
@@ -247,3 +251,11 @@ CACHE_MAX_BODY_BYTES
 ```
 
 默认不开启，启用后每次写入会产生额外资源消耗。
+
+## 日志
+
+| 变量 | 默认值 | 说明 |
+|---|---:|---|
+| `LOG_LEVEL` | `info` | `none`、`error`、`info` 或 `debug`；生产环境建议 `error` 或 `info` |
+
+日志不会主动输出完整 Token，但启用上游信息暴露和调试日志仍应限制日志访问权限。

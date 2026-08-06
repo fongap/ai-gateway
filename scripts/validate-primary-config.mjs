@@ -6,30 +6,35 @@ function fail(message) {
   process.exit(1);
 }
 
-function requireHttps(raw, label) {
+function normalizeHttps(raw, label) {
   try {
     const url = new URL(raw);
     if (url.protocol !== 'https:' || !url.hostname) throw new Error();
+    if (url.username || url.password) fail(`${label} 不得包含用户名或密码。`);
+    url.hash = '';
+    url.pathname = url.pathname.replace(/\/+$/, '');
+    return url.toString();
   } catch {
     fail(`${label} 必须是完整 HTTPS URL。`);
   }
 }
 
 if (!tokensRaw) fail('PRIMARY_API_TOKENS 不能为空。');
-if (defaultBaseRaw) requireHttps(defaultBaseRaw, 'PRIMARY_BASE_URL');
-
-const entries = tokensRaw.split(/[\s,;]+/).map((item) => item.trim()).filter(Boolean);
+if (tokensRaw.includes(';')) fail('不支持分号分隔，请使用逗号或换行。');
+const defaultBaseUrl = defaultBaseRaw ? normalizeHttps(defaultBaseRaw, 'PRIMARY_BASE_URL') : '';
+const entries = tokensRaw.split(/[,\r\n]+/).map((item) => item.trim()).filter(Boolean);
 if (entries.length === 0) fail('未找到有效 Token。');
 
+const seen = new Set();
 for (let index = 0; index < entries.length; index += 1) {
   const item = entries[index];
-  const atIndex = item.indexOf('@');
-  const suffix = atIndex >= 0 ? item.slice(atIndex + 1) : '';
-  const hasBoundUrl = /^https?:\/\//i.test(suffix);
-  const token = hasBoundUrl ? item.slice(0, atIndex).trim() : item;
+  const match = item.match(/^(.*)@(https?:\/\/.+)$/i);
+  const token = match ? match[1].trim() : item;
+  const rawBaseUrl = match ? match[2] : defaultBaseRaw;
   if (!token) fail(`第 ${index + 1} 个 Token 为空。`);
-  if (hasBoundUrl) requireHttps(suffix, `第 ${index + 1} 个 Token 绑定地址`);
-  else if (!defaultBaseRaw) fail(`第 ${index + 1} 个 Token 未绑定 HTTPS URL，且 PRIMARY_BASE_URL 为空。`);
+  if (!rawBaseUrl) fail(`第 ${index + 1} 个 Token 未绑定 HTTPS URL，且 PRIMARY_BASE_URL 为空。`);
+  const baseUrl = normalizeHttps(rawBaseUrl, `第 ${index + 1} 个 Token 绑定地址`);
+  seen.add(`${token}|${baseUrl}`);
 }
 
-console.log(`Primary 配置检查通过：${entries.length} 个端点。`);
+console.log(`Primary 配置检查通过：${seen.size} 个去重端点。`);

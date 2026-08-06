@@ -39,7 +39,7 @@ Primary 端点参与正常流量调度。选择时综合：
 
 ## Fallback
 
-Fallback 不参与正常轮询。只有 Primary 有效尝试全部失败后才执行：
+Fallback 不参与正常轮询，并受独立硬并发上限保护。只有 Primary 有效尝试全部失败后才执行：
 
 1. `FALLBACK_PRIMARY_MODEL`；
 2. 第一兜底失败后，再执行可选的 `FALLBACK_SECONDARY_MODEL`。
@@ -72,7 +72,7 @@ Anthropic Messages 请求会转换为 OpenAI Chat Completions 请求；响应再
 | Endpoint | Authentication | Purpose |
 |---|---|---|
 | `/` | No | Static dashboard and deployment guide |
-| `/version` | No | Project name and version |
+| `/version` | No | Project version and required-binding readiness |
 | `/v1/models` | Yes | Primary model-list failover plus configured gateway aliases |
 | `/health` | Yes | Current-isolate endpoint health snapshot |
 | `/metrics` | Yes | Current-isolate Prometheus text metrics |
@@ -83,3 +83,7 @@ Anthropic Messages 请求会转换为 OpenAI Chat Completions 请求；响应再
 ## 统计边界
 
 `/health` 和 `/metrics` 分别记录客户端 API 请求与上游端点尝试。一次客户端请求可能触发多个 Primary 尝试和一次 Fallback 链，因此端点尝试数通常大于客户端请求数。所有计数仅属于当前 isolate。
+
+## 部署配置边界
+
+`wrangler.jsonc` 使用 `keep_vars: true` 保留控制台普通变量，并声明两个必需 Secret。首次安装、代码更新和运行时重新配置由不同脚本处理，避免把“更新代码”误当成“重新填写全部密钥”。本地开发和 dry-run 使用临时 Wrangler 配置移除 `secrets.required`，保证 `.dev.vars` 中的可选变量可以加载。
