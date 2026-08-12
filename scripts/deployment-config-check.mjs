@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
 const config = JSON.parse(read('wrangler.jsonc'));
+const packageJson = JSON.parse(read('package.json'));
 
 assert.equal(config.keep_vars, true, 'wrangler.jsonc must set keep_vars=true');
 assert.equal(config.main, 'src/index.js');
@@ -13,6 +14,15 @@ assert.ok(config.secrets && Array.isArray(config.secrets.required), 'wrangler.js
 for (const name of ['GATEWAY_ACCESS_KEY', 'PRIMARY_API_TOKENS']) {
   assert.ok(config.secrets.required.includes(name), `Missing required secret: ${name}`);
 }
+assert.equal(
+  packageJson.scripts?.postbuild,
+  'node scripts/sync-wrangler-ci-name.mjs',
+  'postbuild must synchronize the connected Cloudflare Worker name',
+);
+assert.ok(
+  fs.existsSync(path.join(root, 'scripts/sync-wrangler-ci-name.mjs')),
+  'Missing Cloudflare Worker name synchronization script',
+);
 assert.ok(fs.existsSync(path.join(root, 'package-lock.json')), 'package-lock.json is required for npm ci');
 
 for (const file of [

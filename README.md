@@ -167,9 +167,9 @@ Deploy command: npx wrangler deploy
 Non-production deploy command: npx wrangler versions upload
 ```
 
-Wrangler v3 及以上的 Workers Builds 会使用 `WRANGLER_CI_OVERRIDE_NAME` 自动匹配当前连接的 Worker。因此 `ai-gateway-01`、`ai-gateway-02` 等 Worker 都能从同一个仓库部署，无需为每个 Worker 编写环境块或部署脚本。
+Wrangler v3 及以上的 Workers Builds 会提供当前绑定的 Worker 名称。`npm run build` 完成校验后，npm 的 `postbuild` 会在 Cloudflare 的临时构建目录中自动把 `wrangler.jsonc` 同步为该名称；随后仍由默认命令 `npx wrangler deploy` 发布。
 
-截图中的“更新 `wrangler.jsonc`”属于配置同步建议，并不表示部署失败。一个仓库绑定多个不同名称的 Worker 时，不要接受仅把顶层 `name` 改成某一个 Worker 名称的 PR，否则其他 Worker 会再次提示不一致；直接关闭该提示即可。
+因此 `ai-gateway-1`、`ai-gateway-2`、`ai-gateway-3` 等 Worker 都能从同一个仓库部署，并且部署时配置名称已经一致，不会再触发名称修复 PR。仓库中的默认名称仍保持 `ai-gateway`，临时改名不会提交回 GitHub，也不需要为每个 Worker 编写环境块或部署脚本。
 
 每个 Worker 必须在自己的 **Settings → Variables and Secrets** 中独立配置运行时 Secret。这样可以让不同 Worker 使用不同的网关访问密钥、Primary Token、上游地址、模型映射和 Fallback 配置。
 
@@ -179,13 +179,26 @@ Wrangler v3 及以上的 Workers Builds 会使用 `WRANGLER_CI_OVERRIDE_NAME` �
 "name": "ai-gateway"
 ```
 
-只是仓库的默认名称。Cloudflare 构建时会自动覆盖为当前绑定的 Worker 名称，不限制可绑定数量。
+只是仓库和本地部署使用的默认名称。Cloudflare 构建时由 `scripts/sync-wrangler-ci-name.mjs` 在临时工作区自动同步，不限制可绑定数量。
 
 每个 Worker 必须在自己的 **Settings → Variables and Secrets** 中独立设置 `GATEWAY_ACCESS_KEY` 和 `PRIMARY_API_TOKENS`。Secret 属于各 Worker 的运行时配置，不能从另一个 Worker 自动复制，也不能提交到仓库。
 
 > 非生产分支若启用预览部署，也要求目标 Worker 已配置两个必需运行时 Secret；否则 `secrets.required` 会阻止发布。
 
 > 真实 Token 必须存入 Cloudflare Worker Secrets，不能提交到 GitHub。构建环境变量不能代替 Worker 运行时 Secret。
+
+### 查看部署成功或失败
+
+Cloudflare GitHub 集成会自动为每次提交创建 Check Run，无需修改部署命令：
+
+- GitHub 提交旁的绿色勾表示构建和部署成功；
+- 红色叉表示失败，点击 **Details** 可直接打开对应 Worker 的构建详情；
+- 同一仓库绑定多个 Worker 时，每个 Worker 会显示独立检查结果；
+- Pull Request 会自动显示 Cloudflare 构建状态评论和可用的预览地址。
+
+如果 GitHub 提交旁完全没有 Cloudflare 检查结果，请在目标 Worker 的 **Settings → Builds** 中断开并重新连接仓库，同时确认 Cloudflare Workers & Pages GitHub App 对该仓库具有访问权限。
+
+Cloudflare 默认不会发送邮件、Slack、Discord 或浏览器弹窗。需要主动推送时，可在 Cloudflare 中使用 Workers Builds Event Subscriptions 订阅成功、失败和取消事件；这属于可选的账户级通知，不影响本项目的默认部署方式。
 
 详细步骤见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
 

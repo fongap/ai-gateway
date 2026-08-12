@@ -10,6 +10,7 @@
   },
   "scripts": {
     "build": "npm run verify",
+    "postbuild": "node scripts/sync-wrangler-ci-name.mjs",
     "check": "node --check src/index.js",
     "check:version": "node scripts/version-check.mjs",
     "check:links": "node scripts/link-check.mjs",

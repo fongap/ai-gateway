@@ -10,4 +10,4 @@ The patch intentionally removes fixed GitHub owner/repository URLs:
 - Release archive names come from `package.json.name` and `package.json.version`.
 - Interactive installation reads the default Worker name from `wrangler.jsonc`.
 
-For the current repository, `package.json.name` and the default Worker name are `ai-gateway`. Cloudflare Workers Builds can override the Worker name for each connected project while keeping the default `npx wrangler deploy` command.
+For the current repository, `package.json.name` and the default Worker name are `ai-gateway`. The npm `postbuild` lifecycle synchronizes `wrangler.jsonc` to the connected Worker inside Cloudflare's temporary build workspace while keeping the default `npx wrangler deploy` command.

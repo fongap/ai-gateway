@@ -143,9 +143,9 @@ Deploy command: npx wrangler deploy
 Non-production deploy command: npx wrangler versions upload
 ```
 
-Workers Builds on Wrangler v3 and later uses `WRANGLER_CI_OVERRIDE_NAME` to match the currently connected Worker automatically. Workers such as `ai-gateway-01` and `ai-gateway-02` can deploy from one repository without per-Worker environments or wrapper scripts.
+Workers Builds on Wrangler v3 and later provides the name of the currently connected Worker. After `npm run build` verifies the project, npm's `postbuild` synchronizes `wrangler.jsonc` inside Cloudflare's temporary build workspace. Deployment still uses the default `npx wrangler deploy` command.
 
-The “update `wrangler.jsonc`” banner is a configuration-sync recommendation, not a deployment failure. When one repository is connected to several differently named Workers, do not accept a PR that changes the top-level `name` to only one Worker; dismiss the banner instead.
+Workers such as `ai-gateway-1`, `ai-gateway-2`, and `ai-gateway-3` can therefore deploy from one repository with a matching configuration name and without name-fix pull requests. The repository keeps `ai-gateway` as its default; the temporary name is never committed to GitHub, and no per-Worker environment or wrapper command is required.
 
 Configure runtime Secrets independently under **Settings → Variables and Secrets** for every Worker. This allows each Worker to use different gateway access keys, Primary tokens, upstream URLs, model mappings, and Fallback settings.
 
@@ -155,13 +155,26 @@ The following value in `wrangler.jsonc`:
 "name": "ai-gateway"
 ```
 
-is the repository's default name. Cloudflare overrides it with the connected Worker name during Builds, so it does not limit the number of connected Workers.
+is the repository and local deployment default. During Cloudflare Builds, `scripts/sync-wrangler-ci-name.mjs` synchronizes it in the temporary workspace, so it does not limit the number of connected Workers.
 
 Each Worker must independently define `GATEWAY_ACCESS_KEY` and `PRIMARY_API_TOKENS` under **Settings → Variables and Secrets**. Runtime Secrets cannot be copied automatically from another Worker and must never be committed to the repository.
 
 > Preview deployments also require both runtime Secrets on the target Worker; otherwise `secrets.required` blocks the upload.
 
 > Store real tokens as Cloudflare Worker Secrets. Build-time variables are not a substitute for runtime Worker Secrets.
+
+### See whether deployment succeeded or failed
+
+The Cloudflare GitHub integration automatically creates a Check Run for every commit without changing the deploy command:
+
+- a green check next to a GitHub commit means the build and deployment succeeded;
+- a red cross means it failed; select **Details** to open that Worker's build details;
+- when several Workers use one repository, each Worker has its own check result;
+- pull requests receive Cloudflare build-status comments and available preview URLs.
+
+If no Cloudflare check appears next to a commit, disconnect and reconnect the repository under the Worker's **Settings → Builds**, and verify that the Cloudflare Workers & Pages GitHub App can access the repository.
+
+Cloudflare does not send email, Slack, Discord, or browser notifications by default. For proactive delivery, use Workers Builds Event Subscriptions for success, failure, and cancellation events. This optional account-level notification does not change the project's default deployment flow.
 
 See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the full procedure.
 
