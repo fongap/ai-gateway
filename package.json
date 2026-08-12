@@ -1,5 +1,5 @@
 {
-  "name": "smart-edge-gateway",
+  "name": "ai-gateway",
   "version": "5.14.0",
   "private": true,
   "description": "A lightweight OpenAI and Anthropic-compatible AI gateway for Cloudflare Workers with resilient Primary and Fallback routing.",
@@ -9,6 +9,7 @@
     "node": ">=20"
   },
   "scripts": {
+    "build": "npm run verify",
     "check": "node --check src/index.js",
     "check:version": "node scripts/version-check.mjs",
     "check:links": "node scripts/link-check.mjs",
@@ -24,14 +25,6 @@
     "check:deploy": "node scripts/run-wrangler.mjs deploy --dry-run --keep-vars --outdir .wrangler-dry-run",
     "verify:release": "npm run verify && npm run check:deploy",
     "check:deployment-config": "node scripts/deployment-config-check.mjs"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/fongap/smart-edge-gateway.git"
-  },
-  "homepage": "https://github.com/fongap/smart-edge-gateway#readme",
-  "bugs": {
-    "url": "https://github.com/fongap/smart-edge-gateway/issues"
   },
   "keywords": [
     "cloudflare-workers",

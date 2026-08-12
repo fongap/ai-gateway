@@ -17,7 +17,7 @@ MODEL_MAPPING=""
 if [[ -n "$MODEL_MAPPING_PATH" ]]; then node scripts/validate-model-mapping.mjs "$MODEL_MAPPING_PATH"; MODEL_MAPPING="$(cat "$MODEL_MAPPING_PATH")"; fi
 read -r -p '启用严格模型白名单？[y/N]: ' strict; STRICT=false; yesno "$strict" && STRICT=true
 read -r -p '启用 Fallback？[y/N]: ' fb
-TEMP="$(mktemp "${TMPDIR:-/tmp}/smart-edge-gateway-reconfigure.XXXXXX.json")"; chmod 600 "$TEMP"
+TEMP="$(mktemp "${TMPDIR:-/tmp}/gateway-reconfigure.XXXXXX.json")"; chmod 600 "$TEMP"
 trap 'rm -f "$TEMP"; unset GATEWAY_ACCESS_KEY PRIMARY_API_TOKENS FALLBACK_API_TOKEN' EXIT
 export GATEWAY_ACCESS_KEY PRIMARY_API_TOKENS PRIMARY_BASE_URL MODEL_MAPPING STRICT
 if yesno "$fb"; then
@@ -58,3 +58,4 @@ read -r -p '确认覆盖上述 Worker 的运行时配置？[y/N]: ' confirm
 yesno "$confirm" || fail '已取消。'
 npx --yes wrangler@4.114.0 secret bulk "$TEMP"
 echo '配置已更新；请执行健康检查。'
+

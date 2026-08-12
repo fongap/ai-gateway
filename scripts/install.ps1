@@ -9,7 +9,8 @@ function Confirm-Yes([string]$Value){return $Value -match '^(y|yes)$'}
 if(-not(Get-Command node -ErrorAction SilentlyContinue)){throw '未找到 Node.js 20+。'}
 if(-not(Get-Command npm -ErrorAction SilentlyContinue)){throw '未找到 npm。'}
 if([int]((node --version).TrimStart('v').Split('.')[0]) -lt 20){throw '需要 Node.js 20 或更高版本。'}
-$workerName=(Read-Host 'Worker 名称 [smart-edge-gateway]').Trim();if(!$workerName){$workerName='smart-edge-gateway'}
+$defaultWorkerName=((Get-Content (Join-Path $Root 'wrangler.jsonc') -Raw -Encoding UTF8 | ConvertFrom-Json).name)
+$workerName=(Read-Host "Worker 名称 [$defaultWorkerName]").Trim();if(!$workerName){$workerName=$defaultWorkerName}
 if($workerName -notmatch '^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$'){throw 'Worker 名称必须为 1-63 位小写字母、数字或连字符。'}
 $configPath=Join-Path $Root 'wrangler.jsonc';$config=Get-Content $configPath -Raw -Encoding UTF8|ConvertFrom-Json;$config.name=$workerName
 [IO.File]::WriteAllText($configPath,($config|ConvertTo-Json -Depth 30)+"`n",[Text.UTF8Encoding]::new($false))
@@ -37,7 +38,7 @@ if(Confirm-Yes (Read-Host '配置 Fallback？[y/N]')){
  try{node scripts/validate-fallback-config.mjs;if($LASTEXITCODE-ne0){throw 'Fallback 配置无效。'}}finally{Remove-Item Env:FALLBACK_API_TOKEN,Env:FALLBACK_BASE_URL,Env:FALLBACK_PRIMARY_MODEL,Env:FALLBACK_SECONDARY_MODEL -ErrorAction SilentlyContinue}
 }
 $secrets.FAKE_STREAM_PROTECTION='false';$secrets.ALLOW_UNSAFE_PROXY_ROUTES='false';$secrets.ALLOW_INSECURE_HTTP_UPSTREAM='false';$secrets.EXPOSE_UPSTREAM_INFO='false'
-$temp=Join-Path ([IO.Path]::GetTempPath()) ('smart-edge-gateway-install-'+[guid]::NewGuid().ToString('N')+'.json')
+$temp=Join-Path ([IO.Path]::GetTempPath()) ('gateway-install-'+[guid]::NewGuid().ToString('N')+'.json')
 try{
  [IO.File]::WriteAllText($temp,($secrets|ConvertTo-Json -Depth 30),[Text.UTF8Encoding]::new($false))
  Write-Host "将首次部署 Worker：$workerName";if(-not(Confirm-Yes (Read-Host '确认继续？[y/N]'))){throw '已取消。'}
@@ -52,3 +53,4 @@ if($url){
  curl.exe "$($url.TrimEnd('/'))/v1/models" --fail --silent --show-error -H "Authorization: Bearer $access"|Out-Null;if($LASTEXITCODE-ne0){throw '/v1/models 验证失败。'}
  Write-Host '部署和运行验证均通过。'
 }else{Write-Host '部署完成；尚未执行线上验证。'}
+

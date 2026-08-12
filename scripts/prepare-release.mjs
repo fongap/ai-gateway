@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { getArtifactBaseName } from './project-meta.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-const baseName = `smart-edge-gateway-v${pkg.version}`;
+const baseName = getArtifactBaseName();
 const releaseDir = path.join(root, 'release');
 const stageRoot = path.join(releaseDir, '.staging');
 const stageDir = path.join(stageRoot, baseName);
@@ -38,4 +38,4 @@ function copyTree(src, dest) {
 }
 
 copyTree(root, stageDir);
-console.log(JSON.stringify({ version: pkg.version, baseName, releaseDir, stageRoot, stageDir }));
+console.log(JSON.stringify({ baseName, releaseDir, stageRoot, stageDir }));

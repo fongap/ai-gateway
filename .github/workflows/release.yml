@@ -35,7 +35,7 @@ jobs:
       - name: Verify tag matches package version
         shell: bash
         run: |
-          VERSION="$(node -p "require('./package.json').version")"
+          VERSION="$(node scripts/release-meta.mjs version)"
           test "${GITHUB_REF_NAME}" = "v${VERSION}" || {
             echo "Tag ${GITHUB_REF_NAME} does not match package version v${VERSION}." >&2
             exit 1
@@ -48,9 +48,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          ARTIFACT="$(node scripts/release-meta.mjs artifact)"
+          TITLE="$(node scripts/release-meta.mjs name) ${GITHUB_REF_NAME}"
           gh release create "${GITHUB_REF_NAME}" \
-            release/smart-edge-gateway-${GITHUB_REF_NAME}.zip \
-            release/smart-edge-gateway-${GITHUB_REF_NAME}.tar.gz \
+            "release/${ARTIFACT}.zip" \
+            "release/${ARTIFACT}.tar.gz" \
             release/SHA256SUMS \
-            --title "Smart Edge Gateway ${GITHUB_REF_NAME}" \
+            --title "${TITLE}" \
             --generate-notes

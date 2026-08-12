@@ -10,8 +10,9 @@ command -v node >/dev/null 2>&1 || fail "未找到 Node.js 20+。"
 command -v npm >/dev/null 2>&1 || fail "未找到 npm。"
 [[ "$(node -p 'Number(process.versions.node.split(".")[0])')" -ge 20 ]] || fail "需要 Node.js 20 或更高版本。"
 
-read -r -p "Worker 名称 [smart-edge-gateway]: " WORKER_NAME
-WORKER_NAME="${WORKER_NAME:-smart-edge-gateway}"
+DEFAULT_WORKER_NAME="$(node -p "JSON.parse(require('fs').readFileSync('wrangler.jsonc','utf8')).name")"
+read -r -p "Worker 名称 [${DEFAULT_WORKER_NAME}]: " WORKER_NAME
+WORKER_NAME="${WORKER_NAME:-$DEFAULT_WORKER_NAME}"
 [[ "$WORKER_NAME" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || fail "Worker 名称必须为 1-63 位小写字母、数字或连字符，且不能以连字符开头或结尾。"
 node - "$WORKER_NAME" <<'NODE'
 import fs from 'node:fs';
@@ -60,7 +61,7 @@ if yesno "$FALLBACK_INPUT"; then
     node scripts/validate-fallback-config.mjs
 fi
 
-TEMP="$(mktemp "${TMPDIR:-/tmp}/smart-edge-gateway-install.XXXXXX.json")"
+TEMP="$(mktemp "${TMPDIR:-/tmp}/gateway-install.XXXXXX.json")"
 chmod 600 "$TEMP"
 cleanup(){ rm -f "$TEMP"; unset GATEWAY_ACCESS_KEY PRIMARY_API_TOKENS FALLBACK_API_TOKEN; }
 trap cleanup EXIT
@@ -105,3 +106,4 @@ if [[ -n "$GATEWAY_URL" ]]; then
 else
   echo "部署完成；尚未执行线上健康检查。"
 fi
+

@@ -11,10 +11,8 @@ if ($LASTEXITCODE -ne 0) { throw "项目验证失败。" }
 npm run checksums
 if ($LASTEXITCODE -ne 0) { throw "校验值生成失败。" }
 
-$version = node -p "require('./package.json').version"
-if ($LASTEXITCODE -ne 0) { throw "无法读取 package.json 版本。" }
-$version = $version.Trim()
-$baseName = "smart-edge-gateway-v$version"
+$baseName = (node scripts/release-meta.mjs artifact).Trim()
+if ($LASTEXITCODE -ne 0 -or -not $baseName) { throw "无法读取发布元数据。" }
 
 node scripts/prepare-release.mjs | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "发布目录准备失败。" }

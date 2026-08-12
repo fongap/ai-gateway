@@ -20,6 +20,7 @@ if($enable){
  $env:FALLBACK_API_TOKEN=$out.FALLBACK_API_TOKEN;$env:FALLBACK_BASE_URL=$out.FALLBACK_BASE_URL;$env:FALLBACK_PRIMARY_MODEL=$out.FALLBACK_PRIMARY_MODEL;$env:FALLBACK_SECONDARY_MODEL=$out.FALLBACK_SECONDARY_MODEL
  try{node scripts/validate-fallback-config.mjs;if($LASTEXITCODE-ne0){throw 'Fallback 配置无效。'}}finally{Remove-Item Env:FALLBACK_API_TOKEN,Env:FALLBACK_BASE_URL,Env:FALLBACK_PRIMARY_MODEL,Env:FALLBACK_SECONDARY_MODEL -ErrorAction SilentlyContinue}
 }
-$temp=Join-Path ([IO.Path]::GetTempPath()) ('smart-edge-gateway-reconfigure-'+[guid]::NewGuid().ToString('N')+'.json')
+$temp=Join-Path ([IO.Path]::GetTempPath()) ('gateway-reconfigure-'+[guid]::NewGuid().ToString('N')+'.json')
 try{[IO.File]::WriteAllText($temp,($out|ConvertTo-Json -Depth 30),[Text.UTF8Encoding]::new($false));if(-not(Yes(Read-Host '确认覆盖上述 Worker 的运行时配置？[y/N]'))){throw '已取消。'};npx --yes 'wrangler@4.114.0' secret bulk $temp;if($LASTEXITCODE-ne0){throw '配置更新失败。'}}finally{if(Test-Path$temp){Remove-Item$temp-Force};$out.Clear()}
 Write-Host '配置已更新。'
+
