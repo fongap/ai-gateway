@@ -39,3 +39,4 @@ if (missing.length) {
   process.exit(1);
 }
 console.log(`Markdown link check passed (${markdownFiles.length} files).`);
+

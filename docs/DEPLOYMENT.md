@@ -17,17 +17,11 @@ npx --yes wrangler@4.114.0
 
 ```json
 {
-  "keep_vars": true,
-  "secrets": {
-    "required": [
-      "GATEWAY_ACCESS_KEY",
-      "PRIMARY_API_TOKENS"
-    ]
-  }
+  "keep_vars": true
 }
 ```
 
-`keep_vars` 用于在代码更新时保留控制台中的普通运行时变量；`secrets.required` 用于阻止缺少必需 Secret 的错误部署。脚本不会读取已有 Secret 明文，因为 Cloudflare 不提供已保存 Secret 的明文回读。
+`keep_vars` 用于在代码更新时保留控制台中的普通运行时变量。仓库不声明 `secrets.required`，因此首次自动部署不会因为 Secret 尚未创建而失败；受保护接口仍会在运行时拒绝未配置请求。
 
 ## 三种操作模式
 
@@ -81,7 +75,7 @@ Linux / macOS：
 wrangler deploy --keep-vars
 ```
 
-它不会尝试读取或重写已有 Secret。由于 `secrets.required` 已声明，当前 Worker 缺少 `GATEWAY_ACCESS_KEY` 或 `PRIMARY_API_TOKENS` 时，部署应直接失败，而不是发布一个运行后才报错的版本。
+它不会尝试读取或重写已有 Secret。当前 Worker 尚未设置 `GATEWAY_ACCESS_KEY` 或 `PRIMARY_API_TOKENS` 时，代码仍可先部署；根页面会显示配置状态，受保护接口在配置完成前返回明确错误。
 
 ### 3. 重新配置运行时变量
 
@@ -115,13 +109,13 @@ Linux / macOS：
 
 1. 将仓库推送到 GitHub；
 2. 在 Cloudflare 中导入仓库；
-3. Worker 名称必须与 `wrangler.jsonc` 的 `name` 一致；
+3. 在每个目标 Worker 的 **Settings → Builds** 中连接该仓库；Cloudflare 会把构建目标覆盖为当前连接的 Worker；
 4. 使用：
 
 ```text
-Build command: npm run verify
-Deploy command: npx --yes wrangler@4.114.0 deploy --keep-vars
-Non-production deploy command: npx --yes wrangler@4.114.0 versions upload --keep-vars
+Build command: npm run build
+Deploy command: npx wrangler deploy
+Non-production deploy command: npx wrangler versions upload
 ```
 
 5. 在实际 Worker 的 **Settings → Variables and Secrets** 中添加运行时 Secret：
@@ -131,7 +125,7 @@ GATEWAY_ACCESS_KEY
 PRIMARY_API_TOKENS
 ```
 
-构建变量不能替代 Worker 运行时 Secret。第一次构建因为必需 Secret 缺失而失败时，先创建 Worker/项目、添加上述 Secret，再重新运行部署。
+构建变量不能替代 Worker 运行时 Secret。第一次构建会先完成代码部署；随后在目标 Worker 中添加上述 Secret 并部署配置即可。多个 Worker 各自保存变量和 Secret，后续 GitHub 推送会继续自动覆盖各自代码。
 
 ## 本地开发
 
@@ -141,7 +135,7 @@ npm ci
 npm run dev
 ```
 
-项目的 `run-wrangler.mjs` 会为本地开发和 dry-run 临时移除 `secrets.required` 配置，使 `.dev.vars` 中的可选变量能够完整加载；临时配置写入项目根目录的随机隐藏文件，确保 Wrangler 能正确解析相对入口和 `.dev.vars`；命令结束后立即删除，且已被 Git 与 Release 打包规则排除。
+本地开发从 `.dev.vars` 读取测试配置。该文件已被 Git 忽略，不应提交真实密钥。
 
 ## 部署前检查
 

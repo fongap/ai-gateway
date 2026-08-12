@@ -6,9 +6,10 @@ const ctx = {
   passThroughOnException() {},
 };
 
-const dashboard = await worker.fetch(new Request('https://gateway.example/', { headers: { Accept: 'text/html' } }), {}, ctx);
-assert.equal(dashboard.status, 200);
-assert.match(await dashboard.text(), /智能边缘网关/);
+const setupPage = await worker.fetch(new Request('https://gateway.example/', { headers: { Accept: 'text/html' } }), {}, ctx);
+assert.equal(setupPage.status, 200);
+assert.equal(setupPage.headers.get('cache-control'), 'no-store');
+assert.match(await setupPage.text(), /等待完成配置/);
 
 
 const version = await worker.fetch(
@@ -26,6 +27,17 @@ const env = {
   PRIMARY_API_TOKENS: 'test-token@https://upstream.example/v1',
   LOG_LEVEL: 'none',
 };
+
+const dashboard = await worker.fetch(
+  new Request('https://gateway.example/', { headers: { Accept: 'text/html' } }),
+  env,
+  ctx,
+);
+assert.equal(dashboard.status, 200);
+assert.equal(dashboard.headers.get('cache-control'), 'no-store');
+const dashboardHtml = await dashboard.text();
+assert.match(dashboardHtml, /双协议接入/);
+assert.doesNotMatch(dashboardHtml, /等待完成配置/);
 
 const unauthorized = await worker.fetch(
   new Request('https://gateway.example/health'),

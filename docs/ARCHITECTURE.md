@@ -86,4 +86,4 @@ Anthropic Messages 请求会转换为 OpenAI Chat Completions 请求；响应再
 
 ## 部署配置边界
 
-`wrangler.jsonc` 使用 `keep_vars: true` 保留控制台普通变量，并声明两个必需 Secret。首次安装、代码更新和运行时重新配置由不同脚本处理，避免把“更新代码”误当成“重新填写全部密钥”。本地开发和 dry-run 使用临时 Wrangler 配置移除 `secrets.required`，保证 `.dev.vars` 中的可选变量可以加载。
+`wrangler.jsonc` 使用 `keep_vars: true` 保留控制台普通变量，但不通过 `secrets.required` 阻断首次部署。首次安装、代码更新和运行时重新配置仍由不同脚本处理；运行时通过明确的配置错误保护未完成设置的接口。Cloudflare Workers Builds 负责选择当前连接的目标 Worker，同一仓库无需硬编码多个 Worker 名称。

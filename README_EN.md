@@ -31,8 +31,6 @@ Smart Edge Gateway provides one entry point to:
 
 ## Dashboard preview
 
-![Smart Edge Gateway dashboard](docs/screenshots/dashboard.png)
-
 ## Architecture
 
 ![Smart Edge Gateway architecture](docs/architecture.svg)
@@ -120,13 +118,13 @@ Non-production deploy command: npx wrangler versions upload
 ```
 
 5. select **Save and Deploy** to complete the first Worker deployment;
-6. open `https://YOUR-WORKER.workers.dev/version`; `configuration.ready` should initially be `false`;
+6. open `https://YOUR-WORKER.workers.dev/`; the Worker now shows a deployed-but-waiting-for-configuration page;
 7. add `GATEWAY_ACCESS_KEY` and `PRIMARY_API_TOKENS` as **Secret** values under that Worker's **Settings → Variables and Secrets**, then select **Deploy**;
-8. open `/version` again and confirm that `configuration.ready` is now `true`; no additional GitHub push is required.
+8. after the configuration becomes active, the setup page automatically refreshes to the normal gateway home page within five seconds. You can also open `/version` and confirm that `configuration.ready` is now `true`; no additional GitHub push is required.
 
 ### Deploy multiple Workers from one repository
 
-The same source repository can be connected to multiple Workers without copying the repository or changing Cloudflare's default deploy command.
+The same source repository can be connected directly to multiple existing Workers. There is no need to copy the repository, modify the code, or add a Wrangler Environment for every Worker.
 
 For example, create and connect:
 
@@ -136,7 +134,7 @@ ai-gateway-02
 ai-gateway-03
 ```
 
-Connect every Worker to the same GitHub repository and keep Cloudflare's automatically populated settings:
+Connect the same GitHub repository under **Settings → Builds** for every Worker and keep Cloudflare's default commands:
 
 ```text
 Root directory: /
@@ -145,19 +143,17 @@ Deploy command: npx wrangler deploy
 Non-production deploy command: npx wrangler versions upload
 ```
 
-Workers Builds on Wrangler v3 and later provides the name of the currently connected Worker. After `npm run build` verifies the project, npm's `postbuild` synchronizes `wrangler.jsonc` inside Cloudflare's temporary build workspace. Deployment still uses the default `npx wrangler deploy` command.
-
-Workers such as `ai-gateway-1`, `ai-gateway-2`, and `ai-gateway-3` can therefore deploy from one repository with a matching configuration name and without name-fix pull requests. The repository keeps `ai-gateway` as its default; the temporary name is never committed to GitHub, and no per-Worker environment or wrapper command is required.
+Workers Builds overrides each build target with the Worker currently connected to that build. A single GitHub push therefore triggers each connected Worker independently and updates its existing deployment; the repository does not need to know the actual Worker names.
 
 Configure runtime Secrets independently under **Settings → Variables and Secrets** for every Worker. This allows each Worker to use different gateway access keys, Primary tokens, upstream URLs, model mappings, and Fallback settings.
 
-The following value in `wrangler.jsonc`:
+The generic value in `wrangler.jsonc`:
 
 ```json
 "name": "ai-gateway"
 ```
 
-is the repository and local deployment default. During Cloudflare Builds, `scripts/sync-wrangler-ci-name.mjs` synchronizes it in the temporary workspace, so it does not limit the number of connected Workers.
+is used for direct local deployment. A connected Cloudflare build uses its CI-provided target Worker name, so this file does not need to be rewritten for every Worker. A name-override warning is not a deployment failure; use the final build result as the source of truth.
 
 Each Worker must independently define `GATEWAY_ACCESS_KEY` and `PRIMARY_API_TOKENS` under **Settings → Variables and Secrets**. Runtime Secrets cannot be copied automatically from another Worker and must never be committed to the repository.
 
@@ -234,6 +230,12 @@ curl https://YOUR-WORKER.workers.dev/v1/chat/completions \
 ```
 
 ## Diagnostic endpoints
+
+### Streaming integrity errors
+
+Anthropic / Claude Code streams no longer emit a synthetic `message_stop` when upstream SSE JSON is malformed, the stream contains only a role without text/reasoning/tool output, or the connection ends before `finish_reason` / `[DONE]`. The gateway emits a valid Anthropic `event: error` and logs the request ID, failure reason, and a truncated malformed data sample without logging tokens.
+
+If Worker logs contain `Upstream returned malformed streaming data`, the failure occurred in the upstream stream received by the Worker or in protocol conversion. If Worker logs show a complete `message_stop` but the client still reports an HTTP 200 malformed response, inspect New API or another proxy in front of the Worker for SSE buffering, rewriting, or early connection termination.
 
 ### Version
 

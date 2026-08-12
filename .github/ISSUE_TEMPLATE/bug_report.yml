@@ -54,3 +54,4 @@ body:
       label: Sanitized logs
       description: Remove tokens, full request bodies, private domains, and user data.
       render: shell
+

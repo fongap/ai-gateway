@@ -26,3 +26,4 @@ const lines = files.map((file) => {
 });
 fs.writeFileSync(path.join(root, 'SHA256SUMS'), `${lines.join('\n')}\n`);
 console.log(`Generated SHA256SUMS for ${files.length} files.`);
+

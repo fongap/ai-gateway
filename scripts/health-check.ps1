@@ -11,3 +11,4 @@ if(-not $AccessKey){
 }
 $target=$GatewayUrl.TrimEnd('/')+'/health'
 Invoke-RestMethod -Uri $target -Headers @{Authorization="Bearer $AccessKey"} | ConvertTo-Json -Depth 30
+

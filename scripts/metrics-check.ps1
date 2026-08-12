@@ -11,3 +11,4 @@ if(-not $AccessKey){
 }
 $target=$GatewayUrl.TrimEnd('/')+'/metrics'
 (Invoke-WebRequest -Uri $target -Headers @{Authorization="Bearer $AccessKey"}).Content
+

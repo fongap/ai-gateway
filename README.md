@@ -31,8 +31,6 @@ AI 应用经常需要同时管理多个模型供应商、不同模型 ID、不�
 
 ## 页面预览
 
-![智能边缘网关 Dashboard](docs/screenshots/dashboard.png)
-
 ## 架构
 
 ![智能边缘网关架构](docs/architecture.svg)
@@ -144,13 +142,13 @@ Non-production deploy command: npx wrangler versions upload
 ```
 
 5. 点击 **Save and Deploy**，先完成 Worker 的首次部署；
-6. 打开 `https://YOUR-WORKER.workers.dev/version`，此时 `configuration.ready` 应为 `false`；
+6. 打开 `https://YOUR-WORKER.workers.dev/`，此时会显示“Worker 已部署，等待完成配置”的初始化页面；
 7. 在该 Worker 的 **Settings → Variables and Secrets** 中添加 `GATEWAY_ACCESS_KEY` 与 `PRIMARY_API_TOKENS`，类型选择 **Secret**，然后点击 **Deploy**；
-8. 再次访问 `/version`，确认 `configuration.ready` 已变为 `true`，无需重新推送 GitHub 提交。
+8. 配置生效后，初始化页面会在 5 秒内自动刷新到正常网关主页；也可访问 `/version`，确认 `configuration.ready` 已变为 `true`。无需重新推送 GitHub 提交。
 
 ### 一个仓库部署多个 Workers
 
-相同源码可以绑定多个 Worker，不需要复制仓库，也不需要修改 Cloudflare 的默认部署命令。
+相同源码可以直接绑定多个已有 Worker，不需要复制仓库，也不需要为每个 Worker 修改代码或增加 Wrangler Environment。
 
 例如，在 Cloudflare 创建并连接：
 
@@ -160,7 +158,7 @@ ai-gateway-02
 ai-gateway-03
 ```
 
-每个 Worker 都连接同一个 GitHub 仓库，并保留 Cloudflare 自动填写的配置：
+分别在每个 Worker 的 **Settings → Builds** 中连接同一个 GitHub 仓库，并保留 Cloudflare 默认命令：
 
 ```text
 Root directory: /
@@ -169,19 +167,17 @@ Deploy command: npx wrangler deploy
 Non-production deploy command: npx wrangler versions upload
 ```
 
-Wrangler v3 及以上的 Workers Builds 会提供当前绑定的 Worker 名称。`npm run build` 完成校验后，npm 的 `postbuild` 会在 Cloudflare 的临时构建目录中自动把 `wrangler.jsonc` 同步为该名称；随后仍由默认命令 `npx wrangler deploy` 发布。
-
-因此 `ai-gateway-1`、`ai-gateway-2`、`ai-gateway-3` 等 Worker 都能从同一个仓库部署，并且部署时配置名称已经一致，不会再触发名称修复 PR。仓库中的默认名称仍保持 `ai-gateway`，临时改名不会提交回 GitHub，也不需要为每个 Worker 编写环境块或部署脚本。
+Cloudflare Workers Builds 会把每次构建的目标覆盖为当前连接的 Worker。因此同一次 GitHub 推送会分别触发各 Worker 的构建，并覆盖各自已有部署；仓库无需知道 `ai-gateway-01`、`ai-gateway-02` 等实际名称。
 
 每个 Worker 必须在自己的 **Settings → Variables and Secrets** 中独立配置运行时 Secret。这样可以让不同 Worker 使用不同的网关访问密钥、Primary Token、上游地址、模型映射和 Fallback 配置。
 
-`wrangler.jsonc` 中的：
+`wrangler.jsonc` 中的通用名称：
 
 ```json
 "name": "ai-gateway"
 ```
 
-只是仓库和本地部署使用的默认名称。Cloudflare 构建时由 `scripts/sync-wrangler-ci-name.mjs` 在临时工作区自动同步，不限制可绑定数量。
+仅用于本地直接部署。Cloudflare 连接构建时使用它提供的目标 Worker 名称，不要求为每个 Worker 改写该文件。若构建日志出现名称覆盖提示，它不是部署失败；应继续查看日志结尾的实际部署结果。
 
 每个 Worker 必须在自己的 **Settings → Variables and Secrets** 中独立设置 `GATEWAY_ACCESS_KEY` 和 `PRIMARY_API_TOKENS`。Secret 属于各 Worker 的运行时配置，不能从另一个 Worker 自动复制，也不能提交到仓库。
 
@@ -258,6 +254,12 @@ curl https://YOUR-WORKER.workers.dev/v1/chat/completions \
 ```
 
 ## 诊断接口
+
+### 流式完整性错误
+
+Anthropic / Claude Code 流在以下情况不会再返回伪造的 `message_stop`：上游 SSE JSON 畸形、只有角色但没有文本/推理/工具输出，或连接在 `finish_reason` / `[DONE]` 之前提前结束。网关会发送合法的 Anthropic `event: error`，并在 Worker 日志中记录请求 ID、错误原因和截断后的异常数据片段。日志不会记录 Token。
+
+若日志出现 `Upstream returned malformed streaming data`，问题发生在 Worker 收到的上游流或协议转换层；若 Worker 日志显示完整 `message_stop`，但客户端仍报告 HTTP 200 malformed，应继续检查 Worker 前面的 New API 或其他代理是否缓冲、改写或提前关闭 SSE。
 
 ### 查看版本
 

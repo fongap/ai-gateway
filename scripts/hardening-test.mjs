@@ -16,6 +16,17 @@ const chat = (body, extra = {}) => new Request('https://gateway.example/v1/chat/
   body: typeof body === 'string' ? body : JSON.stringify(body),
   ...extra,
 });
+const anthropic = (body, extra = {}) => new Request('https://gateway.example/v1/messages', {
+  method: 'POST',
+  headers: {
+    ...auth,
+    'content-type': 'application/json',
+    'anthropic-version': '2023-06-01',
+    ...(extra.headers || {}),
+  },
+  body: typeof body === 'string' ? body : JSON.stringify(body),
+  ...extra,
+});
 
 try {
   // 诊断接口必须支持 CORS，且不反射未知请求头。
@@ -444,6 +455,60 @@ try {
     ...baseEnv, PRIMARY_API_TOKENS: 'empty-token@https://empty.example/v1', FAKE_STREAM_PROTECTION: 'true',
   }, ctx);
   assert.equal(emptyStream.status, 502);
+
+  // Anthropic 流转换不得静默吞掉畸形 JSON，也不得把 role-only 空流伪装成成功。
+  globalThis.fetch = async () => new Response(
+    'data: {"choices":[\n\n',
+    { status: 200, headers: { 'content-type': 'text/event-stream' } },
+  );
+  const malformedAnthropic = await worker.fetch(anthropic({
+    model: 'm', max_tokens: 16, stream: true, messages: [{ role: 'user', content: 'hello' }],
+  }), { ...baseEnv, PRIMARY_API_TOKENS: 'malformed-token@https://malformed-stream.example/v1' }, ctx);
+  const malformedAnthropicSse = await malformedAnthropic.text();
+  assert.equal(malformedAnthropic.status, 200);
+  assert.match(malformedAnthropicSse, /event: error/);
+  assert.match(malformedAnthropicSse, /Upstream returned malformed streaming data/);
+  assert.doesNotMatch(malformedAnthropicSse, /event: message_stop/);
+
+  globalThis.fetch = async () => new Response(
+    'data: {"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+    { status: 200, headers: { 'content-type': 'text/event-stream' } },
+  );
+  const emptyAnthropic = await worker.fetch(anthropic({
+    model: 'm', max_tokens: 16, stream: true, messages: [{ role: 'user', content: 'hello' }],
+  }), { ...baseEnv, PRIMARY_API_TOKENS: 'empty-anthropic-token@https://empty-anthropic.example/v1' }, ctx);
+  const emptyAnthropicSse = await emptyAnthropic.text();
+  assert.match(emptyAnthropicSse, /event: error/);
+  assert.match(emptyAnthropicSse, /Upstream returned an empty streaming response/);
+  assert.doesNotMatch(emptyAnthropicSse, /event: message_stop/);
+
+  globalThis.fetch = async () => new Response(
+    'data: {"choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}\n\n',
+    { status: 200, headers: { 'content-type': 'text/event-stream' } },
+  );
+  const truncatedAnthropic = await worker.fetch(anthropic({
+    model: 'm', max_tokens: 16, stream: true, messages: [{ role: 'user', content: 'hello' }],
+  }), { ...baseEnv, PRIMARY_API_TOKENS: 'truncated-token@https://truncated-stream.example/v1' }, ctx);
+  const truncatedAnthropicSse = await truncatedAnthropic.text();
+  assert.match(truncatedAnthropicSse, /event: error/);
+  assert.match(truncatedAnthropicSse, /ended before a completion marker/);
+  assert.doesNotMatch(truncatedAnthropicSse, /event: message_stop/);
+
+  // 兼容缺少 SSE 双换行、但每行都是完整 data 事件的 OpenAI 兼容上游。
+  globalThis.fetch = async () => new Response(
+    'data: {"choices":[{"index":0,"delta":{"content":"line-one"},"finish_reason":null}]}\n' +
+    'data: {"choices":[{"index":0,"delta":{"content":"line-two"},"finish_reason":"stop"}]}\n' +
+    'data: [DONE]\n',
+    { status: 200, headers: { 'content-type': 'text/event-stream' } },
+  );
+  const looseAnthropic = await worker.fetch(anthropic({
+    model: 'm', max_tokens: 16, stream: true, messages: [{ role: 'user', content: 'hello' }],
+  }), { ...baseEnv, PRIMARY_API_TOKENS: 'loose-sse-token@https://loose-sse.example/v1' }, ctx);
+  const looseAnthropicSse = await looseAnthropic.text();
+  assert.match(looseAnthropicSse, /line-one/);
+  assert.match(looseAnthropicSse, /line-two/);
+  assert.match(looseAnthropicSse, /event: message_stop/);
+  assert.doesNotMatch(looseAnthropicSse, /event: error/);
 
   // 客户端流统计在流真正结束后才记成功。
   let controller;

@@ -53,3 +53,4 @@ if (findings.length) {
   process.exit(1);
 }
 console.log('Secret scan passed.');
+

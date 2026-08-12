@@ -10,3 +10,4 @@ Write-Host '安全更新只部署代码，使用 keep_vars 保留控制台变量
 if((Read-Host '确认更新上述 Worker？[y/N]')-notmatch'^(y|yes)$'){throw '已取消。'}
 npx --yes 'wrangler@4.114.0' deploy --keep-vars;if($LASTEXITCODE-ne0){throw '部署失败。'}
 Write-Host '代码更新完成。请执行 health-check.ps1 与 models-check.ps1。'
+

@@ -22,3 +22,4 @@ if (secondaryModel.toLowerCase() !== 'off' && !secondaryModel) {
   fail('FALLBACK_SECONDARY_MODEL 必须是模型名或 off。');
 }
 console.log('Fallback 配置检查通过。');
+

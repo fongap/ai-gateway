@@ -74,3 +74,4 @@ try {
 }
 
 console.log('Configuration validation tests passed.');
+

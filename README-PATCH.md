@@ -10,6 +10,6 @@ The patch intentionally removes fixed GitHub owner/repository URLs:
 - Release archive names come from `package.json.name` and `package.json.version`.
 - Interactive installation reads the default Worker name from `wrangler.jsonc`.
 
-For the current repository, `package.json.name` and the default Worker name are `ai-gateway`. The npm `postbuild` lifecycle synchronizes `wrangler.jsonc` to the connected Worker inside Cloudflare's temporary build workspace while keeping the default `npx wrangler deploy` command.
+For the current repository, `package.json.name` and the generic local Worker name are `ai-gateway`. Cloudflare Workers Builds selects each connected existing Worker automatically; no per-Worker environment or hard-coded Worker name is included.
 
-The base Wrangler configuration intentionally does not declare `secrets.required`. This allows Cloudflare to create and deploy a new Worker first. Runtime Secrets are added from that Worker's dashboard afterward; until then, `/version` reports `configuration.ready: false` and protected routes return a configuration error.
+The base Wrangler configuration intentionally does not declare `secrets.required`. This allows Cloudflare to create and deploy a new Worker first. Runtime Secrets are added from that Worker's dashboard afterward. Until then, `/` shows a setup-status page and protected routes return a configuration error. After both required Secrets become active, the page automatically refreshes to the normal dashboard; `/version` exposes the same readiness state without revealing any Secret value.

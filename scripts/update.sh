@@ -12,3 +12,4 @@ read -r -p '确认更新当前 Worker？[y/N]: ' answer
 [[ "$answer" =~ ^([yY]|[yY][eE][sS])$ ]] || { echo '已取消。'; exit 1; }
 npx --yes wrangler@4.114.0 deploy --keep-vars
 echo '代码更新完成。请运行 health-check.sh 与 models-check.sh 验证。'
+

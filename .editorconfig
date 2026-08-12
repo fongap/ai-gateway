@@ -14,3 +14,4 @@ trim_trailing_whitespace = false
 [*.ps1]
 end_of_line = crlf
 indent_size = 2
+

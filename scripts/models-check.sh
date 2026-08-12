@@ -11,3 +11,4 @@ read -r -s -p "GATEWAY_ACCESS_KEY: " ACCESS_KEY; echo
 curl --fail-with-body --silent --show-error "${GATEWAY_URL%/}/v1/models" -H "Authorization: Bearer ${ACCESS_KEY}"
 echo
 unset ACCESS_KEY
+

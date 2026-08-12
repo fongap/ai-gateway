@@ -17,3 +17,4 @@ if (!changelog.includes(`## ${pkg.version} -`)) {
 }
 
 console.log(`Version check passed: ${pkg.version}`);
+

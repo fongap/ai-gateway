@@ -36,3 +36,4 @@ jobs:
 
       - name: Dry-run Worker bundle
         run: npm run check:deploy
+

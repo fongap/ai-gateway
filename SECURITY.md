@@ -30,3 +30,4 @@ If private advisories are unavailable, open a public Issue containing only a req
 ## 中文说明
 
 仅维护主分支和最新发布版本。漏洞应通过 GitHub Security Advisory 私密报告，不要在公开 Issue 中粘贴 Token、完整请求头、私有地址、用户请求正文或可直接利用的漏洞细节。
+
