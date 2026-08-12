@@ -1,6 +1,6 @@
 /**
  * SPDX-License-Identifier: MIT
- * Copyright (c) 2026 Fongap EngineSuite WorkGroup
+ * Copyright (c) 2026 Fongap Studio
  *
  * 智能边缘网关
  *
@@ -24,8 +24,8 @@
  * - PRIMARY_ENABLED            : true/false；未设置时根据 PRIMARY_API_TOKENS 自动判断
  * - PRIMARY_MAX_ATTEMPTS       : 单次请求最多尝试的主端点数；默认 min(端点数, 3)
  * - PRIMARY_ROTATION_WINDOW_MS : 请求统计窗口；默认 60000
- * - PRIMARY_ROTATION_MAX_PER_WINDOW: 单端点窗口请求上限；默认 40
- * - PRIMARY_MAX_CONCURRENCY_PER_ENDPOINT: 单端点并发上限；默认 3
+ * - PRIMARY_ROTATION_MAX_PER_WINDOW: 单端点窗口请求上限；默认 30
+ * - PRIMARY_MAX_CONCURRENCY_PER_ENDPOINT: 单端点并发上限；默认 2
  *
  * Fallback 配置：
  * - FALLBACK_ENABLED           : true/false；未设置时根据完整兜底配置自动判断
@@ -174,9 +174,9 @@ const DEFAULT_AUTH_FAIL_COOLDOWN = 86_400_000;
 const DEFAULT_RATE_LIMIT_COOLDOWN = 60_000;
 
 const DEFAULT_PRIMARY_ROTATION_WINDOW_MS = 60_000;
-const DEFAULT_PRIMARY_ROTATION_MAX_PER_WINDOW = 40;
+const DEFAULT_PRIMARY_ROTATION_MAX_PER_WINDOW = 30;
 // 限制单端点并发，避免瞬时流量集中。
-const DEFAULT_PRIMARY_MAX_CONCURRENCY_PER_ENDPOINT = 3;
+const DEFAULT_PRIMARY_MAX_CONCURRENCY_PER_ENDPOINT = 2;
 
 
 const HEALTH_SCORE_INITIAL = 50;
