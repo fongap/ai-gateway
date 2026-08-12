@@ -119,8 +119,10 @@ Deploy command: npx wrangler deploy
 Non-production deploy command: npx wrangler versions upload
 ```
 
-5. add `GATEWAY_ACCESS_KEY` and `PRIMARY_API_TOKENS` under that Worker's **Settings → Variables and Secrets**;
-6. retry the initial deployment or push another commit.
+5. select **Save and Deploy** to complete the first Worker deployment;
+6. open `https://YOUR-WORKER.workers.dev/version`; `configuration.ready` should initially be `false`;
+7. add `GATEWAY_ACCESS_KEY` and `PRIMARY_API_TOKENS` as **Secret** values under that Worker's **Settings → Variables and Secrets**, then select **Deploy**;
+8. open `/version` again and confirm that `configuration.ready` is now `true`; no additional GitHub push is required.
 
 ### Deploy multiple Workers from one repository
 
@@ -159,7 +161,7 @@ is the repository and local deployment default. During Cloudflare Builds, `scrip
 
 Each Worker must independently define `GATEWAY_ACCESS_KEY` and `PRIMARY_API_TOKENS` under **Settings → Variables and Secrets**. Runtime Secrets cannot be copied automatically from another Worker and must never be committed to the repository.
 
-> Preview deployments also require both runtime Secrets on the target Worker; otherwise `secrets.required` blocks the upload.
+> Preview versions may be created before Secrets are configured, but protected API routes remain unavailable until configuration is complete.
 
 > Store real tokens as Cloudflare Worker Secrets. Build-time variables are not a substitute for runtime Worker Secrets.
 

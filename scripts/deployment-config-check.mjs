@@ -10,10 +10,11 @@ const packageJson = JSON.parse(read('package.json'));
 
 assert.equal(config.keep_vars, true, 'wrangler.jsonc must set keep_vars=true');
 assert.equal(config.main, 'src/index.js');
-assert.ok(config.secrets && Array.isArray(config.secrets.required), 'wrangler.jsonc must declare secrets.required');
-for (const name of ['GATEWAY_ACCESS_KEY', 'PRIMARY_API_TOKENS']) {
-  assert.ok(config.secrets.required.includes(name), `Missing required secret: ${name}`);
-}
+assert.equal(
+  config.secrets,
+  undefined,
+  'wrangler.jsonc must not block the first deployment before runtime Secrets can be configured',
+);
 assert.equal(
   packageJson.scripts?.postbuild,
   'node scripts/sync-wrangler-ci-name.mjs',

@@ -125,7 +125,7 @@ chmod +x scripts/*.sh
 ./scripts/reconfigure.sh
 ```
 
-`wrangler.jsonc` 已声明 `keep_vars: true` 和两个必需 Secret。代码更新不会读取已有 Secret 明文；缺少 `GATEWAY_ACCESS_KEY` 或 `PRIMARY_API_TOKENS` 时，Wrangler 部署会被阻止。
+`wrangler.jsonc` 已声明 `keep_vars: true`，代码更新不会读取或删除已有 Secret。首次部署不要求预先存在 Secret；未完成配置时，Worker 会正常上线，但受保护接口会返回明确的配置错误。
 
 ## 从 GitHub 自动部署到 Cloudflare
 
@@ -143,8 +143,10 @@ Deploy command: npx wrangler deploy
 Non-production deploy command: npx wrangler versions upload
 ```
 
-5. 在该 Worker 的 **Settings → Variables and Secrets** 中添加 `GATEWAY_ACCESS_KEY` 与 `PRIMARY_API_TOKENS`；
-6. 重新运行首次部署，或再次推送提交。
+5. 点击 **Save and Deploy**，先完成 Worker 的首次部署；
+6. 打开 `https://YOUR-WORKER.workers.dev/version`，此时 `configuration.ready` 应为 `false`；
+7. 在该 Worker 的 **Settings → Variables and Secrets** 中添加 `GATEWAY_ACCESS_KEY` 与 `PRIMARY_API_TOKENS`，类型选择 **Secret**，然后点击 **Deploy**；
+8. 再次访问 `/version`，确认 `configuration.ready` 已变为 `true`，无需重新推送 GitHub 提交。
 
 ### 一个仓库部署多个 Workers
 
@@ -183,7 +185,7 @@ Wrangler v3 及以上的 Workers Builds 会提供当前绑定的 Worker 名称�
 
 每个 Worker 必须在自己的 **Settings → Variables and Secrets** 中独立设置 `GATEWAY_ACCESS_KEY` 和 `PRIMARY_API_TOKENS`。Secret 属于各 Worker 的运行时配置，不能从另一个 Worker 自动复制，也不能提交到仓库。
 
-> 非生产分支若启用预览部署，也要求目标 Worker 已配置两个必需运行时 Secret；否则 `secrets.required` 会阻止发布。
+> 非生产分支可在尚未配置 Secret 时生成预览版本，但受保护的 API 在配置完成前不会工作。
 
 > 真实 Token 必须存入 Cloudflare Worker Secrets，不能提交到 GitHub。构建环境变量不能代替 Worker 运行时 Secret。
 
