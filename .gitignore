@@ -5,6 +5,7 @@ node_modules/
 .env
 .env.*
 !.env.example
+.secrets.*
 secrets*.json
 *.local
 *.log
@@ -15,5 +16,4 @@ release/
 *.tar.gz
 
 .wrangler-*-config*.jsonc
-
 .wrangler-local-*.jsonc

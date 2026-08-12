@@ -4,8 +4,7 @@
 
 **智能边缘网关**
 
-[![CI](https://github.com/fongap/smart-edge-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/fongap/smart-edge-gateway/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/fongap/smart-edge-gateway?display_name=tag)](https://github.com/fongap/smart-edge-gateway/releases)
+
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](https://developers.cloudflare.com/workers/)
 [![License](https://img.shields.io/badge/license-MIT-2ea44f)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-43853d?logo=node.js&logoColor=white)](package.json)
@@ -106,33 +105,63 @@ Real credentials are not stored in the repository.
 
 ## Automatic deployment from GitHub to Cloudflare
 
+### One Worker
+
 1. Push this repository to GitHub;
-2. in Cloudflare, open **Workers & Pages → Create application → Import a repository**;
-3. select the repository and `main` as the production branch;
-4. ensure the Cloudflare Worker name matches `name` in `wrangler.jsonc`;
-5. use these build settings:
+2. create or select the target Worker in Cloudflare;
+3. connect this repository and the production branch `main` under **Settings → Builds**;
+4. use these build settings:
 
 ```text
 Root directory: /
-Build command: npm run verify
-Deploy command: npx --yes wrangler@4.114.0 deploy --keep-vars
-Non-production deploy command: npx --yes wrangler@4.114.0 versions upload --keep-vars
+Build command: npm run build
+Deploy command: npx wrangler deploy
+Non-production deploy command: npx wrangler versions upload
 ```
 
-6. add the runtime Worker Secrets under **Settings → Variables and Secrets**:
+5. add `GATEWAY_ACCESS_KEY` and `PRIMARY_API_TOKENS` under that Worker's **Settings → Variables and Secrets**;
+6. retry the initial deployment or push another commit.
+
+### Deploy multiple Workers from one repository
+
+The same source repository can be connected to multiple Workers without copying the repository or changing Cloudflare's default deploy command.
+
+For example, create and connect:
 
 ```text
-GATEWAY_ACCESS_KEY
-PRIMARY_API_TOKENS
+ai-gateway-01
+ai-gateway-02
+ai-gateway-03
 ```
 
-7. retry the deployment after both required Secrets exist.
+Connect every Worker to the same GitHub repository and keep Cloudflare's automatically populated settings:
 
-The first deployment may be blocked by `secrets.required` until the Worker/project exists and both runtime Secrets have been added. Future pushes to `main` can then be verified and deployed automatically by Cloudflare Workers Builds. Non-production branches can produce preview versions.
+```text
+Root directory: /
+Build command: npm run build
+Deploy command: npx wrangler deploy
+Non-production deploy command: npx wrangler versions upload
+```
 
-> Preview deployments also need both required runtime Secrets in the corresponding preview environment; otherwise `secrets.required` blocks the upload.
+Workers Builds on Wrangler v3 and later uses `WRANGLER_CI_OVERRIDE_NAME` to match the currently connected Worker automatically. Workers such as `ai-gateway-01` and `ai-gateway-02` can deploy from one repository without per-Worker environments or wrapper scripts.
 
-> Store real tokens as Cloudflare Worker Secrets. Do not commit them to GitHub. Build-time variables are not a substitute for runtime Worker Secrets.
+The “update `wrangler.jsonc`” banner is a configuration-sync recommendation, not a deployment failure. When one repository is connected to several differently named Workers, do not accept a PR that changes the top-level `name` to only one Worker; dismiss the banner instead.
+
+Configure runtime Secrets independently under **Settings → Variables and Secrets** for every Worker. This allows each Worker to use different gateway access keys, Primary tokens, upstream URLs, model mappings, and Fallback settings.
+
+The following value in `wrangler.jsonc`:
+
+```json
+"name": "ai-gateway"
+```
+
+is the repository's default name. Cloudflare overrides it with the connected Worker name during Builds, so it does not limit the number of connected Workers.
+
+Each Worker must independently define `GATEWAY_ACCESS_KEY` and `PRIMARY_API_TOKENS` under **Settings → Variables and Secrets**. Runtime Secrets cannot be copied automatically from another Worker and must never be committed to the repository.
+
+> Preview deployments also require both runtime Secrets on the target Worker; otherwise `secrets.required` blocks the upload.
+
+> Store real tokens as Cloudflare Worker Secrets. Build-time variables are not a substitute for runtime Worker Secrets.
 
 See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the full procedure.
 

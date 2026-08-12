@@ -4,8 +4,7 @@
 
 **Smart Edge Gateway**
 
-[![CI](https://github.com/fongap/smart-edge-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/fongap/smart-edge-gateway/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/fongap/smart-edge-gateway?display_name=tag)](https://github.com/fongap/smart-edge-gateway/releases)
+
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](https://developers.cloudflare.com/workers/)
 [![License](https://img.shields.io/badge/license-MIT-2ea44f)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-43853d?logo=node.js&logoColor=white)](package.json)
@@ -130,27 +129,63 @@ chmod +x scripts/*.sh
 
 ## 从 GitHub 自动部署到 Cloudflare
 
+### 单个 Worker
+
 1. 将本仓库推送到 GitHub；
-2. 在 Cloudflare 控制台进入 **Workers & Pages → Create application → Import a repository**；
-3. 选择该仓库和生产分支 `main`；
-4. 确保 Cloudflare Worker 名称与 `wrangler.jsonc` 中的 `name` 一致；
-5. 使用以下构建配置：
+2. 在 Cloudflare 控制台创建或选择目标 Worker；
+3. 在 Worker 的 **Settings → Builds** 中连接本仓库和生产分支 `main`；
+4. 使用以下构建配置：
 
 ```text
 Root directory: /
-Build command: npm run verify
-Deploy command: npx --yes wrangler@4.114.0 deploy --keep-vars
-Non-production deploy command: npx --yes wrangler@4.114.0 versions upload --keep-vars
+Build command: npm run build
+Deploy command: npx wrangler deploy
+Non-production deploy command: npx wrangler versions upload
 ```
 
-6. 在 Worker 的 **Settings → Variables and Secrets** 中添加 `GATEWAY_ACCESS_KEY` 与 `PRIMARY_API_TOKENS`；
-7. 重新运行失败的首次部署，或再次推送提交。
+5. 在该 Worker 的 **Settings → Variables and Secrets** 中添加 `GATEWAY_ACCESS_KEY` 与 `PRIMARY_API_TOKENS`；
+6. 重新运行首次部署，或再次推送提交。
 
-后续每次推送 `main`，Cloudflare Workers Builds 都会自动验证并发布。非生产分支可生成预览版本。
+### 一个仓库部署多个 Workers
 
-> 非生产分支若启用预览部署，也需要为对应预览环境配置两个必需运行时 Secret；否则 `secrets.required` 会阻止发布。
+相同源码可以绑定多个 Worker，不需要复制仓库，也不需要修改 Cloudflare 的默认部署命令。
 
-> 真实 Token 必须存入 Cloudflare Secrets，不能提交到 GitHub。Cloudflare 的构建环境变量也不能替代 Worker 运行时 Secrets。
+例如，在 Cloudflare 创建并连接：
+
+```text
+ai-gateway-01
+ai-gateway-02
+ai-gateway-03
+```
+
+每个 Worker 都连接同一个 GitHub 仓库，并保留 Cloudflare 自动填写的配置：
+
+```text
+Root directory: /
+Build command: npm run build
+Deploy command: npx wrangler deploy
+Non-production deploy command: npx wrangler versions upload
+```
+
+Wrangler v3 及以上的 Workers Builds 会使用 `WRANGLER_CI_OVERRIDE_NAME` 自动匹配当前连接的 Worker。因此 `ai-gateway-01`、`ai-gateway-02` 等 Worker 都能从同一个仓库部署，无需为每个 Worker 编写环境块或部署脚本。
+
+截图中的“更新 `wrangler.jsonc`”属于配置同步建议，并不表示部署失败。一个仓库绑定多个不同名称的 Worker 时，不要接受仅把顶层 `name` 改成某一个 Worker 名称的 PR，否则其他 Worker 会再次提示不一致；直接关闭该提示即可。
+
+每个 Worker 必须在自己的 **Settings → Variables and Secrets** 中独立配置运行时 Secret。这样可以让不同 Worker 使用不同的网关访问密钥、Primary Token、上游地址、模型映射和 Fallback 配置。
+
+`wrangler.jsonc` 中的：
+
+```json
+"name": "ai-gateway"
+```
+
+只是仓库的默认名称。Cloudflare 构建时会自动覆盖为当前绑定的 Worker 名称，不限制可绑定数量。
+
+每个 Worker 必须在自己的 **Settings → Variables and Secrets** 中独立设置 `GATEWAY_ACCESS_KEY` 和 `PRIMARY_API_TOKENS`。Secret 属于各 Worker 的运行时配置，不能从另一个 Worker 自动复制，也不能提交到仓库。
+
+> 非生产分支若启用预览部署，也要求目标 Worker 已配置两个必需运行时 Secret；否则 `secrets.required` 会阻止发布。
+
+> 真实 Token 必须存入 Cloudflare Worker Secrets，不能提交到 GitHub。构建环境变量不能代替 Worker 运行时 Secret。
 
 详细步骤见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
 
