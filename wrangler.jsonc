@@ -1,5 +1,5 @@
 {
-  "name": "ai-node-01",
+  "name": "ai-node-02",
   "main": "src/index.js",
   "compatibility_date": "2026-08-06",
   "workers_dev": true,
