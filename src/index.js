@@ -47,7 +47,7 @@
  * - FAKE_STREAM_PROTECTION     : 非流式请求转上游流式并重组；默认 false，按需启用
  *
  * 运行保护：
- * - REQUEST_TIMEOUT_MS         : 上游首字节超时；默认 60000，范围 5000-180000
+ * - REQUEST_TIMEOUT_MS         : 上游首字节超时；默认 180000，范围 5000-180000
  * - MAX_BODY_BYTES             : OpenAI 请求体上限；默认 20 MiB；无 Content-Length 同样生效
  * - 压缩请求体                  : 不支持 gzip/br/deflate 请求体，统一返回 415
  * - AUTH_FAIL_COOLDOWN_MS      : 401/403 冷却；默认 86400000
@@ -158,7 +158,7 @@ function getSetupHtml(configuration) {
 const RETRYABLE_STATUS = new Set([401, 403, 404, 408, 409, 425, 429, 500, 502, 503, 504]);
 const NON_HEALTH_IMPACT_STATUS = new Set([404]);
 
-const DEFAULT_TIMEOUT_MS = 60_000;
+const DEFAULT_TIMEOUT_MS = 180_000;
 const MIN_TIMEOUT_MS = 5_000;
 const MAX_TIMEOUT_MS = 180_000;
 // 默认请求体上限。较大 JSON 会产生额外内存副本，部署后按实际负载谨慎上调。
