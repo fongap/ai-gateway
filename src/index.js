@@ -15,23 +15,23 @@
  *       ↓
  *   Node Scheduler（workload → model → tier → priority → cooldown → circuit → concurrency → health → latency）
  *       ↓
- *   Node Pool (NODES_CONFIG)
+ *   Node Pool (TIER1/TIER2/TIER3_NODES_CONFIG)
  *       ↓
  *   Provider / Account / API Key (token 内嵌在节点中，Token@BaseURL 格式)
  *
  * 部署清单：
  * 1. 将 GATEWAY_ACCESS_KEY 设置为 Secret。
- * 2. 将 NODES_CONFIG 设置为 Secret（JSON 数组，定义节点）。
+ * 2. 将 TIER1_NODES_CONFIG 设置为 Secret（JSON 数组，token 内嵌）。
  * 3. 为每个节点配置 token 字段（Token@BaseURL 格式）。
  * 4. 可选设置 MODELS_CONFIG 与 POLICIES_CONFIG；未设置时使用默认策略。
  * 5. 部署后使用 GATEWAY_ACCESS_KEY 访问 /health，确认节点状态。
  *
  * 核心配置：
  * - GATEWAY_ACCESS_KEY         : 客户端访问网关的鉴权密钥（必需）
- * - NODES_CONFIG               : JSON 数组，定义 tier-1/tier-2/tier-3 节点（必需，token 内嵌）
+ * - TIER1_NODES_CONFIG         : JSON 数组，tier-1 层节点定义（必需，token 内嵌）
  * - MODELS_CONFIG              : JSON 对象，逻辑模型到 workload/policy 的映射（可选）
  * - POLICIES_CONFIG            : JSON 对象，策略 tiers/max_attempts/retry_budget（可选）
- * - TIER1_NODES_CONFIG 等      : 按层分别配置，token 直接内嵌在节点中（必需至少一层）
+ * - TIER2/TIER3_NODES_CONFIG   : JSON 数组，tier-2/tier-3 层节点（可选）
  *
  * 运行保护：
  * - REQUEST_TIMEOUT_MS         : 上游首字节超时；默认 180000，范围 5000-180000
@@ -252,7 +252,7 @@ function getDashboardHtml(env) {
 
 function getGatewayConfigurationState(env) {
   const gatewayAccessKeyBound = Boolean(readOptionalEnv(env, 'GATEWAY_ACCESS_KEY'));
-  const nodesConfigBound = Boolean(readOptionalEnv(env, 'NODES_CONFIG') || readOptionalEnv(env, 'TIER1_NODES_CONFIG') || readOptionalEnv(env, 'TIER2_NODES_CONFIG') || readOptionalEnv(env, 'TIER3_NODES_CONFIG'));
+  const nodesConfigBound = Boolean(readOptionalEnv(env, 'TIER1_NODES_CONFIG') || readOptionalEnv(env, 'TIER2_NODES_CONFIG') || readOptionalEnv(env, 'TIER3_NODES_CONFIG'));
   return {
     ready: gatewayAccessKeyBound && nodesConfigBound,
     gatewayAccessKeyBound,
@@ -285,7 +285,7 @@ function getSetupHtml(configuration) {
   <div class="success">首次部署成功，无需重新修改或上传源代码。</div>
   <div class="list">
     <div class="row"><code>GATEWAY_ACCESS_KEY</code>${status(configuration.gatewayAccessKeyBound)}</div>
-    <div class="row"><code>TIER1_NODES_CONFIG</code> + <code>TIER2_NODES_CONFIG</code> + <code>TIER3_NODES_CONFIG</code> / <code>NODES_CONFIG</code>${status(configuration.nodesConfigBound)}</div>
+    <div class="row"><code>TIER1_NODES_CONFIG</code>${status(configuration.nodesConfigBound)}</div>
   </div>
   <div class="steps">
     <strong>在 Cloudflare 中完成配置</strong>
@@ -311,7 +311,6 @@ function getSetupHtml(configuration) {
     </div>
     <p style="font-size:12px;color:var(--muted);margin-top:12px;line-height:1.6">可选：<code>TIER2_NODES_CONFIG</code> + <code>TIER3_NODES_CONFIG</code> 增加更多层级；<code>MODELS_CONFIG</code> 定义逻辑模型映射；<code>POLICIES_CONFIG</code> 控制重试预算。保存后页面自动刷新。</p>
     </div>
-    <p style="font-size:12px;color:var(--muted);margin-top:12px;line-height:1.6">可选：<code>TIER2_NODES_CONFIG</code> + <code>TIER3_NODES_CONFIG</code> 增加更多层级；<code>MODELS_CONFIG</code> 定义逻辑模型映射；<code>POLICIES_CONFIG</code> 控制重试预算。保存后页面自动刷新。</p>
   </div>
   <p class="note">页面只显示是否已绑定，不会读取或显示 Secret 内容。</p>
   <div class="actions"><a class="button" href="/">立即检查</a><span class="auto">每 5 秒自动检查一次</span></div>
@@ -570,7 +569,7 @@ async function handleRequest(request, env, ctx) {
     const configuredNodes = getConfiguredNodes(env);
     if (configuredNodes.length === 0) {
       return gatewayError(request, env, isAnthropicClient, 500,
-        'Gateway misconfigured: NODES_CONFIG is missing, invalid, or no node credentials are bound.',
+        'Gateway misconfigured: TIER1_NODES_CONFIG is missing or no valid node tokens are bound.',
         undefined, requestId);
     }
 
@@ -988,7 +987,7 @@ async function handleRequest(request, env, ctx) {
       requested_model: requestedModel,
       hint: route === 'anthropic_messages'
         ? 'The gateway converted /v1/messages to /v1/chat/completions. Node candidates were attempted in policy tier order.'
-        : 'Inspect attempts[] and verify NODES_CONFIG, node health, and policy retry_budget.',
+        : 'Inspect attempts[] and verify TIER1_NODES_CONFIG, node health, and policy retry_budget.',
       nodes_total: configuredNodes.length,
       tiers: {
         'tier-1': configuredNodes.filter(n => n.tier === 'tier-1').length,
@@ -2708,7 +2707,7 @@ function buildNodeEndpoints(env, requestedModel, bodyJson) {
   }));
 }
 
-// 兼容内部调用名的节点状态委托（统一走 node-state 模块）。
+// 节点状态委托（统一走 node-state 模块）。
 function recordSuccess(id, latencyMs) { recordNodeSuccess(id, latencyMs); }
 function recordNeutralEnd(id) { recordNodeNeutralEnd(id); }
 function recordFailure(id, status, cooldownMs, reason) { recordNodeFailure(id, status, cooldownMs, reason); }

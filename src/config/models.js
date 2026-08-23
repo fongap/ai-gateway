@@ -25,35 +25,9 @@ function parseAndValidateModels(models) {
   return result;
 }
 
-export function legacyModelMapping(env) {
-  const raw = env?.MODEL_MAPPING;
-  if (!raw) return {};
-  try {
-    return JSON.parse(raw);
-  } catch { return {}; }
-}
-
-export function getModelInfo(modelName, modelsConfig, modelMapping = null) {
-  if (modelsConfig && modelsConfig[modelName]) {
+export function getModelInfo(modelName, modelsConfig, modelMapping) {
+  if (modelsConfig[modelName]) {
     return modelsConfig[modelName];
   }
-  if (modelMapping) {
-    for (const [, hostMapping] of Object.entries(modelMapping)) {
-      if (hostMapping && typeof hostMapping === 'object') {
-        const cfg = hostMapping[modelName];
-        if (cfg) {
-          const workload = /code|coding|程序|代码/i.test(modelName) ? 'coding'
-            : /critical|重要|关键/i.test(modelName) ? 'critical'
-            : 'general';
-          return {
-            workload,
-            policy: workload === 'coding' ? 'coding-stable' : 'general-fast',
-            _mapped: true,
-          };
-        }
-      }
-    }
-  }
-  // 未在 MODELS_CONFIG 中声明的模型使用默认策略
   return { workload: 'general', policy: 'general-fast' };
 }

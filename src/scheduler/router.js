@@ -1,4 +1,4 @@
-import { loadNodesConfig, getNodeSecret } from '../config/nodes.js';
+import { loadNodesConfig, resolveUpstreamModel } from '../config/nodes.js';
 import { loadModelsConfig, getModelInfo } from '../config/models.js';
 import { loadPoliciesConfig, getPolicy } from '../config/policies.js';
 import { selectNodes } from './selector.js';
@@ -29,14 +29,8 @@ export function getConfiguredNodes(env) {
   const allowInsecure = /^(true|1|yes|on)$/i.test(String(env?.ALLOW_INSECURE_HTTP_UPSTREAM || '').trim());
 
   return configuredNodes.map(n => {
-    let raw = n.token || '';
-    // 无 inline token 时通过 secret_ref 查找
-    if (!raw && n.secret_ref) {
-      const secret = getNodeSecret(env, n.secret_ref);
-      if (secret) raw = secret;
-    }
-    if (!raw) return null;
-    const match = raw.match(/^(.*)@(https?:\/\/.+)$/i);
+    if (!n.token) return null;
+    const match = n.token.match(/^(.*)@(https?:\/\/.+)$/i);
     if (!match) return null;
     const baseUrl = match[2];
     if (!allowInsecure && !baseUrl.startsWith('https://')) return null;

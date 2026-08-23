@@ -46,13 +46,11 @@ Node 是唯一调度单位。API Key、Token、Provider 都隐藏在 Node 之后
 每个 Node 包含：
 
 - `id`：人工可读标识，格式 `{tier}-node-{number}`；
-- `tier`：`free` / `paid` / `plus` 资源层级；
-- `priority`：同层内的优先级；
-- `secret_ref`：凭据引用，真实 Token 不进入配置主体；
-- `workloads`：支持的工作负载类型；
-- `capabilities`：能力声明（chat/stream/tools）；
-- `models`：支持的逻辑模型列表；
-- `limits.concurrency`：并发上限。
+- `tier`：`tier-1` / `tier-2` / `tier-3` 资源层级；
+- `priority`：同层内的优先级（可选，默认 100）；
+- `token`：凭据，`Token@BaseURL` 格式，直接内嵌在节点定义中；
+- `models`：逻辑模型到实际上游模型名的映射对象；
+- `limits.concurrency`：并发上限（可选，默认 2）。
 
 ## 三层资源池
 

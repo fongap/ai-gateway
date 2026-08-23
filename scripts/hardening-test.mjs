@@ -7,9 +7,9 @@ const originalFetch = globalThis.fetch;
 const key = 'hardening-gateway-key';
 const baseEnv = {
   GATEWAY_ACCESS_KEY: key,
-  NODES_CONFIG: JSON.stringify([
-    { id: 'tier-1-node-01', tier: 'tier-1', priority: 100, secret_ref: 'NODE_KEY', models: { 'm': 'upstream-m' } },
-    { id: 'tier-2-node-01', tier: 'tier-2', priority: 80, secret_ref: 'NODE_KEY2', models: { 'm': 'upstream-m2' } },
+  TIER1_NODES_CONFIG: JSON.stringify([
+    { id: 'tier-1-node-01', tier: 'tier-1', priority: 100, token: 'hardening-token@https://primary.example/v1', models: { 'm': 'upstream-m' } },
+    { id: 'tier-2-node-01', tier: 'tier-2', priority: 80, token: 'hardening-token2@https://second.example/v1', models: { 'm': 'upstream-m2' } },
   ]),
   NODE_KEY: 'hardening-token@https://primary.example/v1',
   NODE_KEY2: 'hardening-token2@https://second.example/v1',

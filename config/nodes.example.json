@@ -1,8 +1,17 @@
 [
-  // 同一 provider 多账号
-  {"id":"tier-1-node-01","token":"key-1@https://provider-a/v1","models":{"general-air":"model-a","code-pro":"model-a"}},
-  {"id":"tier-1-node-02","token":"key-2@https://provider-a/v1","models":{"general-air":"model-a","code-pro":"model-a"}},
-  // 不同 provider
-  {"id":"tier-1-node-03","token":"sk-xxx@https://provider-b/v1","models":{"code-pro":"model-b"}},
-  {"id":"tier-1-node-04","token":"sk-yyy@https://provider-c/v1","models":{"code-max":"model-c"}}
+  {
+    "id": "tier-1-node-01",
+    "token": "sk-xxx@https://provider-a/v1",
+    "models": {
+      "general-air": "model-a",
+      "code-pro": "model-a"
+    }
+  },
+  {
+    "id": "tier-1-node-02",
+    "token": "sk-yyy@https://provider-b/v1",
+    "models": {
+      "general-air": "model-b"
+    }
+  }
 ]

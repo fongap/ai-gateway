@@ -4,11 +4,11 @@ console.log('=== Node Scheduler Tests ===\n');
 
 // Test 1: Node config loading
 console.log('1. Node config loading...');
-const { loadNodesConfig, resolveUpstreamModel, getNodeSecret } = await import('../src/config/nodes.js');
-const nodes = loadNodesConfig({ NODES_CONFIG: JSON.stringify([
-  { id: 'tier-1-node-01', tier: 'tier-1', priority: 100, provider: 'test', account: 'test', secret_ref: '', workloads: ['general'], capabilities: ['chat'], models: { 'general-air': 'free-air' }, limits: { concurrency: 2 } },
-  { id: 'tier-2-node-01', tier: 'tier-2', priority: 80, provider: 'test', account: 'test', secret_ref: '', workloads: ['coding'], capabilities: ['chat', 'stream', 'tools'], models: { 'code-pro': 'paid-pro' }, limits: { concurrency: 5 } },
-  { id: 'tier-3-node-01', tier: 'tier-3', priority: 50, provider: 'test', account: 'test', secret_ref: '', workloads: ['coding', 'critical'], capabilities: ['chat', 'stream', 'tools'], models: { 'code-max': 'plus-max' }, limits: { concurrency: 3 } },
+const { loadNodesConfig, resolveUpstreamModel } = await import('../src/config/nodes.js');
+const nodes = loadNodesConfig({ TIER1_NODES_CONFIG: JSON.stringify([
+  { id: 'tier-1-node-01', tier: 'tier-1', priority: 100, provider: 'test', account: 'test', token: '', workloads: ['general'], capabilities: ['chat'], models: { 'general-air': 'free-air' }, limits: { concurrency: 2 } },
+  { id: 'tier-2-node-01', tier: 'tier-2', priority: 80, provider: 'test', account: 'test', token: '', workloads: ['coding'], capabilities: ['chat', 'stream', 'tools'], models: { 'code-pro': 'paid-pro' }, limits: { concurrency: 5 } },
+  { id: 'tier-3-node-01', tier: 'tier-3', priority: 50, provider: 'test', account: 'test', token: '', workloads: ['coding', 'critical'], capabilities: ['chat', 'stream', 'tools'], models: { 'code-max': 'plus-max' }, limits: { concurrency: 3 } },
 ]) });
 assert.equal(nodes.length, 3, 'Should load 3 nodes');
 assert.equal(nodes[0].tier, 'tier-3', 'First node should be plus (highest priority)');
@@ -53,12 +53,12 @@ console.log('   PASS: Policies loaded correctly\n');
 // Test 5: Node selector - free node priority
 console.log('5. Free node priority...');
 const { selectNodes } = await import('../src/scheduler/selector.js');
-const testNodes = [
+const selectorTestNodes = [
   { id: 'tier-1-node-01', tier: 'tier-1', priority: 100, workloads: ['general'], capabilities: ['chat'], models: { 'general-air': 'a' }, limits: { concurrency: 2 } },
   { id: 'tier-2-node-01', tier: 'tier-2', priority: 80, workloads: ['general'], capabilities: ['chat'], models: { 'general-air': 'b' }, limits: { concurrency: 5 } },
   { id: 'tier-3-node-01', tier: 'tier-3', priority: 50, workloads: ['general'], capabilities: ['chat'], models: { 'general-air': 'c' }, limits: { concurrency: 3 } },
 ];
-const selected = selectNodes(testNodes, { tiers: ['tier-1', 'tier-2', 'tier-3'], max_attempts: 2, retry_budget: { free: 2, paid: 1, plus: 1 } }, { model: 'general-air' }, 'general-air');
+const selected = selectNodes(selectorTestNodes, { tiers: ['tier-1', 'tier-2', 'tier-3'], max_attempts: 2, retry_budget: { 'tier-1': 2, 'tier-2': 1, 'tier-3': 1 } }, { model: 'general-air' }, 'general-air');
 assert.ok(selected.length > 0, 'Should select at least one node');
 assert.equal(selected[0].tier, 'tier-1', 'First selected should be free tier');
 console.log('   PASS: Free node selected first\n');
@@ -121,24 +121,23 @@ try {
   process.exit(1);
 }
 
-// Test 10: Secret retrieval (no leakage)
-console.log('10. Secret handling...');
-const secret = getNodeSecret({ TEST_SECRET: 'super-secret-key' }, 'TEST_SECRET');
-assert.equal(secret, 'super-secret-key', 'Secret should be retrievable');
-const missing = getNodeSecret({}, 'NONEXISTENT');
-assert.equal(missing, null, 'Missing secret should return null');
-console.log('   PASS: Secret handling works\n');
+// Test 10: Token inline (no separate secret needed)
+console.log('10. Token handling...');
+const testNodes = loadNodesConfig({ TIER1_NODES_CONFIG: JSON.stringify([
+  { id: 'tier-1-node-01', token: 'sk-test@https://test.example/v1', models: { 'm': 'um' } },
+]) });
+assert.equal(testNodes[0].token, 'sk-test@https://test.example/v1', 'Token should be inline in node config');
+assert.equal(testNodes[0].secret_ref, undefined, 'No secret_ref field');
+console.log('   PASS: Token handling works\n');
 
 // Test 11: HTTPS enforcement
 console.log('11. HTTPS enforcement...');
 const { getConfiguredNodes } = await import('../src/scheduler/router.js');
 const httpsNodes = getConfiguredNodes({
-  NODES_CONFIG: JSON.stringify([
-    { id: 'tier-1-node-01', tier: 'tier-1', secret_ref: 'A' },
-    { id: 'tier-1-node-02', tier: 'tier-1', secret_ref: 'B' },
+  TIER1_NODES_CONFIG: JSON.stringify([
+    { id: 'tier-1-node-01', token: 't@https://good.example/v1', models: { 'm': 'um' } },
+    { id: 'tier-1-node-02', token: 't@http://bad.example/v1', models: { 'm': 'um' } },
   ]),
-  A: 't@https://good.example/v1',
-  B: 't@http://bad.example/v1',
 });
 assert.equal(httpsNodes.length, 1, 'Only HTTPS node accepted by default');
 assert.equal(httpsNodes[0].id, 'tier-1-node-01', 'HTTP node rejected');
@@ -148,12 +147,12 @@ console.log('   PASS: Insecure HTTP rejected\n');
 console.log('12. Route plan building...');
 const { buildRoutePlan } = await import('../src/scheduler/router.js');
 const plan = buildRoutePlan({
-  NODES_CONFIG: JSON.stringify([
+  TIER1_NODES_CONFIG: JSON.stringify([
     { id: 'tier-1-node-01', tier: 'tier-1', priority: 100, provider: 'test', account: 'test', token: 'test-token@https://test.example.com/v1', workloads: ['general'], capabilities: ['chat'], models: { 'general-air': 'free-air' }, limits: { concurrency: 2 } },
   ]),
   
   MODELS_CONFIG: JSON.stringify({ 'general-air': { workload: 'general', policy: 'general-fast' } }),
-  POLICIES_CONFIG: JSON.stringify({ 'general-fast': { tiers: ['tier-1', 'tier-2'], max_attempts: 3, retry_budget: { free: 2, paid: 1 } } }),
+  POLICIES_CONFIG: JSON.stringify({ 'general-fast': { tiers: ['tier-1', 'tier-2'], max_attempts: 3, retry_budget: { 'tier-1': 2, 'tier-2': 1 } } }),
 }, 'general-air', { model: 'general-air', messages: [{ role: 'user', content: 'hi' }] });
 assert.ok(plan.nodes, 'Should have nodes array');
 assert.ok(plan.policy, 'Should have policy');

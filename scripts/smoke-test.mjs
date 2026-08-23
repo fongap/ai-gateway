@@ -47,10 +47,11 @@ assert.equal(unauthorized.status, 401);
 function makeNodeEnv(overrides = {}) {
   return {
     GATEWAY_ACCESS_KEY: 'test-gateway-key',
-    NODES_CONFIG: JSON.stringify([
-      { id: 'tier-1-node-01', tier: 'tier-1', token: 'free-token@https://free-node.example/v1', models: { 'general-air': 'free-model-air', 'general-pro': 'free-model-pro' } },
-      { id: 'tier-2-node-01', tier: 'tier-2', token: 'paid-token@https://paid-node.example/v1', models: { 'general-air': 'paid-model-air', 'general-pro': 'paid-model-pro' } },
+    TIER1_NODES_CONFIG: JSON.stringify([
+      { id: 'tier-1-node-01', token: 'free-token@https://free-node.example/v1', models: { 'general-air': 'free-model-air', 'general-pro': 'free-model-pro' } },
+      { id: 'tier-1-node-02', token: 'paid-token@https://paid-node.example/v1', models: { 'general-air': 'paid-model-air', 'general-pro': 'paid-model-pro' } },
     ]),
+    TIER2_NODES_CONFIG: JSON.stringify([]),
     MODELS_CONFIG: JSON.stringify({
       'general-air': { workload: 'general', policy: 'general-fast' },
       'general-pro': { workload: 'general', policy: 'general-fast' },
@@ -85,8 +86,8 @@ assert.equal(health.status, 200);
 const healthJson = await health.json();
 assert.equal(healthJson.status, 'ok');
 assert.equal(healthJson.nodes_total, 2);
-assert.equal(healthJson.tiers['tier-1'], 1);
-assert.equal(healthJson.tiers['tier-2'], 1);
+assert.equal(healthJson.tiers['tier-1'], 2);
+assert.equal(healthJson.tiers['tier-2'], 0);
 
 const metrics = await worker.fetch(
   new Request('https://gateway.example/metrics', {
@@ -136,7 +137,7 @@ const chatResponse = await worker.fetch(
 );
 assert.equal(chatResponse.status, 200);
 assert.match(captured.url, /free-node\.example/); // free 节点优先
-assert.equal(captured.auth, 'Bearer free-token'); // secret_ref 凭据注入
+assert.equal(captured.auth, 'Bearer free-token'); // token 内嵌凭据注入
 assert.equal(captured.body.model, 'free-model-air'); // 逻辑模型 → 上游模型映射
 const chatJson = await chatResponse.json();
 assert.equal(chatJson.model, 'general-air'); // 响应中保留客户端请求的逻辑模型名
@@ -322,7 +323,7 @@ const insecure = await worker.fetch(
     body: JSON.stringify({ model: 'x', messages: [] }),
   }),
   makeNodeEnv({
-    NODES_CONFIG: JSON.stringify([{ id: 'tier-1-node-01', tier: 'tier-1', token: 'tok@http://insecure.example/v1' }]),
+    TIER1_NODES_CONFIG: JSON.stringify([{ id: 'tier-1-node-01', tier: 'tier-1', token: 'tok@http://insecure.example/v1' }]),
   }),
   ctx,
 );
