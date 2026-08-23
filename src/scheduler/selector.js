@@ -1,6 +1,6 @@
 import { getNodeState, isCoolingDown, isCircuitOpen } from '../config/node-state.js';
 
-const TIER_ORDER = ['free', 'paid', 'plus'];
+const TIER_ORDER = ['tier-1', 'tier-2', 'tier-3'];
 
 export function selectNodes(nodes, policy, modelInfo, requestedModel, options = {}) {
   const now = Date.now();
@@ -8,7 +8,7 @@ export function selectNodes(nodes, policy, modelInfo, requestedModel, options = 
 
   const tierOrder = policy.tiers || TIER_ORDER;
   const maxAttempts = Math.min(policy.max_attempts || 3, 5);
-  const retryBudget = policy.retry_budget || { free: 2, paid: 1, plus: 1 };
+  const retryBudget = policy.retry_budget || { 'tier-1': 2, 'tier-2': 1, 'tier-3': 1 };
 
   const eligible = nodes.filter(n => {
     if (!n.models || Object.keys(n.models).length === 0) return true;
@@ -21,7 +21,7 @@ export function selectNodes(nodes, policy, modelInfo, requestedModel, options = 
   }
 
   const selected = [];
-  const tierAttempts = { free: 0, paid: 0, plus: 0 };
+  const tierAttempts = { 'tier-1': 0, 'tier-2': 0, 'tier-3': 0 };
 
   for (const tier of tierOrder) {
     const tierMax = Math.min(retryBudget[tier] || 99, maxAttempts - selected.length);

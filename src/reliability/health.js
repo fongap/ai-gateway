@@ -27,9 +27,9 @@ export function buildHealthResponse(nodes, env) {
     nodes_active: nodes.length - cooling,
     nodes_cooling_down: cooling,
     tiers: {
-      free: nodes.filter(n => n.tier === 'free').length,
-      paid: nodes.filter(n => n.tier === 'paid').length,
-      plus: nodes.filter(n => n.tier === 'plus').length,
+      'tier-1': nodes.filter(n => n.tier === 'tier-1').length,
+      'tier-2': nodes.filter(n => n.tier === 'tier-2').length,
+      'tier-3': nodes.filter(n => n.tier === 'tier-3').length,
     },
     client_stats: {
       started_at: new Date(metrics.startedAt).toISOString(),

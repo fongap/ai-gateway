@@ -17,26 +17,26 @@ function parseAndValidatePolicies(policies) {
   for (const [name, config] of Object.entries(policies)) {
     if (typeof name !== 'string' || !name.trim()) continue;
     if (!config || typeof config !== 'object') continue;
-    const tiers = Array.isArray(config.tiers) ? config.tiers.filter(t => ['free', 'paid', 'plus'].includes(t)) : ['free', 'paid'];
+    const tiers = Array.isArray(config.tiers) ? config.tiers.filter(t => ['tier-1', 'tier-2', 'tier-3'].includes(t)) : ['tier-1', 'tier-2'];
     result[name] = {
-      tiers: tiers.length > 0 ? tiers : ['free', 'paid'],
+      tiers: tiers.length > 0 ? tiers : ['tier-1', 'tier-2'],
       max_attempts: Math.max(1, Math.min(config.max_attempts || 3, 5)),
-      retry_budget: config.retry_budget && typeof config.retry_budget === 'object'
-        ? {
-            free: Math.min(config.retry_budget.free || 2, 3),
-            paid: Math.min(config.retry_budget.paid || 1, 2),
-            plus: Math.min(config.retry_budget.plus || 1, 1),
-          }
-        : { free: 2, paid: 1, plus: 1 },
+retry_budget: config.retry_budget && typeof config.retry_budget === 'object'
+          ? {
+              'tier-1': Math.min(config.retry_budget['tier-1'] || 2, 3),
+              'tier-2': Math.min(config.retry_budget['tier-2'] || 1, 2),
+              'tier-3': Math.min(config.retry_budget['tier-3'] || 1, 1),
+            }
+          : { 'tier-1': 2, 'tier-2': 1, 'tier-3': 1 },
     };
   }
   return result;
 }
 
 export const DEFAULT_POLICY = {
-  tiers: ['free', 'paid'],
+  tiers: ['tier-1', 'tier-2'],
   max_attempts: 3,
-  retry_budget: { free: 2, paid: 1, plus: 1 },
+  retry_budget: { 'tier-1': 2, 'tier-2': 1, 'tier-3': 1 },
 };
 
 export function getPolicy(policyName, policiesConfig) {

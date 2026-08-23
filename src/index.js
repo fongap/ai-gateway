@@ -28,7 +28,7 @@
  *
  * 核心配置：
  * - GATEWAY_ACCESS_KEY         : 客户端访问网关的鉴权密钥（必需）
- * - NODES_CONFIG               : JSON 数组，定义 free/paid/plus 节点（必需）
+ * - NODES_CONFIG               : JSON 数组，定义 free/paid/tier-3 节点（必需）
  * - MODELS_CONFIG              : JSON 对象，逻辑模型到 workload/policy 的映射（可选）
  * - POLICIES_CONFIG            : JSON 对象，策略 tiers/max_attempts/retry_budget（可选）
  * - FREE_NODE_01 等            : 节点 secret_ref 指向的凭据环境变量（必需）
@@ -89,7 +89,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>AI Agent Node Scheduler</title>
 <style>
 :root{--brand:#48636f;--bg:#fff;--text:#111827;--muted:#59636e;--line:#e4e8eb;--font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}
-*{box-sizing:border-box;margin:0;padding:0}body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:1.7;overflow-x:hidden}header{position:fixed;inset:0 0 auto;height:64px;display:flex;align-items:center;justify-content:space-between;padding:0 max(5%,24px);background:rgba(255,255,255,.88);backdrop-filter:blur(16px);border-bottom:1px solid var(--line);z-index:100}.brand{display:flex;align-items:center;gap:11px;font-size:17px;font-weight:650}.brand-icon{width:28px;height:28px;display:grid;place-items:center;border-radius:8px;background:var(--brand);box-shadow:0 6px 18px rgba(72,99,111,.22)}main{padding-top:64px;min-height:100vh}.doc-container{max-width:960px;margin:0 auto;padding:48px max(5%,24px) 96px}.hero h1{font-size:28px;font-weight:700;letter-spacing:-.02em;margin:0 0 12px}.hero p{font-size:16px;color:var(--muted);max-width:640px}.tags{display:flex;flex-wrap:wrap;gap:8px;margin:20px 0 0}.tag{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:600;background:#f7f9fa;color:var(--muted);border:1px solid var(--line)}.flow{display:grid;grid-template-columns:1fr auto 1fr auto 1fr auto 1fr;align-items:center;gap:12px;margin:24px 0;padding:17px 20px;border:1px solid var(--line);border-radius:12px;background:linear-gradient(180deg,#fff,#f7f9fa)}.flow-node{text-align:center}.flow-node strong{display:block;font-size:13px}.flow-node small{display:block;margin-top:2px;color:var(--muted);font-size:11px}.flow-arrow{color:var(--brand);font-weight:800}.stats-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:16px;margin-bottom:48px}.stat-card{padding:20px;border:1px solid var(--line);border-radius:12px}.stat-card .label{font-size:12px;font-weight:600;text-transform:uppercase;color:var(--muted);margin-bottom:6px}.stat-card .value{font-size:28px;font-weight:700}.section{margin-bottom:48px}.section h2{font-size:16px;font-weight:600;margin:0 0 12px}.node-list{display:grid;gap:8px}.step-list{counter-reset:step;margin-top:18px}.step-item{position:relative;padding:0 0 22px 48px}.step-item:last-child{padding-bottom:6px}.step-item:before{counter-increment:step;content:counter(step);position:absolute;left:0;top:0;width:30px;height:30px;display:grid;place-items:center;border-radius:9px;background:var(--brand);color:#fff;font-size:13px;font-weight:750;box-shadow:0 7px 17px rgba(72,99,111,.18)}.step-item:after{content:"";position:absolute;left:14px;top:36px;bottom:5px;width:1px;background:var(--line)}.step-item:last-child:after{display:none}.step-item h4{margin-bottom:5px;color:var(--text);font-size:15px}.step-item p{margin:0;color:var(--muted);font-size:13.5px}.code-editor{margin:17px 0;border:1px solid #2b3035;border-radius:11px;overflow:hidden;background:#171a1d;box-shadow:0 18px 55px rgba(17,24,39,.07)}.code-header{height:38px;display:flex;align-items:center;gap:7px;padding:0 14px;background:#202429;border-bottom:1px solid #30353a}.mac-dot{width:9px;height:9px;border-radius:50%}.dot-r{background:#ff605c}.dot-y{background:#ffbd44}.dot-g{background:#00ca4e}.code-header span{margin-left:7px;color:#939aa3;font-family:var(--mono);font-size:11px}.code-editor pre{margin:0;padding:19px 20px;overflow:auto;color:#d7dce2;font-family:var(--mono);font-size:12.5px;line-height:1.68;tab-size:2}.kw{color:#79b8ff}.str{color:#e6a57e}.brand-str{color:#92c5d6}.fun{color:#e4d28b}.var{color:#9cc7f1}.callout{margin:16px 0;padding:15px 17px;border:1px solid rgba(72,99,111,.18);border-left:3px solid var(--brand);border-radius:10px;background:rgba(72,99,111,.08);color:var(--muted)}.callout strong{display:block;margin-bottom:3px;color:var(--text)}.grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;margin-bottom:8px}.mini-card{padding:20px;border:1px solid var(--line);border-radius:12px;background:#fff}.mini-card h3{margin-bottom:7px;color:var(--text);font-size:16px}.mini-card p{margin:0;color:var(--muted);font-size:13.5px}.node-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;border:1px solid var(--line);border-radius:10px;font-size:14px}.node-id{font-weight:600;font-family:var(--mono);font-size:13px}.tier-badge{padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700}.tier-free{background:#e8f5e9;color:#2e7d32}.tier-paid{background:#e3f2fd;color:#1565c0}.tier-plus{background:#fce4ec;color:#c62828}.model-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:16px}.model-badge{padding:2px 8px;border-radius:4px;font-size:12px;font-family:var(--mono);background:#f7f9fa;border:1px solid var(--line);color:var(--muted)}.endpoints{display:flex;flex-wrap:wrap;gap:8px;margin-top:24px}.endpoint{display:flex;align-items:center;gap:6px;padding:10px 14px;border:1px solid var(--line);border-radius:8px;text-decoration:none;font-size:13px;font-weight:600;transition:.2s ease;background:#fff}.endpoint:hover{border-color:var(--brand);background:rgba(72,99,111,.08);color:var(--brand)}footer{margin-top:64px;padding-top:24px;border-top:1px solid var(--line);font-size:13px;color:var(--muted)}@media(max-width:760px){header{height:56px;padding:0 18px}.brand{font-size:15px}.doc-container{padding:48px 20px 50px}.flow{grid-template-columns:1fr;padding:15px}.flow-arrow{transform:rotate(90deg)}.stats-grid{grid-template-columns:1fr 1fr}.section{margin-bottom:40px}}
+*{box-sizing:border-box;margin:0;padding:0}body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:1.7;overflow-x:hidden}header{position:fixed;inset:0 0 auto;height:64px;display:flex;align-items:center;justify-content:space-between;padding:0 max(5%,24px);background:rgba(255,255,255,.88);backdrop-filter:blur(16px);border-bottom:1px solid var(--line);z-index:100}.brand{display:flex;align-items:center;gap:11px;font-size:17px;font-weight:650}.brand-icon{width:28px;height:28px;display:grid;place-items:center;border-radius:8px;background:var(--brand);box-shadow:0 6px 18px rgba(72,99,111,.22)}main{padding-top:64px;min-height:100vh}.doc-container{max-width:960px;margin:0 auto;padding:48px max(5%,24px) 96px}.hero h1{font-size:28px;font-weight:700;letter-spacing:-.02em;margin:0 0 12px}.hero p{font-size:16px;color:var(--muted);max-width:640px}.tags{display:flex;flex-wrap:wrap;gap:8px;margin:20px 0 0}.tag{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:600;background:#f7f9fa;color:var(--muted);border:1px solid var(--line)}.flow{display:grid;grid-template-columns:1fr auto 1fr auto 1fr auto 1fr;align-items:center;gap:12px;margin:24px 0;padding:17px 20px;border:1px solid var(--line);border-radius:12px;background:linear-gradient(180deg,#fff,#f7f9fa)}.flow-node{text-align:center}.flow-node strong{display:block;font-size:13px}.flow-node small{display:block;margin-top:2px;color:var(--muted);font-size:11px}.flow-arrow{color:var(--brand);font-weight:800}.stats-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:16px;margin-bottom:48px}.stat-card{padding:20px;border:1px solid var(--line);border-radius:12px}.stat-card .label{font-size:12px;font-weight:600;text-transform:uppercase;color:var(--muted);margin-bottom:6px}.stat-card .value{font-size:28px;font-weight:700}.section{margin-bottom:48px}.section h2{font-size:16px;font-weight:600;margin:0 0 12px}.node-list{display:grid;gap:8px}.step-list{counter-reset:step;margin-top:18px}.step-item{position:relative;padding:0 0 22px 48px}.step-item:last-child{padding-bottom:6px}.step-item:before{counter-increment:step;content:counter(step);position:absolute;left:0;top:0;width:30px;height:30px;display:grid;place-items:center;border-radius:9px;background:var(--brand);color:#fff;font-size:13px;font-weight:750;box-shadow:0 7px 17px rgba(72,99,111,.18)}.step-item:after{content:"";position:absolute;left:14px;top:36px;bottom:5px;width:1px;background:var(--line)}.step-item:last-child:after{display:none}.step-item h4{margin-bottom:5px;color:var(--text);font-size:15px}.step-item p{margin:0;color:var(--muted);font-size:13.5px}.code-editor{margin:17px 0;border:1px solid #2b3035;border-radius:11px;overflow:hidden;background:#171a1d;box-shadow:0 18px 55px rgba(17,24,39,.07)}.code-header{height:38px;display:flex;align-items:center;gap:7px;padding:0 14px;background:#202429;border-bottom:1px solid #30353a}.mac-dot{width:9px;height:9px;border-radius:50%}.dot-r{background:#ff605c}.dot-y{background:#ffbd44}.dot-g{background:#00ca4e}.code-header span{margin-left:7px;color:#939aa3;font-family:var(--mono);font-size:11px}.code-editor pre{margin:0;padding:19px 20px;overflow:auto;color:#d7dce2;font-family:var(--mono);font-size:12.5px;line-height:1.68;tab-size:2}.kw{color:#79b8ff}.str{color:#e6a57e}.brand-str{color:#92c5d6}.fun{color:#e4d28b}.var{color:#9cc7f1}.callout{margin:16px 0;padding:15px 17px;border:1px solid rgba(72,99,111,.18);border-left:3px solid var(--brand);border-radius:10px;background:rgba(72,99,111,.08);color:var(--muted)}.callout strong{display:block;margin-bottom:3px;color:var(--text)}.grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;margin-bottom:8px}.mini-card{padding:20px;border:1px solid var(--line);border-radius:12px;background:#fff}.mini-card h3{margin-bottom:7px;color:var(--text);font-size:16px}.mini-card p{margin:0;color:var(--muted);font-size:13.5px}.node-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;border:1px solid var(--line);border-radius:10px;font-size:14px}.node-id{font-weight:600;font-family:var(--mono);font-size:13px}.tier-badge{padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700}.tier-1{background:#e8f5e9;color:#2e7d32}.tier-2{background:#e3f2fd;color:#1565c0}.tier-3{background:#fce4ec;color:#c62828}.model-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:16px}.model-badge{padding:2px 8px;border-radius:4px;font-size:12px;font-family:var(--mono);background:#f7f9fa;border:1px solid var(--line);color:var(--muted)}.endpoints{display:flex;flex-wrap:wrap;gap:8px;margin-top:24px}.endpoint{display:flex;align-items:center;gap:6px;padding:10px 14px;border:1px solid var(--line);border-radius:8px;text-decoration:none;font-size:13px;font-weight:600;transition:.2s ease;background:#fff}.endpoint:hover{border-color:var(--brand);background:rgba(72,99,111,.08);color:var(--brand)}footer{margin-top:64px;padding-top:24px;border-top:1px solid var(--line);font-size:13px;color:var(--muted)}@media(max-width:760px){header{height:56px;padding:0 18px}.brand{font-size:15px}.doc-container{padding:48px 20px 50px}.flow{grid-template-columns:1fr;padding:15px}.flow-arrow{transform:rotate(90deg)}.stats-grid{grid-template-columns:1fr 1fr}.section{margin-bottom:40px}}
 </style>
 </head>
 <body>
@@ -100,7 +100,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 <main><div class="doc-container">
   <section class="hero">
     <h1>AI Agent Node Scheduler</h1>
-    <p>Personal AI Agent 资源调度层。以 free / paid / plus 三层节点模型管理多个 AI 服务商资源，为 Agent 提供低成本、高可靠、可自动故障切换的统一入口。双协议接入，支持 OpenAI 与 Anthropic。</p>
+    <p>Personal AI Agent 资源调度层。以 tier-1 / tier-2 / tier-3 三层节点模型管理多个 AI 服务商资源，为 Agent 提供低成本、高可靠、可自动故障切换的统一入口。双协议接入，支持 OpenAI 与 Anthropic。</p>
     <div class="tags">
       <span class="tag">Version {{VERSION}}</span>
       <span class="tag">Cloudflare Workers</span>
@@ -116,60 +116,74 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       <div class="flow-arrow">→</div>
       <div class="flow-node"><strong>Policy</strong><small>策略选择</small></div>
       <div class="flow-arrow">→</div>
-      <div class="flow-node"><strong>Node Pool</strong><small>free / paid / plus</small></div>
+      <div class="flow-node"><strong>Node Pool</strong><small>tier-1 / tier-2 / tier-3</small></div>
     </div>
   </section>
   <section class="section" id="config">
-    <h2>配置指南</h2>
-    <p style="font-size:14px;color:var(--muted);margin:0 0 16px">在 Cloudflare Worker 的 <strong>设置 → 变量和机密</strong> 中完成以下配置。全部为 Secret，不会出现在代码或日志中。</p>
-    <div class="step-list">
-      <div class="step-item"><h4>1. 设置网关访问密钥</h4><p>添加 Secret <code>GATEWAY_ACCESS_KEY</code>。客户端通过 <code>Authorization: Bearer</code> 或 <code>x-api-key</code> 提交该密钥。</p></div>
-      <div class="step-item"><h4>2. 定义节点池（推荐）</h4><p>添加 Secret <code>NODES_CONFIG</code>，声明 free / paid / plus 三层节点：</p></div>
-      <div class="step-item"><h4>3. 添加节点凭据</h4><p>为每个节点的 <code>secret_ref</code> 添加对应的环境变量，值为 OpenAI 兼容上游凭据（<code>Token@BaseURL</code> 格式）。</p></div>
-      <div class="step-item"><h4>4.（可选）定义逻辑模型与策略</h4><p>通过 <code>MODELS_CONFIG</code> 和 <code>POLICIES_CONFIG</code> 控制模型到工作负载的映射与各层尝试预算。未设置时使用默认策略。</p></div>
-    </div>
+    <h2>配置范例</h2>
+    <p style="font-size:14px;color:var(--muted);margin:0 0 16px">按层级分别配置 Secret，每层一个 JSON 数组。节点中的 <code>tier</code> 字段由配置文件名隐含（tier-1 层自动为 tier-1 节点，依此类推）。</p>
+
     <div class="code-editor">
-      <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>NODES_CONFIG</span></div>
+      <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>TIER1_NODES_CONFIG</span></div>
       <pre>[
   {
-    "id": "free-node-01",
-    "tier": "free",
-    "priority": 100,
-    "provider": "provider-a",
-    "account": "account-01",
+    "id": "tier-1-node-01",
     "secret_ref": "FREE_NODE_01",
-    "workloads": ["general", "coding"],
-    "capabilities": ["chat", "stream", "tools"],
-    "models": ["general-air", "code-pro"],
-    "limits": { "concurrency": 2 }
-  },
-  {
-    "id": "paid-node-01",
-    "tier": "paid",
-    "priority": 80,
-    "secret_ref": "PAID_NODE_01",
-    "workloads": ["general", "coding"],
-    "models": ["code-pro"],
-    "limits": { "concurrency": 5 }
-  },
-  {
-    "id": "plus-node-01",
-    "tier": "plus",
-    "priority": 50,
-    "secret_ref": "PLUS_NODE_01",
-    "workloads": ["coding", "critical"],
-    "models": ["code-max"],
-    "limits": { "concurrency": 3 }
+    "models": {
+      "general-air": "free-provider/model-air",
+      "code-pro": "free-provider/code-pro"
+    }
   }
 ]</pre>
     </div>
     <div class="code-editor">
-      <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>节点凭据环境变量</span></div>
-      <pre><span class="var">FREE_NODE_01</span>=<span class="str">token-a@https://free-api.example/v1</span>
-<span class="var">PAID_NODE_01</span>=<span class="str">token-b@https://paid-api.example/v1</span>
-<span class="var">PLUS_NODE_01</span>=<span class="str">token-c@https://plus-api.example/v1</span></pre>
+      <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>TIER2_NODES_CONFIG</span></div>
+      <pre>[
+  {
+    "id": "tier-2-node-01",
+    "secret_ref": "PAID_NODE_01",
+    "models": {
+      "code-pro": "paid-provider/code-pro"
+    }
+  }
+]</pre>
     </div>
-    <div class="callout"><strong>调度顺序</strong>默认 free → paid → plus。免费节点 429 时按节点冷却并切换同层下一节点；503 连续 3 次触发轻量熔断（30 秒）；流式请求在首个有效事件前允许切换节点，之后禁止透明重放。</div>
+    <div class="code-editor">
+      <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>TIER3_NODES_CONFIG</span></div>
+      <pre>[
+  {
+    "id": "tier-3-node-01",
+    "secret_ref": "PLUS_NODE_01",
+    "models": {
+      "code-max": "plus-provider/code-max"
+    }
+  }
+]</pre>
+    </div>
+    <div class="code-editor">
+      <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>节点凭据</span></div>
+      <pre><span class="var">FREE_NODE_01</span>=<span class="str">sk-xxx@https://free-api.example/v1</span>
+<span class="var">PAID_NODE_01</span>=<span class="str">sk-yyy@https://paid-api.example/v1</span>
+<span class="var">PLUS_NODE_01</span>=<span class="str">sk-zzz@https://plus-api.example/v1</span></pre>
+    </div>
+    <div class="code-editor">
+      <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>MODELS_CONFIG（可选）</span></div>
+      <pre>{
+  "general-air": { "workload": "general", "policy": "general-fast" },
+  "code-pro":    { "workload": "coding",  "policy": "coding-stable" }
+}</pre>
+    </div>
+    <div class="code-editor">
+      <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>POLICIES_CONFIG（可选）</span></div>
+      <pre>{
+  "general-fast": {
+    "tiers": ["tier-1", "tier-2"],
+    "max_attempts": 3,
+    "retry_budget": { "free": 2, "paid": 1 }
+  }
+}</pre>
+    </div>
+    <div class="callout"><strong>调度顺序</strong>默认 tier-1 → tier-2 → tier-3。429 节点级冷却不整个 Provider 禁用；503 连续 3 次触发轻量熔断（30 秒）；流式请求首事件前允许 failover，之后禁止透明重放。</div>
   </section>
 
   <section class="section" id="clients">
@@ -257,7 +271,7 @@ function getDashboardHtml(env) {
 
 function getGatewayConfigurationState(env) {
   const gatewayAccessKeyBound = Boolean(readOptionalEnv(env, 'GATEWAY_ACCESS_KEY'));
-  const nodesConfigBound = Boolean(readOptionalEnv(env, 'NODES_CONFIG'));
+  const nodesConfigBound = Boolean(readOptionalEnv(env, 'NODES_CONFIG') || readOptionalEnv(env, 'TIER1_NODES_CONFIG') || readOptionalEnv(env, 'TIER2_NODES_CONFIG') || readOptionalEnv(env, 'TIER3_NODES_CONFIG'));
   return {
     ready: gatewayAccessKeyBound && nodesConfigBound,
     gatewayAccessKeyBound,
@@ -290,14 +304,14 @@ function getSetupHtml(configuration) {
   <div class="success">首次部署成功，无需重新修改或上传源代码。</div>
   <div class="list">
     <div class="row"><code>GATEWAY_ACCESS_KEY</code>${status(configuration.gatewayAccessKeyBound)}</div>
-    <div class="row"><code>NODES_CONFIG</code>${status(configuration.nodesConfigBound)}</div>
+    <div class="row"><code>TIER1_NODES_CONFIG</code> + <code>TIER2_NODES_CONFIG</code> + <code>TIER3_NODES_CONFIG</code> / <code>NODES_CONFIG</code>${status(configuration.nodesConfigBound)}</div>
   </div>
   <div class="steps">
     <strong>在 Cloudflare 中完成配置</strong>
     <ol>
       <li>打开当前 Worker 的"设置 → 变量和机密"。</li>
       <li>添加 <code>GATEWAY_ACCESS_KEY</code> 作为 Secret。</li>
-      <li>添加 <code>NODES_CONFIG</code> 作为 Secret（JSON 数组，定义 free/paid/plus 节点）。</li>
+      <li>添加 <code>TIER1_NODES_CONFIG</code>、<code>TIER2_NODES_CONFIG</code>、<code>TIER3_NODES_CONFIG</code> 各一个，每层独立 JSON 数组；或使用单个 <code>NODES_CONFIG</code> 定义全部节点。</li>
       <li>为每个节点的 <code>secret_ref</code> 添加凭据环境变量（<code>Token@BaseURL</code> 格式）。</li>
       <li>保存并等待新部署生效。配置示例见 config/nodes.example.json。</li>
     </ol>
@@ -980,9 +994,9 @@ async function handleRequest(request, env, ctx) {
         : 'Inspect attempts[] and verify NODES_CONFIG, node health, and policy retry_budget.',
       nodes_total: configuredNodes.length,
       tiers: {
-        free: configuredNodes.filter(n => n.tier === 'free').length,
-        paid: configuredNodes.filter(n => n.tier === 'paid').length,
-        plus: configuredNodes.filter(n => n.tier === 'plus').length,
+        'tier-1': configuredNodes.filter(n => n.tier === 'tier-1').length,
+        'tier-2': configuredNodes.filter(n => n.tier === 'tier-2').length,
+        'tier-3': configuredNodes.filter(n => n.tier === 'tier-3').length,
       },
     }, requestId);
 }
@@ -2230,7 +2244,6 @@ async function healthCheck(request, env, requestId) {
       tier: n.tier,
       provider: exposeUpstreamInfo ? n.provider : n.tier,
       priority: n.priority,
-      workloads: n.workloads,
       models: Object.keys(n.models || {}),
       health_score: Math.round(s.healthScore),
       status: cooling ? 'cooling_down' : 'active',
@@ -2257,9 +2270,9 @@ async function healthCheck(request, env, requestId) {
     nodes_active: nodes.length - cooling,
     nodes_cooling_down: cooling,
     tiers: {
-      free: nodes.filter(n => n.tier === 'free').length,
-      paid: nodes.filter(n => n.tier === 'paid').length,
-      plus: nodes.filter(n => n.tier === 'plus').length,
+      'tier-1': nodes.filter(n => n.tier === 'tier-1').length,
+      'tier-2': nodes.filter(n => n.tier === 'tier-2').length,
+      'tier-3': nodes.filter(n => n.tier === 'tier-3').length,
     },
     note: "This snapshot reflects only the current isolate's in-memory state.",
     client_stats: {

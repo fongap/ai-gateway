@@ -1,63 +1,19 @@
 [
   {
-    "id": "free-node-01",
-    "tier": "free",
-    "priority": 100,
-    "provider": "provider-a",
-    "account": "account-01",
-    "secret_ref": "FREE_NODE_01",
-    "workloads": ["general", "coding"],
-    "capabilities": ["chat", "stream", "tools"],
+    "id": "tier-1-node-01",
+    "secret_ref": "TIER1_NODE_01",
     "models": {
-      "general-air": "free-provider/model-air",
-      "general-pro": "free-provider/model-pro",
-      "code-air": "free-provider/code-air",
-      "code-pro": "free-provider/code-pro"
-    },
-    "limits": { "concurrency": 2 }
+      "general-air": "tier-1-provider/model-air",
+      "general-pro": "tier-1-provider/model-pro",
+      "code-air": "tier-1-provider/code-air",
+      "code-pro": "tier-1-provider/code-pro"
+    }
   },
   {
-    "id": "free-node-02",
-    "tier": "free",
-    "priority": 90,
-    "provider": "provider-b",
-    "account": "account-02",
-    "secret_ref": "FREE_NODE_02",
-    "workloads": ["general"],
-    "capabilities": ["chat", "stream"],
+    "id": "tier-1-node-02",
+    "secret_ref": "TIER1_NODE_02",
     "models": {
-      "general-air": "free-provider-b/model-air"
-    },
-    "limits": { "concurrency": 3 }
-  },
-  {
-    "id": "paid-node-01",
-    "tier": "paid",
-    "priority": 80,
-    "provider": "provider-c",
-    "account": "account-03",
-    "secret_ref": "PAID_NODE_01",
-    "workloads": ["general", "coding"],
-    "capabilities": ["chat", "stream", "tools"],
-    "models": {
-      "general-pro": "paid-provider/model-pro",
-      "code-pro": "paid-provider/code-pro"
-    },
-    "limits": { "concurrency": 5 }
-  },
-  {
-    "id": "plus-node-01",
-    "tier": "plus",
-    "priority": 50,
-    "provider": "provider-d",
-    "account": "account-04",
-    "secret_ref": "PLUS_NODE_01",
-    "workloads": ["coding", "critical"],
-    "capabilities": ["chat", "stream", "tools"],
-    "models": {
-      "code-pro": "plus-provider/code-pro",
-      "code-max": "plus-provider/code-max"
-    },
-    "limits": { "concurrency": 3 }
+      "general-air": "tier-1-provider-b/model-air"
+    }
   }
 ]

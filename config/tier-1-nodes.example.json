@@ -1,0 +1,19 @@
+[
+  {
+    "id": "free-node-01",
+    "secret_ref": "FREE_NODE_01",
+    "models": {
+      "general-air": "free-provider/model-air",
+      "general-pro": "free-provider/model-pro",
+      "code-air": "free-provider/code-air",
+      "code-pro": "free-provider/code-pro"
+    }
+  },
+  {
+    "id": "free-node-02",
+    "secret_ref": "FREE_NODE_02",
+    "models": {
+      "general-air": "free-provider-b/model-air"
+    }
+  }
+]

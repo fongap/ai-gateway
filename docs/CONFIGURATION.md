@@ -1,6 +1,6 @@
 # 配置说明 / Configuration
 
-网关以 Node Scheduler 为核心，通过 `NODES_CONFIG` + `MODELS_CONFIG` + `POLICIES_CONFIG` 三个 JSON Secret 定义三层节点池（free / paid / plus）。不依赖任何旧版 API 转发配置。
+网关以 Node Scheduler 为核心，通过 `NODES_CONFIG` + `MODELS_CONFIG` + `POLICIES_CONFIG` 三个 JSON Secret 定义三层节点池（tier-1 / tier-2 / tier-3）。不依赖任何旧版 API 转发配置。
 
 ## 鉴权
 
@@ -30,57 +30,42 @@ JSON 数组，定义全部调度节点。每个节点字段：
 
 | 字段 | 必需 | 说明 |
 |------|------|------|
-| `id` | 是 | 节点 ID，格式推荐 `{tier}-node-{number}`，如 `free-node-01` |
+| `id` | 是 | 节点 ID，推荐格式 `{tier}-node-{number}`，如 `tier-1-node-01` |
 | `tier` | 是 | `free` / `paid` / `plus` 三层之一 |
-| `priority` | 否 | 数值越小越优先；默认 100 |
-| `provider` | 否 | 服务商标识，仅用于诊断展示 |
-| `account` | 否 | 账户标识，仅用于诊断展示 |
 | `secret_ref` | 是 | 指向环境变量的名称，变量值为 `Token@BaseURL` 格式 |
-| `workloads` | 否 | 支持的工作负载类型，如 `["general","coding"]`；默认 `["general"]` |
-| `capabilities` | 否 | 能力声明，如 `["chat","stream","tools"]`；默认 `["chat"]` |
-| `models` | 否 | 逻辑模型到实际上游模型名的映射对象；为空时支持所有模型（同名透传） |
-| `limits.concurrency` | 否 | 单节点并发上限；默认 2 |
+| `models` | 否 | 逻辑模型到实际上游模型名的映射对象；为空时同名透传 |
+| `priority` | 否 | 可选，数值越小越优先；默认 100 |
+| `provider` | 否 | 可选，服务商标识，仅用于诊断展示 |
+| `limits.concurrency` | 否 | 可选，单节点并发上限；默认 2 |
 
 示例（保存为 Secret `NODES_CONFIG`）：
 
 ```json
 [
   {
-    "id": "free-node-01",
-    "tier": "free",
-    "priority": 100,
-    "provider": "provider-a",
-    "account": "account-01",
-    "secret_ref": "FREE_NODE_01",
-    "workloads": ["general", "coding"],
-    "capabilities": ["chat", "stream", "tools"],
+    "id": "tier-1-node-01",
+    "tier": "tier-1",
+    "secret_ref": "TIER1_NODE_01",
     "models": {
-      "general-air": "free-provider/model-air",
-      "code-pro": "free-provider/code-pro"
-    },
-    "limits": { "concurrency": 2 }
+      "general-air": "tier-1-provider/model-air",
+      "code-pro": "tier-1-provider/code-pro"
+    }
   },
   {
-    "id": "paid-node-01",
-    "tier": "paid",
-    "priority": 80,
-    "secret_ref": "PAID_NODE_01",
-    "workloads": ["general", "coding"],
+    "id": "tier-2-node-01",
+    "tier": "tier-2",
+    "secret_ref": "TIER2_NODE_01",
     "models": {
-      "code-pro": "paid-provider/code-pro"
-    },
-    "limits": { "concurrency": 5 }
+      "code-pro": "tier-2-provider/code-pro"
+    }
   },
   {
-    "id": "plus-node-01",
-    "tier": "plus",
-    "priority": 50,
-    "secret_ref": "PLUS_NODE_01",
-    "workloads": ["coding", "critical"],
+    "id": "tier-3-node-01",
+    "tier": "tier-3",
+    "secret_ref": "TIER3_NODE_01",
     "models": {
-      "code-max": "plus-provider/code-max"
-    },
-    "limits": { "concurrency": 3 }
+      "code-max": "tier-3-provider/code-max"
+    }
   }
 ]
 ```
@@ -92,9 +77,9 @@ JSON 数组，定义全部调度节点。每个节点字段：
 每个节点的 `secret_ref` 指向一个独立的环境变量，值为 OpenAI 兼容上游凭据：
 
 ```text
-FREE_NODE_01=sk-xxx@https://free-api.example/v1
-PAID_NODE_01=sk-yyy@https://paid-api.example/v1
-PLUS_NODE_01=sk-zzz@https://plus-api.example/v1
+TIER1_NODE_01=sk-xxx@https://free-api.example/v1
+TIER2_NODE_01=sk-yyy@https://paid-api.example/v1
+TIER3_NODE_01=sk-zzz@https://plus-api.example/v1
 ```
 
 格式为 `Token@BaseURL`。所有节点凭据都必须保存为 Cloudflare Secret。默认仅接受 HTTPS 上游；只有显式设置 `ALLOW_INSECURE_HTTP_UPSTREAM=true` 才允许 HTTP（仅限本地受控测试）。
@@ -132,7 +117,7 @@ JSON 对象，定义各策略如何选择节点层级。
 
 | 字段 | 说明 |
 |------|------|
-| `tiers` | 层级尝试顺序，如 `["free","paid","plus"]` |
+| `tiers` | 层级尝试顺序，如 `["tier-1","tier-2","tier-3"]` |
 | `max_attempts` | 单次请求最大尝试数，范围 1–5 |
 | `retry_budget` | 各层级的尝试预算 `{ free, paid, plus }` |
 
@@ -141,36 +126,36 @@ JSON 对象，定义各策略如何选择节点层级。
 ```json
 {
   "general-fast": {
-    "tiers": ["free", "paid"],
+    "tiers": ["tier-1", "tier-2"],
     "max_attempts": 3,
-    "retry_budget": { "free": 2, "paid": 1 }
+    "retry_budget": { "tier-1": 2, "tier-2": 1 }
   },
   "coding-stable": {
-    "tiers": ["free", "paid", "plus"],
+    "tiers": ["tier-1", "tier-2", "tier-3"],
     "max_attempts": 4,
-    "retry_budget": { "free": 2, "paid": 1, "plus": 1 }
+    "retry_budget": { "tier-1": 2, "tier-2": 1, "tier-3": 1 }
   },
   "critical-only": {
-    "tiers": ["plus", "paid", "free"],
+    "tiers": ["tier-3", "tier-2", "tier-1"],
     "max_attempts": 3,
-    "retry_budget": { "plus": 1, "paid": 1, "free": 1 }
+    "retry_budget": { "tier-3": 1, "tier-2": 1, "tier-1": 1 }
   }
 }
 ```
 
 完整示例见 [../config/policies.example.json](../config/policies.example.json)。
 
-未定义的策略回退到默认值：`tiers: ["free","paid"]`、`max_attempts: 3`、`retry_budget: { free: 2, paid: 1, plus: 1 }`。
+未定义的策略回退到默认值：`tiers: ["tier-1","tier-2"]`、`max_attempts: 3`、`retry_budget: { tier-1: 2, tier-2: 1, tier-3: 1 }`。
 
 ## 三层资源池语义
 
 | 层级 | 特点 | 默认用途 |
 |------|------|----------|
-| `free-node` | 成本最低，稳定性不确定 | 默认优先 |
-| `paid-node` | 稳定性较高，成本可接受 | 主要 fallback |
-| `plus-node` | 最高可靠性，成本最高 | 关键任务、Coding 长任务 |
+| `free-node` | 稳定性不确定，tier-1 优先 | 默认优先 |
+| `paid-node` | 稳定性较高，tier-2 回退 | 主要 fallback |
+| `plus-node` | 最高可靠性，tier-3 保底 | 关键任务、Coding 长任务使用 tier-3 |
 
-默认调度顺序为 `free → paid → plus`。禁止因为 paid/plus 更快而自动抢占 free。Critical 任务可通过策略反转为 `plus → paid → free`。
+默认调度顺序为 `tier-1 → tier-2 → tier-3`。禁止因为 paid/plus 更快而自动抢占 free。Critical 任务可通过策略反转为 `plus → paid → free`。
 
 ## 调度排序依据
 

@@ -22,7 +22,7 @@ AI Agent 需要同时管理多个模型供应商、不同资源等级、不同�
 AI Agent Node Scheduler 提供一个统一入口，用于：
 
 - 将服务商和 API Key 隐藏到 Node 抽象之后，避免架构被特定免费 API 绑死；
-- 以 `free → paid → plus` 三层资源池自动调度，优先使用免费资源；
+- 以 `tier-1 → tier-2 → tier-3` 三层资源池自动调度，优先使用免费资源；
 - 在节点异常时自动切换至同层或更高层节点；
 - 统一 OpenAI 与 Anthropic 两种接入方式；
 - 面向 Agent 稳定运行，支持长连接、工具调用和流式响应；
@@ -50,7 +50,7 @@ Provider / Account / API Key (secret_ref 环境变量)
 | `paid-node` | 付费资源池 | 稳定性较高，成本可接受 | 主要 fallback |
 | `plus-node` | 增强资源池 | 最高可靠性，成本最高 | 关键任务、Coding 长任务 |
 
-默认调度顺序：`free → paid → plus`。禁止因为 paid/plus 更快而自动抢占 free。
+默认调度顺序：`tier-1 → tier-2 → tier-3`。禁止因为 paid/plus 更快而自动抢占 free。
 
 ### 代码结构
 
@@ -180,15 +180,15 @@ Non-production deploy command: npx wrangler versions upload
 | `NODES_CONFIG` | JSON 数组，定义 free/paid/plus 节点 |
 | `MODELS_CONFIG` | JSON 对象，逻辑模型到 workload/policy 的映射 |
 | `POLICIES_CONFIG` | JSON 对象，策略定义 |
-| `FREE_NODE_01` 等 | 节点 `secret_ref` 指向的环境变量（`Token@BaseURL` 格式） |
+| `TIER1_NODE_01` 等 | 节点 `secret_ref` 指向的环境变量（`Token@BaseURL` 格式） |
 
 **NODES_CONFIG 示例：**
 
 ```json
 [
-  {"id":"free-node-01","tier":"free","priority":100,"provider":"provider-a","secret_ref":"FREE_NODE_01","workloads":["general","coding"],"models":{"general-air":"free-provider/model-air","code-pro":"free-provider/code-pro"},"limits":{"concurrency":2}},
-  {"id":"paid-node-01","tier":"paid","priority":80,"secret_ref":"PAID_NODE_01","workloads":["general","coding"],"models":{"code-pro":"paid-provider/code-pro"},"limits":{"concurrency":5}},
-  {"id":"plus-node-01","tier":"plus","priority":50,"secret_ref":"PLUS_NODE_01","workloads":["coding","critical"],"models":{"code-max":"plus-provider/code-max"},"limits":{"concurrency":3}}
+  {"id":"tier-1-node-01","tier":"tier-1","secret_ref":"TIER1_NODE_01","models":{"general-air":"tier-1-provider/model-air","code-pro":"tier-1-provider/code-pro"}},
+  {"id":"tier-2-node-01","tier":"tier-2","secret_ref":"TIER2_NODE_01","models":{"code-pro":"tier-2-provider/code-pro"}},
+  {"id":"tier-3-node-01","tier":"tier-3","secret_ref":"TIER3_NODE_01","models":{"code-max":"tier-3-provider/code-max"}}
 ]
 ```
 
@@ -206,8 +206,8 @@ Non-production deploy command: npx wrangler versions upload
 
 ```json
 {
-  "general-fast": {"tiers":["free","paid"],"max_attempts":3,"retry_budget":{"free":2,"paid":1}},
-  "coding-stable": {"tiers":["free","paid","plus"],"max_attempts":4,"retry_budget":{"free":2,"paid":1,"plus":1}}
+  "general-fast": {"tiers":["tier-1","tier-2"],"max_attempts":3,"retry_budget":{"tier-1":2,"tier-2":1}},
+  "coding-stable": {"tiers":["tier-1","tier-2","tier-3"],"max_attempts":4,"retry_budget":{"tier-1":2,"tier-2":1,"tier-3":1}}
 }
 ```
 
@@ -218,10 +218,10 @@ Non-production deploy command: npx wrangler versions upload
 统一格式：`{tier}-node-{number}`
 
 ```
-free-node-01
-free-node-02
-paid-node-01
-plus-node-01
+tier-1-node-01
+tier-1-node-02
+tier-2-node-01
+tier-3-node-01
 ```
 
 禁止使用 `key1`、`token1`、`provider-key1`、`backup-key` 等命名。Node ID 会出现在日志、错误和健康状态中，必须人工可读。

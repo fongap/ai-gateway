@@ -4,15 +4,26 @@
 GATEWAY_ACCESS_KEY="replace-with-a-long-random-key"
 
 # ============ Node Scheduler 配置（必需） ============
-# 节点池定义（JSON 数组）。models 为 逻辑模型名 -> 实际上游模型名 的映射。
-NODES_CONFIG='[{"id":"free-node-01","tier":"free","priority":100,"provider":"provider-a","secret_ref":"FREE_NODE_01","workloads":["general","coding"],"capabilities":["chat","stream","tools"],"models":{"general-air":"free-model-air","code-pro":"free-model-pro"},"limits":{"concurrency":2}}]'
+# 按优先级顺序配置，tier-1 优先、tier-2、tier-3。
+# 每层为一个 JSON 数组。节点中的 tier 字段由配置文件隐含。
 
-# 为每个节点的 secret_ref 添加凭据（Token@BaseURL 格式，默认仅 HTTPS）。
-FREE_NODE_01="token@https://free-api.example/v1"
+# tier-1 层节点（默认优先）
+TIER1_NODES_CONFIG='[{"id":"tier-1-node-01","secret_ref":"TIER1_NODE_01","models":{"general-air":"free-model-air"}}]'
+
+# tier-2 层节点（可选）
+# TIER2_NODES_CONFIG='[{"id":"tier-2-node-01","secret_ref":"TIER2_NODE_01","models":{"code-pro":"paid-model-pro"}}]'
+
+# tier-3 层节点（可选）
+# TIER3_NODES_CONFIG='[{"id":"tier-3-node-01","secret_ref":"TIER3_NODE_01","models":{"code-max":"plus-model-max"}}]'
+
+# 各节点的凭据（Token@BaseURL 格式，默认仅 HTTPS）。
+TIER1_NODE_01="token@https://tier-1-api.example/v1"
+# TIER2_NODE_01="token@https://tier-2-api.example/v1"
+# TIER3_NODE_01="token@https://tier-3-api.example/v1"
 
 # 可选：逻辑模型映射与策略。
-# MODELS_CONFIG='{"general-air":{"workload":"general","policy":"general-fast"},"code-pro":{"workload":"coding","policy":"coding-stable"}}'
-# POLICIES_CONFIG='{"general-fast":{"tiers":["free","paid"],"max_attempts":3,"retry_budget":{"free":2,"paid":1}},"coding-stable":{"tiers":["free","paid","plus"],"max_attempts":4,"retry_budget":{"free":2,"paid":1,"plus":1}}}'
+# MODELS_CONFIG='{"general-air":{"workload":"general","policy":"general-fast"}}'
+# POLICIES_CONFIG='{"general-fast":{"tiers":["free","paid"],"max_attempts":3,"retry_budget":{"free":2,"paid":1}}}'
 
 # 默认安全策略。
 ALLOW_UNSAFE_PROXY_ROUTES="false"

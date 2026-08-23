@@ -39,22 +39,22 @@ console.log('   PASS\n');
 // Test 4: Retry budget limits
 console.log('4. Retry budget limits...');
 const { shouldRetry } = await import('../src/reliability/retry.js');
-const policy = { retry_budget: { free: 2, paid: 1, plus: 1 }, max_attempts: 4 };
-assert.ok(shouldRetry(0, 4, 429, 'free', policy), 'First retry for free');
-assert.ok(shouldRetry(1, 4, 429, 'free', policy), 'Second retry for free');
-assert.ok(!shouldRetry(2, 4, 429, 'free', policy), 'Third retry for free should be blocked');
-assert.ok(shouldRetry(0, 4, 503, 'paid', policy), 'First retry for paid');
-assert.ok(!shouldRetry(1, 4, 503, 'paid', policy), 'Second retry for paid should be blocked');
-assert.ok(shouldRetry(0, 4, 502, 'plus', policy), 'First retry for plus');
-assert.ok(!shouldRetry(1, 4, 502, 'plus', policy), 'Second retry for plus should be blocked');
+const policy = { retry_budget: { "tier-1": 2, "tier-2": 1, "tier-3": 1 }, max_attempts: 4 };
+assert.ok(shouldRetry(0, 4, 429, 'tier-1', policy), 'First retry for free');
+assert.ok(shouldRetry(1, 4, 429, 'tier-1', policy), 'Second retry for free');
+assert.ok(!shouldRetry(2, 4, 429, 'tier-1', policy), 'Third retry for free should be blocked');
+assert.ok(shouldRetry(0, 4, 503, 'tier-2', policy), 'First retry for paid');
+assert.ok(!shouldRetry(1, 4, 503, 'tier-2', policy), 'Second retry for paid should be blocked');
+assert.ok(shouldRetry(0, 4, 502, 'tier-3', policy), 'First retry for plus');
+assert.ok(!shouldRetry(1, 4, 502, 'tier-3', policy), 'Second retry for plus should be blocked');
 console.log('   PASS\n');
 
 // Test 5: Non-retryable status
 console.log('5. Non-retryable status...');
-assert.ok(!shouldRetry(0, 3, 400, 'free', policy), '400 should not be retried');
-assert.ok(!shouldRetry(0, 3, 422, 'free', policy), '422 should not be retried');
-assert.ok(shouldRetry(0, 3, 429, 'free', policy), '429 should be retried');
-assert.ok(shouldRetry(0, 3, 503, 'free', policy), '503 should be retried');
+assert.ok(!shouldRetry(0, 3, 400, 'tier-1', policy), '400 should not be retried');
+assert.ok(!shouldRetry(0, 3, 422, 'tier-1', policy), '422 should not be retried');
+assert.ok(shouldRetry(0, 3, 429, 'tier-1', policy), '429 should be retried');
+assert.ok(shouldRetry(0, 3, 503, 'tier-1', policy), '503 should be retried');
 console.log('   PASS\n');
 
 // Test 6: Maximum total attempts
@@ -81,7 +81,7 @@ console.log('   PASS\n');
 console.log('8. Health check...');
 const { buildHealthResponse } = await import('../src/reliability/health.js');
 const health = buildHealthResponse([
-  { id: 'free-node-01', tier: 'free', priority: 100, provider: 'test', account: 'test', secret_ref: '', workloads: ['general'], capabilities: ['chat'], models: {}, limits: { concurrency: 2 } },
+  { id: 'tier-1-node-01', tier: 'tier-1', priority: 100, provider: 'test', account: 'test', secret_ref: '', workloads: ['general'], capabilities: ['chat'], models: {}, limits: { concurrency: 2 } },
 ], {});
 assert.ok(health.status === 'ok' || health.status === 'misconfigured', 'Health should have status');
 assert.ok(health.nodes_total >= 0, 'Should have nodes_total');
@@ -119,12 +119,12 @@ console.log('   PASS\n');
 console.log('11. Concurrency limit...');
 const { selectNodes } = await import('../src/scheduler/selector.js');
 const concNodes = [
-  { id: 'busy-node', tier: 'free', priority: 100, workloads: ['general'], capabilities: ['chat'], models: { 'test-model': 'tm' }, limits: { concurrency: 1 } },
-  { id: 'free-node', tier: 'free', priority: 90, workloads: ['general'], capabilities: ['chat'], models: { 'test-model': 'tm' }, limits: { concurrency: 2 } },
+  { id: 'busy-node', tier: 'tier-1', priority: 100, workloads: ['general'], capabilities: ['chat'], models: { 'test-model': 'tm' }, limits: { concurrency: 1 } },
+  { id: 'free-node', tier: 'tier-1', priority: 90, workloads: ['general'], capabilities: ['chat'], models: { 'test-model': 'tm' }, limits: { concurrency: 2 } },
 ];
 const cState = getNodeState('busy-node');
 cState.activeRequests = 1;
-const cSelected = selectNodes(concNodes, { tiers: ['free', 'paid'], max_attempts: 2, retry_budget: { free: 2, paid: 1 } }, { model: 'test-model' }, 'test-model');
+const cSelected = selectNodes(concNodes, { tiers: ['tier-1', 'tier-2'], max_attempts: 2, retry_budget: { "tier-1": 2, "tier-2": 1 } }, { model: 'test-model' }, 'test-model');
 assert.ok(cSelected.length > 0, 'Should still select nodes');
 const busySelected = cSelected.find(n => n.id === 'busy-node');
 assert.ok(!busySelected, 'Busy node should not be selected');

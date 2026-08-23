@@ -49,13 +49,13 @@ function makeNodeEnv(overrides = {}) {
     GATEWAY_ACCESS_KEY: 'test-gateway-key',
     NODES_CONFIG: JSON.stringify([
       {
-        id: 'free-node-01', tier: 'free', priority: 100,
+        id: 'tier-1-node-01', tier: 'tier-1', priority: 100,
         provider: 'provider-a', secret_ref: 'FREE_NODE_01',
         workloads: ['general', 'coding'], models: { 'general-air': 'free-model-air', 'general-pro': 'free-model-pro' },
         limits: { concurrency: 2 },
       },
       {
-        id: 'paid-node-01', tier: 'paid', priority: 80,
+        id: 'tier-2-node-01', tier: 'tier-2', priority: 80,
         provider: 'provider-b', secret_ref: 'PAID_NODE_01',
         workloads: ['general', 'coding'], models: { 'general-air': 'paid-model-air', 'general-pro': 'paid-model-pro' },
         limits: { concurrency: 5 },
@@ -68,7 +68,7 @@ function makeNodeEnv(overrides = {}) {
       'general-pro': { workload: 'general', policy: 'general-fast' },
     }),
     POLICIES_CONFIG: JSON.stringify({
-      'general-fast': { tiers: ['free', 'paid'], max_attempts: 3, retry_budget: { free: 2, paid: 1, plus: 1 } },
+      'general-fast': { tiers: ['tier-1', 'tier-2'], max_attempts: 3, retry_budget: { free: 2, paid: 1, plus: 1 } },
     }),
     ...overrides,
   };
@@ -83,7 +83,7 @@ assert.equal(dashboard.status, 200);
 assert.equal(dashboard.headers.get('cache-control'), 'no-store');
 const dashboardHtml = await dashboard.text();
 assert.match(dashboardHtml, /Node Scheduler/);
-assert.match(dashboardHtml, /配置指南/);
+assert.match(dashboardHtml, /配置范例/);
 assert.doesNotMatch(dashboardHtml, /等待完成配置/);
 
 const health = await worker.fetch(
@@ -97,8 +97,8 @@ assert.equal(health.status, 200);
 const healthJson = await health.json();
 assert.equal(healthJson.status, 'ok');
 assert.equal(healthJson.nodes_total, 2);
-assert.equal(healthJson.tiers.free, 1);
-assert.equal(healthJson.tiers.paid, 1);
+assert.equal(healthJson.tiers['tier-1'], 1);
+assert.equal(healthJson.tiers['tier-2'], 1);
 
 const metrics = await worker.fetch(
   new Request('https://gateway.example/metrics', {
@@ -334,7 +334,7 @@ const insecure = await worker.fetch(
     body: JSON.stringify({ model: 'x', messages: [] }),
   }),
   makeNodeEnv({
-    NODES_CONFIG: JSON.stringify([{ id: 'free-node-01', tier: 'free', secret_ref: 'FREE_NODE_01' }]),
+    NODES_CONFIG: JSON.stringify([{ id: 'tier-1-node-01', tier: 'tier-1', secret_ref: 'FREE_NODE_01' }]),
     FREE_NODE_01: 'tok@http://insecure.example/v1',
   }),
   ctx,

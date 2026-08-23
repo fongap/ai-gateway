@@ -6,19 +6,19 @@ console.log('=== Node Scheduler Tests ===\n');
 console.log('1. Node config loading...');
 const { loadNodesConfig, resolveUpstreamModel, getNodeSecret } = await import('../src/config/nodes.js');
 const nodes = loadNodesConfig({ NODES_CONFIG: JSON.stringify([
-  { id: 'free-node-01', tier: 'free', priority: 100, provider: 'test', account: 'test', secret_ref: '', workloads: ['general'], capabilities: ['chat'], models: { 'general-air': 'free-air' }, limits: { concurrency: 2 } },
-  { id: 'paid-node-01', tier: 'paid', priority: 80, provider: 'test', account: 'test', secret_ref: '', workloads: ['coding'], capabilities: ['chat', 'stream', 'tools'], models: { 'code-pro': 'paid-pro' }, limits: { concurrency: 5 } },
-  { id: 'plus-node-01', tier: 'plus', priority: 50, provider: 'test', account: 'test', secret_ref: '', workloads: ['coding', 'critical'], capabilities: ['chat', 'stream', 'tools'], models: { 'code-max': 'plus-max' }, limits: { concurrency: 3 } },
+  { id: 'tier-1-node-01', tier: 'tier-1', priority: 100, provider: 'test', account: 'test', secret_ref: '', workloads: ['general'], capabilities: ['chat'], models: { 'general-air': 'free-air' }, limits: { concurrency: 2 } },
+  { id: 'tier-2-node-01', tier: 'tier-2', priority: 80, provider: 'test', account: 'test', secret_ref: '', workloads: ['coding'], capabilities: ['chat', 'stream', 'tools'], models: { 'code-pro': 'paid-pro' }, limits: { concurrency: 5 } },
+  { id: 'tier-3-node-01', tier: 'tier-3', priority: 50, provider: 'test', account: 'test', secret_ref: '', workloads: ['coding', 'critical'], capabilities: ['chat', 'stream', 'tools'], models: { 'code-max': 'plus-max' }, limits: { concurrency: 3 } },
 ]) });
 assert.equal(nodes.length, 3, 'Should load 3 nodes');
-assert.equal(nodes[0].tier, 'plus', 'First node should be plus (highest priority)');
-assert.equal(nodes[1].tier, 'paid', 'Second node should be paid');
-assert.equal(nodes[2].tier, 'free', 'Third node should be free');
+assert.equal(nodes[0].tier, 'tier-3', 'First node should be plus (highest priority)');
+assert.equal(nodes[1].tier, 'tier-2', 'Second node should be paid');
+assert.equal(nodes[2].tier, 'tier-1', 'Third node should be free');
 console.log('   PASS: 3 nodes loaded correctly\n');
 
 // Test 2: Model mapping (logical → actual) with object form
 console.log('2. Model mapping resolution...');
-const freeNode = nodes.find(n => n.tier === 'free');
+const freeNode = nodes.find(n => n.tier === 'tier-1');
 assert.equal(resolveUpstreamModel(freeNode, 'general-air'), 'free-air', 'actual upstream model resolved');
 assert.equal(resolveUpstreamModel(freeNode, 'unknown-model'), 'unknown-model', 'unmapped model passes through');
 console.log('   PASS: Node model mapping works\n');
@@ -42,8 +42,8 @@ console.log('   PASS: Models loaded correctly\n');
 console.log('4. Policy loading...');
 const { loadPoliciesConfig } = await import('../src/config/policies.js');
 const policies = loadPoliciesConfig({ POLICIES_CONFIG: JSON.stringify({
-  'general-fast': { tiers: ['free', 'paid'], max_attempts: 3, retry_budget: { free: 2, paid: 1 } },
-  'coding-stable': { tiers: ['free', 'paid', 'plus'], max_attempts: 4, retry_budget: { free: 2, paid: 1, plus: 1 } },
+  'general-fast': { tiers: ['tier-1', 'tier-2'], max_attempts: 3, retry_budget: { free: 2, paid: 1 } },
+  'coding-stable': { tiers: ['tier-1', 'tier-2', 'tier-3'], max_attempts: 4, retry_budget: { free: 2, paid: 1, plus: 1 } },
 }) });
 assert.ok(policies['general-fast'], 'Should load general-fast policy');
 assert.equal(policies['general-fast'].tiers.length, 2, 'general-fast should have 2 tiers');
@@ -54,13 +54,13 @@ console.log('   PASS: Policies loaded correctly\n');
 console.log('5. Free node priority...');
 const { selectNodes } = await import('../src/scheduler/selector.js');
 const testNodes = [
-  { id: 'free-node-01', tier: 'free', priority: 100, workloads: ['general'], capabilities: ['chat'], models: { 'general-air': 'a' }, limits: { concurrency: 2 } },
-  { id: 'paid-node-01', tier: 'paid', priority: 80, workloads: ['general'], capabilities: ['chat'], models: { 'general-air': 'b' }, limits: { concurrency: 5 } },
-  { id: 'plus-node-01', tier: 'plus', priority: 50, workloads: ['general'], capabilities: ['chat'], models: { 'general-air': 'c' }, limits: { concurrency: 3 } },
+  { id: 'tier-1-node-01', tier: 'tier-1', priority: 100, workloads: ['general'], capabilities: ['chat'], models: { 'general-air': 'a' }, limits: { concurrency: 2 } },
+  { id: 'tier-2-node-01', tier: 'tier-2', priority: 80, workloads: ['general'], capabilities: ['chat'], models: { 'general-air': 'b' }, limits: { concurrency: 5 } },
+  { id: 'tier-3-node-01', tier: 'tier-3', priority: 50, workloads: ['general'], capabilities: ['chat'], models: { 'general-air': 'c' }, limits: { concurrency: 3 } },
 ];
-const selected = selectNodes(testNodes, { tiers: ['free', 'paid', 'plus'], max_attempts: 2, retry_budget: { free: 2, paid: 1, plus: 1 } }, { model: 'general-air' }, 'general-air');
+const selected = selectNodes(testNodes, { tiers: ['tier-1', 'tier-2', 'tier-3'], max_attempts: 2, retry_budget: { free: 2, paid: 1, plus: 1 } }, { model: 'general-air' }, 'general-air');
 assert.ok(selected.length > 0, 'Should select at least one node');
-assert.equal(selected[0].tier, 'free', 'First selected should be free tier');
+assert.equal(selected[0].tier, 'tier-1', 'First selected should be free tier');
 console.log('   PASS: Free node selected first\n');
 
 // Test 6: Node state management
@@ -93,11 +93,11 @@ console.log('   PASS: Circuit breaker works\n');
 console.log('8. Retry budget...');
 const { shouldRetry, getAttemptBudget } = await import('../src/reliability/retry.js');
 const testPolicy = { retry_budget: { free: 2, paid: 1, plus: 1 }, max_attempts: 4 };
-assert.ok(shouldRetry(0, 3, 429, 'free', testPolicy), 'Should retry free node on 429');
-assert.ok(!shouldRetry(2, 3, 429, 'free', testPolicy), 'Should not exceed free retry budget');
-assert.ok(shouldRetry(0, 3, 429, 'paid', testPolicy), 'Should retry paid node on 429');
-assert.ok(!shouldRetry(1, 3, 429, 'paid', testPolicy), 'Should not exceed paid retry budget');
-assert.equal(getAttemptBudget(testPolicy, 'plus'), 1, 'plus budget is 1');
+assert.ok(shouldRetry(0, 3, 429, 'tier-1', testPolicy), 'Should retry free node on 429');
+assert.ok(!shouldRetry(2, 3, 429, 'tier-1', testPolicy), 'Should not exceed free retry budget');
+assert.ok(shouldRetry(0, 3, 429, 'tier-2', testPolicy), 'Should retry paid node on 429');
+assert.ok(!shouldRetry(1, 3, 429, 'tier-2', testPolicy), 'Should not exceed paid retry budget');
+assert.equal(getAttemptBudget(testPolicy, 'tier-3'), 1, 'plus budget is 1');
 console.log('   PASS: Retry budget works\n');
 
 // Test 9: First Event Guard
@@ -134,14 +134,14 @@ console.log('11. HTTPS enforcement...');
 const { getConfiguredNodes } = await import('../src/scheduler/router.js');
 const httpsNodes = getConfiguredNodes({
   NODES_CONFIG: JSON.stringify([
-    { id: 'free-node-01', tier: 'free', secret_ref: 'A' },
-    { id: 'free-node-02', tier: 'free', secret_ref: 'B' },
+    { id: 'tier-1-node-01', tier: 'tier-1', secret_ref: 'A' },
+    { id: 'tier-1-node-02', tier: 'tier-1', secret_ref: 'B' },
   ]),
   A: 't@https://good.example/v1',
   B: 't@http://bad.example/v1',
 });
 assert.equal(httpsNodes.length, 1, 'Only HTTPS node accepted by default');
-assert.equal(httpsNodes[0].id, 'free-node-01', 'HTTP node rejected');
+assert.equal(httpsNodes[0].id, 'tier-1-node-01', 'HTTP node rejected');
 console.log('   PASS: Insecure HTTP rejected\n');
 
 // Test 12: Route plan building
@@ -149,11 +149,11 @@ console.log('12. Route plan building...');
 const { buildRoutePlan } = await import('../src/scheduler/router.js');
 const plan = buildRoutePlan({
   NODES_CONFIG: JSON.stringify([
-    { id: 'free-node-01', tier: 'free', priority: 100, provider: 'test', account: 'test', secret_ref: 'FREE_NODE_KEY', workloads: ['general'], capabilities: ['chat'], models: { 'general-air': 'free-air' }, limits: { concurrency: 2 } },
+    { id: 'tier-1-node-01', tier: 'tier-1', priority: 100, provider: 'test', account: 'test', secret_ref: 'FREE_NODE_KEY', workloads: ['general'], capabilities: ['chat'], models: { 'general-air': 'free-air' }, limits: { concurrency: 2 } },
   ]),
   FREE_NODE_KEY: 'test-token@https://test.example.com/v1',
   MODELS_CONFIG: JSON.stringify({ 'general-air': { workload: 'general', policy: 'general-fast' } }),
-  POLICIES_CONFIG: JSON.stringify({ 'general-fast': { tiers: ['free', 'paid'], max_attempts: 3, retry_budget: { free: 2, paid: 1 } } }),
+  POLICIES_CONFIG: JSON.stringify({ 'general-fast': { tiers: ['tier-1', 'tier-2'], max_attempts: 3, retry_budget: { free: 2, paid: 1 } } }),
 }, 'general-air', { model: 'general-air', messages: [{ role: 'user', content: 'hi' }] });
 assert.ok(plan.nodes, 'Should have nodes array');
 assert.ok(plan.policy, 'Should have policy');

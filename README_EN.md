@@ -174,15 +174,15 @@ Configure three JSON Secrets:
 | `NODES_CONFIG` | JSON array defining free/paid/plus nodes |
 | `MODELS_CONFIG` | JSON object mapping logical models to workload/policy |
 | `POLICIES_CONFIG` | JSON object defining policies |
-| `FREE_NODE_01` etc. | Env vars referenced by each node's `secret_ref` (`Token@BaseURL`) |
+| `TIER1_NODE_01` etc. | Env vars referenced by each node's `secret_ref` (`Token@BaseURL`) |
 
 **NODES_CONFIG example:**
 
 ```json
 [
-  {"id":"free-node-01","tier":"free","priority":100,"provider":"provider-a","secret_ref":"FREE_NODE_01","workloads":["general","coding"],"models":{"general-air":"free-provider/model-air","code-pro":"free-provider/code-pro"},"limits":{"concurrency":2}},
-  {"id":"paid-node-01","tier":"paid","priority":80,"secret_ref":"PAID_NODE_01","workloads":["general","coding"],"models":{"code-pro":"paid-provider/code-pro"},"limits":{"concurrency":5}},
-  {"id":"plus-node-01","tier":"plus","priority":50,"secret_ref":"PLUS_NODE_01","workloads":["coding","critical"],"models":{"code-max":"plus-provider/code-max"},"limits":{"concurrency":3}}
+  {"id":"tier-1-node-01","tier":"tier-1","secret_ref":"TIER1_NODE_01","models":{"general-air":"tier-1-provider/model-air","code-pro":"tier-1-provider/code-pro"}},
+  {"id":"tier-2-node-01","tier":"tier-2","secret_ref":"TIER2_NODE_01","models":{"code-pro":"tier-2-provider/code-pro"}},
+  {"id":"tier-3-node-01","tier":"tier-3","secret_ref":"TIER3_NODE_01","models":{"code-max":"tier-3-provider/code-max"}}
 ]
 ```
 
@@ -199,8 +199,8 @@ Configure three JSON Secrets:
 
 ```json
 {
-  "general-fast": {"tiers":["free","paid"],"max_attempts":3,"retry_budget":{"free":2,"paid":1}},
-  "coding-stable": {"tiers":["free","paid","plus"],"max_attempts":4,"retry_budget":{"free":2,"paid":1,"plus":1}}
+  "general-fast": {"tiers":["tier-1","tier-2"],"max_attempts":3,"retry_budget":{"tier-1":2,"tier-2":1}},
+  "coding-stable": {"tiers":["tier-1","tier-2","tier-3"],"max_attempts":4,"retry_budget":{"tier-1":2,"tier-2":1,"tier-3":1}}
 }
 ```
 
@@ -211,10 +211,10 @@ Example files: `config/nodes.example.json`, `config/models.example.json`, `confi
 Uniform format: `{tier}-node-{number}`
 
 ```
-free-node-01
-free-node-02
-paid-node-01
-plus-node-01
+tier-1-node-01
+tier-1-node-02
+tier-2-node-01
+tier-3-node-01
 ```
 
 Names like `key1`, `token1`, `provider-key1`, `backup-key` are not allowed. Node IDs appear in logs, errors, and health states — they must be human-readable.
