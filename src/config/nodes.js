@@ -62,6 +62,7 @@ function parseNode(n, defaultTier) {
     priority: Number.isFinite(n.priority) ? n.priority : 100,
     provider: n.provider || 'unknown',
     secret_ref: n.secret_ref || '',
+    token: typeof n.token === 'string' ? n.token : '',
     models,
     limits: { concurrency: Math.max(1, n.limits?.concurrency || 2) },
   };

@@ -149,9 +149,9 @@ console.log('12. Route plan building...');
 const { buildRoutePlan } = await import('../src/scheduler/router.js');
 const plan = buildRoutePlan({
   NODES_CONFIG: JSON.stringify([
-    { id: 'tier-1-node-01', tier: 'tier-1', priority: 100, provider: 'test', account: 'test', secret_ref: 'FREE_NODE_KEY', workloads: ['general'], capabilities: ['chat'], models: { 'general-air': 'free-air' }, limits: { concurrency: 2 } },
+    { id: 'tier-1-node-01', tier: 'tier-1', priority: 100, provider: 'test', account: 'test', token: 'test-token@https://test.example.com/v1', workloads: ['general'], capabilities: ['chat'], models: { 'general-air': 'free-air' }, limits: { concurrency: 2 } },
   ]),
-  FREE_NODE_KEY: 'test-token@https://test.example.com/v1',
+  
   MODELS_CONFIG: JSON.stringify({ 'general-air': { workload: 'general', policy: 'general-fast' } }),
   POLICIES_CONFIG: JSON.stringify({ 'general-fast': { tiers: ['tier-1', 'tier-2'], max_attempts: 3, retry_budget: { free: 2, paid: 1 } } }),
 }, 'general-air', { model: 'general-air', messages: [{ role: 'user', content: 'hi' }] });

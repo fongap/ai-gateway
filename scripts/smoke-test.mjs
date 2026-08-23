@@ -48,27 +48,15 @@ function makeNodeEnv(overrides = {}) {
   return {
     GATEWAY_ACCESS_KEY: 'test-gateway-key',
     NODES_CONFIG: JSON.stringify([
-      {
-        id: 'tier-1-node-01', tier: 'tier-1', priority: 100,
-        provider: 'provider-a', secret_ref: 'FREE_NODE_01',
-        workloads: ['general', 'coding'], models: { 'general-air': 'free-model-air', 'general-pro': 'free-model-pro' },
-        limits: { concurrency: 2 },
-      },
-      {
-        id: 'tier-2-node-01', tier: 'tier-2', priority: 80,
-        provider: 'provider-b', secret_ref: 'PAID_NODE_01',
-        workloads: ['general', 'coding'], models: { 'general-air': 'paid-model-air', 'general-pro': 'paid-model-pro' },
-        limits: { concurrency: 5 },
-      },
+      { id: 'tier-1-node-01', tier: 'tier-1', token: 'free-token@https://free-node.example/v1', models: { 'general-air': 'free-model-air', 'general-pro': 'free-model-pro' } },
+      { id: 'tier-2-node-01', tier: 'tier-2', token: 'paid-token@https://paid-node.example/v1', models: { 'general-air': 'paid-model-air', 'general-pro': 'paid-model-pro' } },
     ]),
-    FREE_NODE_01: 'free-token@https://free-node.example/v1',
-    PAID_NODE_01: 'paid-token@https://paid-node.example/v1',
     MODELS_CONFIG: JSON.stringify({
       'general-air': { workload: 'general', policy: 'general-fast' },
       'general-pro': { workload: 'general', policy: 'general-fast' },
     }),
     POLICIES_CONFIG: JSON.stringify({
-      'general-fast': { tiers: ['tier-1', 'tier-2'], max_attempts: 3, retry_budget: { free: 2, paid: 1, plus: 1 } },
+      'general-fast': { tiers: ['tier-1', 'tier-2'], max_attempts: 3, retry_budget: { 'tier-1': 2, 'tier-2': 1 } },
     }),
     ...overrides,
   };
@@ -334,8 +322,7 @@ const insecure = await worker.fetch(
     body: JSON.stringify({ model: 'x', messages: [] }),
   }),
   makeNodeEnv({
-    NODES_CONFIG: JSON.stringify([{ id: 'tier-1-node-01', tier: 'tier-1', secret_ref: 'FREE_NODE_01' }]),
-    FREE_NODE_01: 'tok@http://insecure.example/v1',
+    NODES_CONFIG: JSON.stringify([{ id: 'tier-1-node-01', tier: 'tier-1', token: 'tok@http://insecure.example/v1' }]),
   }),
   ctx,
 );

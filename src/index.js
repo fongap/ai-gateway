@@ -124,47 +124,29 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     <p style="font-size:14px;color:var(--muted);margin:0 0 16px">按层级分别配置 Secret，每层一个 JSON 数组。节点中的 <code>tier</code> 字段由配置文件名隐含（tier-1 层自动为 tier-1 节点，依此类推）。</p>
 
     <div class="code-editor">
-      <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>TIER1_NODES_CONFIG</span></div>
+      <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>TIER1_NODES_CONFIG（token 直接内嵌）</span></div>
       <pre>[
-  {
-    "id": "tier-1-node-01",
-    "secret_ref": "FREE_NODE_01",
-    "models": {
-      "general-air": "free-provider/model-air",
-      "code-pro": "free-provider/code-pro"
-    }
-  }
+  // 同一 provider 的多账号
+  {"id":"tier-1-node-01","token":"key-1@https://provider-a/v1","models":{"general-air":"model-a","code-pro":"model-a"}},
+  {"id":"tier-1-node-02","token":"key-2@https://provider-a/v1","models":{"general-air":"model-a","code-pro":"model-a"}},
+  // 不同 provider
+  {"id":"tier-1-node-03","token":"sk-xxx@https://provider-b/v1","models":{"code-pro":"model-b"}},
+  {"id":"tier-1-node-04","token":"sk-yyy@https://provider-c/v1","models":{"code-max":"model-c"}}
 ]</pre>
     </div>
     <div class="code-editor">
       <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>TIER2_NODES_CONFIG</span></div>
       <pre>[
-  {
-    "id": "tier-2-node-01",
-    "secret_ref": "PAID_NODE_01",
-    "models": {
-      "code-pro": "paid-provider/code-pro"
-    }
-  }
+  {"id":"tier-2-node-01","token":"sk-zzz@https://provider-d/v1","models":{"code-pro":"model-d"}}
 ]</pre>
     </div>
     <div class="code-editor">
       <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>TIER3_NODES_CONFIG</span></div>
       <pre>[
-  {
-    "id": "tier-3-node-01",
-    "secret_ref": "PLUS_NODE_01",
-    "models": {
-      "code-max": "plus-provider/code-max"
-    }
+  {"id":"tier-3-node-01","token":"sk-www@https://provider-e/v1","models":{"code-max":"model-e"}}
+]</pre>
   }
 ]</pre>
-    </div>
-    <div class="code-editor">
-      <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>节点凭据</span></div>
-      <pre><span class="var">FREE_NODE_01</span>=<span class="str">sk-xxx@https://free-api.example/v1</span>
-<span class="var">PAID_NODE_01</span>=<span class="str">sk-yyy@https://paid-api.example/v1</span>
-<span class="var">PLUS_NODE_01</span>=<span class="str">sk-zzz@https://plus-api.example/v1</span></pre>
     </div>
     <div class="code-editor">
       <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>MODELS_CONFIG（可选）</span></div>
@@ -319,12 +301,16 @@ function getSetupHtml(configuration) {
       <pre><span class="str">your-random-access-key-here</span></pre>
     </div>
     <div class="code-editor">
-      <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>TIER1_NODES_CONFIG</span></div>
-      <pre>[{"id":"tier-1-node-01","secret_ref":"TIER1_NODE_01","models":{"general-air":"your-provider/model","code-pro":"your-provider/code-model"}}]</pre>
+      <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>TIER1_NODES_CONFIG（token 内嵌在配置中）</span></div>
+      <pre>[
+  // 同一 provider 多账号
+  {"id":"tier-1-node-01","token":"key-1@https://provider-a/v1","models":{"general-air":"model"}},
+  {"id":"tier-1-node-02","token":"key-2@https://provider-a/v1","models":{"general-air":"model"}},
+  // 不同 provider
+  {"id":"tier-1-node-03","token":"sk-xxx@https://provider-b/v1","models":{"code-pro":"model"}}
+]</pre>
     </div>
-    <div class="code-editor">
-      <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>TIER1_NODE_01</span></div>
-      <pre><span class="str">your-api-token@https://your-api-endpoint/v1</span></pre>
+    <p style="font-size:12px;color:var(--muted);margin-top:12px;line-height:1.6">可选：<code>TIER2_NODES_CONFIG</code> + <code>TIER3_NODES_CONFIG</code> 增加更多层级；<code>MODELS_CONFIG</code> 定义逻辑模型映射；<code>POLICIES_CONFIG</code> 控制重试预算。保存后页面自动刷新。</p>
     </div>
     <p style="font-size:12px;color:var(--muted);margin-top:12px;line-height:1.6">可选：<code>TIER2_NODES_CONFIG</code> + <code>TIER2_NODE_01</code> 增加第二层回退节点；<code>MODELS_CONFIG</code> 定义逻辑模型映射；<code>POLICIES_CONFIG</code> 控制重试预算。保存后页面自动刷新。</p>
   </div>

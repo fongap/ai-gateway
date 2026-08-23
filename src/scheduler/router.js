@@ -29,13 +29,16 @@ export function getConfiguredNodes(env) {
   const allowInsecure = /^(true|1|yes|on)$/i.test(String(env?.ALLOW_INSECURE_HTTP_UPSTREAM || '').trim());
 
   return configuredNodes.map(n => {
-    if (!n.secret_ref) return null;
-    const secret = getNodeSecret(env, n.secret_ref);
-    if (!secret) return null;
-    const match = secret.match(/^(.*)@(https?:\/\/.+)$/i);
+    let raw = n.token || '';
+    // 无 inline token 时通过 secret_ref 查找
+    if (!raw && n.secret_ref) {
+      const secret = getNodeSecret(env, n.secret_ref);
+      if (secret) raw = secret;
+    }
+    if (!raw) return null;
+    const match = raw.match(/^(.*)@(https?:\/\/.+)$/i);
     if (!match) return null;
     const baseUrl = match[2];
-    // 默认仅接受 HTTPS 上游
     if (!allowInsecure && !baseUrl.startsWith('https://')) return null;
     return {
       ...n,

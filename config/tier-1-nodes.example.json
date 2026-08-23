@@ -1,19 +1,19 @@
 [
   {
-    "id": "free-node-01",
-    "secret_ref": "FREE_NODE_01",
+    "id": "tier-1-node-01",
+    "token": "sk-xxx@https://provider-a/v1",
     "models": {
-      "general-air": "free-provider/model-air",
-      "general-pro": "free-provider/model-pro",
-      "code-air": "free-provider/code-air",
-      "code-pro": "free-provider/code-pro"
+      "general-air": "provider-a/model-air",
+      "general-pro": "provider-a/model-pro",
+      "code-air": "provider-a/code-air",
+      "code-pro": "provider-a/code-pro"
     }
   },
   {
-    "id": "free-node-02",
-    "secret_ref": "FREE_NODE_02",
+    "id": "tier-1-node-02",
+    "token": "sk-yyy@https://provider-b/v1",
     "models": {
-      "general-air": "free-provider-b/model-air"
+      "general-air": "provider-b/model-air"
     }
   }
 ]
