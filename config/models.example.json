@@ -1,0 +1,22 @@
+{
+  "general-air": {
+    "workload": "general",
+    "policy": "general-fast"
+  },
+  "general-pro": {
+    "workload": "general",
+    "policy": "general-fast"
+  },
+  "code-air": {
+    "workload": "coding",
+    "policy": "coding-stable"
+  },
+  "code-pro": {
+    "workload": "coding",
+    "policy": "coding-stable"
+  },
+  "code-max": {
+    "workload": "coding",
+    "policy": "coding-stable"
+  }
+}

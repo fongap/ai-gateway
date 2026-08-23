@@ -2,14 +2,26 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Fongap Studio
  *
- * 智能边缘网关
+ * AI Agent Node Scheduler
  *
  * 将 OpenAI Chat Completions 与 Anthropic Messages / Claude Code 请求统一转发至
- * OpenAI 兼容上游。Primary 负责日常调度；Fallback 仅在 Primary 全部失败后接管。
+ * OpenAI 兼容上游。Node Scheduler 以 free-node / paid-node / plus-node 三层
+ * 管理资源，旧配置（PRIMARY_API_TOKENS / FALLBACK_TOKEN / MODEL_MAPPING）兼容。
+ *
+ * 架构：
+ *   Logical Model (MODELS_CONFIG)
+ *       ↓
+ *   Policy (POLICIES_CONFIG)
+ *       ↓
+ *   Node Scheduler
+ *       ↓
+ *   Node Pool (NODES_CONFIG / legacy PRIMARY_API_TOKENS)
+ *       ↓
+ *   Provider / Account / API Key
  *
  * 一次部署清单：
  * 1. 将 GATEWAY_ACCESS_KEY 设置为 Secret。
- * 2. 将 PRIMARY_API_TOKENS 设置为 Secret。
+ * 2. 将 PRIMARY_API_TOKENS 或 NODES_CONFIG 设置为 Secret。
  * 3. Token 未使用 Token@BaseURL 时，设置 PRIMARY_BASE_URL。
  * 4. 客户端模型别名与上游模型 ID 不一致时，设置 MODEL_MAPPING。
  * 5. 需要兜底时，至少设置 FALLBACK_API_TOKEN、FALLBACK_BASE_URL 和 FALLBACK_PRIMARY_MODEL。
@@ -19,6 +31,12 @@
  * - GATEWAY_ACCESS_KEY         : 客户端访问网关的鉴权密钥
  * - PRIMARY_API_TOKENS         : 主端点 Token；支持 Token 或 Token@BaseURL
  * - PRIMARY_BASE_URL           : 未在 Token 中绑定 URL 时使用的共享 Base URL
+ *
+ * Node Scheduler 配置（可选，优先于旧配置）：
+ * - NODES_CONFIG               : JSON 数组，定义 free/paid/plus 节点
+ * - MODELS_CONFIG              : JSON 对象，逻辑模型到 workload/policy 的映射
+ * - POLICIES_CONFIG            : JSON 对象，策略定义（tiers/max_attempts/retry_budget）
+ * - FREE_NODE_01 等            : 节点 secret_ref 指向的环境变量（Token@BaseURL 格式）
  *
  * Primary 配置：
  * - PRIMARY_ENABLED            : true/false；未设置时根据 PRIMARY_API_TOKENS 自动判断
@@ -75,6 +93,11 @@
  * 运行边界：健康分、并发、滑动窗口和冷却状态保存在当前 isolate 内，
  * 不代表跨全部边缘节点的严格全局状态。大体积直通请求不会执行模型映射或多端点重试。
  */
+
+import { buildRoutePlan } from './scheduler/router.js';
+import { getNodeState as getNodeRuntimeState, isCoolingDown as isNodeCoolingDown, recordRequestStart as recordNodeStart, recordSuccess as recordNodeSuccess, recordFailure as recordNodeFailure, recordNeutralEnd as recordNodeNeutralEnd, checkCleanup as checkNodeCleanup, getNodeMetrics, getNodeHealthSnapshot } from './config/node-state.js';
+import { shouldRetry, getTimeouts, isRetryable } from './reliability/retry.js';
+import { FirstEventGuard } from './stream/guard.js';
 
 const APP_META = Object.freeze({
   name: 'Smart Edge Gateway',
@@ -443,9 +466,13 @@ async function handleRequest(request, env, ctx) {
 
     const primaryEndpoints = buildPrimaryEndpoints(env);
     const fallbackEndpoints = buildFallbackEndpoints(env);
-    if (primaryEndpoints.length === 0 && fallbackEndpoints.length === 0) {
+
+    const requestedModel = originalBodyJson?.model || 'unknown';
+    const nodeEndpoints = buildNodeEndpoints(env, requestedModel, originalBodyJson, isDirectStream);
+
+    if (primaryEndpoints.length === 0 && fallbackEndpoints.length === 0 && nodeEndpoints.length === 0) {
       return gatewayError(request, env, isAnthropicClient, 500,
-        'Gateway misconfigured: no primary endpoint token and no fallback API token are configured.',
+        'Gateway misconfigured: no node, primary endpoint, or fallback API token is configured.',
         undefined, requestId);
     }
 
@@ -550,7 +577,13 @@ async function handleRequest(request, env, ctx) {
           request
         )
       : [];
-    const candidates = [...primaryCandidates];
+    const nodeCandidates = nodeEndpoints.filter(ep => {
+      const state = getEndpointState(ep.id);
+      if (isCoolingDown(ep.id)) return false;
+      if (state.activeRequests >= (ep.limits?.concurrency || 2)) return false;
+      return true;
+    });
+    const candidates = [...nodeCandidates, ...primaryCandidates];
 
     // Fallback 不参与 Primary 轮询，并按 primary → secondary 顺序尝试。
     // 大体积直通请求体不可重复消费，因此最多发送至一个候选端点。
@@ -598,7 +631,6 @@ async function handleRequest(request, env, ctx) {
     }
 
     const attempts = [];
-    const requestedModel = originalBodyJson?.model || 'unknown';
     const anthropicClientWantsStream = route === 'anthropic_messages' && originalBodyJson?.stream === true;
     let fallbackChainEntered = false;
 
@@ -3383,6 +3415,38 @@ function createLimitedRequestBodyStream(body, maxBytes) {
 }
 
 // ============ 配置与通用工具 ============
+
+function buildNodeEndpoints(env, requestedModel, bodyJson, isDirectStream) {
+  const nodesConfigRaw = readOptionalEnv(env, 'NODES_CONFIG');
+  if (!nodesConfigRaw) return [];
+
+  let routePlan;
+  try {
+    routePlan = buildRoutePlan(env, requestedModel, bodyJson);
+  } catch (e) {
+    return [];
+  }
+  const nodes = routePlan?.nodes || [];
+  if (nodes.length === 0) return [];
+
+  return nodes.map(n => {
+    const token = n._token || n._legacyToken || '';
+    const baseUrl = n._baseUrl || n._legacyBaseUrl || '';
+    if (!token || !baseUrl) return null;
+    return {
+      id: n.id,
+      token,
+      baseUrl,
+      role: 'primary',
+      providerName: n.provider || inferProviderName(baseUrl),
+      fallbackTier: null,
+      fallbackOrder: 0,
+      configuredModel: null,
+      tier: n.tier,
+      limits: n.limits || { concurrency: 2 },
+    };
+  }).filter(ep => ep !== null);
+}
 
 function buildPrimaryEndpoints(env) {
   const tokensRaw = readOptionalEnv(env, 'PRIMARY_API_TOKENS');

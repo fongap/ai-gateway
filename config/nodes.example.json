@@ -1,0 +1,50 @@
+[
+  {
+    "id": "free-node-01",
+    "tier": "free",
+    "priority": 100,
+    "provider": "provider-a",
+    "account": "account-01",
+    "secret_ref": "FREE_NODE_01",
+    "workloads": ["general", "coding"],
+    "capabilities": ["chat", "stream", "tools"],
+    "models": ["general-air", "general-pro", "code-air", "code-pro"],
+    "limits": { "concurrency": 2 }
+  },
+  {
+    "id": "free-node-02",
+    "tier": "free",
+    "priority": 90,
+    "provider": "provider-b",
+    "account": "account-02",
+    "secret_ref": "FREE_NODE_02",
+    "workloads": ["general"],
+    "capabilities": ["chat", "stream"],
+    "models": ["general-air"],
+    "limits": { "concurrency": 3 }
+  },
+  {
+    "id": "paid-node-01",
+    "tier": "paid",
+    "priority": 80,
+    "provider": "provider-c",
+    "account": "account-03",
+    "secret_ref": "PAID_NODE_01",
+    "workloads": ["general", "coding"],
+    "capabilities": ["chat", "stream", "tools"],
+    "models": ["general-pro", "code-pro"],
+    "limits": { "concurrency": 5 }
+  },
+  {
+    "id": "plus-node-01",
+    "tier": "plus",
+    "priority": 50,
+    "provider": "provider-d",
+    "account": "account-04",
+    "secret_ref": "PLUS_NODE_01",
+    "workloads": ["coding", "critical"],
+    "capabilities": ["chat", "stream", "tools"],
+    "models": ["code-pro", "code-max"],
+    "limits": { "concurrency": 3 }
+  }
+]

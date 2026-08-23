@@ -1,0 +1,28 @@
+{
+  "general-fast": {
+    "tiers": ["free", "paid"],
+    "max_attempts": 3,
+    "retry_budget": {
+      "free": 2,
+      "paid": 1
+    }
+  },
+  "coding-stable": {
+    "tiers": ["free", "paid", "plus"],
+    "max_attempts": 4,
+    "retry_budget": {
+      "free": 2,
+      "paid": 1,
+      "plus": 1
+    }
+  },
+  "critical-only": {
+    "tiers": ["plus", "paid", "free"],
+    "max_attempts": 3,
+    "retry_budget": {
+      "plus": 1,
+      "paid": 1,
+      "free": 1
+    }
+  }
+}

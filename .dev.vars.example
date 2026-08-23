@@ -11,6 +11,14 @@ PRIMARY_API_TOKENS="token-a@https://primary-a.example/v1,token-b@https://primary
 # MODEL_MAPPING='{"primary-a.example":{"model-alias":"vendor/model-id"}}'
 # STRICT_MODEL_MAPPING="true"
 
+# ============ Node Scheduler 配置（可选，优先于旧配置） ============
+# NODES_CONFIG='[{"id":"free-node-01","tier":"free","priority":100,"provider":"provider-a","secret_ref":"FREE_NODE_01","workloads":["general","coding"],"capabilities":["chat","stream","tools"],"models":["general-air","code-pro"],"limits":{"concurrency":2}}]'
+# MODELS_CONFIG='{"general-air":{"workload":"general","policy":"general-fast"},"code-pro":{"workload":"coding","policy":"coding-stable"}}'
+# POLICIES_CONFIG='{"general-fast":{"tiers":["free","paid"],"max_attempts":3,"retry_budget":{"free":2,"paid":1}},"coding-stable":{"tiers":["free","paid","plus"],"max_attempts":4,"retry_budget":{"free":2,"paid":1,"plus":1}}}'
+# FREE_NODE_01="token@https://free-api.example/v1"
+# PAID_NODE_01="token@https://paid-api.example/v1"
+# PLUS_NODE_01="token@https://plus-api.example/v1"
+
 # 默认安全策略。
 ALLOW_UNSAFE_PROXY_ROUTES="false"
 ALLOW_INSECURE_HTTP_UPSTREAM="false"
