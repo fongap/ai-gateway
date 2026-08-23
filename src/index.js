@@ -293,7 +293,7 @@ function getSetupHtml(configuration) {
 <meta http-equiv="refresh" content="5">
 <title>AI Agent Node Scheduler · 初始化</title>
 <style>
-:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;color:#172126;background:#f4f7f8}*{box-sizing:border-box}body{min-height:100vh;margin:0;display:grid;place-items:center;padding:24px}.card{width:min(680px,100%);padding:36px;border:1px solid #dce4e7;border-radius:18px;background:#fff;box-shadow:0 20px 60px rgba(27,48,58,.1)}.mark{width:48px;height:48px;display:grid;place-items:center;border-radius:14px;background:#48636f;color:#fff;font-size:24px}h1{margin:22px 0 8px;font-size:28px;letter-spacing:-.02em}p{margin:0;color:#66747b;line-height:1.75}.success{margin:22px 0;padding:14px 16px;border:1px solid #cde8d3;border-radius:12px;background:#f1faf3;color:#28723a}.list{margin:20px 0;display:grid;gap:10px}.row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 16px;border:1px solid #e2e8ea;border-radius:12px}.row code{font-size:13px;overflow-wrap:anywhere}.status{flex:none;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:700}.ready{background:#e9f7ed;color:#26713a}.pending{background:#fff3db;color:#995f00}.steps{padding:18px;border-radius:12px;background:#f5f8f9}.steps strong{display:block;margin-bottom:7px}.steps ol{margin:0;padding-left:20px;color:#536168;line-height:1.8}.note{margin-top:18px;font-size:13px}.actions{display:flex;align-items:center;gap:14px;margin-top:22px}.button{display:inline-block;padding:10px 16px;border-radius:10px;background:#48636f;color:#fff;text-decoration:none;font-weight:700}.auto{font-size:13px;color:#76838a}@media(max-width:560px){.card{padding:24px}.row{align-items:flex-start;flex-direction:column;gap:8px}h1{font-size:24px}}
+:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;color:#172126;background:#f4f7f8}*{box-sizing:border-box}body{min-height:100vh;margin:0;display:grid;place-items:center;padding:24px}.card{width:min(680px,100%);padding:36px;border:1px solid #dce4e7;border-radius:18px;background:#fff;box-shadow:0 20px 60px rgba(27,48,58,.1)}.mark{width:48px;height:48px;display:grid;place-items:center;border-radius:14px;background:#48636f;color:#fff;font-size:24px}h1{margin:22px 0 8px;font-size:28px;letter-spacing:-.02em}p{margin:0;color:#66747b;line-height:1.75}.success{margin:22px 0;padding:14px 16px;border:1px solid #cde8d3;border-radius:12px;background:#f1faf3;color:#28723a}.list{margin:20px 0;display:grid;gap:10px}.row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 16px;border:1px solid #e2e8ea;border-radius:12px}.row code{font-size:13px;overflow-wrap:anywhere}.status{flex:none;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:700}.ready{background:#e9f7ed;color:#26713a}.pending{background:#fff3db;color:#995f00}.code-editor{margin:16px 0;border:1px solid #2b3035;border-radius:11px;overflow:hidden;background:#171a1d}.code-header{height:36px;display:flex;align-items:center;gap:7px;padding:0 14px;background:#202429;border-bottom:1px solid #30353a}.code-header span{margin-left:7px;color:#939aa3;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:11px}.code-editor pre{margin:0;padding:14px 16px;overflow:auto;color:#d7dce2;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12.5px;line-height:1.68;white-space:pre-wrap;word-break:break-all}.str{color:#e6a57e}.note{margin-top:18px;font-size:13px}.actions{display:flex;align-items:center;gap:14px;margin-top:22px}.button{display:inline-block;padding:10px 16px;border-radius:10px;background:#48636f;color:#fff;text-decoration:none;font-weight:700}.auto{font-size:13px;color:#76838a}@media(max-width:560px){.card{padding:24px}.row{align-items:flex-start;flex-direction:column;gap:8px}h1{font-size:24px}}
 </style>
 </head>
 <body>
@@ -308,13 +308,25 @@ function getSetupHtml(configuration) {
   </div>
   <div class="steps">
     <strong>在 Cloudflare 中完成配置</strong>
-    <ol>
-      <li>打开当前 Worker 的"设置 → 变量和机密"。</li>
-      <li>添加 <code>GATEWAY_ACCESS_KEY</code> 作为 Secret。</li>
-      <li>添加 <code>TIER1_NODES_CONFIG</code>、<code>TIER2_NODES_CONFIG</code>、<code>TIER3_NODES_CONFIG</code> 各一个，每层独立 JSON 数组；或使用单个 <code>NODES_CONFIG</code> 定义全部节点。</li>
-      <li>为每个节点的 <code>secret_ref</code> 添加凭据环境变量（<code>Token@BaseURL</code> 格式）。</li>
-      <li>保存并等待新部署生效。配置示例见 config/nodes.example.json。</li>
-    </ol>
+    <p style="font-size:13px;color:var(--muted);margin:5px 0 0">添加以下 5 个 Secret，全部为机密变量，不会出现在代码或日志中。</p>
+    <div class="list" style="margin-top:14px">
+      <div class="row"><code>GATEWAY_ACCESS_KEY</code>${status(configuration.gatewayAccessKeyBound)}</div>
+      <div class="row"><code>TIER1_NODES_CONFIG</code>${status(configuration.nodesConfigBound)}</div>
+      <div class="row"><code>TIER1_NODE_01</code>${status(Boolean(configuration.gatewayAccessKeyBound))}</div>
+    </div>
+    <div class="code-editor" style="margin:16px 0 0">
+      <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>GATEWAY_ACCESS_KEY</span></div>
+      <pre><span class="str">your-random-access-key-here</span></pre>
+    </div>
+    <div class="code-editor">
+      <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>TIER1_NODES_CONFIG</span></div>
+      <pre>[{"id":"tier-1-node-01","secret_ref":"TIER1_NODE_01","models":{"general-air":"your-provider/model","code-pro":"your-provider/code-model"}}]</pre>
+    </div>
+    <div class="code-editor">
+      <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>TIER1_NODE_01</span></div>
+      <pre><span class="str">your-api-token@https://your-api-endpoint/v1</span></pre>
+    </div>
+    <p style="font-size:12px;color:var(--muted);margin-top:12px;line-height:1.6">可选：<code>TIER2_NODES_CONFIG</code> + <code>TIER2_NODE_01</code> 增加第二层回退节点；<code>MODELS_CONFIG</code> 定义逻辑模型映射；<code>POLICIES_CONFIG</code> 控制重试预算。保存后页面自动刷新。</p>
   </div>
   <p class="note">页面只显示是否已绑定，不会读取或显示 Secret 内容。</p>
   <div class="actions"><a class="button" href="/">立即检查</a><span class="auto">每 5 秒自动检查一次</span></div>
