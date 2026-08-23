@@ -37,7 +37,7 @@ Policy (POLICIES_CONFIG)
     ↓
 Node Scheduler
     ↓
-Node Pool (NODES_CONFIG)
+Node Pool (TIER1_NODES_CONFIG)
     ↓
 Provider / Account / API Key
 ```
@@ -156,7 +156,7 @@ Non-production deploy command: npx wrangler versions upload
 
 5. Click **Save and Deploy** for the first deployment;
 6. Visit `https://YOUR-WORKER.workers.dev/` — you will see the setup page;
-7. Add `GATEWAY_ACCESS_KEY` and `NODES_CONFIG` as Secrets in **Settings → Variables and Secrets**, then click Deploy;
+7. Add `GATEWAY_ACCESS_KEY` and `TIER1_NODES_CONFIG` as Secrets in **Settings → Variables and Secrets**, then click Deploy;
 8. The page auto-refreshes within 5 seconds once configuration is ready.
 
 Multiple Workers can share one repository; each Worker keeps its own Secrets independently.
@@ -171,18 +171,18 @@ Configure three JSON Secrets:
 
 | Variable | Purpose |
 |----------|---------|
-| `NODES_CONFIG` | JSON array defining tier-1/tier-2/tier-3 nodes |
+| `TIER1_NODES_CONFIG` | JSON array, tier-1 nodes (token embedded) |
 | `MODELS_CONFIG` | JSON object mapping logical models to workload/policy |
 | `POLICIES_CONFIG` | JSON object defining policies |
 | `TIER1_NODES_CONFIG` etc. | Per-tier config, `token` embedded in each node |
 
-**NODES_CONFIG example:**
+**TIER1_NODES_CONFIG example:**
 
 ```json
 [
-  {"id":"tier-1-node-01","tier":"tier-1","token":"TIER1_NODE_01","models":{"general-air":"tier-1-provider/model-air","code-pro":"tier-1-provider/code-pro"}},
-  {"id":"tier-2-node-01","tier":"tier-2","token":"TIER2_NODE_01","models":{"code-pro":"tier-2-provider/code-pro"}},
-  {"id":"tier-3-node-01","tier":"tier-3","token":"TIER3_NODE_01","models":{"code-max":"tier-3-provider/code-max"}}
+  {"id":"tier-1-node-01","tier":"tier-1","token":"sk-xxx@https://provider-a/v1","models":{"general-air":"tier-1-provider/model-air","code-pro":"tier-1-provider/code-pro"}},
+  {"id":"tier-2-node-01","tier":"tier-2","token":"sk-yyy@https://provider-b/v1","models":{"code-pro":"tier-2-provider/code-pro"}},
+  {"id":"tier-3-node-01","tier":"tier-3","token":"sk-zzz@https://provider-c/v1","models":{"code-max":"tier-3-provider/code-max"}}
 ]
 ```
 

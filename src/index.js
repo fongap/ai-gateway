@@ -293,8 +293,7 @@ function getSetupHtml(configuration) {
     <div class="list" style="margin-top:14px">
       <div class="row"><code>GATEWAY_ACCESS_KEY</code>${status(configuration.gatewayAccessKeyBound)}</div>
       <div class="row"><code>TIER1_NODES_CONFIG</code>${status(configuration.nodesConfigBound)}</div>
-      <div class="row"><code>TIER1_NODE_01</code>${status(Boolean(configuration.gatewayAccessKeyBound))}</div>
-    </div>
+          </div>
     <div class="code-editor" style="margin:16px 0 0">
       <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>GATEWAY_ACCESS_KEY</span></div>
       <pre><span class="str">your-random-access-key-here</span></pre>

@@ -1,6 +1,6 @@
 # 配置说明 / Configuration
 
-网关以 Node Scheduler 为核心，通过 `NODES_CONFIG` + `MODELS_CONFIG` + `POLICIES_CONFIG` 三个 JSON Secret 定义三层节点池（tier-1 / tier-2 / tier-3）。不依赖任何旧版 API 转发配置。
+网关以 Node Scheduler 为核心，通过 `TIER1_NODES_CONFIG` + `MODELS_CONFIG` + `POLICIES_CONFIG` 三个 JSON Secret 定义三层节点池（tier-1 / tier-2 / tier-3）。不依赖任何旧版 API 转发配置。
 
 ## 鉴权
 
@@ -24,7 +24,7 @@ x-api-key: <GATEWAY_ACCESS_KEY>
 
 # 一、核心配置
 
-## `NODES_CONFIG`
+## `TIER1_NODES_CONFIG`
 
 JSON 数组，定义全部调度节点。每个节点字段：
 
@@ -38,14 +38,14 @@ JSON 数组，定义全部调度节点。每个节点字段：
 | `provider` | 否 | 可选，服务商标识，仅用于诊断展示 |
 | `limits.concurrency` | 否 | 可选，单节点并发上限；默认 2 |
 
-示例（保存为 Secret `NODES_CONFIG`）：
+示例（保存为 Secret `TIER1_NODES_CONFIG`）：
 
 ```json
 [
   {
     "id": "tier-1-node-01",
     "tier": "tier-1",
-    "token": "TIER1_NODE_01",
+    "token": "sk-xxx@https://provider-a/v1",
     "models": {
       "general-air": "tier-1-provider/model-air",
       "code-pro": "tier-1-provider/code-pro"
@@ -54,7 +54,7 @@ JSON 数组，定义全部调度节点。每个节点字段：
   {
     "id": "tier-2-node-01",
     "tier": "tier-2",
-    "token": "TIER2_NODE_01",
+    "token": "sk-yyy@https://provider-b/v1",
     "models": {
       "code-pro": "tier-2-provider/code-pro"
     }
@@ -62,7 +62,7 @@ JSON 数组，定义全部调度节点。每个节点字段：
   {
     "id": "tier-3-node-01",
     "tier": "tier-3",
-    "token": "TIER3_NODE_01",
+    "token": "sk-zzz@https://provider-c/v1",
     "models": {
       "code-max": "tier-3-provider/code-max"
     }
@@ -77,16 +77,13 @@ JSON 数组，定义全部调度节点。每个节点字段：
 每个节点的 `token` 直接内嵌在节点定义中，值为 OpenAI 兼容上游凭据：
 
 ```text
-TIER1_NODE_01=sk-xxx@https://free-api.example/v1
-TIER2_NODE_01=sk-yyy@https://paid-api.example/v1
-TIER3_NODE_01=sk-zzz@https://plus-api.example/v1
 ```
 
 格式为 `Token@BaseURL`。所有节点凭据都必须保存为 Cloudflare Secret。默认仅接受 HTTPS 上游；只有显式设置 `ALLOW_INSECURE_HTTP_UPSTREAM=true` 才允许 HTTP（仅限本地受控测试）。
 
 ## `MODELS_CONFIG`
 
-JSON 对象，定义客户端可见的逻辑模型。客户端只使用这些模型名，真实 Provider 模型名不暴露（由 `NODES_CONFIG.models` 映射）。
+JSON 对象，定义客户端可见的逻辑模型。客户端只使用这些模型名，真实 Provider 模型名不暴露（由 `TIER1_NODES_CONFIG.models` 映射）。
 
 每个模型字段：
 
@@ -255,7 +252,7 @@ OpenAI 与 Anthropic 接口要求 `Content-Type: application/json`。除 `Conten
 
 ## 模型列表
 
-`/v1/models` 返回 `NODES_CONFIG` 中所有节点声明过的逻辑模型并集，按名称排序。不会查询或暴露任何上游真实模型目录，也不暴露上游地址。
+`/v1/models` 返回 `TIER1_NODES_CONFIG` 中所有节点声明过的逻辑模型并集，按名称排序。不会查询或暴露任何上游真实模型目录，也不暴露上游地址。
 
 | 变量 | 默认值 | 说明 |
 |---|---:|---|
@@ -300,7 +297,7 @@ CACHE_MAX_BODY_BYTES
 
 ### `/version`
 
-公开端点，返回项目版本及配置就绪状态（是否已绑定 `GATEWAY_ACCESS_KEY` 与 `NODES_CONFIG`）。只返回布尔值，不返回 Secret 内容。
+公开端点，返回项目版本及配置就绪状态（是否已绑定 `GATEWAY_ACCESS_KEY` 与 `TIER1_NODES_CONFIG`）。只返回布尔值，不返回 Secret 内容。
 
 ### `/health`
 

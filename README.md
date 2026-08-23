@@ -37,7 +37,7 @@ Policy (POLICIES_CONFIG)
     ↓
 Node Scheduler
     ↓
-Node Pool (NODES_CONFIG)
+Node Pool (TIER1_NODES_CONFIG)
     ↓
 Provider / Account / API Key (token 环境变量)
 ```
@@ -162,7 +162,7 @@ Non-production deploy command: npx wrangler versions upload
 
 5. 点击 **Save and Deploy**，先完成 Worker 的首次部署；
 6. 打开 `https://YOUR-WORKER.workers.dev/`，此时会显示"Worker 已部署，等待完成配置"的初始化页面；
-7. 在该 Worker 的 **Settings → Variables and Secrets** 中添加 `GATEWAY_ACCESS_KEY` 与 `NODES_CONFIG`，类型选择 **Secret**，然后点击 **Deploy**；
+7. 在该 Worker 的 **Settings → Variables and Secrets** 中添加 `GATEWAY_ACCESS_KEY` 与 `TIER1_NODES_CONFIG`，类型选择 **Secret**，然后点击 **Deploy**；
 8. 配置生效后，初始化页面会在 5 秒内自动刷新到正常网关主页。
 
 ### 一个仓库部署多个 Workers
@@ -177,18 +177,18 @@ Non-production deploy command: npx wrangler versions upload
 
 | 变量 | 说明 |
 |------|------|
-| `NODES_CONFIG` | JSON 数组，定义 tier-1/tier-2/tier-3 节点 |
+| `TIER1_NODES_CONFIG` | JSON 数组，tier-1 层节点定义（token 内嵌） |
 | `MODELS_CONFIG` | JSON 对象，逻辑模型到 workload/policy 的映射 |
 | `POLICIES_CONFIG` | JSON 对象，策略定义 |
 | `TIER1_NODES_CONFIG` 等 | 按层分别配置，`token` 直接内嵌在节点中 |
 
-**NODES_CONFIG 示例：**
+**TIER1_NODES_CONFIG 示例：**
 
 ```json
 [
-  {"id":"tier-1-node-01","tier":"tier-1","token":"TIER1_NODE_01","models":{"general-air":"tier-1-provider/model-air","code-pro":"tier-1-provider/code-pro"}},
-  {"id":"tier-2-node-01","tier":"tier-2","token":"TIER2_NODE_01","models":{"code-pro":"tier-2-provider/code-pro"}},
-  {"id":"tier-3-node-01","tier":"tier-3","token":"TIER3_NODE_01","models":{"code-max":"tier-3-provider/code-max"}}
+  {"id":"tier-1-node-01","tier":"tier-1","token":"sk-xxx@https://provider-a/v1","models":{"general-air":"tier-1-provider/model-air","code-pro":"tier-1-provider/code-pro"}},
+  {"id":"tier-2-node-01","tier":"tier-2","token":"sk-yyy@https://provider-b/v1","models":{"code-pro":"tier-2-provider/code-pro"}},
+  {"id":"tier-3-node-01","tier":"tier-3","token":"sk-zzz@https://provider-c/v1","models":{"code-max":"tier-3-provider/code-max"}}
 ]
 ```
 

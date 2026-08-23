@@ -81,7 +81,7 @@ console.log('   PASS\n');
 console.log('8. Health check...');
 const { buildHealthResponse } = await import('../src/reliability/health.js');
 const health = buildHealthResponse([
-  { id: 'tier-1-node-01', tier: 'tier-1', priority: 100, provider: 'test', account: 'test', secret_ref: '', workloads: ['general'], capabilities: ['chat'], models: {}, limits: { concurrency: 2 } },
+  { id: 'tier-1-node-01', tier: 'tier-1', priority: 100, provider: 'test', account: 'test', token: '', workloads: ['general'], capabilities: ['chat'], models: {}, limits: { concurrency: 2 } },
 ], {});
 assert.ok(health.status === 'ok' || health.status === 'misconfigured', 'Health should have status');
 assert.ok(health.nodes_total >= 0, 'Should have nodes_total');

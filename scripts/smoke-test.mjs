@@ -22,7 +22,7 @@ const versionJson = await version.json();
 assert.equal(versionJson.name, 'AI Agent Node Scheduler');
 assert.equal(versionJson.version, '5.14.0');
 
-// 未配置 NODES_CONFIG 时，即使有 GATEWAY_ACCESS_KEY 也处于待配置状态
+// 未配置 TIER1_NODES_CONFIG 时，即使有 GATEWAY_ACCESS_KEY 也处于待配置状态
 const env = {
   GATEWAY_ACCESS_KEY: 'test-gateway-key',
   LOG_LEVEL: 'none',
@@ -99,7 +99,7 @@ const metrics = await worker.fetch(
 assert.equal(metrics.status, 200);
 assert.match(await metrics.text(), /edge_gateway_node_health_score/);
 
-// ===== 模型列表：只返回 NODES_CONFIG 中声明的逻辑模型 =====
+// ===== 模型列表：只返回已配置节点声明的逻辑模型 =====
 const models = await worker.fetch(
   new Request('https://gateway.example/v1/models', {
     headers: { Authorization: 'Bearer test-gateway-key' },

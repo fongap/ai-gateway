@@ -127,7 +127,7 @@ const testNodes = loadNodesConfig({ TIER1_NODES_CONFIG: JSON.stringify([
   { id: 'tier-1-node-01', token: 'sk-test@https://test.example/v1', models: { 'm': 'um' } },
 ]) });
 assert.equal(testNodes[0].token, 'sk-test@https://test.example/v1', 'Token should be inline in node config');
-assert.equal(testNodes[0].secret_ref, undefined, 'No secret_ref field');
+assert.equal(testNodes[0].token, "sk-test@https://test.example/v1", 'Token is inline');
 console.log('   PASS: Token handling works\n');
 
 // Test 11: HTTPS enforcement

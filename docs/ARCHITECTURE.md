@@ -9,7 +9,7 @@ Policy (POLICIES_CONFIG)
     ↓
 Node Scheduler
     ↓
-Node Pool (NODES_CONFIG)
+Node Pool (TIER1/TIER2/TIER3_NODES_CONFIG)
     ↓
 Provider / Account / API Key
 ```
