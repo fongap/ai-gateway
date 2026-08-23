@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
+import { __resetAllNodeStateForTests } from '../src/config/node-state.js';
 
 const ctx = {
   waitUntil() {},
@@ -11,7 +12,6 @@ assert.equal(setupPage.status, 200);
 assert.equal(setupPage.headers.get('cache-control'), 'no-store');
 assert.match(await setupPage.text(), /等待完成配置/);
 
-
 const version = await worker.fetch(
   new Request('https://gateway.example/version'),
   {},
@@ -19,26 +19,22 @@ const version = await worker.fetch(
 );
 assert.equal(version.status, 200);
 const versionJson = await version.json();
-assert.equal(versionJson.name, 'Smart Edge Gateway');
+assert.equal(versionJson.name, 'AI Agent Node Scheduler');
 assert.equal(versionJson.version, '5.14.0');
 
+// 未配置 NODES_CONFIG 时，即使有 GATEWAY_ACCESS_KEY 也处于待配置状态
 const env = {
   GATEWAY_ACCESS_KEY: 'test-gateway-key',
-  PRIMARY_API_TOKENS: 'test-token@https://upstream.example/v1',
   LOG_LEVEL: 'none',
 };
 
-const dashboard = await worker.fetch(
+const dashboardPending = await worker.fetch(
   new Request('https://gateway.example/', { headers: { Accept: 'text/html' } }),
   env,
   ctx,
 );
-assert.equal(dashboard.status, 200);
-assert.equal(dashboard.headers.get('cache-control'), 'no-store');
-const dashboardHtml = await dashboard.text();
-assert.match(dashboardHtml, /双协议接入/);
-assert.match(dashboardHtml, /Node Scheduler/);
-assert.doesNotMatch(dashboardHtml, /等待完成配置/);
+assert.equal(dashboardPending.status, 200);
+assert.match(await dashboardPending.text(), /等待完成配置/);
 
 const unauthorized = await worker.fetch(
   new Request('https://gateway.example/health'),
@@ -47,99 +43,275 @@ const unauthorized = await worker.fetch(
 );
 assert.equal(unauthorized.status, 401);
 
+// 完整 Node 配置环境
+function makeNodeEnv(overrides = {}) {
+  return {
+    GATEWAY_ACCESS_KEY: 'test-gateway-key',
+    NODES_CONFIG: JSON.stringify([
+      {
+        id: 'free-node-01', tier: 'free', priority: 100,
+        provider: 'provider-a', secret_ref: 'FREE_NODE_01',
+        workloads: ['general', 'coding'], models: { 'general-air': 'free-model-air', 'general-pro': 'free-model-pro' },
+        limits: { concurrency: 2 },
+      },
+      {
+        id: 'paid-node-01', tier: 'paid', priority: 80,
+        provider: 'provider-b', secret_ref: 'PAID_NODE_01',
+        workloads: ['general', 'coding'], models: { 'general-air': 'paid-model-air', 'general-pro': 'paid-model-pro' },
+        limits: { concurrency: 5 },
+      },
+    ]),
+    FREE_NODE_01: 'free-token@https://free-node.example/v1',
+    PAID_NODE_01: 'paid-token@https://paid-node.example/v1',
+    MODELS_CONFIG: JSON.stringify({
+      'general-air': { workload: 'general', policy: 'general-fast' },
+      'general-pro': { workload: 'general', policy: 'general-fast' },
+    }),
+    POLICIES_CONFIG: JSON.stringify({
+      'general-fast': { tiers: ['free', 'paid'], max_attempts: 3, retry_budget: { free: 2, paid: 1, plus: 1 } },
+    }),
+    ...overrides,
+  };
+}
+
+const dashboard = await worker.fetch(
+  new Request('https://gateway.example/', { headers: { Accept: 'text/html' } }),
+  makeNodeEnv(),
+  ctx,
+);
+assert.equal(dashboard.status, 200);
+assert.equal(dashboard.headers.get('cache-control'), 'no-store');
+const dashboardHtml = await dashboard.text();
+assert.match(dashboardHtml, /Node Scheduler/);
+assert.match(dashboardHtml, /配置指南/);
+assert.doesNotMatch(dashboardHtml, /等待完成配置/);
+
 const health = await worker.fetch(
   new Request('https://gateway.example/health', {
     headers: { Authorization: 'Bearer test-gateway-key' },
   }),
-  env,
+  makeNodeEnv(),
   ctx,
 );
 assert.equal(health.status, 200);
 const healthJson = await health.json();
-assert.ok(healthJson);
+assert.equal(healthJson.status, 'ok');
+assert.equal(healthJson.nodes_total, 2);
+assert.equal(healthJson.tiers.free, 1);
+assert.equal(healthJson.tiers.paid, 1);
 
 const metrics = await worker.fetch(
   new Request('https://gateway.example/metrics', {
     headers: { 'x-api-key': 'test-gateway-key' },
   }),
-  env,
+  makeNodeEnv(),
   ctx,
 );
 assert.equal(metrics.status, 200);
-assert.match(await metrics.text(), /gateway_/);
+assert.match(await metrics.text(), /edge_gateway_node_health_score/);
+
+// ===== 模型列表：只返回 NODES_CONFIG 中声明的逻辑模型 =====
+const models = await worker.fetch(
+  new Request('https://gateway.example/v1/models', {
+    headers: { Authorization: 'Bearer test-gateway-key' },
+  }),
+  makeNodeEnv(),
+  ctx,
+);
+assert.equal(models.status, 200);
+const modelsJson = await models.json();
+assert.deepEqual(modelsJson.data.map(item => item.id), ['general-air', 'general-pro']);
 
 const originalFetch = globalThis.fetch;
-const modelCalls = [];
+
+__resetAllNodeStateForTests();
+
+// ===== free-node 优先调度 + 上游模型映射 =====
+let captured = {};
+globalThis.fetch = async (url, init) => {
+  captured.url = String(url);
+  captured.auth = new Headers(init.headers).get('authorization');
+  captured.body = JSON.parse(String(init.body || '{}'));
+  return new Response(JSON.stringify({
+    id: 'chatcmpl-01', object: 'chat.completion', model: captured.body.model,
+    choices: [{ index: 0, message: { role: 'assistant', content: 'ok-from-' + new URL(captured.url).hostname }, finish_reason: 'stop' }],
+  }), { status: 200, headers: { 'content-type': 'application/json' } });
+};
+const chatResponse = await worker.fetch(
+  new Request('https://gateway.example/v1/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer test-gateway-key', 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'general-air', messages: [{ role: 'user', content: 'hi' }] }),
+  }),
+  makeNodeEnv(),
+  ctx,
+);
+assert.equal(chatResponse.status, 200);
+assert.match(captured.url, /free-node\.example/); // free 节点优先
+assert.equal(captured.auth, 'Bearer free-token'); // secret_ref 凭据注入
+assert.equal(captured.body.model, 'free-model-air'); // 逻辑模型 → 上游模型映射
+const chatJson = await chatResponse.json();
+assert.equal(chatJson.model, 'general-air'); // 响应中保留客户端请求的逻辑模型名
+
+// ===== 429 自动切换：free 冷却后切到 paid =====
+let callHosts = [];
 globalThis.fetch = async (url) => {
-  modelCalls.push(String(url));
-  if (modelCalls.length === 1) {
-    return new Response(JSON.stringify({ error: { message: 'models endpoint unavailable' } }), {
-      status: 404,
-      headers: { 'content-type': 'application/json' },
+  const host = new URL(String(url)).hostname;
+  callHosts.push(host);
+  if (host === 'free-node.example') {
+    return new Response(JSON.stringify({ error: { message: 'rate limited' } }), {
+      status: 429, headers: { 'content-type': 'application/json', 'retry-after': '60' },
     });
   }
   return new Response(JSON.stringify({
-    object: 'list',
-    data: [{ id: 'upstream-model', object: 'model', owned_by: 'provider' }],
-  }), {
-    status: 200,
-    headers: { 'content-type': 'application/json' },
-  });
+    id: 'chatcmpl-fb', object: 'chat.completion', model: 'paid-model-air',
+    choices: [{ index: 0, message: { role: 'assistant', content: 'from-paid' }, finish_reason: 'stop' }],
+  }), { status: 200, headers: { 'content-type': 'application/json' } });
 };
+const failoverEnv = makeNodeEnv();
+callHosts = [];
+const failoverResponse = await worker.fetch(
+  new Request('https://gateway.example/v1/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer test-gateway-key', 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'general-air', messages: [{ role: 'user', content: 'hi' }] }),
+  }),
+  failoverEnv,
+  ctx,
+);
+assert.equal(failoverResponse.status, 200);
+assert.deepEqual(callHosts, ['free-node.example', 'paid-node.example']);
+// 第二次请求：free 已冷却，直接使用 paid
+callHosts = [];
+await worker.fetch(
+  new Request('https://gateway.example/v1/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer test-gateway-key', 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'general-air', messages: [{ role: 'user', content: 'hi' }] }),
+  }),
+  failoverEnv,
+  ctx,
+);
+assert.deepEqual(callHosts, ['paid-node.example']);
 
-try {
-  const modelsEnv = {
-    ...env,
-    PRIMARY_API_TOKENS: 'token-a@https://primary-a.example/v1,token-b@https://primary-b.example/v1',
-    MODEL_MAPPING: JSON.stringify({
-      'primary-b.example': {
-        'gateway-model': 'vendor/model-id',
+// ===== 全部节点不可用时返回 429 =====
+const exhaustedEnv = makeNodeEnv({ RATE_LIMIT_COOLDOWN_MS: '60000' });
+// 让两个节点都进入冷却
+for (let i = 0; i < 6; i++) {
+  globalThis.fetch = async () => new Response('{}', { status: 429, headers: { 'retry-after': '60' } });
+  try { await worker.fetch(
+    new Request('https://gateway.example/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test-gateway-key', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'general-pro', messages: [] }),
+    }), exhaustedEnv, ctx);
+  } catch {}
+}
+globalThis.fetch = async () => new Response('{}', { status: 500 });
+const allExhausted = await worker.fetch(
+  new Request('https://gateway.example/v1/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer test-gateway-key', 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'general-pro', messages: [] }),
+  }),
+  exhaustedEnv,
+  ctx,
+);
+assert.equal(allExhausted.status, 429); // 全部节点冷却/熔断中
+
+// ===== 不泄露 Secret 与上游 hostname =====
+const hiddenFailure = allExhausted;
+const hiddenText = await hiddenFailure.text();
+assert.doesNotMatch(hiddenText, /free-token|paid-token/);
+assert.doesNotMatch(hiddenText, /free-node\.example|paid-node\.example/);
+
+__resetAllNodeStateForTests();
+
+// ===== 流式响应透传（OpenAI）=====
+globalThis.fetch = async () => new Response(
+  new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"hello"}}]}\n\n'));
+      controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'));
+      controller.close();
+    },
+  }),
+  { status: 200, headers: { 'content-type': 'text/event-stream' } },
+);
+const streamRequest = new Request('https://gateway.example/v1/chat/completions', {
+  method: 'POST',
+  headers: { Authorization: 'Bearer test-gateway-key', 'content-type': 'application/json' },
+  body: JSON.stringify({ model: 'general-air', stream: true, messages: [{ role: 'user', content: 'hi' }] }),
+});
+const streamResponse = await worker.fetch(streamRequest, makeNodeEnv(), ctx);
+assert.equal(streamResponse.status, 200);
+const streamBody = await streamResponse.text();
+assert.match(streamBody, /hello/);
+
+__resetAllNodeStateForTests();
+
+// ===== Anthropic 协议桥接 =====
+let anthropicCaptured = {};
+globalThis.fetch = async (url, init) => {
+  anthropicCaptured.body = JSON.parse(String(init.body || '{}'));
+  return new Response(JSON.stringify({
+    id: 'chatcmpl-anthropic', object: 'chat.completion', model: anthropicCaptured.body.model,
+    choices: [{ index: 0, message: { role: 'assistant', content: 'anthropic-ok' }, finish_reason: 'stop' }],
+  }), { status: 200, headers: { 'content-type': 'application/json' } });
+};
+const anthropicResponse = await worker.fetch(
+  new Request('https://gateway.example/v1/messages', {
+    method: 'POST',
+    headers: { 'x-api-key': 'test-gateway-key', 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'general-air', max_tokens: 100, messages: [{ role: 'user', content: 'hi' }] }),
+  }),
+  makeNodeEnv(),
+  ctx,
+);
+assert.equal(anthropicResponse.status, 200);
+assert.equal(anthropicCaptured.body.stream, false); // 默认不改写流式
+const anthropicJson = await anthropicResponse.json();
+assert.equal(anthropicJson.type, 'message');
+assert.equal(anthropicJson.content[0].text, 'anthropic-ok');
+
+__resetAllNodeStateForTests();
+
+// ===== First Event Guard：空流触发 failover 到下一节点 =====
+let guardCalls = [];
+globalThis.fetch = async (url) => {
+  const host = new URL(String(url)).hostname;
+  guardCalls.push(host);
+  if (host === 'free-node.example') {
+    // 空流：立即关闭，无任何事件
+    return new Response(new ReadableStream({ start(c) { c.close(); } }), {
+      status: 200, headers: { 'content-type': 'text/event-stream' },
+    });
+  }
+  return new Response(
+    new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"paid-stream"}}]}\n\n'));
+        controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+        controller.close();
       },
     }),
-  };
-  const models = await worker.fetch(
-    new Request('https://gateway.example/v1/models', {
-      headers: { Authorization: 'Bearer test-gateway-key' },
-    }),
-    modelsEnv,
-    ctx,
+    { status: 200, headers: { 'content-type': 'text/event-stream' } },
   );
-  assert.equal(models.status, 200);
-  const modelsJson = await models.json();
-  assert.equal(modelsJson.object, 'list');
-  assert.deepEqual(modelsJson.data.map(item => item.id), ['gateway-model', 'upstream-model']);
-  assert.equal(modelCalls.length, 2);
-  assert.equal(models.headers.get('x-edge-gateway-model-source'), 'upstream+configured');
+};
+guardCalls = [];
+const guardRequest = new Request('https://gateway.example/v1/chat/completions', {
+  method: 'POST',
+  headers: { Authorization: 'Bearer test-gateway-key', 'content-type': 'application/json' },
+  body: JSON.stringify({ model: 'general-air', stream: true, messages: [{ role: 'user', content: 'hi' }] }),
+});
+const guardResponse = await worker.fetch(guardRequest, makeNodeEnv(), ctx);
+assert.equal(guardResponse.status, 200);
+assert.deepEqual(guardCalls, ['free-node.example', 'paid-node.example']); // 空流后 failover
+const guardBody = await guardResponse.text();
+assert.match(guardBody, /paid-stream/);
+assert.doesNotMatch(guardBody, /free-model/);
 
-  globalThis.fetch = async () => new Response(JSON.stringify({ error: { message: 'not supported' } }), {
-    status: 404,
-    headers: { 'content-type': 'application/json' },
-  });
-  const configuredOnly = await worker.fetch(
-    new Request('https://gateway.example/models', {
-      headers: { 'x-api-key': 'test-gateway-key' },
-    }),
-    modelsEnv,
-    ctx,
-  );
-  assert.equal(configuredOnly.status, 200);
-  const configuredOnlyJson = await configuredOnly.json();
-  assert.deepEqual(configuredOnlyJson.data.map(item => item.id), ['gateway-model']);
-  assert.equal(configuredOnly.headers.get('x-edge-gateway-model-source'), 'configured');
-
-  const unauthorizedModels = await worker.fetch(
-    new Request('https://gateway.example/v1/models'),
-    modelsEnv,
-    ctx,
-  );
-  assert.equal(unauthorizedModels.status, 401);
-} finally {
-  globalThis.fetch = originalFetch;
-}
-
-console.log('Smoke tests passed.');
-
-// 未知路径默认拒绝，不得把 DELETE/文件等管理接口转发给上游。
+// ===== 未知路径默认拒绝 =====
 let unexpectedProxyCalls = 0;
 globalThis.fetch = async () => { unexpectedProxyCalls++; return new Response('{}'); };
 const blockedRoute = await worker.fetch(
@@ -147,236 +319,27 @@ const blockedRoute = await worker.fetch(
     method: 'DELETE',
     headers: { Authorization: 'Bearer test-gateway-key' },
   }),
-  env,
+  makeNodeEnv(),
   ctx,
 );
 assert.equal(blockedRoute.status, 404);
 assert.equal(unexpectedProxyCalls, 0);
 
-// Base URL 固定查询参数必须保留，客户端查询参数可覆盖同名项。
-let capturedTargetUrl = '';
-globalThis.fetch = async (url) => {
-  capturedTargetUrl = String(url);
-  return new Response(JSON.stringify({
-    id: 'chatcmpl-test', object: 'chat.completion', model: 'upstream-model',
-    choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
-  }), { status: 200, headers: { 'content-type': 'application/json', server: 'hidden-upstream' } });
-};
-const queryEnv = {
-  ...env,
-  PRIMARY_API_TOKENS: 'query-token@https://query-upstream.example/v1?api-version=2026-01-01&mode=base',
-};
-const queryResponse = await worker.fetch(
-  new Request('https://gateway.example/v1/chat/completions?mode=client&trace=1&tag=a&tag=b', {
-    method: 'POST',
-    headers: { Authorization: 'Bearer test-gateway-key', 'content-type': 'application/json' },
-    body: JSON.stringify({ model: 'upstream-model', messages: [{ role: 'user', content: 'hi' }] }),
-  }), queryEnv, ctx,
-);
-assert.equal(queryResponse.status, 200);
-const captured = new URL(capturedTargetUrl);
-assert.equal(captured.pathname, '/v1/chat/completions');
-assert.equal(captured.searchParams.get('api-version'), '2026-01-01');
-assert.equal(captured.searchParams.get('mode'), 'client');
-assert.equal(captured.searchParams.get('trace'), '1');
-assert.deepEqual(captured.searchParams.getAll('tag'), ['a', 'b']);
-assert.equal(queryResponse.headers.get('server'), null);
-
-// Primary 默认只接受 HTTPS。
+// ===== HTTP 上游默认拒绝 =====
+__resetAllNodeStateForTests();
 const insecure = await worker.fetch(
   new Request('https://gateway.example/v1/chat/completions', {
     method: 'POST',
     headers: { Authorization: 'Bearer test-gateway-key', 'content-type': 'application/json' },
     body: JSON.stringify({ model: 'x', messages: [] }),
   }),
-  { ...env, PRIMARY_API_TOKENS: 'token@http://insecure.example/v1' },
+  makeNodeEnv({
+    NODES_CONFIG: JSON.stringify([{ id: 'free-node-01', tier: 'free', secret_ref: 'FREE_NODE_01' }]),
+    FREE_NODE_01: 'tok@http://insecure.example/v1',
+  }),
   ctx,
 );
 assert.equal(insecure.status, 500);
 
-// 严格模型映射开启后，只允许配置中的网关模型名。
-const strictEnv = {
-  ...env,
-  PRIMARY_API_TOKENS: 'strict-token@https://strict.example/v1',
-  STRICT_MODEL_MAPPING: 'true',
-  MODEL_MAPPING: JSON.stringify({ 'strict.example': { allowed: 'vendor/allowed' } }),
-};
-const strictDenied = await worker.fetch(
-  new Request('https://gateway.example/v1/chat/completions', {
-    method: 'POST',
-    headers: { Authorization: 'Bearer test-gateway-key', 'content-type': 'application/json' },
-    body: JSON.stringify({ model: 'not-allowed', messages: [] }),
-  }), strictEnv, ctx,
-);
-assert.equal(strictDenied.status, 400);
-
-// Primary 进入 429 冷却后，下一次请求应直接跳过 Primary，使用 Fallback。
-const routedHosts = [];
-globalThis.fetch = async (url) => {
-  const host = new URL(String(url)).hostname;
-  routedHosts.push(host);
-  if (host === 'cool-primary.example') {
-    return new Response(JSON.stringify({ error: { message: 'rate limited' } }), {
-      status: 429, headers: { 'content-type': 'application/json', 'retry-after': '60' },
-    });
-  }
-  return new Response(JSON.stringify({
-    id: 'chatcmpl-fallback', object: 'chat.completion', model: 'fallback-model',
-    choices: [{ index: 0, message: { role: 'assistant', content: 'fallback' }, finish_reason: 'stop' }],
-  }), { status: 200, headers: { 'content-type': 'application/json' } });
-};
-const coolingEnv = {
-  ...env,
-  PRIMARY_API_TOKENS: 'cool-token@https://cool-primary.example/v1',
-  FALLBACK_ENABLED: 'true',
-  FALLBACK_API_TOKEN: 'fallback-token',
-  FALLBACK_BASE_URL: 'https://cool-fallback.example/v1',
-  FALLBACK_PRIMARY_MODEL: 'fallback-model',
-};
-const makeCoolingRequest = () => new Request('https://gateway.example/v1/chat/completions', {
-  method: 'POST', headers: { Authorization: 'Bearer test-gateway-key', 'content-type': 'application/json' },
-  body: JSON.stringify({ model: 'requested-model', messages: [{ role: 'user', content: 'hi' }] }),
-});
-assert.equal((await worker.fetch(makeCoolingRequest(), coolingEnv, ctx)).status, 200);
-assert.deepEqual(routedHosts, ['cool-primary.example', 'cool-fallback.example']);
-routedHosts.length = 0;
-assert.equal((await worker.fetch(makeCoolingRequest(), coolingEnv, ctx)).status, 200);
-assert.deepEqual(routedHosts, ['cool-fallback.example']);
-
-// 流式连接在结束前应保持 active_requests，占满硬并发上限时拒绝新请求。
-let streamController;
-let streamFetchCalls = 0;
-globalThis.fetch = async () => {
-  streamFetchCalls++;
-  const body = new ReadableStream({
-    start(controller) {
-      streamController = controller;
-      controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"a"}}]}\n\n'));
-    },
-  });
-  return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
-};
-const streamEnv = {
-  ...env,
-  PRIMARY_API_TOKENS: 'stream-token@https://stream.example/v1',
-  PRIMARY_MAX_CONCURRENCY_PER_ENDPOINT: '1',
-};
-const makeStreamRequest = () => new Request('https://gateway.example/v1/chat/completions', {
-  method: 'POST', headers: { Authorization: 'Bearer test-gateway-key', 'content-type': 'application/json' },
-  body: JSON.stringify({ model: 'stream-model', stream: true, messages: [{ role: 'user', content: 'hi' }] }),
-});
-const firstStream = await worker.fetch(makeStreamRequest(), streamEnv, ctx);
-assert.equal(firstStream.status, 200);
-const streamHealth = await worker.fetch(new Request('https://gateway.example/health', {
-  headers: { Authorization: 'Bearer test-gateway-key' },
-}), streamEnv, ctx);
-const streamHealthJson = await streamHealth.json();
-assert.equal(streamHealthJson.endpoints[0].active_requests, 1);
-const blockedByConcurrency = await worker.fetch(makeStreamRequest(), streamEnv, ctx);
-assert.equal(blockedByConcurrency.status, 429);
-assert.equal(streamFetchCalls, 1);
-streamController.close();
-await firstStream.text();
-const endedHealth = await worker.fetch(new Request('https://gateway.example/health', {
-  headers: { Authorization: 'Bearer test-gateway-key' },
-}), streamEnv, ctx);
-assert.equal((await endedHealth.json()).endpoints[0].active_requests, 0);
-
 globalThis.fetch = originalFetch;
-console.log('Extended safety tests passed.');
-
-// 客户端提供的 Idempotency-Key 应原样转发；非流式请求默认不得被改成 stream=true。
-let forwardedIdempotencyKey = '';
-let forwardedBody = null;
-globalThis.fetch = async (_url, init) => {
-  forwardedIdempotencyKey = new Headers(init.headers).get('idempotency-key') || '';
-  forwardedBody = JSON.parse(String(init.body || '{}'));
-  return new Response(JSON.stringify({
-    id: 'chatcmpl-idempotency', object: 'chat.completion', model: 'model',
-    choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
-  }), { status: 200, headers: { 'content-type': 'application/json' } });
-};
-const idempotencyResponse = await worker.fetch(
-  new Request('https://gateway.example/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      Authorization: 'Bearer test-gateway-key',
-      'content-type': 'application/json',
-      'Idempotency-Key': 'request-123',
-    },
-    body: JSON.stringify({ model: 'model', stream: false, messages: [] }),
-  }),
-  { ...env, PRIMARY_API_TOKENS: 'idem-token@https://idem.example/v1' },
-  ctx,
-);
-assert.equal(idempotencyResponse.status, 200);
-assert.equal(forwardedIdempotencyKey, 'request-123');
-assert.equal(forwardedBody.stream, false);
-
-// 最终失败响应在默认配置下不得暴露上游 hostname 或 Base URL。
-globalThis.fetch = async () => new Response(JSON.stringify({ error: { message: 'upstream failure' } }), {
-  status: 500,
-  headers: { 'content-type': 'application/json' },
-});
-const hiddenUpstreamEnv = {
-  ...env,
-  PRIMARY_API_TOKENS: 'hidden-primary-token@https://hidden-primary.example/v1',
-  PRIMARY_MAX_ATTEMPTS: '1',
-  FALLBACK_ENABLED: 'true',
-  FALLBACK_API_TOKEN: 'hidden-fallback-token',
-  FALLBACK_BASE_URL: 'https://hidden-fallback.example/v1',
-  FALLBACK_PRIMARY_MODEL: 'fallback-model',
-};
-const hiddenFailure = await worker.fetch(
-  new Request('https://gateway.example/v1/chat/completions', {
-    method: 'POST',
-    headers: { Authorization: 'Bearer test-gateway-key', 'content-type': 'application/json' },
-    body: JSON.stringify({ model: 'model', messages: [] }),
-  }), hiddenUpstreamEnv, ctx,
-);
-assert.equal(hiddenFailure.status, 502);
-const hiddenFailureText = await hiddenFailure.text();
-assert.doesNotMatch(hiddenFailureText, /hidden-primary\.example/);
-assert.doesNotMatch(hiddenFailureText, /hidden-fallback\.example/);
-
-// 指标保留旧名称兼容，同时提供语义准确的 TTFB 名称。
-const updatedMetrics = await worker.fetch(
-  new Request('https://gateway.example/metrics', {
-    headers: { Authorization: 'Bearer test-gateway-key' },
-  }), env, ctx,
-);
-const updatedMetricsText = await updatedMetrics.text();
-assert.match(updatedMetricsText, /edge_gateway_endpoint_avg_ttfb_ms/);
-assert.match(updatedMetricsText, /edge_gateway_endpoint_avg_latency_ms/);
-
-globalThis.fetch = originalFetch;
-console.log('Extended compatibility tests passed.');
-
-// /health 与 /metrics 应提供独立的客户端请求、成功、失败和 Fallback 统计。
-const statsHealth = await worker.fetch(
-  new Request('https://gateway.example/health', {
-    headers: { Authorization: 'Bearer test-gateway-key' },
-  }), env, ctx,
-);
-assert.equal(statsHealth.status, 200);
-const statsHealthJson = await statsHealth.json();
-assert.ok(statsHealthJson.client_stats.requests_total > 0);
-assert.equal(
-  statsHealthJson.client_stats.requests_total,
-  statsHealthJson.client_stats.successes_total + statsHealthJson.client_stats.failures_total,
-);
-assert.ok(statsHealthJson.client_stats.fallback_activations_total >= 1);
-assert.ok(statsHealthJson.client_stats.fallback_successes_total >= 1);
-
-const statsMetrics = await worker.fetch(
-  new Request('https://gateway.example/metrics', {
-    headers: { Authorization: 'Bearer test-gateway-key' },
-  }), env, ctx,
-);
-const statsMetricsText = await statsMetrics.text();
-assert.match(statsMetricsText, /edge_gateway_client_requests_total/);
-assert.match(statsMetricsText, /edge_gateway_client_successes_total/);
-assert.match(statsMetricsText, /edge_gateway_client_failures_total/);
-assert.match(statsMetricsText, /edge_gateway_fallback_activations_total/);
-
-console.log('Client statistics tests passed.');
+console.log('Smoke tests passed.');

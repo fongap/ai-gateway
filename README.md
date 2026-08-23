@@ -37,9 +37,9 @@ Policy (POLICIES_CONFIG)
     ↓
 Node Scheduler
     ↓
-Node Pool (NODES_CONFIG / legacy PRIMARY_API_TOKENS)
+Node Pool (NODES_CONFIG)
     ↓
-Provider / Account / API Key
+Provider / Account / API Key (secret_ref 环境变量)
 ```
 
 ### 三层 Node Pool
@@ -56,11 +56,9 @@ Provider / Account / API Key
 
 ```text
 src/
-├─ index.js                   主入口，集成 Node Scheduler 与旧兼容
-├─ index-legacy.js             旧版完整代码（re-export 兼容）
-├─ dashboard.js               管理首页 HTML
+├─ index.js                   主入口，Node Scheduler 请求处理
 ├─ config/
-│  ├─ nodes.js                Node 配置加载 + 旧配置转换
+│  ├─ nodes.js                Node 配置加载 + 节点模型映射
 │  ├─ models.js               Model 逻辑模型加载
 │  ├─ policies.js             Policy 策略加载
 │  └─ node-state.js           Node 运行时状态管理
@@ -81,7 +79,6 @@ src/
 ## 核心能力
 
 - **Node 三层调度**：free/paid/plus 资源池，按 workload/model/tier/priority/cooldown/circuit/concurrency/health/latency 排序；
-- **旧配置兼容**：`PRIMARY_API_TOKENS` / `FALLBACK_TOKEN` / `MODEL_MAPPING` 继续工作，自动转换为 free-node；
 - OpenAI 与 Anthropic 双协议接入；
 - 默认启用路径与方法白名单；
 - 节点级 429 冷却与 Retry-After 支持，不整个 Provider 禁用；
@@ -165,7 +162,7 @@ Non-production deploy command: npx wrangler versions upload
 
 5. 点击 **Save and Deploy**，先完成 Worker 的首次部署；
 6. 打开 `https://YOUR-WORKER.workers.dev/`，此时会显示"Worker 已部署，等待完成配置"的初始化页面；
-7. 在该 Worker 的 **Settings → Variables and Secrets** 中添加 `GATEWAY_ACCESS_KEY` 与 `PRIMARY_API_TOKENS`（或 `NODES_CONFIG`），类型选择 **Secret**，然后点击 **Deploy**；
+7. 在该 Worker 的 **Settings → Variables and Secrets** 中添加 `GATEWAY_ACCESS_KEY` 与 `NODES_CONFIG`，类型选择 **Secret**，然后点击 **Deploy**；
 8. 配置生效后，初始化页面会在 5 秒内自动刷新到正常网关主页。
 
 ### 一个仓库部署多个 Workers
@@ -175,8 +172,6 @@ Non-production deploy command: npx wrangler versions upload
 详细步骤见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
 
 ## 配置
-
-### 方式一：Node Scheduler（推荐）
 
 通过三个 JSON Secret 配置完整的 Node 调度系统：
 
@@ -191,9 +186,9 @@ Non-production deploy command: npx wrangler versions upload
 
 ```json
 [
-  {"id":"free-node-01","tier":"free","priority":100,"provider":"provider-a","secret_ref":"FREE_NODE_01","workloads":["general","coding"],"models":["general-air","code-pro"]},
-  {"id":"paid-node-01","tier":"paid","priority":80,"secret_ref":"PAID_NODE_01","workloads":["general","coding"],"models":["code-pro"]},
-  {"id":"plus-node-01","tier":"plus","priority":50,"secret_ref":"PLUS_NODE_01","workloads":["coding","critical"],"models":["code-max"]}
+  {"id":"free-node-01","tier":"free","priority":100,"provider":"provider-a","secret_ref":"FREE_NODE_01","workloads":["general","coding"],"models":{"general-air":"free-provider/model-air","code-pro":"free-provider/code-pro"},"limits":{"concurrency":2}},
+  {"id":"paid-node-01","tier":"paid","priority":80,"secret_ref":"PAID_NODE_01","workloads":["general","coding"],"models":{"code-pro":"paid-provider/code-pro"},"limits":{"concurrency":5}},
+  {"id":"plus-node-01","tier":"plus","priority":50,"secret_ref":"PLUS_NODE_01","workloads":["coding","critical"],"models":{"code-max":"plus-provider/code-max"},"limits":{"concurrency":3}}
 ]
 ```
 
@@ -217,30 +212,6 @@ Non-production deploy command: npx wrangler versions upload
 ```
 
 配置示例文件见 `config/nodes.example.json`、`config/models.example.json`、`config/policies.example.json`。
-
-### 方式二：旧配置（兼容）
-
-旧配置继续工作，自动转换为 `free-node`：
-
-| 变量 | 是否必需 | 说明 |
-|------|----------|------|
-| `GATEWAY_ACCESS_KEY` | 是 | 客户端访问网关的密钥 |
-| `PRIMARY_API_TOKENS` | 是 | 一个或多个上游 Token；支持 `Token@BaseURL` |
-| `PRIMARY_BASE_URL` | 条件必需 | Token 未绑定 URL 时使用 |
-| `MODEL_MAPPING` | 否 | 客户端模型名到上游模型 ID 的映射 |
-| `STRICT_MODEL_MAPPING` | 否 | `true` 时只允许配置中的模型名 |
-| `ALLOW_UNSAFE_PROXY_ROUTES` | 否 | 默认 `false` |
-| `FAKE_STREAM_PROTECTION` | 否 | 默认 `false` |
-
-Fallback 配置：
-
-```text
-FALLBACK_API_TOKEN
-FALLBACK_BASE_URL
-FALLBACK_PRIMARY_MODEL
-```
-
-完整变量说明见 [docs/CONFIGURATION.md](docs/CONFIGURATION.md)。
 
 ### Node 命名规范
 

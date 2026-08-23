@@ -211,3 +211,15 @@ export function checkCleanup() {
     cleanupStaleState();
   }
 }
+
+// 仅供测试：清空当前 isolate 的全部节点运行状态。
+export function __resetAllNodeStateForTests() {
+  nodeState.clear();
+  nodeMetrics.startedAt = Date.now();
+  nodeMetrics.totalRequests = 0;
+  nodeMetrics.totalSuccesses = 0;
+  nodeMetrics.totalFailures = 0;
+  nodeMetrics.totalCancellations = 0;
+  nodeMetrics.fallbackActivations = 0;
+  nodeMetrics.fallbackSuccesses = 0;
+}

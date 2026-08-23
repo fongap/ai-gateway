@@ -8,7 +8,12 @@
     "secret_ref": "FREE_NODE_01",
     "workloads": ["general", "coding"],
     "capabilities": ["chat", "stream", "tools"],
-    "models": ["general-air", "general-pro", "code-air", "code-pro"],
+    "models": {
+      "general-air": "free-provider/model-air",
+      "general-pro": "free-provider/model-pro",
+      "code-air": "free-provider/code-air",
+      "code-pro": "free-provider/code-pro"
+    },
     "limits": { "concurrency": 2 }
   },
   {
@@ -20,7 +25,9 @@
     "secret_ref": "FREE_NODE_02",
     "workloads": ["general"],
     "capabilities": ["chat", "stream"],
-    "models": ["general-air"],
+    "models": {
+      "general-air": "free-provider-b/model-air"
+    },
     "limits": { "concurrency": 3 }
   },
   {
@@ -32,7 +39,10 @@
     "secret_ref": "PAID_NODE_01",
     "workloads": ["general", "coding"],
     "capabilities": ["chat", "stream", "tools"],
-    "models": ["general-pro", "code-pro"],
+    "models": {
+      "general-pro": "paid-provider/model-pro",
+      "code-pro": "paid-provider/code-pro"
+    },
     "limits": { "concurrency": 5 }
   },
   {
@@ -44,7 +54,10 @@
     "secret_ref": "PLUS_NODE_01",
     "workloads": ["coding", "critical"],
     "capabilities": ["chat", "stream", "tools"],
-    "models": ["code-pro", "code-max"],
+    "models": {
+      "code-pro": "plus-provider/code-pro",
+      "code-max": "plus-provider/code-max"
+    },
     "limits": { "concurrency": 3 }
   }
 ]

@@ -11,8 +11,8 @@ export function selectNodes(nodes, policy, modelInfo, requestedModel, options = 
   const retryBudget = policy.retry_budget || { free: 2, paid: 1, plus: 1 };
 
   const eligible = nodes.filter(n => {
-    if (!n.models || n.models.length === 0) return true;
-    return n.models.includes(modelName);
+    if (!n.models || Object.keys(n.models).length === 0) return true;
+    return Object.prototype.hasOwnProperty.call(n.models, modelName);
   });
 
   const tiered = {};

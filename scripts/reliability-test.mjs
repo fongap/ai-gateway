@@ -81,7 +81,7 @@ console.log('   PASS\n');
 console.log('8. Health check...');
 const { buildHealthResponse } = await import('../src/reliability/health.js');
 const health = buildHealthResponse([
-  { id: 'free-node-01', tier: 'free', priority: 100, provider: 'test', account: 'test', secret_ref: '', workloads: ['general'], capabilities: ['chat'], models: [], limits: { concurrency: 2 } },
+  { id: 'free-node-01', tier: 'free', priority: 100, provider: 'test', account: 'test', secret_ref: '', workloads: ['general'], capabilities: ['chat'], models: {}, limits: { concurrency: 2 } },
 ], {});
 assert.ok(health.status === 'ok' || health.status === 'misconfigured', 'Health should have status');
 assert.ok(health.nodes_total >= 0, 'Should have nodes_total');
@@ -119,8 +119,8 @@ console.log('   PASS\n');
 console.log('11. Concurrency limit...');
 const { selectNodes } = await import('../src/scheduler/selector.js');
 const concNodes = [
-  { id: 'busy-node', tier: 'free', priority: 100, workloads: ['general'], capabilities: ['chat'], models: ['test-model'], limits: { concurrency: 1 } },
-  { id: 'free-node', tier: 'free', priority: 90, workloads: ['general'], capabilities: ['chat'], models: ['test-model'], limits: { concurrency: 2 } },
+  { id: 'busy-node', tier: 'free', priority: 100, workloads: ['general'], capabilities: ['chat'], models: { 'test-model': 'tm' }, limits: { concurrency: 1 } },
+  { id: 'free-node', tier: 'free', priority: 90, workloads: ['general'], capabilities: ['chat'], models: { 'test-model': 'tm' }, limits: { concurrency: 2 } },
 ];
 const cState = getNodeState('busy-node');
 cState.activeRequests = 1;

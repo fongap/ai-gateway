@@ -37,7 +37,7 @@ Policy (POLICIES_CONFIG)
     ↓
 Node Scheduler
     ↓
-Node Pool (NODES_CONFIG / legacy PRIMARY_API_TOKENS)
+Node Pool (NODES_CONFIG)
     ↓
 Provider / Account / API Key
 ```
@@ -56,9 +56,9 @@ Default order: `free → paid → plus`. Paid/plus nodes never preempt free node
 
 ```text
 src/
-├─ index.js                   Main entry, integrates Node Scheduler + legacy compat
+├─ index.js                   Main entry (Node Scheduler request handling)
 ├─ config/
-│  ├─ nodes.js                Node config loader + legacy conversion
+│  ├─ nodes.js                Node config loader + node model mapping
 │  ├─ models.js               Logical model loader
 │  ├─ policies.js             Policy loader
 │  └─ node-state.js           Node runtime state management
@@ -79,7 +79,6 @@ src/
 ## Features
 
 - **Three-tier node scheduling**: free/paid/plus pools ranked by workload/model/tier/priority/cooldown/circuit/concurrency/health/latency;
-- **Legacy config compatible**: `PRIMARY_API_TOKENS` / `FALLBACK_TOKEN` / `MODEL_MAPPING` keep working, auto-converted to free-nodes;
 - OpenAI and Anthropic-compatible endpoints;
 - Default route and method allowlist;
 - Per-node 429 cooldown with Retry-After support — never disables a whole provider;
@@ -157,7 +156,7 @@ Non-production deploy command: npx wrangler versions upload
 
 5. Click **Save and Deploy** for the first deployment;
 6. Visit `https://YOUR-WORKER.workers.dev/` — you will see the setup page;
-7. Add `GATEWAY_ACCESS_KEY` plus either `NODES_CONFIG` (recommended) or `PRIMARY_API_TOKENS` as Secrets in **Settings → Variables and Secrets**, then click Deploy;
+7. Add `GATEWAY_ACCESS_KEY` and `NODES_CONFIG` as Secrets in **Settings → Variables and Secrets**, then click Deploy;
 8. The page auto-refreshes within 5 seconds once configuration is ready.
 
 Multiple Workers can share one repository; each Worker keeps its own Secrets independently.
@@ -166,7 +165,7 @@ See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for details.
 
 ## Configuration
 
-### Option 1: Node Scheduler (recommended)
+### Configuration
 
 Configure three JSON Secrets:
 
@@ -181,9 +180,9 @@ Configure three JSON Secrets:
 
 ```json
 [
-  {"id":"free-node-01","tier":"free","priority":100,"provider":"provider-a","secret_ref":"FREE_NODE_01","workloads":["general","coding"],"models":["general-air","code-pro"]},
-  {"id":"paid-node-01","tier":"paid","priority":80,"secret_ref":"PAID_NODE_01","workloads":["general","coding"],"models":["code-pro"]},
-  {"id":"plus-node-01","tier":"plus","priority":50,"secret_ref":"PLUS_NODE_01","workloads":["coding","critical"],"models":["code-max"]}
+  {"id":"free-node-01","tier":"free","priority":100,"provider":"provider-a","secret_ref":"FREE_NODE_01","workloads":["general","coding"],"models":{"general-air":"free-provider/model-air","code-pro":"free-provider/code-pro"},"limits":{"concurrency":2}},
+  {"id":"paid-node-01","tier":"paid","priority":80,"secret_ref":"PAID_NODE_01","workloads":["general","coding"],"models":{"code-pro":"paid-provider/code-pro"},"limits":{"concurrency":5}},
+  {"id":"plus-node-01","tier":"plus","priority":50,"secret_ref":"PLUS_NODE_01","workloads":["coding","critical"],"models":{"code-max":"plus-provider/code-max"},"limits":{"concurrency":3}}
 ]
 ```
 
@@ -206,28 +205,6 @@ Configure three JSON Secrets:
 ```
 
 Example files: `config/nodes.example.json`, `config/models.example.json`, `config/policies.example.json`.
-
-### Option 2: Legacy config (compatible)
-
-Legacy config keeps working and is auto-converted to free-nodes:
-
-| Variable | Required | Description |
-|------|------|------|
-| `GATEWAY_ACCESS_KEY` | Yes | Client access key |
-| `PRIMARY_API_TOKENS` | Yes | One or more upstream tokens; supports `Token@BaseURL` |
-| `PRIMARY_BASE_URL` | Conditional | Shared base URL when tokens have no bound URL |
-| `MODEL_MAPPING` | No | Client model alias mapping |
-| `STRICT_MODEL_MAPPING` | No | Only allow declared models when `true` |
-
-Fallback requires:
-
-```text
-FALLBACK_API_TOKEN
-FALLBACK_BASE_URL
-FALLBACK_PRIMARY_MODEL
-```
-
-Full variable reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 ### Node naming convention
 

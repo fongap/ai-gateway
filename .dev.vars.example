@@ -2,22 +2,17 @@
 # .dev.vars 已被 .gitignore 排除，严禁提交真实密钥。
 
 GATEWAY_ACCESS_KEY="replace-with-a-long-random-key"
-PRIMARY_API_TOKENS="token-a@https://primary-a.example/v1,token-b@https://primary-b.example/v1"
 
-# Token 未绑定 URL 时使用共享 HTTPS Base URL。
-# PRIMARY_BASE_URL="https://primary.example/v1"
+# ============ Node Scheduler 配置（必需） ============
+# 节点池定义（JSON 数组）。models 为 逻辑模型名 -> 实际上游模型名 的映射。
+NODES_CONFIG='[{"id":"free-node-01","tier":"free","priority":100,"provider":"provider-a","secret_ref":"FREE_NODE_01","workloads":["general","coding"],"capabilities":["chat","stream","tools"],"models":{"general-air":"free-model-air","code-pro":"free-model-pro"},"limits":{"concurrency":2}}]'
 
-# 可选：模型别名映射。
-# MODEL_MAPPING='{"primary-a.example":{"model-alias":"vendor/model-id"}}'
-# STRICT_MODEL_MAPPING="true"
+# 为每个节点的 secret_ref 添加凭据（Token@BaseURL 格式，默认仅 HTTPS）。
+FREE_NODE_01="token@https://free-api.example/v1"
 
-# ============ Node Scheduler 配置（可选，优先于旧配置） ============
-# NODES_CONFIG='[{"id":"free-node-01","tier":"free","priority":100,"provider":"provider-a","secret_ref":"FREE_NODE_01","workloads":["general","coding"],"capabilities":["chat","stream","tools"],"models":["general-air","code-pro"],"limits":{"concurrency":2}}]'
+# 可选：逻辑模型映射与策略。
 # MODELS_CONFIG='{"general-air":{"workload":"general","policy":"general-fast"},"code-pro":{"workload":"coding","policy":"coding-stable"}}'
 # POLICIES_CONFIG='{"general-fast":{"tiers":["free","paid"],"max_attempts":3,"retry_budget":{"free":2,"paid":1}},"coding-stable":{"tiers":["free","paid","plus"],"max_attempts":4,"retry_budget":{"free":2,"paid":1,"plus":1}}}'
-# FREE_NODE_01="token@https://free-api.example/v1"
-# PAID_NODE_01="token@https://paid-api.example/v1"
-# PLUS_NODE_01="token@https://plus-api.example/v1"
 
 # 默认安全策略。
 ALLOW_UNSAFE_PROXY_ROUTES="false"
@@ -25,17 +20,11 @@ ALLOW_INSECURE_HTTP_UPSTREAM="false"
 EXPOSE_UPSTREAM_INFO="false"
 FAKE_STREAM_PROTECTION="false"
 
-# 模型列表独立超时与尝试次数。
+# 超时拆分。
+UPSTREAM_HEADERS_TIMEOUT="30000"
+FIRST_EVENT_TIMEOUT="60000"
+STREAM_IDLE_TIMEOUT="120000"
+
+# 其他。
 MODEL_LIST_TIMEOUT_MS="5000"
-MODEL_LIST_MAX_ATTEMPTS="3"
-
-# 可选：Fallback。关闭时建议显式配置。
-FALLBACK_ENABLED="false"
-FALLBACK_SECONDARY_MODEL="off"
-FALLBACK_MAX_CONCURRENCY_PER_ENDPOINT="3"
-# FALLBACK_API_TOKEN="replace-with-fallback-token"
-# FALLBACK_BASE_URL="https://fallback.example/v1"
-# FALLBACK_PRIMARY_MODEL="model-pro"
-# FALLBACK_SECONDARY_MODEL="model-flash"
-# FALLBACK_CLIENT_NOTICE_MODE="headers"
-
+LOG_LEVEL="info"

@@ -4,104 +4,82 @@
  *
  * AI Agent Node Scheduler
  *
- * 将 OpenAI Chat Completions 与 Anthropic Messages / Claude Code 请求统一转发至
- * OpenAI 兼容上游。Node Scheduler 以 free-node / paid-node / plus-node 三层
- * 管理资源，旧配置（PRIMARY_API_TOKENS / FALLBACK_TOKEN / MODEL_MAPPING）兼容。
+ * Personal AI Agent 资源调度层。以 free-node / paid-node / plus-node 三层节点池
+ * 管理多个 OpenAI 兼容上游，为 Coding Agent、办公 Agent 与本地 AI 应用提供
+ * 低成本、高可靠、可自动故障切换的统一入口。双协议接入 OpenAI / Anthropic。
  *
  * 架构：
  *   Logical Model (MODELS_CONFIG)
  *       ↓
  *   Policy (POLICIES_CONFIG)
  *       ↓
- *   Node Scheduler
+ *   Node Scheduler（workload → model → tier → priority → cooldown → circuit → concurrency → health → latency）
  *       ↓
- *   Node Pool (NODES_CONFIG / legacy PRIMARY_API_TOKENS)
+ *   Node Pool (NODES_CONFIG)
  *       ↓
- *   Provider / Account / API Key
+ *   Provider / Account / API Key (secret_ref 环境变量，Token@BaseURL 格式)
  *
- * 一次部署清单：
+ * 部署清单：
  * 1. 将 GATEWAY_ACCESS_KEY 设置为 Secret。
- * 2. 将 PRIMARY_API_TOKENS 或 NODES_CONFIG 设置为 Secret。
- * 3. Token 未使用 Token@BaseURL 时，设置 PRIMARY_BASE_URL。
- * 4. 客户端模型别名与上游模型 ID 不一致时，设置 MODEL_MAPPING。
- * 5. 需要兜底时，至少设置 FALLBACK_API_TOKEN、FALLBACK_BASE_URL 和 FALLBACK_PRIMARY_MODEL。
- * 6. 部署后使用 GATEWAY_ACCESS_KEY 访问 /health，确认端点状态与兜底顺序。
+ * 2. 将 NODES_CONFIG 设置为 Secret（JSON 数组，定义节点）。
+ * 3. 为每个节点的 secret_ref 添加凭据环境变量。
+ * 4. 可选设置 MODELS_CONFIG 与 POLICIES_CONFIG；未设置时使用默认策略。
+ * 5. 部署后使用 GATEWAY_ACCESS_KEY 访问 /health，确认节点状态。
  *
- * 最小可运行配置：
- * - GATEWAY_ACCESS_KEY         : 客户端访问网关的鉴权密钥
- * - PRIMARY_API_TOKENS         : 主端点 Token；支持 Token 或 Token@BaseURL
- * - PRIMARY_BASE_URL           : 未在 Token 中绑定 URL 时使用的共享 Base URL
- *
- * Node Scheduler 配置（可选，优先于旧配置）：
- * - NODES_CONFIG               : JSON 数组，定义 free/paid/plus 节点
- * - MODELS_CONFIG              : JSON 对象，逻辑模型到 workload/policy 的映射
- * - POLICIES_CONFIG            : JSON 对象，策略定义（tiers/max_attempts/retry_budget）
- * - FREE_NODE_01 等            : 节点 secret_ref 指向的环境变量（Token@BaseURL 格式）
- *
- * Primary 配置：
- * - PRIMARY_ENABLED            : true/false；未设置时根据 PRIMARY_API_TOKENS 自动判断
- * - PRIMARY_MAX_ATTEMPTS       : 单次请求最多尝试的主端点数；默认 min(端点数, 3)
- * - PRIMARY_ROTATION_WINDOW_MS : 请求统计窗口；默认 60000
- * - PRIMARY_ROTATION_MAX_PER_WINDOW: 单端点窗口请求上限；默认 30
- * - PRIMARY_MAX_CONCURRENCY_PER_ENDPOINT: 单端点并发上限；默认 2
- *
- * Fallback 配置：
- * - FALLBACK_ENABLED           : true/false；未设置时根据完整兜底配置自动判断
- * - FALLBACK_API_TOKEN         : 主副兜底共用 Token
- * - FALLBACK_BASE_URL          : 主副兜底共用 HTTPS Base URL
- * - FALLBACK_PRIMARY_MODEL     : 第一兜底模型
- * - FALLBACK_SECONDARY_MODEL   : 第二兜底模型；默认关闭；填写模型名启用；仅 off 显式关闭
- * - FALLBACK_PRIMARY_TOKEN / FALLBACK_PRIMARY_BASE_URL: 第一兜底独立覆盖
- * - FALLBACK_SECONDARY_TOKEN / FALLBACK_SECONDARY_BASE_URL: 第二兜底独立覆盖
- * - FALLBACK_MAX_CONCURRENCY_PER_ENDPOINT: 单个 Fallback 端点并发上限；默认 3
- * - FALLBACK_CLIENT_NOTICE_MODE: headers/visible/off；默认 headers
- * - FALLBACK_CLIENT_NOTICE_TEXT: 可见提示模板；支持 provider、model、tier 等占位符
- *
- * 协议与模型：
- * - MODEL_MAPPING              : 按上游 hostname 分组的 JSON 模型映射
- * - ANTHROPIC_MAX_BODY_BYTES   : Anthropic 请求体上限；默认 20 MiB
- * - ANTHROPIC_COUNT_TOKENS_MODE: approximate/disabled；默认 approximate
- * - ANTHROPIC_REASONING_REQUEST_MODE: none/reasoning_effort/chat_template_kwargs/thinking
- * - FAKE_STREAM_PROTECTION     : 非流式请求转上游流式并重组；默认 false，按需启用
+ * 核心配置：
+ * - GATEWAY_ACCESS_KEY         : 客户端访问网关的鉴权密钥（必需）
+ * - NODES_CONFIG               : JSON 数组，定义 free/paid/plus 节点（必需）
+ * - MODELS_CONFIG              : JSON 对象，逻辑模型到 workload/policy 的映射（可选）
+ * - POLICIES_CONFIG            : JSON 对象，策略 tiers/max_attempts/retry_budget（可选）
+ * - FREE_NODE_01 等            : 节点 secret_ref 指向的凭据环境变量（必需）
  *
  * 运行保护：
  * - REQUEST_TIMEOUT_MS         : 上游首字节超时；默认 180000，范围 5000-180000
- * - MAX_BODY_BYTES             : OpenAI 请求体上限；默认 20 MiB；无 Content-Length 同样生效
- * - 压缩请求体                  : 不支持 gzip/br/deflate 请求体，统一返回 415
+ * - MAX_BODY_BYTES             : OpenAI 请求体上限；默认 20 MiB
  * - AUTH_FAIL_COOLDOWN_MS      : 401/403 冷却；默认 86400000
- * - RATE_LIMIT_COOLDOWN_MS     : 429 冷却；默认 60000
+ * - RATE_LIMIT_COOLDOWN_MS     : 429 冷却；默认 60000（优先读取 Retry-After）
  * - ALLOWED_ORIGIN             : CORS 来源；默认 *
- * - STRICT_MODEL_MAPPING       : true 时只允许 MODEL_MAPPING 中声明的模型
  * - ALLOW_UNSAFE_PROXY_ROUTES  : true 时允许白名单外路径；默认 false
  * - ALLOW_INSECURE_HTTP_UPSTREAM: true 时允许 HTTP 上游；默认 false
  *
- * 缓存与诊断：
+ * 可靠性机制：
+ * - 429 节点级冷却与同层 failover，不整个 Provider 禁用
+ * - 502/503/504 连续 3 次触发轻量 Circuit Breaker（30 秒）
+ * - 流式请求 First Event Guard：首个有效事件前允许 failover，之后禁止透明切换
+ * - Retry Budget：分层预算总计不超过 5 次
+ * - 客户端取消不处罚节点健康分
+ *
+ * 其他配置：
+ * - ANTHROPIC_MAX_BODY_BYTES   : Anthropic 请求体上限；默认 20 MiB
+ * - ANTHROPIC_COUNT_TOKENS_MODE: approximate/disabled；默认 approximate
+ * - ANTHROPIC_REASONING_REQUEST_MODE: none/reasoning_effort/chat_template_kwargs/thinking
+ * - FAKE_STREAM_PROTECTION     : 非流式请求转上游流式并重组；默认 false
  * - CACHE_ENABLED / CACHE_MAX_AGE_SEC / CACHE_MAX_BODY_BYTES
  * - LOG_LEVEL                  : none/error/info/debug；默认 info
- * - EXPOSE_UPSTREAM_INFO       : true 时在诊断中暴露上游 host/path；默认 false
- * - PROJECT_REPOSITORY_URL     : 可选 HTTPS 源码地址；用于 Dashboard 与 /version
+ * - EXPOSE_UPSTREAM_INFO       : true 时在诊断中暴露上游信息；默认 false
+ * - PROJECT_REPOSITORY_URL     : 可选 HTTPS 源码地址；用于状态页与 /version
  * - AE_DATASET                 : 可选 Workers Analytics Engine binding
  *
  * 内置端点：
  * - GET /version              : 公开的项目版本信息
- * - GET /v1/models            : 汇总可用模型；需要网关鉴权
- * - GET /health               : 当前 isolate 的端点健康快照
+ * - GET /v1/models            : 已配置的逻辑模型列表；需要网关鉴权
+ * - GET /health               : 当前 isolate 的节点健康快照
  * - GET /metrics              : 当前 isolate 的 Prometheus 指标
  * - POST /v1/chat/completions  : OpenAI Chat Completions
  * - POST /v1/messages          : Anthropic Messages
  *
- * 运行边界：健康分、并发、滑动窗口和冷却状态保存在当前 isolate 内，
- * 不代表跨全部边缘节点的严格全局状态。大体积直通请求不会执行模型映射或多端点重试。
+ * 运行边界：健康分、并发和冷却状态保存在当前 isolate 内存中，
+ * 不使用 KV/D1/Durable Objects，不代表跨全部边缘节点的严格全局状态。
  */
 
-import { buildRoutePlan } from './scheduler/router.js';
-import { getNodeState as getNodeRuntimeState, isCoolingDown as isNodeCoolingDown, recordRequestStart as recordNodeStart, recordSuccess as recordNodeSuccess, recordFailure as recordNodeFailure, recordNeutralEnd as recordNodeNeutralEnd, checkCleanup as checkNodeCleanup, getNodeMetrics, getNodeHealthSnapshot } from './config/node-state.js';
-import { shouldRetry, getTimeouts, isRetryable } from './reliability/retry.js';
-import { FirstEventGuard } from './stream/guard.js';
+import { buildRoutePlan, getConfiguredNodes } from './scheduler/router.js';
+import { resolveUpstreamModel } from './config/nodes.js';
+import { isCoolingDown as isNodeCoolingDown, isCircuitOpen as isNodeCircuitOpen, getNodeState as getNodeRuntimeState, recordRequestStart as recordNodeStart, recordSuccess as recordNodeSuccess, recordFailure as recordNodeFailure, recordNeutralEnd as recordNodeNeutralEnd, checkCleanup as checkNodeCleanup, nextCooldownMs as nextNodeCooldownMs, getRetryAfterMs } from './config/node-state.js';
+import { recordCircuitFailure, recordCircuitSuccess } from './reliability/circuit.js';
 
 const APP_META = Object.freeze({
-  name: 'Smart Edge Gateway',
-  displayName: '智能边缘网关',
+  name: 'AI Agent Node Scheduler',
+  displayName: 'AI Agent Node Scheduler',
   version: '5.14.0',
 });
 
@@ -111,7 +89,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>AI Agent Node Scheduler</title>
 <style>
 :root{--brand:#48636f;--bg:#fff;--text:#111827;--muted:#59636e;--line:#e4e8eb;--font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}
-*{box-sizing:border-box;margin:0;padding:0}body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:1.7;overflow-x:hidden}header{position:fixed;inset:0 0 auto;height:64px;display:flex;align-items:center;justify-content:space-between;padding:0 max(5%,24px);background:rgba(255,255,255,.88);backdrop-filter:blur(16px);border-bottom:1px solid var(--line);z-index:100}.brand{display:flex;align-items:center;gap:11px;font-size:17px;font-weight:650}.brand-icon{width:28px;height:28px;display:grid;place-items:center;border-radius:8px;background:var(--brand);box-shadow:0 6px 18px rgba(72,99,111,.22)}main{padding-top:64px;min-height:100vh}.doc-container{max-width:960px;margin:0 auto;padding:48px max(5%,24px) 96px}.hero h1{font-size:28px;font-weight:700;letter-spacing:-.02em;margin:0 0 12px}.hero p{font-size:16px;color:var(--muted);max-width:640px}.tags{display:flex;flex-wrap:wrap;gap:8px;margin:20px 0 0}.tag{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:600;background:#f7f9fa;color:var(--muted);border:1px solid var(--line)}.flow{display:grid;grid-template-columns:1fr auto 1fr auto 1fr auto 1fr;align-items:center;gap:12px;margin:24px 0;padding:17px 20px;border:1px solid var(--line);border-radius:12px;background:linear-gradient(180deg,#fff,#f7f9fa)}.flow-node{text-align:center}.flow-node strong{display:block;font-size:13px}.flow-node small{display:block;margin-top:2px;color:var(--muted);font-size:11px}.flow-arrow{color:var(--brand);font-weight:800}.stats-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:16px;margin-bottom:48px}.stat-card{padding:20px;border:1px solid var(--line);border-radius:12px}.stat-card .label{font-size:12px;font-weight:600;text-transform:uppercase;color:var(--muted);margin-bottom:6px}.stat-card .value{font-size:28px;font-weight:700}.section{margin-bottom:48px}.section h2{font-size:16px;font-weight:600;margin:0 0 12px}.node-list{display:grid;gap:8px}.node-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;border:1px solid var(--line);border-radius:10px;font-size:14px}.node-id{font-weight:600;font-family:var(--mono);font-size:13px}.tier-badge{padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700}.tier-free{background:#e8f5e9;color:#2e7d32}.tier-paid{background:#e3f2fd;color:#1565c0}.tier-plus{background:#fce4ec;color:#c62828}.model-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:16px}.model-badge{padding:2px 8px;border-radius:4px;font-size:12px;font-family:var(--mono);background:#f7f9fa;border:1px solid var(--line);color:var(--muted)}.endpoints{display:flex;flex-wrap:wrap;gap:8px;margin-top:24px}.endpoint{display:flex;align-items:center;gap:6px;padding:10px 14px;border:1px solid var(--line);border-radius:8px;text-decoration:none;font-size:13px;font-weight:600;transition:.2s ease;background:#fff}.endpoint:hover{border-color:var(--brand);background:rgba(72,99,111,.08);color:var(--brand)}footer{margin-top:64px;padding-top:24px;border-top:1px solid var(--line);font-size:13px;color:var(--muted)}@media(max-width:760px){header{height:56px;padding:0 18px}.brand{font-size:15px}.doc-container{padding:48px 20px 50px}.flow{grid-template-columns:1fr;padding:15px}.flow-arrow{transform:rotate(90deg)}.stats-grid{grid-template-columns:1fr 1fr}.section{margin-bottom:40px}}
+*{box-sizing:border-box;margin:0;padding:0}body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:1.7;overflow-x:hidden}header{position:fixed;inset:0 0 auto;height:64px;display:flex;align-items:center;justify-content:space-between;padding:0 max(5%,24px);background:rgba(255,255,255,.88);backdrop-filter:blur(16px);border-bottom:1px solid var(--line);z-index:100}.brand{display:flex;align-items:center;gap:11px;font-size:17px;font-weight:650}.brand-icon{width:28px;height:28px;display:grid;place-items:center;border-radius:8px;background:var(--brand);box-shadow:0 6px 18px rgba(72,99,111,.22)}main{padding-top:64px;min-height:100vh}.doc-container{max-width:960px;margin:0 auto;padding:48px max(5%,24px) 96px}.hero h1{font-size:28px;font-weight:700;letter-spacing:-.02em;margin:0 0 12px}.hero p{font-size:16px;color:var(--muted);max-width:640px}.tags{display:flex;flex-wrap:wrap;gap:8px;margin:20px 0 0}.tag{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:600;background:#f7f9fa;color:var(--muted);border:1px solid var(--line)}.flow{display:grid;grid-template-columns:1fr auto 1fr auto 1fr auto 1fr;align-items:center;gap:12px;margin:24px 0;padding:17px 20px;border:1px solid var(--line);border-radius:12px;background:linear-gradient(180deg,#fff,#f7f9fa)}.flow-node{text-align:center}.flow-node strong{display:block;font-size:13px}.flow-node small{display:block;margin-top:2px;color:var(--muted);font-size:11px}.flow-arrow{color:var(--brand);font-weight:800}.stats-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:16px;margin-bottom:48px}.stat-card{padding:20px;border:1px solid var(--line);border-radius:12px}.stat-card .label{font-size:12px;font-weight:600;text-transform:uppercase;color:var(--muted);margin-bottom:6px}.stat-card .value{font-size:28px;font-weight:700}.section{margin-bottom:48px}.section h2{font-size:16px;font-weight:600;margin:0 0 12px}.node-list{display:grid;gap:8px}.step-list{counter-reset:step;margin-top:18px}.step-item{position:relative;padding:0 0 22px 48px}.step-item:last-child{padding-bottom:6px}.step-item:before{counter-increment:step;content:counter(step);position:absolute;left:0;top:0;width:30px;height:30px;display:grid;place-items:center;border-radius:9px;background:var(--brand);color:#fff;font-size:13px;font-weight:750;box-shadow:0 7px 17px rgba(72,99,111,.18)}.step-item:after{content:"";position:absolute;left:14px;top:36px;bottom:5px;width:1px;background:var(--line)}.step-item:last-child:after{display:none}.step-item h4{margin-bottom:5px;color:var(--text);font-size:15px}.step-item p{margin:0;color:var(--muted);font-size:13.5px}.code-editor{margin:17px 0;border:1px solid #2b3035;border-radius:11px;overflow:hidden;background:#171a1d;box-shadow:0 18px 55px rgba(17,24,39,.07)}.code-header{height:38px;display:flex;align-items:center;gap:7px;padding:0 14px;background:#202429;border-bottom:1px solid #30353a}.mac-dot{width:9px;height:9px;border-radius:50%}.dot-r{background:#ff605c}.dot-y{background:#ffbd44}.dot-g{background:#00ca4e}.code-header span{margin-left:7px;color:#939aa3;font-family:var(--mono);font-size:11px}.code-editor pre{margin:0;padding:19px 20px;overflow:auto;color:#d7dce2;font-family:var(--mono);font-size:12.5px;line-height:1.68;tab-size:2}.kw{color:#79b8ff}.str{color:#e6a57e}.brand-str{color:#92c5d6}.fun{color:#e4d28b}.var{color:#9cc7f1}.callout{margin:16px 0;padding:15px 17px;border:1px solid rgba(72,99,111,.18);border-left:3px solid var(--brand);border-radius:10px;background:rgba(72,99,111,.08);color:var(--muted)}.callout strong{display:block;margin-bottom:3px;color:var(--text)}.grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;margin-bottom:8px}.mini-card{padding:20px;border:1px solid var(--line);border-radius:12px;background:#fff}.mini-card h3{margin-bottom:7px;color:var(--text);font-size:16px}.mini-card p{margin:0;color:var(--muted);font-size:13.5px}.node-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;border:1px solid var(--line);border-radius:10px;font-size:14px}.node-id{font-weight:600;font-family:var(--mono);font-size:13px}.tier-badge{padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700}.tier-free{background:#e8f5e9;color:#2e7d32}.tier-paid{background:#e3f2fd;color:#1565c0}.tier-plus{background:#fce4ec;color:#c62828}.model-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:16px}.model-badge{padding:2px 8px;border-radius:4px;font-size:12px;font-family:var(--mono);background:#f7f9fa;border:1px solid var(--line);color:var(--muted)}.endpoints{display:flex;flex-wrap:wrap;gap:8px;margin-top:24px}.endpoint{display:flex;align-items:center;gap:6px;padding:10px 14px;border:1px solid var(--line);border-radius:8px;text-decoration:none;font-size:13px;font-weight:600;transition:.2s ease;background:#fff}.endpoint:hover{border-color:var(--brand);background:rgba(72,99,111,.08);color:var(--brand)}footer{margin-top:64px;padding-top:24px;border-top:1px solid var(--line);font-size:13px;color:var(--muted)}@media(max-width:760px){header{height:56px;padding:0 18px}.brand{font-size:15px}.doc-container{padding:48px 20px 50px}.flow{grid-template-columns:1fr;padding:15px}.flow-arrow{transform:rotate(90deg)}.stats-grid{grid-template-columns:1fr 1fr}.section{margin-bottom:40px}}
 </style>
 </head>
 <body>
@@ -141,6 +119,84 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       <div class="flow-node"><strong>Node Pool</strong><small>free / paid / plus</small></div>
     </div>
   </section>
+  <section class="section" id="config">
+    <h2>配置指南</h2>
+    <p style="font-size:14px;color:var(--muted);margin:0 0 16px">在 Cloudflare Worker 的 <strong>设置 → 变量和机密</strong> 中完成以下配置。全部为 Secret，不会出现在代码或日志中。</p>
+    <div class="step-list">
+      <div class="step-item"><h4>1. 设置网关访问密钥</h4><p>添加 Secret <code>GATEWAY_ACCESS_KEY</code>。客户端通过 <code>Authorization: Bearer</code> 或 <code>x-api-key</code> 提交该密钥。</p></div>
+      <div class="step-item"><h4>2. 定义节点池（推荐）</h4><p>添加 Secret <code>NODES_CONFIG</code>，声明 free / paid / plus 三层节点：</p></div>
+      <div class="step-item"><h4>3. 添加节点凭据</h4><p>为每个节点的 <code>secret_ref</code> 添加对应的环境变量，值为 OpenAI 兼容上游凭据（<code>Token@BaseURL</code> 格式）。</p></div>
+      <div class="step-item"><h4>4.（可选）定义逻辑模型与策略</h4><p>通过 <code>MODELS_CONFIG</code> 和 <code>POLICIES_CONFIG</code> 控制模型到工作负载的映射与各层尝试预算。未设置时使用默认策略。</p></div>
+    </div>
+    <div class="code-editor">
+      <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>NODES_CONFIG</span></div>
+      <pre>[
+  {
+    "id": "free-node-01",
+    "tier": "free",
+    "priority": 100,
+    "provider": "provider-a",
+    "account": "account-01",
+    "secret_ref": "FREE_NODE_01",
+    "workloads": ["general", "coding"],
+    "capabilities": ["chat", "stream", "tools"],
+    "models": ["general-air", "code-pro"],
+    "limits": { "concurrency": 2 }
+  },
+  {
+    "id": "paid-node-01",
+    "tier": "paid",
+    "priority": 80,
+    "secret_ref": "PAID_NODE_01",
+    "workloads": ["general", "coding"],
+    "models": ["code-pro"],
+    "limits": { "concurrency": 5 }
+  },
+  {
+    "id": "plus-node-01",
+    "tier": "plus",
+    "priority": 50,
+    "secret_ref": "PLUS_NODE_01",
+    "workloads": ["coding", "critical"],
+    "models": ["code-max"],
+    "limits": { "concurrency": 3 }
+  }
+]</pre>
+    </div>
+    <div class="code-editor">
+      <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>节点凭据环境变量</span></div>
+      <pre><span class="var">FREE_NODE_01</span>=<span class="str">token-a@https://free-api.example/v1</span>
+<span class="var">PAID_NODE_01</span>=<span class="str">token-b@https://paid-api.example/v1</span>
+<span class="var">PLUS_NODE_01</span>=<span class="str">token-c@https://plus-api.example/v1</span></pre>
+    </div>
+    <div class="callout"><strong>调度顺序</strong>默认 free → paid → plus。免费节点 429 时按节点冷却并切换同层下一节点；503 连续 3 次触发轻量熔断（30 秒）；流式请求在首个有效事件前允许切换节点，之后禁止透明重放。</div>
+  </section>
+
+  <section class="section" id="clients">
+    <h2>客户端接入</h2>
+    <div class="grid-2">
+      <div class="mini-card"><h3>OpenAI 兼容客户端</h3><p>Base URL 使用网关地址的 <code>/v1</code>，接口路径为 <code>/chat/completions</code>。</p></div>
+      <div class="mini-card"><h3>Claude Code</h3><p><code>ANTHROPIC_BASE_URL</code> 只填写网关地址，不需要 <code>/v1</code> 后缀。</p></div>
+    </div>
+    <div class="code-editor">
+      <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>OpenAI cURL</span></div>
+      <pre><span class="fun">curl</span> https://YOUR-WORKER.workers.dev/v1/chat/completions \\
+  -H <span class="str">"Authorization: Bearer YOUR_GATEWAY_ACCESS_KEY"</span> \\
+  -H <span class="str">"Content-Type: application/json"</span> \\
+  -d <span class="str">'{"model":"general-air","messages":[{"role":"user","content":"Hello"}]}'</span></pre>
+    </div>
+    <div class="code-editor">
+      <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>Claude Code settings.json</span></div>
+      <pre>{
+  <span class="str">"env"</span>: {
+    <span class="str">"ANTHROPIC_BASE_URL"</span>: <span class="brand-str">"https://YOUR-WORKER.workers.dev"</span>,
+    <span class="str">"ANTHROPIC_AUTH_TOKEN"</span>: <span class="brand-str">"your-gateway-access-key"</span>,
+    <span class="str">"ANTHROPIC_MODEL"</span>: <span class="brand-str">"code-pro"</span>
+  }
+}</pre>
+    </div>
+  </section>
+
   <section class="section">
     <h2>节点概览</h2>
     <div class="stats-grid" id="stats"></div>
@@ -201,12 +257,10 @@ function getDashboardHtml(env) {
 
 function getGatewayConfigurationState(env) {
   const gatewayAccessKeyBound = Boolean(readOptionalEnv(env, 'GATEWAY_ACCESS_KEY'));
-  const primaryApiTokensBound = Boolean(readOptionalEnv(env, 'PRIMARY_API_TOKENS'));
   const nodesConfigBound = Boolean(readOptionalEnv(env, 'NODES_CONFIG'));
   return {
-    ready: gatewayAccessKeyBound && (primaryApiTokensBound || nodesConfigBound),
+    ready: gatewayAccessKeyBound && nodesConfigBound,
     gatewayAccessKeyBound,
-    primaryApiTokensBound,
     nodesConfigBound,
   };
 }
@@ -236,16 +290,16 @@ function getSetupHtml(configuration) {
   <div class="success">首次部署成功，无需重新修改或上传源代码。</div>
   <div class="list">
     <div class="row"><code>GATEWAY_ACCESS_KEY</code>${status(configuration.gatewayAccessKeyBound)}</div>
-    <div class="row"><code>NODES_CONFIG</code> / <code>PRIMARY_API_TOKENS</code>${status(configuration.primaryApiTokensBound || configuration.nodesConfigBound)}</div>
+    <div class="row"><code>NODES_CONFIG</code>${status(configuration.nodesConfigBound)}</div>
   </div>
   <div class="steps">
     <strong>在 Cloudflare 中完成配置</strong>
     <ol>
       <li>打开当前 Worker 的"设置 → 变量和机密"。</li>
       <li>添加 <code>GATEWAY_ACCESS_KEY</code> 作为 Secret。</li>
-      <li>添加 <code>NODES_CONFIG</code>（推荐）或 <code>PRIMARY_API_TOKENS</code> 作为 Secret。</li>
-      <li>如使用 NODES_CONFIG，还需为每个节点的 <code>secret_ref</code> 添加对应的环境变量。</li>
-      <li>保存并等待新部署生效。</li>
+      <li>添加 <code>NODES_CONFIG</code> 作为 Secret（JSON 数组，定义 free/paid/plus 节点）。</li>
+      <li>为每个节点的 <code>secret_ref</code> 添加凭据环境变量（<code>Token@BaseURL</code> 格式）。</li>
+      <li>保存并等待新部署生效。配置示例见 config/nodes.example.json。</li>
     </ol>
   </div>
   <p class="note">页面只显示是否已绑定，不会读取或显示 Secret 内容。</p>
@@ -296,50 +350,10 @@ const CLEANUP_INTERVAL_MS = 30_000;
 const LOG_LEVELS = { none: 0, error: 1, info: 2, debug: 3 };
 
 const ASSEMBLE_TIMEOUT_MS = 180_000;
+const FIRST_EVENT_TIMEOUT_DEFAULT = 60_000;
 const MAX_SAFE_BYTES = 2 * 1024 * 1024;
 const DEFAULT_MAX_UPSTREAM_JSON_BYTES = 20 * 1024 * 1024;
 
-
-// ============ 主端点请求窗口 ============
-
-class RequestRingBuffer {
-  constructor(maxSize = RING_BUFFER_MIN_SIZE) {
-    this.buffer = new Float64Array(maxSize);
-    this.head = 0;
-    this.count = 0;
-  }
-
-  record(timestamp) {
-    this.buffer[this.head] = timestamp;
-    this.head = (this.head + 1) % this.buffer.length;
-    if (this.count < this.buffer.length) this.count++;
-  }
-
-  getRecentCount(windowMs, now) {
-    const threshold = now - windowMs;
-    const buf = this.buffer;
-    let validCount = 0;
-    for (let i = 0; i < this.count; i++) {
-      if (buf[i] > threshold) validCount++;
-    }
-    return validCount;
-  }
-
-  resize(maxSize) {
-    const nextSize = Math.max(RING_BUFFER_MIN_SIZE, Number(maxSize) || RING_BUFFER_MIN_SIZE);
-    if (nextSize === this.buffer.length) return;
-    const values = [];
-    for (let i = 0; i < this.count; i++) {
-      const index = (this.head - this.count + i + this.buffer.length) % this.buffer.length;
-      values.push(this.buffer[index]);
-    }
-    const kept = values.slice(-nextSize);
-    this.buffer = new Float64Array(nextSize);
-    this.head = 0;
-    this.count = 0;
-    for (const value of kept) this.record(value);
-  }
-}
 
 // ============ 请求体限制 ============
 
@@ -351,9 +365,6 @@ class BodyTooLargeError extends Error {
 }
 
 // ============ Isolate 内运行状态 ============
-// endpointState 仅在当前 isolate 内共享。健康分、并发、窗口计数与冷却状态均为局部近似值；
-// 如需跨边缘节点的严格一致性，应改用 Durable Object 或外部协调存储。
-const endpointState = new Map();
 const gatewayStats = {
   startedAt: Date.now(),
   clientRequests: 0,
@@ -364,8 +375,6 @@ const gatewayStats = {
   fallbackActivations: 0,
   fallbackSuccesses: 0,
 };
-let lastCleanupTime = 0;
-let g_ringBufferSize = RING_BUFFER_MIN_SIZE;
 
 // ============ 请求入口 ============
 
@@ -377,11 +386,7 @@ async function handleRequest(request, env, ctx) {
     const route = detectGatewayRoute(request.method, normalizedPath);
     const isAnthropicClient = route === 'anthropic_messages' || route === 'anthropic_count_tokens';
 
-    const now = Date.now();
-    if (now - lastCleanupTime > CLEANUP_INTERVAL_MS) {
-      lastCleanupTime = now;
-      cleanupStaleState();
-    }
+    checkNodeCleanup();
 
     if (request.method === 'OPTIONS') {
       const intendedMethod = request.headers.get('Access-Control-Request-Method') || 'POST';
@@ -543,53 +548,22 @@ async function handleRequest(request, env, ctx) {
       }
     }
 
-    const primaryEndpoints = buildPrimaryEndpoints(env);
-    const fallbackEndpoints = buildFallbackEndpoints(env);
+    // 模型列表路由不依赖请求体，优先处理
+    if (isModelsListRoute(request.method, normalizedPath)) {
+      return modelsListResponse(request, env, requestId);
+    }
 
     const requestedModel = originalBodyJson?.model || 'unknown';
-    const nodeEndpoints = buildNodeEndpoints(env, requestedModel, originalBodyJson, isDirectStream);
 
-    if (primaryEndpoints.length === 0 && fallbackEndpoints.length === 0 && nodeEndpoints.length === 0) {
+    // 区分配置缺失（500）与节点暂不可用（429）
+    const configuredNodes = getConfiguredNodes(env);
+    if (configuredNodes.length === 0) {
       return gatewayError(request, env, isAnthropicClient, 500,
-        'Gateway misconfigured: no node, primary endpoint, or fallback API token is configured.',
+        'Gateway misconfigured: NODES_CONFIG is missing, invalid, or no node credentials are bound.',
         undefined, requestId);
     }
 
-    let modelMapping = {};
-    const mappingRaw = readOptionalEnv(env, 'MODEL_MAPPING');
-    if (mappingRaw) {
-      try {
-        modelMapping = parseAndValidateModelMapping(mappingRaw, env);
-      } catch (error) {
-        logger.error('MODEL_MAPPING parse error:', error.message);
-        return gatewayError(request, env, isAnthropicClient, 500,
-          `Gateway misconfigured: MODEL_MAPPING is invalid (${error.message}).`,
-          undefined, requestId);
-      }
-    }
-
-    if (isModelsListRoute(request.method, normalizedPath)) {
-      return await modelsListResponse({
-        request,
-        env,
-        requestId,
-        primaryEndpoints,
-        fallbackEndpoints,
-        modelMapping,
-      });
-    }
-
-    const strictModelMapping = readBooleanEnv(env, 'STRICT_MODEL_MAPPING', false);
-    if (strictModelMapping) {
-      if (!bodyParsed || !originalBodyJson || typeof originalBodyJson.model !== 'string') {
-        return gatewayError(request, env, isAnthropicClient, 400,
-          'STRICT_MODEL_MAPPING requires a JSON request body with a model field.', undefined, requestId);
-      }
-      if (!isRequestedModelAllowed(originalBodyJson.model, primaryEndpoints, fallbackEndpoints, modelMapping)) {
-        return gatewayError(request, env, isAnthropicClient, 400,
-          `Model "${originalBodyJson.model}" is not allowed by STRICT_MODEL_MAPPING.`, undefined, requestId);
-      }
-    }
+    let nodeEndpoints = buildNodeEndpoints(env, requestedModel, originalBodyJson);
 
     const cacheEnabled = readBooleanEnv(env, 'CACHE_ENABLED', false);
     const isStreamRequest = bodyParsed && originalBodyJson && originalBodyJson.stream === true;
@@ -616,15 +590,6 @@ async function handleRequest(request, env, ctx) {
       }
     }
 
-    const configuredPrimaryMaxAttempts = primaryEndpoints.length > 0
-      ? clampInt(
-          readOptionalEnv(env, 'PRIMARY_MAX_ATTEMPTS'),
-          1,
-          primaryEndpoints.length,
-          Math.min(primaryEndpoints.length, DEFAULT_PRIMARY_MAX_ATTEMPTS)
-        )
-      : 0;
-    const primaryMaxAttempts = isDirectStream ? Math.min(1, primaryEndpoints.length) : configuredPrimaryMaxAttempts;
     const timeoutMs = clampInt(
       readOptionalEnv(env, 'REQUEST_TIMEOUT_MS'),
       MIN_TIMEOUT_MS,
@@ -633,104 +598,39 @@ async function handleRequest(request, env, ctx) {
     );
     const exposeUpstreamInfo = readBooleanEnv(env, 'EXPOSE_UPSTREAM_INFO', false);
 
-    const primarySelectionConfig = {
-      rotationWindowMs: clampInt(readOptionalEnv(env, 'PRIMARY_ROTATION_WINDOW_MS'), 10_000, 18_000_000, DEFAULT_PRIMARY_ROTATION_WINDOW_MS),
-      rotationMaxPerWindow: clampInt(readOptionalEnv(env, 'PRIMARY_ROTATION_MAX_PER_WINDOW'), 1, 1000, DEFAULT_PRIMARY_ROTATION_MAX_PER_WINDOW),
-      maxConcurrencyPerEndpoint: clampInt(readOptionalEnv(env, 'PRIMARY_MAX_CONCURRENCY_PER_ENDPOINT'), 1, 100, DEFAULT_PRIMARY_MAX_CONCURRENCY_PER_ENDPOINT),
-    };
-
-    g_ringBufferSize = Math.max(RING_BUFFER_MIN_SIZE, primarySelectionConfig.rotationMaxPerWindow * 4);
-    const strictEligiblePrimaryEndpoints = strictModelMapping && originalBodyJson?.model
-      ? primaryEndpoints.filter(endpoint => isModelAllowedForEndpoint(
-          originalBodyJson.model,
-          endpoint,
-          modelMapping
-        ))
-      : primaryEndpoints;
-    const primaryCandidates = strictEligiblePrimaryEndpoints.length > 0
-      ? selectPrimaryEndpoints(
-          strictEligiblePrimaryEndpoints,
-          Math.min(primaryMaxAttempts, strictEligiblePrimaryEndpoints.length),
-          primarySelectionConfig,
-          originalBodyJson,
-          request
-        )
-      : [];
-    const nodeCandidates = nodeEndpoints.filter(ep => {
-      const state = getEndpointState(ep.id);
-      if (isCoolingDown(ep.id)) return false;
+    const candidates = nodeEndpoints.filter(ep => {
+      if (isNodeCoolingDown(ep.id)) return false;
+      if (isNodeCircuitOpen(ep.id)) return false;
+      const state = getNodeRuntimeState(ep.id);
       if (state.activeRequests >= (ep.limits?.concurrency || 2)) return false;
       return true;
     });
-    const candidates = [...nodeCandidates, ...primaryCandidates];
-
-    // Fallback 不参与 Primary 轮询，并按 primary → secondary 顺序尝试。
-    // 大体积直通请求体不可重复消费，因此最多发送至一个候选端点。
-    const fallbackEligible = isFallbackEligible(route, normalizedPath)
-      && (!isDirectStream || primaryCandidates.length === 0);
-    if (fallbackEligible) {
-      const fallbackMaxConcurrency = clampInt(
-        readOptionalEnv(env, 'FALLBACK_MAX_CONCURRENCY_PER_ENDPOINT'),
-        1,
-        100,
-        DEFAULT_PRIMARY_MAX_CONCURRENCY_PER_ENDPOINT
-      );
-      const availableFallbacks = fallbackEndpoints.filter(ep => {
-        const state = getEndpointState(ep.id);
-        if (isCoolingDown(ep.id)) return false;
-        if (state.activeRequests >= fallbackMaxConcurrency) return false;
-        return true;
-      });
-      candidates.push(...(isDirectStream ? availableFallbacks.slice(0, 1) : availableFallbacks));
-    }
-
-    if (candidates.length === 0 && strictModelMapping && originalBodyJson?.model) {
-      return gatewayError(request, env, isAnthropicClient, 400,
-        `Model "${originalBodyJson.model}" is allowed globally but no currently available endpoint can route it.`,
-        undefined, requestId);
-    }
 
     if (candidates.length === 0) {
-      const allKnownEndpoints = [...primaryEndpoints, ...fallbackEndpoints];
-      const retryAfter = nextCooldownMs(allKnownEndpoints);
+      const retryAfter = nextNodeCooldownMs(configuredNodes.map(ep => ep.id));
       return gatewayError(request, env, isAnthropicClient, 429,
-        'All primary and fallback upstream endpoints are temporarily unavailable.', {
+        'All nodes are temporarily unavailable.', {
           retry_after_ms: retryAfter,
-          primary_endpoints_total: primaryEndpoints.length,
-          primary_endpoints_cooling: primaryEndpoints.filter(ep => isCoolingDown(ep.id)).length,
-          fallback_configured: fallbackEndpoints.length > 0,
-          fallback_endpoints: fallbackEndpoints.map(ep => ({
-            tier: ep.fallbackTier,
-            order: ep.fallbackOrder,
-            provider: exposeUpstreamInfo ? ep.providerName : getEndpointRole(ep),
-            model: ep.configuredModel,
-            cooling: isCoolingDown(ep.id),
-          })),
+          nodes_total: configuredNodes.length,
+          nodes_cooling: configuredNodes.filter(ep => isNodeCoolingDown(ep.id)).length,
+          nodes_circuit_open: configuredNodes.filter(ep => isNodeCircuitOpen(ep.id)).length,
         }, requestId);
     }
 
     const attempts = [];
     const anthropicClientWantsStream = route === 'anthropic_messages' && originalBodyJson?.stream === true;
-    let fallbackChainEntered = false;
 
     for (let index = 0; index < candidates.length; index++) {
       const endpoint = candidates[index];
-      if (endpoint.role === 'fallback' && !fallbackChainEntered) {
-        fallbackChainEntered = true;
-        gatewayStats.fallbackActivations++;
-      }
-      recordRequestStart(endpoint.id);
+      recordNodeStart(endpoint.id);
 
       let targetUrl;
       let targetHost;
-      let modelConfig;
       let currentBody = requestBodyBuffer;
+      const actualModel = resolveUpstreamModel(endpoint, requestedModel);
+      const modelConfig = { model: actualModel };
       try {
-        const endpointUrl = new URL(endpoint.baseUrl);
-        targetHost = endpointUrl.hostname;
-        modelConfig = endpoint.role === 'fallback'
-          ? buildFallbackModelConfig(endpoint, modelMapping, requestedModel)
-          : resolveModelConfig(modelMapping, targetHost, requestedModel);
+        targetHost = new URL(endpoint.baseUrl).hostname;
 
         const upstreamRequestUrl = new URL(requestUrl.toString());
         if (route === 'openai_chat' || route === 'anthropic_messages') {
@@ -738,30 +638,19 @@ async function handleRequest(request, env, ctx) {
         }
 
         targetUrl = buildTargetUrl(upstreamRequestUrl, endpoint.baseUrl);
-        if (modelConfig.invoke_url) {
-          const forcedUrl = normalizeInvokeUrl(
-            modelConfig.invoke_url,
-            readBooleanEnv(env, 'ALLOW_INSECURE_HTTP_UPSTREAM', false)
-          );
-          if (!forcedUrl) throw new Error('MODEL_MAPPING invoke_url must be an absolute HTTPS URL without embedded credentials.');
-          const forced = new URL(forcedUrl);
-          mergeSearchParams(forced, requestUrl);
-          targetUrl = forced.toString();
-          targetHost = forced.hostname;
-        }
 
         if (route === 'anthropic_messages') {
           const openAIBody = anthropicToOpenAIRequest(originalBodyJson, modelConfig, env);
-          openAIBody.model = modelConfig.model || requestedModel;
+          openAIBody.model = actualModel;
           currentBody = JSON.stringify(openAIBody);
         } else if (originalBodyText !== null) {
           const outbound = bodyParsed && originalBodyJson
-            ? { ...originalBodyJson, model: modelConfig.model || originalBodyJson.model }
+            ? { ...originalBodyJson, model: actualModel }
             : null;
-          currentBody = outbound ? JSON.stringify(applyModelRequestConfig(outbound, modelConfig)) : originalBodyText;
+          currentBody = outbound ? JSON.stringify(outbound) : originalBodyText;
         }
       } catch (e) {
-        recordFailure(endpoint.id, 500, 5_000, 'Invalid dynamic Base URL or request conversion');
+        recordFailure(endpoint.id, 500, 5_000, 'Invalid Base URL or request conversion');
         attempts.push(await buildAttemptRecord({
           attempt: index + 1,
           status: 500,
@@ -770,7 +659,7 @@ async function handleRequest(request, env, ctx) {
           upstreamHost: targetHost || null,
           upstreamPath: null,
           exposeUpstreamInfo,
-          endpointRole: getEndpointRole(endpoint),
+          endpointRole: endpoint.tier,
         }));
         continue;
       }
@@ -796,7 +685,7 @@ async function handleRequest(request, env, ctx) {
 
       const requestStartTime = Date.now();
       try {
-        const upstream = await fetch(targetUrl, {
+        let upstream = await fetch(targetUrl, {
           method: request.method,
           headers,
           body: currentBody,
@@ -808,22 +697,43 @@ async function handleRequest(request, env, ctx) {
         const elapsedMs = Date.now() - requestStartTime;
 
         if (upstream.ok || (upstream.status >= 400 && !RETRYABLE_STATUS.has(upstream.status))) {
-          const isStreaming = isStreamingResponse(upstream);
-          const primaryFailureCount = attempts.filter(item => item.endpoint_role === 'primary').length;
-          const fallbackFeedback = endpoint.role === 'fallback'
-            ? buildFallbackClientFeedback(env, endpoint, requestedModel, modelConfig.model || endpoint.configuredModel, primaryFailureCount)
-            : null;
+          let isStreaming = isStreamingResponse(upstream);
           const extraHeaders = {
             'x-edge-gateway-attempts': String(index + 1),
             'x-edge-gateway-upstream-status': String(upstream.status),
             'x-edge-gateway-cache': 'MISS',
-            'x-edge-gateway-health': String(getEndpointState(endpoint.id).healthScore),
+            'x-edge-gateway-node': endpoint.id,
+            'x-edge-gateway-tier': String(endpoint.tier || ''),
             'x-request-id': requestId,
-            ...(fallbackFeedback?.headers || {}),
           };
           if (exposeUpstreamInfo) extraHeaders['x-edge-gateway-upstream-host'] = targetHost;
-          if (fallbackFeedback) {
-            logger.info(`Fallback activated: provider=${fallbackFeedback.provider}, tier=${fallbackFeedback.tier}, model=${fallbackFeedback.reportedModel}, primary_attempts=${fallbackFeedback.primaryAttempts}`);
+
+          // First Event Guard：流式响应在首个有效事件前允许 failover。
+          // 仅用于 OpenAI 直通流；重组模式（targetWasNonStream）与 Anthropic 转换
+          // （由转换层以 HTTP 200 + event:error 表达错误）跳过 guard。
+          if (isStreaming && !targetWasNonStream && route === 'openai_chat') {
+            try {
+              upstream = await ensureFirstSseEvent(upstream, FIRST_EVENT_TIMEOUT_DEFAULT, request.signal);
+              extraHeaders['x-edge-gateway-first-event'] = 'ok';
+            } catch (e) {
+              clearTimeout(timeoutId);
+              if (request.signal && clientAbortListener) {
+                request.signal.removeEventListener('abort', clientAbortListener);
+              }
+              recordFailure(endpoint.id, 504, 5_000, `first_event_${e.message}`);
+              attempts.push(await buildAttemptRecord({
+                attempt: index + 1,
+                status: 504,
+                endpoint,
+                error: `First event guard failed: ${e.message}`,
+                latencyMs: elapsedMs,
+                upstreamHost: targetHost,
+                upstreamPath: new URL(targetUrl).pathname,
+                exposeUpstreamInfo,
+                endpointRole: endpoint.tier,
+              }));
+              continue;
+            }
           }
 
           if (route === 'anthropic_messages') {
@@ -865,7 +775,7 @@ async function handleRequest(request, env, ctx) {
                   modelConfig,
                   request.signal,
                   clientAbortListener,
-                  fallbackFeedback,
+                  null,
                   logger
                 );
               } else {
@@ -873,7 +783,7 @@ async function handleRequest(request, env, ctx) {
                   request.signal.removeEventListener('abort', clientAbortListener);
                 }
                 const openAIData = await safeJsonResponse(upstream);
-                const message = openAIToAnthropicMessage(openAIData, requestedModel, modelConfig, fallbackFeedback);
+                const message = openAIToAnthropicMessage(openAIData, requestedModel, modelConfig, null);
                 anthropicResponse = anthropicMessageToSseResponse(message);
               }
               return withCors(
@@ -893,7 +803,7 @@ async function handleRequest(request, env, ctx) {
             } else {
               openAIData = await safeJsonResponse(upstream);
             }
-            const anthropicMessage = openAIToAnthropicMessage(openAIData, requestedModel, modelConfig, fallbackFeedback);
+            const anthropicMessage = openAIToAnthropicMessage(openAIData, requestedModel, modelConfig, null);
             recordSuccess(endpoint.id, elapsedMs);
             return new Response(JSON.stringify(anthropicMessage), {
               status: 200,
@@ -914,14 +824,13 @@ async function handleRequest(request, env, ctx) {
             logger.info('触发慢模型非流式响应重组...');
             const assembleResult = await assembleNonStreamResponse(
               upstream,
-              fallbackFeedback?.reportedModel || requestedModel,
+              requestedModel,
               requestId,
               request,
               env,
               extraHeaders,
               logger,
-              ctx,
-              fallbackFeedback
+              ctx
             );
             if (assembleResult.status === 200) recordSuccess(endpoint.id, elapsedMs);
             else recordFailure(endpoint.id, 502, 5_000, 'stream_assemble_failed');
@@ -940,28 +849,6 @@ async function handleRequest(request, env, ctx) {
             }));
           }
 
-          if (fallbackFeedback?.visible && upstream.ok && !isStreaming) {
-            const openAIData = await safeJsonResponse(upstream);
-            applyOpenAIFallbackNotice(openAIData, fallbackFeedback);
-            recordSuccess(endpoint.id, elapsedMs);
-            return new Response(JSON.stringify(openAIData), {
-              status: 200,
-              headers: {
-                'content-type': 'application/json;charset=UTF-8',
-                'cache-control': 'no-store',
-                ...corsHeaders(request, env),
-                ...extraHeaders,
-              },
-            });
-          }
-
-          if (fallbackFeedback?.visible && upstream.ok && isStreaming) {
-            const transformed = transformOpenAIStreamWithFallbackNotice(
-              upstream, fallbackFeedback, request.signal, clientAbortListener
-            );
-            return withCors(trackEndpointStream(transformed, endpoint.id, elapsedMs), request, env, extraHeaders);
-          }
-
           if (cacheUrl && upstream.ok && !isStreaming) {
             const cacheMaxBytes = clampInt(readOptionalEnv(env, 'CACHE_MAX_BODY_BYTES'), 1024, 10 * 1024 * 1024, 2 * 1024 * 1024);
             const cacheTtl = clampInt(readOptionalEnv(env, 'CACHE_MAX_AGE_SEC'), 60, 86400 * 30, 600);
@@ -973,9 +860,26 @@ async function handleRequest(request, env, ctx) {
             return withCors(resForClient, request, env, extraHeaders);
           }
 
-          if (!isStreaming && upstream.ok) recordSuccess(endpoint.id, elapsedMs);
+          if (!isStreaming && upstream.ok) {
+            // 非流式：重写 model 字段为客户端请求的逻辑模型，隐藏上游真实模型名
+            try {
+              const data = await safeJsonResponse(upstream);
+              if (data && typeof data === 'object') {
+                if (requestedModel !== 'unknown') data.model = requestedModel;
+                recordSuccess(endpoint.id, elapsedMs);
+                return new Response(JSON.stringify(data), {
+                  status: upstream.status,
+                  statusText: upstream.statusText,
+                  headers: upstream.headers,
+                });
+              }
+            } catch {
+              // 非 JSON 响应按原文透传
+            }
+            recordSuccess(endpoint.id, elapsedMs);
+          }
           const responseForClient = isStreaming && upstream.ok
-            ? trackEndpointStream(upstream, endpoint.id, elapsedMs)
+            ? trackEndpointStream(rewriteStreamModelField(upstream, requestedModel), endpoint.id, elapsedMs)
             : upstream;
           return withCors(
             responseForClient,
@@ -996,7 +900,7 @@ async function handleRequest(request, env, ctx) {
           upstreamHost: targetHost,
           upstreamPath: new URL(targetUrl).pathname,
           exposeUpstreamInfo,
-          endpointRole: getEndpointRole(endpoint),
+          endpointRole: endpoint.tier,
         }));
 
         if (NON_HEALTH_IMPACT_STATUS.has(upstream.status)) {
@@ -1006,6 +910,7 @@ async function handleRequest(request, env, ctx) {
           recordFailure(endpoint.id, upstream.status,
             applyExponentialBackoff(endpoint.id, upstream.status, retryAfterMs),
             `HTTP ${upstream.status}`);
+          if (upstream.status >= 500) recordCircuitFailure(endpoint.id);
         }
 
         if (env && env.AE_DATASET) {
@@ -1048,7 +953,7 @@ async function handleRequest(request, env, ctx) {
           upstreamHost: targetHost,
           upstreamPath: targetUrl ? new URL(targetUrl).pathname : null,
           exposeUpstreamInfo,
-          endpointRole: getEndpointRole(endpoint),
+          endpointRole: endpoint.tier,
         }));
         recordFailure(endpoint.id, 0,
           applyExponentialBackoff(endpoint.id, 0, isTimeout ? 30_000 : 2_000),
@@ -1061,10 +966,10 @@ async function handleRequest(request, env, ctx) {
     const status = last?.status === 429 ? 429 : 502;
     const isTimeoutError = last?.error?.includes('timed out');
     const message = last?.status === 404
-      ? `Upstream returned 404 for model "${requestedModel}". Verify MODEL_MAPPING and the mapped invoke_url.`
+      ? `Upstream returned 404 for model "${requestedModel}". Verify the models mapping on your nodes.`
       : isTimeoutError
-        ? 'Upstream timed out for all endpoints.'
-        : 'Upstream request failed after endpoint rotation.';
+        ? 'Upstream timed out for all nodes.'
+        : 'Upstream request failed after node failover.';
 
     return gatewayError(request, env, isAnthropicClient, status, message, {
       attempts,
@@ -1072,16 +977,14 @@ async function handleRequest(request, env, ctx) {
       request_path: requestUrl.pathname,
       requested_model: requestedModel,
       hint: route === 'anthropic_messages'
-        ? 'The gateway converted /v1/messages to /v1/chat/completions. Primary endpoints were attempted first, followed by the configured fallback endpoints.'
-        : 'Inspect attempts[] and verify MODEL_MAPPING, primary endpoint availability, and fallback configuration.',
-      fallback_configured: fallbackEndpoints.length > 0,
-      fallback_order: fallbackEndpoints.map(ep => ({
-        tier: ep.fallbackTier,
-        order: ep.fallbackOrder,
-        provider: exposeUpstreamInfo ? ep.providerName : getEndpointRole(ep),
-        ...(exposeUpstreamInfo ? { base_url: ep.baseUrl } : {}),
-        model: ep.configuredModel,
-      })),
+        ? 'The gateway converted /v1/messages to /v1/chat/completions. Node candidates were attempted in policy tier order.'
+        : 'Inspect attempts[] and verify NODES_CONFIG, node health, and policy retry_budget.',
+      nodes_total: configuredNodes.length,
+      tiers: {
+        free: configuredNodes.filter(n => n.tier === 'free').length,
+        paid: configuredNodes.filter(n => n.tier === 'paid').length,
+        plus: configuredNodes.filter(n => n.tier === 'plus').length,
+      },
     }, requestId);
 }
 
@@ -1238,95 +1141,6 @@ function validateOpenAIChatRequest(body) {
   return null;
 }
 
-function parseAndValidateModelMapping(raw, env) {
-  const parsed = JSON.parse(raw);
-  if (!isPlainObject(parsed)) throw new Error('root value must be a JSON object');
-  const allowInsecureHttp = readBooleanEnv(env, 'ALLOW_INSECURE_HTTP_UPSTREAM', false);
-  const normalized = {};
-  for (const [rawHost, hostMapping] of Object.entries(parsed)) {
-    const host = String(rawHost || '').trim().toLowerCase();
-    if (!host || !isPlainObject(hostMapping)) throw new Error(`mapping for host "${rawHost}" must be an object`);
-    if (Object.prototype.hasOwnProperty.call(normalized, host)) {
-      throw new Error(`duplicate mapping host after case normalization: "${rawHost}"`);
-    }
-    const normalizedHostMapping = {};
-    for (const [rawAlias, config] of Object.entries(hostMapping)) {
-      const alias = String(rawAlias || '').trim();
-      if (!alias) throw new Error(`host "${rawHost}" contains an empty model alias`);
-      if (Object.prototype.hasOwnProperty.call(normalizedHostMapping, alias)) {
-        throw new Error(`host "${rawHost}" contains duplicate model alias "${alias}"`);
-      }
-      if (typeof config === 'string') {
-        if (!config.trim()) throw new Error(`mapping "${rawHost}.${alias}" must not be empty`);
-        normalizedHostMapping[alias] = config.trim();
-        continue;
-      }
-      if (!isPlainObject(config)) throw new Error(`mapping "${rawHost}.${alias}" must be a string or object`);
-      if (config.model !== undefined && (typeof config.model !== 'string' || !config.model.trim())) {
-        throw new Error(`mapping "${rawHost}.${alias}.model" must be a non-empty string`);
-      }
-      if (config.invoke_url !== undefined && !normalizeInvokeUrl(config.invoke_url, allowInsecureHttp)) {
-        throw new Error(`mapping "${rawHost}.${alias}.invoke_url" must be an absolute HTTPS URL without embedded credentials`);
-      }
-      if (config.capabilities !== undefined && !isPlainObject(config.capabilities)) {
-        throw new Error(`mapping "${rawHost}.${alias}.capabilities" must be an object`);
-      }
-      if (config.request_overrides !== undefined && !isPlainObject(config.request_overrides)) {
-        throw new Error(`mapping "${rawHost}.${alias}.request_overrides" must be an object`);
-      }
-      const protectedRequestFields = new Set(['model', 'messages', 'stream']);
-      if (config.request_overrides && Object.keys(config.request_overrides).some(key => protectedRequestFields.has(key))) {
-        throw new Error(`mapping "${rawHost}.${alias}.request_overrides" must not override model, messages, or stream`);
-      }
-      if (config.drop_params !== undefined && (!Array.isArray(config.drop_params) || config.drop_params.some(item => typeof item !== 'string'))) {
-        throw new Error(`mapping "${rawHost}.${alias}.drop_params" must be an array of strings`);
-      }
-      if (Array.isArray(config.drop_params) && config.drop_params.some(key => protectedRequestFields.has(key))) {
-        throw new Error(`mapping "${rawHost}.${alias}.drop_params" must not remove model, messages, or stream`);
-      }
-      normalizedHostMapping[alias] = {
-        ...config,
-        ...(typeof config.model === 'string' ? { model: config.model.trim() } : {}),
-      };
-    }
-    normalized[host] = normalizedHostMapping;
-  }
-  return normalized;
-}
-
-function isModelAllowedForEndpoint(requestedModel, endpoint, modelMapping) {
-  if (!requestedModel || !endpoint) return false;
-  if (endpoint.role === 'fallback' && endpoint.configuredModel === requestedModel) return true;
-  let host = '';
-  try { host = new URL(endpoint.baseUrl).hostname; } catch { return false; }
-  const hostMapping = modelMapping?.[host];
-  return isPlainObject(hostMapping) && Object.prototype.hasOwnProperty.call(hostMapping, requestedModel);
-}
-
-function resolveModelConfig(modelMapping, host, requestedModel) {
-  const hostMapping = modelMapping?.[host] || {};
-  const raw = hostMapping?.[requestedModel];
-  if (typeof raw === 'string') return { model: raw, capabilities: {} };
-  if (raw && typeof raw === 'object') {
-    return {
-      ...raw,
-      model: raw.model || requestedModel,
-      invoke_url: raw.invoke_url || '',
-      capabilities: raw.capabilities && typeof raw.capabilities === 'object' ? raw.capabilities : {},
-      request_overrides: raw.request_overrides && typeof raw.request_overrides === 'object' ? raw.request_overrides : {},
-      drop_params: Array.isArray(raw.drop_params) ? raw.drop_params : [],
-    };
-  }
-  return { model: requestedModel, capabilities: {}, request_overrides: {}, drop_params: [] };
-}
-
-function applyModelRequestConfig(body, modelConfig) {
-  const result = { ...body, ...(modelConfig?.request_overrides || {}) };
-  for (const key of modelConfig?.drop_params || []) delete result[key];
-  if (modelConfig?.model) result.model = modelConfig.model;
-  return result;
-}
-
 function anthropicToOpenAIRequest(body, modelConfig, env) {
   const caps = modelConfig?.capabilities || {};
   const messages = [];
@@ -1393,7 +1207,7 @@ function anthropicToOpenAIRequest(body, modelConfig, env) {
     out.stream_options = { include_usage: true };
   }
 
-  return applyModelRequestConfig(out, modelConfig);
+  return out;
 }
 
 function convertAnthropicSystem(system, caps) {
@@ -1627,186 +1441,8 @@ function normalizeReasoningEffort(value) {
   return 'medium';
 }
 
-function buildFallbackClientFeedback(env, endpoint, requestedModel, actualModel, primaryAttempts) {
-  const rawMode = String(readOptionalEnv(env, 'FALLBACK_CLIENT_NOTICE_MODE') || 'headers').toLowerCase();
-  const mode = ['headers', 'visible', 'off'].includes(rawMode) ? rawMode : 'headers';
-  const provider = readBooleanEnv(env, 'EXPOSE_UPSTREAM_INFO', false)
-    ? (endpoint?.providerName || inferProviderName(endpoint?.baseUrl) || 'custom-openai')
-    : getEndpointRole(endpoint);
-  const tier = endpoint?.fallbackTier || 'primary';
-  const model = actualModel || endpoint?.configuredModel || requestedModel || 'unknown';
-  const attempts = Math.max(0, Number(primaryAttempts || 0));
-  const reason = attempts > 0 ? 'primary-exhausted' : 'primary-unavailable';
-  const template = readOptionalEnv(env, 'FALLBACK_CLIENT_NOTICE_TEXT')
-    || '[智能边缘网关] 主端点不可用，已切换至 {provider} / {model}（{tier}）。';
-  const noticeText = renderFallbackNotice(template, {
-    provider,
-    model,
-    tier,
-    requested_model: requestedModel || 'unknown',
-    primary_attempts: String(attempts),
-  });
-  const headers = mode === 'off' ? {} : {
-    'x-edge-gateway-route': 'fallback',
-    'x-edge-gateway-fallback': 'true',
-    'x-edge-gateway-fallback-provider': encodeHeaderValue(provider),
-    'x-edge-gateway-fallback-tier': encodeHeaderValue(tier),
-    'x-edge-gateway-fallback-model': encodeHeaderValue(model),
-    'x-edge-gateway-requested-model': encodeHeaderValue(requestedModel || 'unknown'),
-    'x-edge-gateway-primary-attempts': String(attempts),
-    'x-edge-gateway-fallback-reason': reason,
-  };
-  return {
-    mode,
-    visible: mode === 'visible',
-    noticeText,
-    reportedModel: model,
-    provider,
-    tier,
-    primaryAttempts: attempts,
-    headers,
-  };
-}
-
-function renderFallbackNotice(template, values) {
-  return String(template || '').replace(/\{(provider|model|tier|requested_model|primary_attempts)\}/g,
-    (_, key) => String(values?.[key] ?? ''));
-}
-
-function encodeHeaderValue(value) {
-  return encodeURIComponent(String(value ?? '').slice(0, 512));
-}
-
-function applyAnthropicFallbackNotice(content, feedback, hasTools) {
-  if (!feedback?.visible || hasTools || !feedback.noticeText) return content;
-  const output = Array.isArray(content) ? [...content] : [];
-  const noticeBlock = { type: 'text', text: `${feedback.noticeText}\n\n` };
-  const firstTextIndex = output.findIndex(block => block?.type === 'text');
-  if (firstTextIndex >= 0) {
-    output[firstTextIndex] = {
-      ...output[firstTextIndex],
-      text: `${feedback.noticeText}\n\n${output[firstTextIndex].text || ''}`,
-    };
-  } else {
-    const firstNonThinking = output.findIndex(block => block?.type !== 'thinking');
-    output.splice(firstNonThinking >= 0 ? firstNonThinking : output.length, 0, noticeBlock);
-  }
-  return output;
-}
-
-function applyOpenAIFallbackNotice(data, feedback) {
-  if (!feedback?.visible || !feedback.noticeText || !data || typeof data !== 'object') return data;
-  for (const choice of data.choices || []) {
-    const message = choice?.message;
-    if (!message || (Array.isArray(message.tool_calls) && message.tool_calls.length) || message.function_call) continue;
-    if (typeof message.content === 'string') {
-      message.content = `${feedback.noticeText}\n\n${message.content}`;
-    } else if (Array.isArray(message.content)) {
-      const textIndex = message.content.findIndex(part => part?.type === 'text' || part?.type === 'output_text');
-      if (textIndex >= 0) {
-        message.content[textIndex] = {
-          ...message.content[textIndex],
-          text: `${feedback.noticeText}\n\n${message.content[textIndex].text || ''}`,
-        };
-      } else {
-        message.content.unshift({ type: 'text', text: `${feedback.noticeText}\n\n` });
-      }
-    } else if (message.content == null) {
-      message.content = feedback.noticeText;
-    }
-  }
-  if (feedback.reportedModel) data.model = feedback.reportedModel;
-  return data;
-}
-
-function transformOpenAIStreamWithFallbackNotice(upstream, feedback, requestSignal, clientAbortListener) {
-  if (!feedback?.visible || !feedback.noticeText || !upstream.body) return upstream;
-  const reader = upstream.body.getReader();
-  const decoder = new TextDecoder();
-  const encoder = new TextEncoder();
-  let buffer = '';
-  let emitted = false;
-  let toolMode = false;
-
-  const cleanup = async () => {
-    if (requestSignal && clientAbortListener) requestSignal.removeEventListener('abort', clientAbortListener);
-    try { await reader.cancel().catch(() => {}); } catch {}
-  };
-
-  const stream = new ReadableStream({
-    async start(controller) {
-      const pushEvent = data => controller.enqueue(encoder.encode(`data: ${data}\n\n`));
-      const processEvent = raw => {
-        if (!raw || raw === '[DONE]') {
-          if (raw) pushEvent(raw);
-          return;
-        }
-        try {
-          const json = JSON.parse(raw);
-          const choice = json?.choices?.[0];
-          const delta = choice?.delta || {};
-          if (Array.isArray(delta.tool_calls) || delta.function_call) toolMode = true;
-          const text = extractOpenAITextContent(delta.content);
-          if (!emitted && !toolMode && text) {
-            emitted = true;
-            const noticeChunk = {
-              ...json,
-              model: feedback.reportedModel || json.model,
-              choices: [{
-                index: choice?.index ?? 0,
-                delta: { role: 'assistant', content: `${feedback.noticeText}\n\n` },
-                finish_reason: null,
-              }],
-            };
-            pushEvent(JSON.stringify(noticeChunk));
-          }
-          if (feedback.reportedModel) json.model = feedback.reportedModel;
-          pushEvent(JSON.stringify(json));
-        } catch {
-          pushEvent(raw);
-        }
-      };
-
-      try {
-        while (true) {
-          if (requestSignal?.aborted) break;
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const events = buffer.split(/\r?\n\r?\n/);
-          buffer = events.pop() || '';
-          for (const eventChunk of events) {
-            const data = eventChunk.split(/\r?\n/)
-              .filter(line => line.startsWith('data:'))
-              .map(line => line.slice(5).trimStart())
-              .join('\n');
-            if (data) processEvent(data);
-          }
-        }
-        if (buffer.trim()) {
-          const data = buffer.split(/\r?\n/).filter(line => line.startsWith('data:'))
-            .map(line => line.slice(5).trimStart()).join('\n');
-          if (data) processEvent(data);
-        }
-        controller.close();
-      } catch (e) {
-        controller.error(e);
-      } finally {
-        await cleanup();
-      }
-    },
-    cancel() { cleanup(); },
-  });
-
-  return new Response(stream, {
-    status: upstream.status,
-    statusText: upstream.statusText,
-    headers: upstream.headers,
-  });
-}
-
 function openAIToAnthropicMessage(data, requestedModel, modelConfig = {}, fallbackFeedback = null) {
-  const responseModel = fallbackFeedback?.reportedModel || requestedModel;
+  const responseModel = requestedModel;
   const choice = data?.choices?.[0] || {};
   const message = choice.message || {};
   const content = [];
@@ -1843,7 +1479,7 @@ function openAIToAnthropicMessage(data, requestedModel, modelConfig = {}, fallba
     });
   }
 
-  const finalContent = applyAnthropicFallbackNotice(content, fallbackFeedback, toolCalls.length > 0);
+  const finalContent = content;
   if (finalContent.length === 0) {
     throw new Error('Upstream returned an empty response without text, reasoning, or tool calls.');
   }
@@ -1852,7 +1488,7 @@ function openAIToAnthropicMessage(data, requestedModel, modelConfig = {}, fallba
     id: normalizeAnthropicMessageId(data?.id),
     type: 'message',
     role: 'assistant',
-    model: fallbackFeedback?.reportedModel || requestedModel,
+    model: requestedModel,
     content: finalContent,
     stop_reason: mapOpenAIFinishReason(choice.finish_reason, toolCalls.length > 0),
     stop_sequence: null,
@@ -1936,8 +1572,8 @@ function normalizeToolArgumentsJson(value) {
 }
 
 function transformOpenAIStreamToAnthropic(upstream, requestedModel, requestId, modelConfig, requestSignal, clientAbortListener, fallbackFeedback = null, logger = console) {
-  const responseModel = fallbackFeedback?.reportedModel || requestedModel;
-  let fallbackNoticeEmitted = false;
+  const responseModel = requestedModel;
+
   const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
@@ -2046,14 +1682,6 @@ function transformOpenAIStreamToAnthropic(upstream, requestedModel, requestId, m
         const text = extractOpenAITextContent(delta.content);
         if (text) {
           const index = ensureBlock('text');
-          if (fallbackFeedback?.visible && !fallbackNoticeEmitted && pendingTools.size === 0 && fallbackFeedback.noticeText) {
-            fallbackNoticeEmitted = true;
-            emit('content_block_delta', {
-              type: 'content_block_delta',
-              index,
-              delta: { type: 'text_delta', text: `${fallbackFeedback.noticeText}\n\n` },
-            });
-          }
           emit('content_block_delta', {
             type: 'content_block_delta',
             index,
@@ -2587,229 +2215,31 @@ function simpleHash(str) {
   return hash >>> 0;
 }
 
-// ============ 主端点选择 ============
+// ============ Health / Metrics / Models ============
 
-function buildRequestAffinityKey(body) {
-  if (!body || typeof body !== 'object') {
-    return 'default-session';
-  }
-
-  // 对话尾部会随着每次工具调用变化，因此只使用稳定的前缀生成亲和键。
-  if (Array.isArray(body.messages) && body.messages.length > 0) {
-    return stableStringify({
-      model: body.model || '',
-      system: body.system || '',
-      prefix: body.messages.slice(0, 2),
-    });
-  }
-
-  return stableStringify({
-    model: body.model || '',
-    user: body.user || '',
-  });
-}
-
-function selectPrimaryEndpoints(primaryEndpoints, maxAttempts, config, originalBodyJson, request) {
-  const now = Date.now();
-  const { rotationWindowMs, rotationMaxPerWindow, maxConcurrencyPerEndpoint } = config;
-
-  for (const ep of primaryEndpoints) {
-    const state = getEndpointState(ep.id);
-    state.requestBuffer.resize(g_ringBufferSize);
-    if (state.cooldownUntil > 0 && state.cooldownUntil <= now) {
-      state.cooldownUntil = 0;
-      state.cooldownReason = null;
-      state.consecutiveFailures = 0;
-      state.healthScore = Math.min(HEALTH_SCORE_MAX, state.healthScore + HEALTH_SCORE_COOLDOWN_RECOVERY);
-    }
-  }
-
-  if (primaryEndpoints.length === 0 || maxAttempts <= 0) return [];
-
-  const affinityKey =
-    request?.headers?.get('x-claude-code-session-id') ||
-    request?.headers?.get('x-claude-code-agent-id') ||
-    request?.headers?.get('x-claude-code-parent-agent-id') ||
-    buildRequestAffinityKey(originalBodyJson);
-
-  // 首选端点只依赖传入 Primary 列表的原始稳定顺序，不能依赖动态健康排序。
-  const preferredIndex = simpleHash(affinityKey) % primaryEndpoints.length;
-  const preferredEndpoint = primaryEndpoints[preferredIndex];
-  const preferredState = getEndpointState(preferredEndpoint.id);
-  const preferredRecentRequests = preferredState.requestBuffer.getRecentCount(rotationWindowMs, now);
-
-  // 粘滞优先：仅在冷却、硬请求/并发上限或严重低健康时跳过首选端点。
-  const preferredUsable =
-    preferredState.cooldownUntil <= now &&
-    preferredRecentRequests < rotationMaxPerWindow &&
-    preferredState.activeRequests < maxConcurrencyPerEndpoint &&
-    preferredState.healthScore >= 20;
-
-  // 其它端点只用于 failover；排除当前不可用端点后再按健康度和负载排序。
-  const alternatives = primaryEndpoints
-    .filter(ep => ep.id !== preferredEndpoint.id)
-    .map(ep => {
-      const state = getEndpointState(ep.id);
-      return {
-        ep,
-        state,
-        recentRequests: state.requestBuffer.getRecentCount(rotationWindowMs, now),
-      };
-    })
-    .filter(item => item.state.cooldownUntil <= now)
-    .filter(item => item.state.activeRequests < maxConcurrencyPerEndpoint)
-    .filter(item => item.recentRequests < rotationMaxPerWindow)
-    .sort((a, b) => {
-      if (b.state.healthScore !== a.state.healthScore) return b.state.healthScore - a.state.healthScore;
-      if (a.recentRequests !== b.recentRequests) return a.recentRequests - b.recentRequests;
-      if (a.state.activeRequests !== b.state.activeRequests) return a.state.activeRequests - b.state.activeRequests;
-      return (a.state.avgLatencyMs || 999999) - (b.state.avgLatencyMs || 999999);
-    })
-    .map(item => item.ep);
-
-  const ordered = preferredUsable
-    ? [preferredEndpoint, ...alternatives]
-    : alternatives;
-
-  return ordered.slice(0, maxAttempts);
-}
-
-function getEndpointState(id) {
-  if (!endpointState.has(id)) {
-    endpointState.set(id, {
-      healthScore: HEALTH_SCORE_INITIAL,
-      activeRequests: 0,
-      requestBuffer: new RequestRingBuffer(g_ringBufferSize),
-      consecutiveFailures: 0,
-      avgLatencyMs: 0,
-      cooldownUntil: 0,
-      cooldownReason: null,
-      totalRequests: 0,
-      totalSuccesses: 0,
-      totalFailures: 0,
-      lastUsedAt: 0,
-    });
-  }
-  return endpointState.get(id);
-}
-
-function recordRequestStart(id) {
-  const s = getEndpointState(id);
-  s.activeRequests++;
-  s.requestBuffer.record(Date.now());
-  s.totalRequests++;
-  s.lastUsedAt = Date.now();
-}
-
-function recordSuccess(id, latencyMs) {
-  const s = getEndpointState(id);
-  s.activeRequests = Math.max(0, s.activeRequests - 1);
-  s.healthScore = Math.min(HEALTH_SCORE_MAX, s.healthScore + HEALTH_SCORE_SUCCESS_GAIN);
-  s.consecutiveFailures = 0;
-  s.totalSuccesses++;
-  s.avgLatencyMs = s.avgLatencyMs === 0 ? latencyMs : s.avgLatencyMs * (1 - LATENCY_EWMA_ALPHA) + latencyMs * LATENCY_EWMA_ALPHA;
-}
-
-function recordFailure(id, status, cooldownMs, reason) {
-  const s = getEndpointState(id);
-  s.activeRequests = Math.max(0, s.activeRequests - 1);
-  s.totalFailures++;
-  s.consecutiveFailures++;
-  const healthPenalty = status === 429 ? 15
-    : (status === 401 || status === 403) ? 50
-    : status === 404 ? 8
-    : status >= 500 ? 20
-    : status === 0 ? 12
-    : 10;
-  s.healthScore = Math.max(HEALTH_SCORE_MIN, s.healthScore - healthPenalty);
-  if (cooldownMs > 0) {
-    s.cooldownUntil = Date.now() + cooldownMs;
-    s.cooldownReason = reason || `status:${status}`;
-  }
-}
-
-// 404 等配置类错误只释放并发，不改变端点健康分或冷却状态。
-function recordNeutralEnd(id) {
-  const s = getEndpointState(id);
-  s.activeRequests = Math.max(0, s.activeRequests - 1);
-}
-
-function applyExponentialBackoff(id, status, baseCooldownMs) {
-  const s = getEndpointState(id);
-  if (status === 429 || status === 401 || status === 403) return baseCooldownMs;
-  return baseCooldownMs * Math.min(MAX_EXPONENTIAL_BACKOFF_MULTIPLIER, Math.pow(2, Math.max(0, s.consecutiveFailures)));
-}
-
-function isCoolingDown(id) {
-  const s = getEndpointState(id);
-  if (s.cooldownUntil <= 0) return false;
-  if (s.cooldownUntil <= Date.now()) {
-    s.cooldownUntil = 0;
-    s.cooldownReason = null;
-    return false;
-  }
-  return true;
-}
-
-function nextCooldownMs(endpoints) {
-  const now = Date.now();
-  const values = endpoints.map(ep => {
-    const s = getEndpointState(ep.id);
-    return s.cooldownUntil > now ? s.cooldownUntil - now : 0;
-  }).filter(Boolean);
-  return values.length ? Math.min(...values) : 0;
-}
-
-function cleanupStaleState() {
-  const now = Date.now();
-  for (const [, state] of endpointState) {
-    if (state.cooldownUntil > 0 && state.cooldownUntil <= now) {
-      state.cooldownUntil = 0;
-      state.cooldownReason = null;
-      state.consecutiveFailures = 0;
-      state.healthScore = Math.min(HEALTH_SCORE_MAX, state.healthScore + HEALTH_SCORE_COOLDOWN_RECOVERY);
-    }
-  }
-  if (endpointState.size > MAX_STATE_ENTRIES) {
-    const targetSize = Math.floor(MAX_STATE_ENTRIES * 0.75);
-    const entries = [...endpointState.entries()];
-    entries.sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt);
-    for (let i = 0; i < endpointState.size - targetSize; i++) {
-      endpointState.delete(entries[i][0]);
-    }
-  }
-}
 
 async function healthCheck(request, env, requestId) {
-  const primaryEndpoints = buildPrimaryEndpoints(env);
-  const fallbackEndpoints = buildFallbackEndpoints(env);
-  const endpoints = [...primaryEndpoints, ...fallbackEndpoints];
-  const now = Date.now();
-  const rotationWindowMs = clampInt(readOptionalEnv(env, 'PRIMARY_ROTATION_WINDOW_MS'), 10_000, 18_000_000, DEFAULT_PRIMARY_ROTATION_WINDOW_MS);
+  const nodes = getConfiguredNodes(env);
   const exposeUpstreamInfo = readBooleanEnv(env, 'EXPOSE_UPSTREAM_INFO', false);
+  const now = Date.now();
 
-  // 端点标识使用异步 SHA-256 指纹，因此并行生成后再序列化。
-  const endpointDetails = await Promise.all(endpoints.map(async ep => {
-    const s = getEndpointState(ep.id);
+  const nodeDetails = nodes.map(n => {
+    const s = getNodeRuntimeState(n.id);
     const cooling = s.cooldownUntil > now;
     return {
-      id: await fingerprint(ep.id),
-      ...(exposeUpstreamInfo ? { base_url: ep.baseUrl } : {}),
-      role: getEndpointRole(ep),
-      provider: exposeUpstreamInfo ? (ep.providerName || inferProviderName(ep.baseUrl)) : getEndpointRole(ep),
-      primary_provider: ep.role === 'fallback' ? null : (exposeUpstreamInfo ? (ep.providerName || inferProviderName(ep.baseUrl)) : 'primary'),
-      fallback_provider: ep.role === 'fallback' ? (exposeUpstreamInfo ? ep.providerName : getEndpointRole(ep)) : null,
-      fallback_tier: ep.role === 'fallback' ? ep.fallbackTier : null,
-      fallback_order: ep.role === 'fallback' ? ep.fallbackOrder : null,
-      configured_model: ep.role === 'fallback' ? ep.configuredModel : null,
+      id: n.id,
+      tier: n.tier,
+      provider: exposeUpstreamInfo ? n.provider : n.tier,
+      priority: n.priority,
+      workloads: n.workloads,
+      models: Object.keys(n.models || {}),
       health_score: Math.round(s.healthScore),
       status: cooling ? 'cooling_down' : 'active',
       cooldown_remaining_ms: cooling ? s.cooldownUntil - now : 0,
       cooldown_reason: s.cooldownReason || null,
+      circuit_state: s.circuitState,
       active_requests: s.activeRequests,
-      recent_requests_in_window: s.requestBuffer.getRecentCount(rotationWindowMs, now),
       avg_ttfb_ms: Math.round(s.avgLatencyMs) || 0,
-      avg_latency_ms: Math.round(s.avgLatencyMs) || 0,
       total_requests: s.totalRequests,
       total_successes: s.totalSuccesses,
       total_failures: s.totalFailures,
@@ -2817,32 +2247,22 @@ async function healthCheck(request, env, requestId) {
       consecutive_failures: s.consecutiveFailures,
       last_used_at: s.lastUsedAt > 0 ? new Date(s.lastUsedAt).toISOString() : null,
     };
-  }));
+  });
 
-  const cooling = endpointDetails.filter(e => e.status === 'cooling_down').length;
-  const totalRequests = endpointDetails.reduce((sum, e) => sum + e.total_requests, 0);
-  const totalSuccesses = endpointDetails.reduce((sum, e) => sum + e.total_successes, 0);
+  const cooling = nodeDetails.filter(e => e.status === 'cooling_down').length;
 
   return new Response(JSON.stringify({
-    status: endpoints.length > 0 ? 'ok' : 'misconfigured',
+    status: nodes.length > 0 ? 'ok' : 'misconfigured',
     gateway_auth_enabled: true,
-    primary_endpoints_total: primaryEndpoints.length,
-    primary_providers: exposeUpstreamInfo
-      ? [...new Set(primaryEndpoints.map(ep => ep.providerName || inferProviderName(ep.baseUrl)))]
-      : (primaryEndpoints.length > 0 ? ['primary'] : []),
-    ...(exposeUpstreamInfo ? { primary_base_urls: [...new Set(primaryEndpoints.map(ep => ep.baseUrl))] } : {}),
-    fallback_configured: fallbackEndpoints.length > 0,
-    fallback_order: fallbackEndpoints.map(ep => ({
-        tier: ep.fallbackTier,
-        order: ep.fallbackOrder,
-        provider: exposeUpstreamInfo ? ep.providerName : getEndpointRole(ep),
-      ...(exposeUpstreamInfo ? { base_url: ep.baseUrl } : {}),
-      model: ep.configuredModel,
-    })),
-    note: 'This snapshot reflects only the current isolate\'s in-memory state, not a strictly global view across all edge locations.',
-    endpoints_total: endpoints.length,
-    endpoints_active: endpoints.length - cooling,
-    endpoints_cooling_down: cooling,
+    nodes_total: nodes.length,
+    nodes_active: nodes.length - cooling,
+    nodes_cooling_down: cooling,
+    tiers: {
+      free: nodes.filter(n => n.tier === 'free').length,
+      paid: nodes.filter(n => n.tier === 'paid').length,
+      plus: nodes.filter(n => n.tier === 'plus').length,
+    },
+    note: "This snapshot reflects only the current isolate's in-memory state.",
     client_stats: {
       started_at: new Date(gatewayStats.startedAt).toISOString(),
       requests_total: gatewayStats.clientRequests,
@@ -2852,115 +2272,70 @@ async function healthCheck(request, env, requestId) {
       cancellations_total: gatewayStats.clientCancellations,
       fallback_activations_total: gatewayStats.fallbackActivations,
       fallback_successes_total: gatewayStats.fallbackSuccesses,
-      success_rate: gatewayStats.clientRequests > 0
-        ? (gatewayStats.clientSuccesses / gatewayStats.clientRequests * 100).toFixed(1) + '%'
-        : 'N/A',
+      success_rate: gatewayStats.clientRequests > 0 ? (gatewayStats.clientSuccesses / gatewayStats.clientRequests * 100).toFixed(1) + '%' : 'N/A',
     },
-    isolate_stats: {
-      endpoint_attempts_total: totalRequests,
-      endpoint_successes_total: totalSuccesses,
-      endpoint_success_rate: totalRequests > 0 ? (totalSuccesses / totalRequests * 100).toFixed(1) + '%' : 'N/A',
-      // 兼容旧字段；该值是上游端点尝试次数，不是客户端请求数。
-      total_requests_served: totalRequests,
-      total_successes: totalSuccesses,
-      overall_success_rate: totalRequests > 0 ? (totalSuccesses / totalRequests * 100).toFixed(1) + '%' : 'N/A',
-    },
-    endpoints: endpointDetails,
+    endpoints: nodeDetails,
     request_id: requestId,
   }, null, 2), {
     status: 200,
-    headers: {
-      'content-type': 'application/json;charset=UTF-8',
-      'cache-control': 'no-store',
-      'x-request-id': requestId,
-      ...corsHeaders(request, env),
-    },
+    headers: { 'content-type': 'application/json;charset=UTF-8', 'cache-control': 'no-store', 'x-request-id': requestId, ...corsHeaders(request, env) },
   });
 }
 
-// Prometheus 指标仅反映当前 isolate，适合趋势观察，不代表全局精确值。
 async function metricsCheck(request, env) {
-  const primaryEndpoints = buildPrimaryEndpoints(env);
-  const fallbackEndpoints = buildFallbackEndpoints(env);
-  const endpoints = [...primaryEndpoints, ...fallbackEndpoints];
-  const now = Date.now();
-  const rotationWindowMs = clampInt(readOptionalEnv(env, 'PRIMARY_ROTATION_WINDOW_MS'), 10_000, 18_000_000, DEFAULT_PRIMARY_ROTATION_WINDOW_MS);
+  const nodes = getConfiguredNodes(env);
   const exposeUpstreamInfo = readBooleanEnv(env, 'EXPOSE_UPSTREAM_INFO', false);
+  const now = Date.now();
 
   const lines = [];
   lines.push('# HELP edge_gateway_client_requests_total Counted client API requests since isolate start.');
   lines.push('# TYPE edge_gateway_client_requests_total counter');
-  lines.push(`edge_gateway_client_requests_total ${gatewayStats.clientRequests}`);
+  lines.push('edge_gateway_client_requests_total ' + gatewayStats.clientRequests);
   lines.push('# HELP edge_gateway_client_successes_total Client API responses with HTTP status below 400 since isolate start.');
   lines.push('# TYPE edge_gateway_client_successes_total counter');
-  lines.push(`edge_gateway_client_successes_total ${gatewayStats.clientSuccesses}`);
-  lines.push('# HELP edge_gateway_client_failures_total Client API responses with HTTP status 400 or above, including thrown errors, since isolate start.');
+  lines.push('edge_gateway_client_successes_total ' + gatewayStats.clientSuccesses);
+  lines.push('# HELP edge_gateway_client_failures_total Client API responses with HTTP status 400 or above since isolate start.');
   lines.push('# TYPE edge_gateway_client_failures_total counter');
-  lines.push(`edge_gateway_client_failures_total ${gatewayStats.clientFailures}`);
+  lines.push('edge_gateway_client_failures_total ' + gatewayStats.clientFailures);
   lines.push('# HELP edge_gateway_client_active_requests Current counted client API requests still active in this isolate.');
   lines.push('# TYPE edge_gateway_client_active_requests gauge');
-  lines.push(`edge_gateway_client_active_requests ${gatewayStats.clientActiveRequests}`);
-  lines.push('# HELP edge_gateway_client_cancellations_total Counted streaming client responses cancelled before completion.');
-  lines.push('# TYPE edge_gateway_client_cancellations_total counter');
-  lines.push(`edge_gateway_client_cancellations_total ${gatewayStats.clientCancellations}`);
-  lines.push('# HELP edge_gateway_fallback_activations_total Requests that entered the Fallback chain since isolate start.');
-  lines.push('# TYPE edge_gateway_fallback_activations_total counter');
-  lines.push(`edge_gateway_fallback_activations_total ${gatewayStats.fallbackActivations}`);
-  lines.push('# HELP edge_gateway_fallback_successes_total Successful client responses served by a Fallback endpoint since isolate start.');
-  lines.push('# TYPE edge_gateway_fallback_successes_total counter');
-  lines.push(`edge_gateway_fallback_successes_total ${gatewayStats.fallbackSuccesses}`);
-  lines.push('# HELP edge_gateway_endpoint_health_score Current health score (1-100) per upstream endpoint.');
-  lines.push('# TYPE edge_gateway_endpoint_health_score gauge');
-  lines.push('# HELP edge_gateway_endpoint_active_requests Currently in-flight requests per upstream endpoint.');
-  lines.push('# TYPE edge_gateway_endpoint_active_requests gauge');
-  lines.push('# HELP edge_gateway_endpoint_cooldown_remaining_ms Remaining cooldown time in ms (0 if not cooling).');
-  lines.push('# TYPE edge_gateway_endpoint_cooldown_remaining_ms gauge');
-  lines.push('# HELP edge_gateway_endpoint_avg_ttfb_ms Exponentially-weighted time to response headers in ms.');
-  lines.push('# TYPE edge_gateway_endpoint_avg_ttfb_ms gauge');
-  lines.push('# HELP edge_gateway_endpoint_avg_latency_ms Deprecated alias of edge_gateway_endpoint_avg_ttfb_ms.');
-  lines.push('# TYPE edge_gateway_endpoint_avg_latency_ms gauge');
-  lines.push('# HELP edge_gateway_endpoint_requests_total Total requests served per endpoint since isolate start.');
-  lines.push('# TYPE edge_gateway_endpoint_requests_total counter');
-  lines.push('# HELP edge_gateway_endpoint_successes_total Total successful requests per endpoint since isolate start.');
-  lines.push('# TYPE edge_gateway_endpoint_successes_total counter');
-  lines.push('# HELP edge_gateway_endpoint_failures_total Total failed requests per endpoint since isolate start.');
-  lines.push('# TYPE edge_gateway_endpoint_failures_total counter');
+  lines.push('edge_gateway_client_active_requests ' + gatewayStats.clientActiveRequests);
+  lines.push('# HELP edge_gateway_node_health_score Current health score (1-100) per node.');
+  lines.push('# TYPE edge_gateway_node_health_score gauge');
+  lines.push('# HELP edge_gateway_node_active_requests Currently in-flight requests per node.');
+  lines.push('# TYPE edge_gateway_node_active_requests gauge');
+  lines.push('# HELP edge_gateway_node_cooldown_remaining_ms Remaining cooldown time in ms per node.');
+  lines.push('# TYPE edge_gateway_node_cooldown_remaining_ms gauge');
+  lines.push('# HELP edge_gateway_node_avg_ttfb_ms Exponentially-weighted time to response headers in ms per node.');
+  lines.push('# TYPE edge_gateway_node_avg_ttfb_ms gauge');
+  lines.push('# HELP edge_gateway_node_requests_total Total requests served per node since isolate start.');
+  lines.push('# TYPE edge_gateway_node_requests_total counter');
+  lines.push('# HELP edge_gateway_node_successes_total Total successful requests per node since isolate start.');
+  lines.push('# TYPE edge_gateway_node_successes_total counter');
+  lines.push('# HELP edge_gateway_node_failures_total Total failed requests per node since isolate start.');
+  lines.push('# TYPE edge_gateway_node_failures_total counter');
 
-  for (const ep of endpoints) {
-    const s = getEndpointState(ep.id);
+  for (const n of nodes) {
+    const s = getNodeRuntimeState(n.id);
     const cooling = s.cooldownUntil > now ? s.cooldownUntil - now : 0;
-    const id = await fingerprint(ep.id);
-    const role = getEndpointRole(ep);
-    const fallbackTier = ep.role === 'fallback' ? ep.fallbackTier : '';
-    const configuredModel = ep.role === 'fallback' ? ep.configuredModel : '';
-    const provider = sanitizePrometheusLabel(exposeUpstreamInfo
-      ? (ep.providerName || inferProviderName(ep.baseUrl))
-      : getEndpointRole(ep));
-    const fallbackProvider = ep.role === 'fallback' ? provider : '';
-    const label = `endpoint_id="${id}",endpoint_role="${role}",provider="${provider}",fallback_provider="${fallbackProvider}",fallback_tier="${fallbackTier}",configured_model="${sanitizePrometheusLabel(configuredModel)}"`;
-    lines.push(`edge_gateway_endpoint_health_score{${label}} ${Math.round(s.healthScore)}`);
-    lines.push(`edge_gateway_endpoint_active_requests{${label}} ${s.activeRequests}`);
-    lines.push(`edge_gateway_endpoint_cooldown_remaining_ms{${label}} ${cooling}`);
-    lines.push(`edge_gateway_endpoint_avg_ttfb_ms{${label}} ${Math.round(s.avgLatencyMs) || 0}`);
-    lines.push(`edge_gateway_endpoint_avg_latency_ms{${label}} ${Math.round(s.avgLatencyMs) || 0}`);
-    lines.push(`edge_gateway_endpoint_requests_total{${label}} ${s.totalRequests}`);
-    lines.push(`edge_gateway_endpoint_successes_total{${label}} ${s.totalSuccesses}`);
-    lines.push(`edge_gateway_endpoint_failures_total{${label}} ${s.totalFailures}`);
-    // 当前窗口请求数用于观察端点是否接近轮换阈值。
-    lines.push(`edge_gateway_endpoint_recent_requests_in_window{${label}} ${s.requestBuffer.getRecentCount(rotationWindowMs, now)}`);
+    const provider = sanitizePrometheusLabel(exposeUpstreamInfo ? n.provider : n.tier);
+    const label = 'node_id="' + sanitizePrometheusLabel(n.id) + '",tier="' + n.tier + '",provider="' + provider + '"';
+    lines.push('edge_gateway_node_health_score{' + label + '} ' + Math.round(s.healthScore));
+    lines.push('edge_gateway_node_circuit_state{node_id="' + sanitizePrometheusLabel(n.id) + '"} ' + (s.circuitState === 'closed' ? '0' : s.circuitState === 'open' ? '2' : '1'));
+    lines.push('edge_gateway_node_active_requests{' + label + '} ' + s.activeRequests);
+    lines.push('edge_gateway_node_cooldown_remaining_ms{' + label + '} ' + cooling);
+    lines.push('edge_gateway_node_avg_ttfb_ms{' + label + '} ' + (Math.round(s.avgLatencyMs) || 0));
+    lines.push('edge_gateway_node_requests_total{' + label + '} ' + s.totalRequests);
+    lines.push('edge_gateway_node_successes_total{' + label + '} ' + s.totalSuccesses);
+    lines.push('edge_gateway_node_failures_total{' + label + '} ' + s.totalFailures);
   }
 
   return new Response(lines.join('\n') + '\n', {
     status: 200,
-    headers: {
-      'content-type': 'text/plain; version=0.0.4; charset=utf-8',
-      'cache-control': 'no-store',
-      ...corsHeaders(request, env),
-    },
+    headers: { 'content-type': 'text/plain; version=0.0.4; charset=utf-8', 'cache-control': 'no-store', ...corsHeaders(request, env) },
   });
 }
 
-// AE_DATASET 存在时异步写入跨 isolate 趋势数据；写入失败不影响主请求。
 async function writeAnalytics(env, { endpointId, status, latencyMs, attempt, cacheStatus }) {
   try {
     env.AE_DATASET.writeDataPoint({
@@ -2975,219 +2350,27 @@ async function writeAnalytics(env, { endpointId, status, latencyMs, attempt, cac
 
 // ============ 模型列表 ============
 
-async function modelsListResponse({ request, env, requestId, primaryEndpoints, fallbackEndpoints, modelMapping }) {
-  const timeoutMs = clampInt(
-    readOptionalEnv(env, 'MODEL_LIST_TIMEOUT_MS'),
-    1_000,
-    30_000,
-    DEFAULT_MODEL_LIST_TIMEOUT_MS
-  );
-  const maxAttempts = clampInt(
-    readOptionalEnv(env, 'MODEL_LIST_MAX_ATTEMPTS'),
-    1,
-    Math.max(1, primaryEndpoints.length),
-    Math.min(DEFAULT_MODEL_LIST_MAX_ATTEMPTS, Math.max(1, primaryEndpoints.length))
-  );
-
-  const configuredModels = collectConfiguredModelEntries(primaryEndpoints, fallbackEndpoints, modelMapping);
-  const strictModelMapping = readBooleanEnv(env, 'STRICT_MODEL_MAPPING', false);
-  const exposeUpstreamInfo = readBooleanEnv(env, 'EXPOSE_UPSTREAM_INFO', false);
-  if (strictModelMapping) {
-    if (configuredModels.length === 0) {
-      return gatewayError(request, env, false, 500,
-        'Gateway misconfigured: STRICT_MODEL_MAPPING is enabled but no models are configured in MODEL_MAPPING or Fallback.',
-        undefined, requestId);
-    }
-    return new Response(JSON.stringify({ object: 'list', data: configuredModels }), {
-      status: 200,
-      headers: {
-        'content-type': 'application/json;charset=UTF-8',
-        'cache-control': 'no-store',
-        'x-request-id': requestId,
-        'x-edge-gateway-model-source': 'configured',
-        ...corsHeaders(request, env),
-      },
-    });
-  }
-  const attempts = [];
-  const modelListCandidates = primaryEndpoints.filter(endpoint => !isCoolingDown(endpoint.id)).slice(0, maxAttempts);
-
-  for (const endpoint of modelListCandidates) {
-    let targetUrl;
-    try {
-      targetUrl = buildTargetUrl(new URL(request.url), endpoint.baseUrl);
-    } catch (error) {
-      attempts.push({
-        provider: exposeUpstreamInfo ? endpoint.providerName : 'primary',
-        status: 0,
-        error: `Invalid upstream URL: ${error.message || String(error)}`,
-      });
-      continue;
-    }
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-    try {
-      const upstream = await fetch(targetUrl, {
-        method: 'GET',
-        headers: buildStandardOpenAIHeaders(request, endpoint.token, requestId),
-        redirect: 'manual',
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-
-      if (!upstream.ok) {
-        attempts.push({
-          provider: exposeUpstreamInfo ? endpoint.providerName : 'primary',
-          status: upstream.status,
-          error: extractUpstreamErrorMessage(await safeReadText(upstream)) || `HTTP ${upstream.status}`,
-        });
-        continue;
-      }
-
-      let payload;
-      try {
-        payload = await safeJsonResponse(upstream, DEFAULT_MODEL_LIST_MAX_BYTES);
-      } catch (error) {
-        attempts.push({
-          provider: exposeUpstreamInfo ? endpoint.providerName : 'primary',
-          status: upstream.status,
-          error: error instanceof BodyTooLargeError
-            ? 'Upstream model list exceeds the safety limit.'
-            : 'Upstream model list is not valid JSON.',
-        });
-        continue;
-      }
-
-      const upstreamModels = normalizeOpenAIModelEntries(payload?.data);
-      const models = mergeModelEntries(upstreamModels, configuredModels);
-      if (models.length === 0) {
-        attempts.push({
-          provider: exposeUpstreamInfo ? endpoint.providerName : 'primary',
-          status: upstream.status,
-          error: 'Upstream returned an empty model list.',
-        });
-        continue;
-      }
-
-      return new Response(JSON.stringify({ object: 'list', data: models }), {
-        status: 200,
-        headers: {
-          'content-type': 'application/json;charset=UTF-8',
-          'cache-control': 'no-store',
-          'x-request-id': requestId,
-          'x-edge-gateway-model-source': configuredModels.length > 0 ? 'upstream+configured' : 'upstream',
-          ...corsHeaders(request, env),
-        },
-      });
-    } catch (error) {
-      clearTimeout(timeoutId);
-      attempts.push({
-        provider: exposeUpstreamInfo ? endpoint.providerName : 'primary',
-        status: 0,
-        error: error?.name === 'AbortError' ? 'Upstream model-list request timed out.' : (error.message || String(error)),
-      });
-    }
-  }
-
-  if (configuredModels.length > 0) {
-    return new Response(JSON.stringify({ object: 'list', data: configuredModels }), {
-      status: 200,
-      headers: {
-        'content-type': 'application/json;charset=UTF-8',
-        'cache-control': 'no-store',
-        'x-request-id': requestId,
-        'x-edge-gateway-model-source': 'configured',
-        ...corsHeaders(request, env),
-      },
-    });
-  }
-
-  return gatewayError(request, env, false, 502,
-    'Unable to obtain a model list from any configured Primary endpoint.', {
-      attempts: attempts.map(item => ({
-        provider: item.provider,
-        status: item.status,
-        error: exposeUpstreamInfo
-          ? item.error
-          : item.status > 0 ? `Upstream returned HTTP ${item.status}.` : 'Upstream model-list request failed.',
-      })),
-    }, requestId);
-}
-
-function collectConfiguredModelEntries(primaryEndpoints, fallbackEndpoints, modelMapping) {
+function modelsListResponse(request, env, requestId) {
+  const nodes = getConfiguredNodes(env);
   const models = new Map();
-  const configuredHosts = new Set();
-
-  for (const endpoint of [...primaryEndpoints, ...fallbackEndpoints]) {
-    try {
-      configuredHosts.add(new URL(endpoint.baseUrl).hostname);
-    } catch {}
-  }
-
-  for (const host of configuredHosts) {
-    const hostMapping = modelMapping?.[host];
-    if (!isPlainObject(hostMapping)) continue;
-    for (const alias of Object.keys(hostMapping)) {
-      addModelEntry(models, {
-        id: alias,
-        object: 'model',
-        created: 0,
-        owned_by: APP_META.name,
-      });
+  for (const node of nodes) {
+    for (const logical of Object.keys(node.models || {})) {
+      if (!models.has(logical)) {
+        models.set(logical, { id: logical, object: 'model', created: 0, owned_by: APP_META.name });
+      }
     }
   }
-
-  for (const endpoint of fallbackEndpoints) {
-    if (!endpoint.configuredModel) continue;
-    addModelEntry(models, {
-      id: endpoint.configuredModel,
-      object: 'model',
-      created: 0,
-      owned_by: APP_META.name,
-    });
-  }
-
-  return [...models.values()].sort((a, b) => a.id.localeCompare(b.id));
-}
-
-function normalizeOpenAIModelEntries(data) {
-  if (!Array.isArray(data)) return [];
-  const models = new Map();
-  for (const item of data) {
-    if (!item || typeof item !== 'object' || typeof item.id !== 'string' || !item.id.trim()) continue;
-    addModelEntry(models, {
-      ...item,
-      id: item.id.trim(),
-      object: item.object || 'model',
-      created: Number.isFinite(Number(item.created)) ? Number(item.created) : 0,
-      owned_by: item.owned_by || 'upstream',
-    });
-  }
-  return [...models.values()];
-}
-
-function mergeModelEntries(...groups) {
-  const models = new Map();
-  for (const group of groups) {
-    for (const item of group || []) addModelEntry(models, item);
-  }
-  return [...models.values()].sort((a, b) => a.id.localeCompare(b.id));
-}
-
-function addModelEntry(models, item) {
-  const id = String(item?.id || '').trim();
-  if (!id || models.has(id)) return;
-  models.set(id, { ...item, id });
-}
-
-
-function isRequestedModelAllowed(requestedModel, primaryEndpoints, fallbackEndpoints, modelMapping) {
-  const requested = String(requestedModel || '').trim();
-  if (!requested) return false;
-  const configured = collectConfiguredModelEntries(primaryEndpoints, fallbackEndpoints, modelMapping);
-  return configured.some(item => item.id === requested);
+  const data = [...models.values()].sort((a, b) => a.id.localeCompare(b.id));
+  return new Response(JSON.stringify({ object: 'list', data }), {
+    status: 200,
+    headers: {
+      'content-type': 'application/json;charset=UTF-8',
+      'cache-control': 'no-store',
+      'x-request-id': requestId,
+      'x-edge-gateway-model-source': 'configured',
+      ...corsHeaders(request, env),
+    },
+  });
 }
 
 // ============ HTTP 处理 ============
@@ -3495,10 +2678,7 @@ function createLimitedRequestBodyStream(body, maxBytes) {
 
 // ============ 配置与通用工具 ============
 
-function buildNodeEndpoints(env, requestedModel, bodyJson, isDirectStream) {
-  const nodesConfigRaw = readOptionalEnv(env, 'NODES_CONFIG');
-  if (!nodesConfigRaw) return [];
-
+function buildNodeEndpoints(env, requestedModel, bodyJson) {
   let routePlan;
   try {
     routePlan = buildRoutePlan(env, requestedModel, bodyJson);
@@ -3508,236 +2688,175 @@ function buildNodeEndpoints(env, requestedModel, bodyJson, isDirectStream) {
   const nodes = routePlan?.nodes || [];
   if (nodes.length === 0) return [];
 
-  return nodes.map(n => {
-    const token = n._token || n._legacyToken || '';
-    const baseUrl = n._baseUrl || n._legacyBaseUrl || '';
-    if (!token || !baseUrl) return null;
-    return {
-      id: n.id,
-      token,
-      baseUrl,
-      role: 'primary',
-      providerName: n.provider || inferProviderName(baseUrl),
-      fallbackTier: null,
-      fallbackOrder: 0,
-      configuredModel: null,
-      tier: n.tier,
-      limits: n.limits || { concurrency: 2 },
-    };
-  }).filter(ep => ep !== null);
+  return nodes.map(n => ({
+    id: n.id,
+    token: n._token,
+    baseUrl: n._baseUrl,
+    providerName: n.provider || inferProviderName(n._baseUrl),
+    models: n.models || {},
+    tier: n.tier,
+    limits: n.limits || { concurrency: 2 },
+  }));
 }
 
-function buildPrimaryEndpoints(env) {
-  const tokensRaw = readOptionalEnv(env, 'PRIMARY_API_TOKENS');
-  const enabledRaw = readOptionalEnv(env, 'PRIMARY_ENABLED');
-  const enabled = enabledRaw === null || enabledRaw === undefined || enabledRaw === ''
-    ? Boolean(tokensRaw)
-    : parseBooleanValue(enabledRaw, false);
-  if (!enabled || !tokensRaw) return [];
+// 兼容内部调用名的节点状态委托（统一走 node-state 模块）。
+function recordSuccess(id, latencyMs) { recordNodeSuccess(id, latencyMs); }
+function recordNeutralEnd(id) { recordNodeNeutralEnd(id); }
+function recordFailure(id, status, cooldownMs, reason) { recordNodeFailure(id, status, cooldownMs, reason); }
 
-  const defaultBaseUrl = readOptionalEnv(env, 'PRIMARY_BASE_URL') || '';
-  const allowInsecureHttp = readBooleanEnv(env, 'ALLOW_INSECURE_HTTP_UPSTREAM', false);
-  return parseTokens(tokensRaw, defaultBaseUrl, allowInsecureHttp)
-    .filter(endpoint => endpoint.token && endpoint.baseUrl)
-    .map(endpoint => ({
-      ...endpoint,
-      role: 'primary',
-      providerName: inferProviderName(endpoint.baseUrl),
-      fallbackTier: null,
-      fallbackOrder: 0,
-      configuredModel: null,
-    }));
+// 轻量指数退避：429/401/403 使用固定冷却，其余按连续失败翻倍。
+function applyExponentialBackoff(id, status, baseCooldownMs) {
+  const s = getNodeRuntimeState(id);
+  if (status === 429 || status === 401 || status === 403) return baseCooldownMs;
+  return baseCooldownMs * Math.min(8, Math.pow(2, Math.max(0, s.consecutiveFailures)));
 }
 
-function buildFallbackEndpoints(env) {
-  const sharedToken = readOptionalEnv(env, 'FALLBACK_API_TOKEN');
-  const sharedBaseUrl = readOptionalEnv(env, 'FALLBACK_BASE_URL') || '';
-  const primaryToken = readOptionalEnv(env, 'FALLBACK_PRIMARY_TOKEN') || sharedToken;
-  const primaryBaseUrl = readOptionalEnv(env, 'FALLBACK_PRIMARY_BASE_URL') || sharedBaseUrl;
-  const primaryModel = normalizeFallbackPrimaryModel(
-    readOptionalEnv(env, 'FALLBACK_PRIMARY_MODEL')
-  );
-
-  const secondaryToken = readOptionalEnv(env, 'FALLBACK_SECONDARY_TOKEN') || sharedToken;
-  const secondaryBaseUrl = readOptionalEnv(env, 'FALLBACK_SECONDARY_BASE_URL') || sharedBaseUrl;
-  const secondaryModel = normalizeFallbackSecondaryModel(
-    readOptionalEnv(env, 'FALLBACK_SECONDARY_MODEL')
-  );
-
-  const enabledRaw = readOptionalEnv(env, 'FALLBACK_ENABLED');
-  const hasConfiguredFallback = Boolean(
-    (primaryToken && primaryBaseUrl && primaryModel)
-    || (secondaryToken && secondaryBaseUrl && secondaryModel)
-  );
-  const enabled = enabledRaw === null || enabledRaw === undefined || enabledRaw === ''
-    ? hasConfiguredFallback
-    : parseBooleanValue(enabledRaw, false);
-  if (!enabled || !hasConfiguredFallback) return [];
-
-  const definitions = [
-    {
-      tier: 'primary',
-      order: 1,
-      model: primaryModel,
-      token: primaryToken,
-      baseUrl: primaryBaseUrl,
-    },
-    {
-      tier: 'secondary',
-      order: 2,
-      model: secondaryModel,
-      token: secondaryToken,
-      baseUrl: secondaryBaseUrl,
-    },
-  ];
-
-  const endpoints = [];
-  const seen = new Set();
-
-  for (const definition of definitions) {
-    if (!definition.model || !definition.token || !definition.baseUrl) continue;
-
-    const normalizedBaseUrl = normalizeHttpsBaseUrl(definition.baseUrl);
-    if (!normalizedBaseUrl) continue;
-
-    const dedupeKey = [
-      normalizedBaseUrl,
-      definition.model,
-      definition.token,
-    ].join('|');
-    if (seen.has(dedupeKey)) continue;
-    seen.add(dedupeKey);
-
-    endpoints.push({
-      id: `fallback:${dedupeKey}`,
-      role: 'fallback',
-      token: definition.token,
-      baseUrl: normalizedBaseUrl,
-      providerName: inferProviderName(normalizedBaseUrl),
-      fallbackTier: definition.tier,
-      fallbackOrder: definition.order,
-      configuredModel: definition.model,
-    });
-  }
-
-  return endpoints.sort((a, b) => a.fallbackOrder - b.fallbackOrder);
-}
-
-function normalizeHttpsBaseUrl(value) {
-  return normalizeUpstreamBaseUrl(value, false);
-}
-
-
-function inferProviderName(baseUrl) {
+// First Event Guard：读取上游 SSE 流直到出现第一个有效 data 事件。
+// 成功时返回一个重放已消费字节并继续转发剩余流的新 Response；
+// 失败（空流 / [DONE] 无数据 / 畸形 / 超时 / 客户端取消）时抛错，允许 failover。
+async function ensureFirstSseEvent(upstream, timeoutMs, requestSignal) {
+  if (!upstream.body) throw new Error('empty');
+  const reader = upstream.body.getReader();
+  const decoder = new TextDecoder();
+  const consumed = [];
+  let buffer = '';
+  let timerId = null;
   try {
-    return new URL(String(baseUrl || '')).hostname || 'custom-openai';
-  } catch {
-    return 'custom-openai';
+    while (true) {
+      if (requestSignal && requestSignal.aborted) throw new Error('aborted');
+      const readPromise = reader.read();
+      const timeoutPromise = new Promise((_, reject) => {
+        timerId = setTimeout(() => reject(new Error('timeout')), timeoutMs);
+      });
+      let result;
+      try {
+        result = await Promise.race([readPromise, timeoutPromise]);
+      } finally {
+        clearTimeout(timerId);
+        timerId = null;
+      }
+      if (result.done) throw new Error('empty');
+      consumed.push(result.value);
+      buffer += decoder.decode(result.value, { stream: true });
+      const events = buffer.split(/\r?\n\r?\n/);
+      buffer = events.pop() || '';
+      for (const eventChunk of events) {
+        const data = eventChunk.split(/\r?\n/)
+          .filter(line => line.startsWith('data:'))
+          .map(line => line.slice(5).trimStart())
+          .join('\n');
+        if (!data) continue;
+        if (data === '[DONE]') continue; // 只有 DONE，无有效输出
+        try {
+          JSON.parse(data);
+          // 有效 JSON 事件确认成功；构造重放流
+          const stream = new ReadableStream({
+            start(controller) {
+              for (const chunk of consumed) controller.enqueue(chunk);
+              void (async () => {
+                try {
+                  while (true) {
+                    const next = await reader.read();
+                    if (next.done) break;
+                    controller.enqueue(next.value);
+                  }
+                  controller.close();
+                } catch (e) {
+                  try { controller.error(e); } catch {}
+                }
+              })();
+            },
+            cancel() { reader.cancel().catch(() => {}); },
+          });
+          return new Response(stream, {
+            status: upstream.status,
+            statusText: upstream.statusText,
+            headers: upstream.headers,
+          });
+        } catch {}
+      }
+    }
+  } catch (e) {
+    clearTimeout(timerId);
+    await reader.cancel().catch(() => {});
+    throw e;
   }
+}
+
+// 流式响应中把上游真实模型名重写为客户端请求的逻辑模型。
+// 按行缓冲解析 data: 载荷；解析失败的行原样透传。
+function rewriteStreamModelField(upstream, logicalModel) {
+  if (!upstream.body || logicalModel === 'unknown') return upstream;
+  const reader = upstream.body.getReader();
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let lineBuffer = '';
+
+  const rewriteDataPayload = (payload) => {
+    if (!payload || payload === '[DONE]') return null;
+    try {
+      const json = JSON.parse(payload);
+      if (json && typeof json === 'object' && json.model !== undefined) {
+        json.model = logicalModel;
+        return JSON.stringify(json);
+      }
+    } catch {}
+    return null;
+  };
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const text = decoder.decode(value, { stream: true });
+          lineBuffer += text;
+          const lines = lineBuffer.split('\n');
+          lineBuffer = lines.pop() || '';
+          for (const line of lines) {
+            const outLine = rewriteSseLine(line, rewriteDataPayload);
+            controller.enqueue(encoder.encode(outLine + '\n'));
+          }
+        }
+        if (lineBuffer) {
+          controller.enqueue(encoder.encode(rewriteSseLine(lineBuffer, rewriteDataPayload)));
+        }
+        controller.close();
+      } catch (e) {
+        try { controller.error(e); } catch {}
+      } finally {
+        await reader.cancel().catch(() => {});
+      }
+    },
+    cancel() { reader.cancel().catch(() => {}); },
+  });
+
+  return new Response(stream, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers: upstream.headers,
+  });
+}
+
+function rewriteSseLine(line, rewriteDataPayload) {
+  if (!line.startsWith('data:')) return line;
+  const prefix = 'data:';
+  const raw = line.slice(prefix.length).replace(/^ /, '');
+  const rewritten = rewriteDataPayload(raw);
+  return rewritten === null ? line : prefix + ' ' + rewritten;
 }
 
 function sanitizePrometheusLabel(value) {
   return String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
 }
 
-function normalizeFallbackPrimaryModel(value) {
-  return String(value || '').trim();
+function inferProviderName(baseUrl) {
+  try { return new URL(String(baseUrl || '')).hostname || 'unknown'; }
+  catch { return 'unknown'; }
 }
 
-function normalizeFallbackSecondaryModel(value) {
-  const model = String(value || '').trim();
-  if (!model || model.toLowerCase() === 'off') return '';
-  return model;
-}
 
-function getEndpointRole(endpoint) {
-  if (endpoint?.role !== 'fallback') return 'primary';
-  return endpoint.fallbackTier === 'primary'
-    ? 'fallback_primary'
-    : 'fallback_secondary';
-}
-
-function buildFallbackModelConfig(endpoint, modelMapping, requestedModel) {
-  const host = new URL(endpoint.baseUrl).hostname;
-  const fallbackAlias = endpoint.configuredModel || requestedModel;
-  const mapped = resolveModelConfig(modelMapping, host, fallbackAlias);
-
-  const fallbackDefaults = {
-    tools: true,
-    parallel_tools: true,
-    vision: false,
-    json_schema: false,
-    expose_reasoning: true,
-    preserve_reasoning_history: false,
-    reasoning_request: 'none',
-    stream_usage: false,
-  };
-
-  return {
-    ...mapped,
-    model: mapped.model || fallbackAlias,
-    invoke_url: mapped.invoke_url || '',
-    capabilities: {
-      ...fallbackDefaults,
-      ...(mapped.capabilities || {}),
-    },
-    request_overrides: {
-      ...(mapped.request_overrides || {}),
-    },
-    drop_params: Array.isArray(mapped.drop_params) ? mapped.drop_params : [],
-  };
-}
-
-function isFallbackEligible(route, pathname) {
-  if (route === 'anthropic_messages') return true;
-  const path = String(pathname || '').replace(/\/+$/, '').toLowerCase();
-  return path === '/v1/chat/completions' || path === '/chat/completions';
-}
-
-function parseTokens(raw, defaultBaseUrl, allowInsecureHttp = false) {
-  const unique = new Map();
-  const source = String(raw || '');
-  if (source.includes(';')) return [];
-  const items = source
-    .split(/[,\r\n]+/)
-    .map(item => item.trim())
-    .filter(Boolean);
-  for (const item of items) {
-    const match = item.match(/^(.*)@(https?:\/\/.+)$/i);
-    const token = match ? match[1].trim() : item;
-    const rawBaseUrl = match ? match[2] : defaultBaseUrl || '';
-    const baseUrl = normalizeUpstreamBaseUrl(rawBaseUrl, allowInsecureHttp);
-    if (!token || !baseUrl) continue;
-    const id = `primary:${token}|${baseUrl}`;
-    if (!unique.has(id)) unique.set(id, { id, token, baseUrl });
-  }
-  return [...unique.values()];
-}
-
-function normalizeUpstreamBaseUrl(value, allowInsecureHttp = false) {
-  try {
-    const parsed = new URL(String(value || '').trim());
-    if (parsed.protocol !== 'https:' && !(allowInsecureHttp && parsed.protocol === 'http:')) return '';
-    if (parsed.username || parsed.password) return '';
-    parsed.hash = '';
-    parsed.pathname = parsed.pathname.replace(/\/+$/, '');
-    return parsed.toString();
-  } catch {
-    return '';
-  }
-}
-
-function normalizeInvokeUrl(value, allowInsecureHttp = false) {
-  try {
-    const parsed = new URL(String(value || '').trim());
-    if (parsed.protocol !== 'https:' && !(allowInsecureHttp && parsed.protocol === 'http:')) return '';
-    if (parsed.username || parsed.password) return '';
-    parsed.hash = '';
-    return parsed.toString();
-  } catch {
-    return '';
-  }
-}
 
 function parseBearer(value) {
   const raw = String(value || '').trim();
@@ -3775,7 +2894,7 @@ function versionResponse(request, env) {
     configuration: {
       ready: configuration.ready,
       gateway_access_key_bound: configuration.gatewayAccessKeyBound,
-      primary_api_tokens_bound: configuration.primaryApiTokensBound,
+      nodes_config_bound: configuration.nodesConfigBound,
     },
   }, null, 2), {
     status: 200,
@@ -3846,16 +2965,6 @@ async function safeReadText(response) {
   } catch { return ''; }
 }
 
-function getRetryAfterMs(headers) {
-  const value = headers.get('Retry-After');
-  if (!value) return 0;
-  const seconds = Number(value);
-  if (Number.isFinite(seconds)) return clamp(seconds * 1000, 500, 60_000);
-  const dateMs = Date.parse(value);
-  if (Number.isFinite(dateMs)) return clamp(dateMs - Date.now(), 500, 60_000);
-  return 0;
-}
-
 function defaultCooldownMs(status, env) {
   if (status === 401 || status === 403) return clampInt(readOptionalEnv(env, 'AUTH_FAIL_COOLDOWN_MS'), 1000, 7 * 86_400_000, DEFAULT_AUTH_FAIL_COOLDOWN);
   if (status === 429) return clampInt(readOptionalEnv(env, 'RATE_LIMIT_COOLDOWN_MS'), 1000, 600_000, DEFAULT_RATE_LIMIT_COOLDOWN);
@@ -3886,7 +2995,7 @@ async function buildAttemptRecord({ attempt, status, endpoint, error, latencyMs,
     attempt,
     status,
     token: await fingerprint(endpoint.id),
-    endpoint_role: endpointRole || (getEndpointRole(endpoint)),
+    endpoint_role: endpointRole,
     error: publicError,
   };
   if (latencyMs !== undefined) record.latency_ms = latencyMs;
@@ -3932,7 +3041,6 @@ function clampInt(value, min, max, fallback) {
   return Number.isFinite(number) ? Math.max(min, Math.min(max, number)) : fallback;
 }
 
-function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
 
 function trimDiagnostic(text) { return String(text || '').replace(/\s+/g, ' ').slice(0, 600); }
 
@@ -4116,7 +3224,6 @@ async function assembleNonStreamResponse(upstream, model, requestId, request, en
     };
 
     if (usage) responseBody.usage = usage;
-    applyOpenAIFallbackNotice(responseBody, fallbackFeedback);
 
     const responseStr = JSON.stringify(responseBody);
     const headers = new Headers();

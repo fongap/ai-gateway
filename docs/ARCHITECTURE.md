@@ -37,8 +37,6 @@ Node Scheduler (tier order → priority → health → latency)
        exhausted / failed
            v
      plus-node pool
-           |
-      legacy Fallback chain (compat mode only)
 ```
 
 ## 核心抽象：Node
@@ -147,15 +145,7 @@ Anthropic Messages 请求转换为 OpenAI Chat Completions；响应再转换回 
 
 ## 旧配置兼容
 
-未设置 `NODES_CONFIG` 时，旧配置自动转换：
-
-```text
-PRIMARY_API_TOKENS → free-node-01, free-node-02, ...
-FALLBACK_*         → fallback chain（保留原语义）
-MODEL_MAPPING      → 模型别名解析
-```
-
-转换后的节点走同一个 Scheduler，行为一致。
+已移除旧版 API 转发配置支持（`PRIMARY_API_TOKENS` / `FALLBACK_*` / `MODEL_MAPPING`）。网关仅使用 Node Scheduler 配置（`NODES_CONFIG` / `MODELS_CONFIG` / `POLICIES_CONFIG`）。
 
 ## 默认路由策略
 
