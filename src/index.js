@@ -311,7 +311,7 @@ function getSetupHtml(configuration) {
     </div>
     <p style="font-size:12px;color:var(--muted);margin-top:12px;line-height:1.6">可选：<code>TIER2_NODES_CONFIG</code> + <code>TIER3_NODES_CONFIG</code> 增加更多层级；<code>MODELS_CONFIG</code> 定义逻辑模型映射；<code>POLICIES_CONFIG</code> 控制重试预算。保存后页面自动刷新。</p>
     </div>
-    <p style="font-size:12px;color:var(--muted);margin-top:12px;line-height:1.6">可选：<code>TIER2_NODES_CONFIG</code> + <code>TIER2_NODE_01</code> 增加第二层回退节点；<code>MODELS_CONFIG</code> 定义逻辑模型映射；<code>POLICIES_CONFIG</code> 控制重试预算。保存后页面自动刷新。</p>
+    <p style="font-size:12px;color:var(--muted);margin-top:12px;line-height:1.6">可选：<code>TIER2_NODES_CONFIG</code> + <code>TIER3_NODES_CONFIG</code> 增加更多层级；<code>MODELS_CONFIG</code> 定义逻辑模型映射；<code>POLICIES_CONFIG</code> 控制重试预算。保存后页面自动刷新。</p>
   </div>
   <p class="note">页面只显示是否已绑定，不会读取或显示 Secret 内容。</p>
   <div class="actions"><a class="button" href="/">立即检查</a><span class="auto">每 5 秒自动检查一次</span></div>
