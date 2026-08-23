@@ -23,6 +23,32 @@ npx --yes wrangler@4.114.0
 
 `keep_vars` 用于在代码更新时保留控制台中的普通运行时变量。仓库不声明 `secrets.required`，因此首次自动部署不会因为 Secret 尚未创建而失败；受保护接口仍会在运行时拒绝未配置请求。
 
+## 必需 Secret
+
+两种配置方式二选一：
+
+**方式一：Node Scheduler（推荐）**
+
+```text
+GATEWAY_ACCESS_KEY    客户端访问密钥
+NODES_CONFIG          节点定义 JSON 数组
+MODELS_CONFIG         逻辑模型映射（可选，缺省走 general-fast 策略）
+POLICIES_CONFIG       策略定义（可选，缺省 free→paid 两层）
+FREE_NODE_01 等       各节点 secret_ref 指向的凭据（Token@BaseURL）
+```
+
+配置示例见 `config/nodes.example.json`、`config/models.example.json`、`config/policies.example.json`。
+
+**方式二：旧配置（兼容）**
+
+```text
+GATEWAY_ACCESS_KEY    客户端访问密钥
+PRIMARY_API_TOKENS    上游 Token 列表（Token@BaseURL）
+PRIMARY_BASE_URL      共享 Base URL（Token 未绑定 URL 时必需）
+```
+
+旧配置会自动转换为 free-node 节点，走同一个 Scheduler。详细说明见 [CONFIGURATION.md](CONFIGURATION.md)。
+
 ## 三种操作模式
 
 ### 1. 首次安装
@@ -75,7 +101,7 @@ Linux / macOS：
 wrangler deploy --keep-vars
 ```
 
-它不会尝试读取或重写已有 Secret。当前 Worker 尚未设置 `GATEWAY_ACCESS_KEY` 或 `PRIMARY_API_TOKENS` 时，代码仍可先部署；根页面会显示配置状态，受保护接口在配置完成前返回明确错误。
+它不会尝试读取或重写已有 Secret。当前 Worker 尚未设置 `GATEWAY_ACCESS_KEY` 或 `NODES_CONFIG`/`PRIMARY_API_TOKENS` 时，代码仍可先部署；根页面会显示配置状态，受保护接口在配置完成前返回明确错误。
 
 ### 3. 重新配置运行时变量
 
@@ -118,11 +144,11 @@ Deploy command: npx wrangler deploy
 Non-production deploy command: npx wrangler versions upload
 ```
 
-5. 在实际 Worker 的 **Settings → Variables and Secrets** 中添加运行时 Secret：
+5. 在实际 Worker 的 **Settings → Variables and Secrets** 中添加运行时 Secret（见上文"必需 Secret"）：
 
 ```text
 GATEWAY_ACCESS_KEY
-PRIMARY_API_TOKENS
+NODES_CONFIG          （推荐）或 PRIMARY_API_TOKENS
 ```
 
 构建变量不能替代 Worker 运行时 Secret。第一次构建会先完成代码部署；随后在目标 Worker 中添加上述 Secret 并部署配置即可。多个 Worker 各自保存变量和 Secret，后续 GitHub 推送会继续自动覆盖各自代码。
@@ -162,12 +188,13 @@ curl https://YOUR-GATEWAY/version
   "configuration": {
     "ready": true,
     "gateway_access_key_bound": true,
-    "primary_api_tokens_bound": true
+    "primary_api_tokens_bound": true,
+    "nodes_config_bound": true
   }
 }
 ```
 
-表示当前活动版本已绑定两个必需 Secret。
+`ready: true` 表示当前活动版本已绑定必需 Secret（`NODES_CONFIG` 或 `PRIMARY_API_TOKENS` 任一即可）。
 
 随后执行：
 

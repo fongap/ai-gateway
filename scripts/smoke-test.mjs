@@ -37,6 +37,7 @@ assert.equal(dashboard.status, 200);
 assert.equal(dashboard.headers.get('cache-control'), 'no-store');
 const dashboardHtml = await dashboard.text();
 assert.match(dashboardHtml, /双协议接入/);
+assert.match(dashboardHtml, /Node Scheduler/);
 assert.doesNotMatch(dashboardHtml, /等待完成配置/);
 
 const unauthorized = await worker.fetch(

@@ -1,85 +1,103 @@
 [简体中文](README.md) | [English](README_EN.md)
 
-# Smart Edge Gateway
+# AI Agent Node Scheduler
 
-**智能边缘网关**
+**Personal AI Agent Resource Scheduling Layer**
 
 
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](https://developers.cloudflare.com/workers/)
 [![License](https://img.shields.io/badge/license-MIT-2ea44f)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-43853d?logo=node.js&logoColor=white)](package.json)
 
-A lightweight AI API gateway running on Cloudflare Workers. It unifies multiple OpenAI-compatible upstream providers and exposes:
+A personal AI agent resource scheduling layer running on Cloudflare Workers. It manages multiple AI providers through a `free-node / paid-node / plus-node` three-tier node model, giving Coding Agents, office Agents, and local AI apps a low-cost, reliable entry point with automatic failover.
 
 - OpenAI Chat Completions: `/v1/chat/completions`
 - Anthropic Messages / Claude Code: `/v1/messages`
 - Anthropic Token Count: `/v1/messages/count_tokens`
 
-Requests use the Primary endpoint pool first. The two-level Fallback chain is activated only after all eligible Primary attempts fail.
-
 ## Why this project exists
 
-AI applications often depend on multiple model providers with different model IDs, reliability characteristics, and rate limits. Keeping those differences inside every client leads to duplicated configuration and inconsistent failure handling.
+AI agents need to manage multiple providers, resource tiers, reliability characteristics, and rate limits at the same time. Keeping those differences inside every agent leads to scattered configuration and duplicated failure handling.
 
-Smart Edge Gateway provides one entry point to:
+AI Agent Node Scheduler provides one entry point to:
 
-- decouple clients from provider-specific settings;
+- hide providers and API keys behind the Node abstraction, avoiding vendor lock-in;
+- schedule across `free → paid → plus` tier pools automatically, preferring free resources;
+- fail over to same-tier or higher-tier nodes on node failures;
 - expose both OpenAI and Anthropic-compatible endpoints;
-- switch to backup routes after Primary exhaustion;
-- map model aliases, capabilities, and invoke URLs by hostname;
-- deploy an edge routing layer without operating a standalone server.
-
-## Dashboard preview
+- support long-running agents with streaming and tool calls;
+- deploy an edge scheduling layer without servers or databases.
 
 ## Architecture
 
-![Smart Edge Gateway architecture](docs/architecture.svg)
+```
+Logical Model (MODELS_CONFIG)
+    ↓
+Policy (POLICIES_CONFIG)
+    ↓
+Node Scheduler
+    ↓
+Node Pool (NODES_CONFIG / legacy PRIMARY_API_TOKENS)
+    ↓
+Provider / Account / API Key
+```
 
-Primary handles normal traffic. Fallback is not part of normal rotation and is attempted only after Primary exhaustion. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+### Three-tier Node Pool
+
+| Tier | Name | Traits | Default role |
+|------|------|--------|--------------|
+| `free-node` | Free pool | Lowest cost, uncertain stability | First choice |
+| `paid-node` | Paid pool | Higher stability | Main fallback |
+| `plus-node` | Plus pool | Highest reliability, highest cost | Critical tasks, long coding runs |
+
+Default order: `free → paid → plus`. Paid/plus nodes never preempt free nodes by being faster. Critical tasks can reverse the order via policy (`plus → paid → free`).
+
+### Code structure
+
+```text
+src/
+├─ index.js                   Main entry, integrates Node Scheduler + legacy compat
+├─ config/
+│  ├─ nodes.js                Node config loader + legacy conversion
+│  ├─ models.js               Logical model loader
+│  ├─ policies.js             Policy loader
+│  └─ node-state.js           Node runtime state management
+├─ scheduler/
+│  ├─ selector.js             Node selector (tier/priority/health/latency)
+│  └─ router.js               Route planner
+├─ reliability/
+│  ├─ health.js               Health response builder
+│  ├─ circuit.js              Lightweight circuit breaker
+│  └─ retry.js                Retry budget + timeout splitting
+├─ stream/
+│  └─ guard.js                First Event Guard
+└─ protocol/
+   ├─ openai.js               OpenAI protocol utilities
+   └─ anthropic.js            Anthropic protocol utilities
+```
 
 ## Features
 
+- **Three-tier node scheduling**: free/paid/plus pools ranked by workload/model/tier/priority/cooldown/circuit/concurrency/health/latency;
+- **Legacy config compatible**: `PRIMARY_API_TOKENS` / `FALLBACK_TOKEN` / `MODEL_MAPPING` keep working, auto-converted to free-nodes;
 - OpenAI and Anthropic-compatible endpoints;
-- a default route and method allowlist that blocks arbitrary upstream management APIs;
-- HTTPS-only Primary and Fallback upstreams by default;
-- Primary rotation, bounded retries, health scoring, hard concurrency limits, and true cooldown exclusion;
-- two-level Fallback routing after Primary exhaustion;
-- per-host model aliases, capabilities, and independent `invoke_url` values;
-- non-streaming and streaming conversion, images, and tool calls;
-- common Claude Code and parallel tool-call patterns;
-- public `/version` endpoint;
-- protected `/v1/models` with Primary failover and configured-model fallback;
-- protected `/health` and `/metrics` endpoints;
-- optional Cloudflare Analytics Engine events.
+- Default route and method allowlist;
+- Per-node 429 cooldown with Retry-After support — never disables a whole provider;
+- Lightweight circuit breaker for 503/502/504 after 3 consecutive failures;
+- First Event Guard: streaming failover allowed before the first valid event, forbidden after it;
+- Split timeouts: `UPSTREAM_HEADERS_TIMEOUT` / `FIRST_EVENT_TIMEOUT` / `STREAM_IDLE_TIMEOUT`;
+- Retry budget: free ≤2, paid ≤1, plus ≤1, total ≤5;
+- Client cancellation does not penalize node health;
+- Per-host model aliases, capabilities, and independent `invoke_url` values;
+- Non-streaming and streaming conversion, images, and tool calls;
+- Public `/version`; protected `/v1/models`, `/health`, `/metrics`;
+- Optional Cloudflare Analytics Engine events.
 
 ## Scope and limitations
 
 This project provides a stable entry point for multiple OpenAI-compatible upstreams. It is not an official Anthropic proxy, and it cannot create native Anthropic thinking signatures, exact token accounting, or unsupported protocol semantics on behalf of a third-party model.
 
-`/health` and `/metrics` expose local state from the current Worker isolate. They are not globally aggregated Cloudflare totals and are not a billing dashboard. Streaming requests remain active until the response body ends or the client cancels.
-
-The gateway forwards a client-supplied `Idempotency-Key`, but retries still cannot guarantee idempotency across all third-party providers. If an upstream accepted a request but the gateway timed out before response headers arrived, a later retry may cause a duplicate call or duplicate charge.
-
-## Repository layout
-
-```text
-.
-├─ src/index.js                  Complete Worker source
-├─ config/                       Model mapping examples
-├─ scripts/                      Deployment, verification, and release scripts
-├─ docs/                         Deployment, configuration, architecture, screenshots
-├─ .github/workflows/            CI and GitHub Release workflows
-├─ .github/ISSUE_TEMPLATE/       Issue forms
-├─ wrangler.jsonc                Wrangler configuration
-├─ package.json                  npm commands and pinned Wrangler invocations
-├─ package-lock.json             Reproducible dependency lock file
-├─ README.md                     Chinese documentation
-├─ README_EN.md                  English documentation
-├─ SECURITY.md                   Vulnerability reporting policy
-├─ CONTRIBUTING.md               Contribution guide
-├─ OPEN_SOURCE_CHECKLIST.md      Release checklist
-└─ LICENSE                       MIT License
-```
+`/health` and `/metrics` expose local state from the current Worker isolate. Node runtime state lives only in Worker memory — no KV, D1, or Durable Objects.
 
 ## Quick deployment
 
@@ -97,18 +115,38 @@ chmod +x scripts/*.sh
 ./scripts/install.sh
 ```
 
-The script checks Node.js, installs dependencies, signs in to Cloudflare, collects configuration, writes credentials to a temporary file, uploads the Worker and secrets together, and removes the temporary file after deployment.
+The install script checks Node.js, runs full tests and Wrangler dry-run, confirms your Cloudflare account, validates configuration, deploys code and Secrets via restricted temporary files, and optionally verifies online endpoints. Temporary files are removed afterwards. Real credentials are never written to the repository.
 
-Real credentials are not stored in the repository.
+### Updating an existing Worker
 
-## Automatic deployment from GitHub to Cloudflare
+Update code while keeping existing runtime variables and Secrets:
 
-### One Worker
+```powershell
+.\scripts\update.ps1
+```
+
+```bash
+./scripts/update.sh
+```
+
+Modify keys, mappings, or Fallback:
+
+```powershell
+.\scripts\reconfigure.ps1
+```
+
+```bash
+./scripts/reconfigure.sh
+```
+
+`wrangler.jsonc` declares `keep_vars: true`, so code updates never read or delete existing Secrets. First deployment does not require pre-existing Secrets; protected endpoints return explicit errors until configured.
+
+## Auto-deploy from GitHub to Cloudflare
 
 1. Push this repository to GitHub;
-2. create or select the target Worker in Cloudflare;
-3. connect this repository and the production branch `main` under **Settings → Builds**;
-4. use these build settings:
+2. Create or select a Worker in the Cloudflare dashboard;
+3. Connect this repository in the Worker's **Settings → Builds** with production branch `main`;
+4. Use:
 
 ```text
 Root directory: /
@@ -117,78 +155,71 @@ Deploy command: npx wrangler deploy
 Non-production deploy command: npx wrangler versions upload
 ```
 
-5. select **Save and Deploy** to complete the first Worker deployment;
-6. open `https://YOUR-WORKER.workers.dev/`; the Worker now shows a deployed-but-waiting-for-configuration page;
-7. add `GATEWAY_ACCESS_KEY` and `PRIMARY_API_TOKENS` as **Secret** values under that Worker's **Settings → Variables and Secrets**, then select **Deploy**;
-8. after the configuration becomes active, the setup page automatically refreshes to the normal gateway home page within five seconds. You can also open `/version` and confirm that `configuration.ready` is now `true`; no additional GitHub push is required.
+5. Click **Save and Deploy** for the first deployment;
+6. Visit `https://YOUR-WORKER.workers.dev/` — you will see the setup page;
+7. Add `GATEWAY_ACCESS_KEY` plus either `NODES_CONFIG` (recommended) or `PRIMARY_API_TOKENS` as Secrets in **Settings → Variables and Secrets**, then click Deploy;
+8. The page auto-refreshes within 5 seconds once configuration is ready.
 
-### Deploy multiple Workers from one repository
+Multiple Workers can share one repository; each Worker keeps its own Secrets independently.
 
-The same source repository can be connected directly to multiple existing Workers. There is no need to copy the repository, modify the code, or add a Wrangler Environment for every Worker.
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for details.
 
-For example, create and connect:
+## Configuration
 
-```text
-ai-gateway-01
-ai-gateway-02
-ai-gateway-03
-```
+### Option 1: Node Scheduler (recommended)
 
-Connect the same GitHub repository under **Settings → Builds** for every Worker and keep Cloudflare's default commands:
+Configure three JSON Secrets:
 
-```text
-Root directory: /
-Build command: npm run build
-Deploy command: npx wrangler deploy
-Non-production deploy command: npx wrangler versions upload
-```
+| Variable | Purpose |
+|----------|---------|
+| `NODES_CONFIG` | JSON array defining free/paid/plus nodes |
+| `MODELS_CONFIG` | JSON object mapping logical models to workload/policy |
+| `POLICIES_CONFIG` | JSON object defining policies |
+| `FREE_NODE_01` etc. | Env vars referenced by each node's `secret_ref` (`Token@BaseURL`) |
 
-Workers Builds overrides each build target with the Worker currently connected to that build. A single GitHub push therefore triggers each connected Worker independently and updates its existing deployment; the repository does not need to know the actual Worker names.
-
-Configure runtime Secrets independently under **Settings → Variables and Secrets** for every Worker. This allows each Worker to use different gateway access keys, Primary tokens, upstream URLs, model mappings, and Fallback settings.
-
-The generic value in `wrangler.jsonc`:
+**NODES_CONFIG example:**
 
 ```json
-"name": "ai-gateway"
+[
+  {"id":"free-node-01","tier":"free","priority":100,"provider":"provider-a","secret_ref":"FREE_NODE_01","workloads":["general","coding"],"models":["general-air","code-pro"]},
+  {"id":"paid-node-01","tier":"paid","priority":80,"secret_ref":"PAID_NODE_01","workloads":["general","coding"],"models":["code-pro"]},
+  {"id":"plus-node-01","tier":"plus","priority":50,"secret_ref":"PLUS_NODE_01","workloads":["coding","critical"],"models":["code-max"]}
+]
 ```
 
-is used for direct local deployment. A connected Cloudflare build uses its CI-provided target Worker name, so this file does not need to be rewritten for every Worker. A name-override warning is not a deployment failure; use the final build result as the source of truth.
+**MODELS_CONFIG example:**
 
-Each Worker must independently define `GATEWAY_ACCESS_KEY` and `PRIMARY_API_TOKENS` under **Settings → Variables and Secrets**. Runtime Secrets cannot be copied automatically from another Worker and must never be committed to the repository.
+```json
+{
+  "general-air": {"workload":"general","policy":"general-fast"},
+  "code-pro": {"workload":"coding","policy":"coding-stable"}
+}
+```
 
-> Preview versions may be created before Secrets are configured, but protected API routes remain unavailable until configuration is complete.
+**POLICIES_CONFIG example:**
 
-> Store real tokens as Cloudflare Worker Secrets. Build-time variables are not a substitute for runtime Worker Secrets.
+```json
+{
+  "general-fast": {"tiers":["free","paid"],"max_attempts":3,"retry_budget":{"free":2,"paid":1}},
+  "coding-stable": {"tiers":["free","paid","plus"],"max_attempts":4,"retry_budget":{"free":2,"paid":1,"plus":1}}
+}
+```
 
-### See whether deployment succeeded or failed
+Example files: `config/nodes.example.json`, `config/models.example.json`, `config/policies.example.json`.
 
-The Cloudflare GitHub integration automatically creates a Check Run for every commit without changing the deploy command:
+### Option 2: Legacy config (compatible)
 
-- a green check next to a GitHub commit means the build and deployment succeeded;
-- a red cross means it failed; select **Details** to open that Worker's build details;
-- when several Workers use one repository, each Worker has its own check result;
-- pull requests receive Cloudflare build-status comments and available preview URLs.
+Legacy config keeps working and is auto-converted to free-nodes:
 
-If no Cloudflare check appears next to a commit, disconnect and reconnect the repository under the Worker's **Settings → Builds**, and verify that the Cloudflare Workers & Pages GitHub App can access the repository.
-
-Cloudflare does not send email, Slack, Discord, or browser notifications by default. For proactive delivery, use Workers Builds Event Subscriptions for success, failure, and cancellation events. This optional account-level notification does not change the project's default deployment flow.
-
-See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the full procedure.
-
-## Minimum configuration
-
-| Variable | Required | Purpose |
-|---|---|---|
-| `GATEWAY_ACCESS_KEY` | Yes | Credential used by clients to access the gateway |
+| Variable | Required | Description |
+|------|------|------|
+| `GATEWAY_ACCESS_KEY` | Yes | Client access key |
 | `PRIMARY_API_TOKENS` | Yes | One or more upstream tokens; supports `Token@BaseURL` |
-| `PRIMARY_BASE_URL` | Conditional | Shared upstream URL when tokens do not bind a URL |
-| `MODEL_MAPPING` | No | Maps client-facing model names to actual upstream model IDs |
-| `STRICT_MODEL_MAPPING` | No | Allows only configured model names when set to `true` |
-| `ALLOW_UNSAFE_PROXY_ROUTES` | No | Defaults to `false`; only supported routes are exposed |
-| `FAKE_STREAM_PROTECTION` | No | Defaults to `false`; non-stream reconstruction is opt-in |
+| `PRIMARY_BASE_URL` | Conditional | Shared base URL when tokens have no bound URL |
+| `MODEL_MAPPING` | No | Client model alias mapping |
+| `STRICT_MODEL_MAPPING` | No | Only allow declared models when `true` |
 
-Fallback requires at least:
+Fallback requires:
 
 ```text
 FALLBACK_API_TOKEN
@@ -196,25 +227,30 @@ FALLBACK_BASE_URL
 FALLBACK_PRIMARY_MODEL
 ```
 
-Secondary Fallback behavior:
+Full variable reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
-```text
-Unset or empty       -> disabled by default
-A concrete model ID  -> enabled
-Value set to off     -> explicitly disabled
+### Node naming convention
+
+Uniform format: `{tier}-node-{number}`
+
+```
+free-node-01
+free-node-02
+paid-node-01
+plus-node-01
 ```
 
-See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for all variables.
+Names like `key1`, `token1`, `provider-key1`, `backup-key` are not allowed. Node IDs appear in logs, errors, and health states — they must be human-readable.
 
-## Client examples
+## Client usage
 
-### OpenAI-compatible client
+### OpenAI-compatible
 
 ```bash
 curl https://YOUR-WORKER.workers.dev/v1/chat/completions \
   -H "Authorization: Bearer YOUR_GATEWAY_ACCESS_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model":"model-alias","messages":[{"role":"user","content":"Hello"}]}'
+  -d '{"model":"general-air","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
 ### Claude Code
@@ -224,80 +260,50 @@ curl https://YOUR-WORKER.workers.dev/v1/chat/completions \
   "env": {
     "ANTHROPIC_BASE_URL": "https://YOUR-WORKER.workers.dev",
     "ANTHROPIC_AUTH_TOKEN": "YOUR_GATEWAY_ACCESS_KEY",
-    "ANTHROPIC_MODEL": "model-alias"
+    "ANTHROPIC_MODEL": "code-pro"
   }
 }
 ```
 
-## Diagnostic endpoints
-
-### Streaming integrity errors
-
-Anthropic / Claude Code streams no longer emit a synthetic `message_stop` when upstream SSE JSON is malformed, the stream contains only a role without text/reasoning/tool output, or the connection ends before `finish_reason` / `[DONE]`. The gateway emits a valid Anthropic `event: error` and logs the request ID, failure reason, and a truncated malformed data sample without logging tokens.
-
-If Worker logs contain `Upstream returned malformed streaming data`, the failure occurred in the upstream stream received by the Worker or in protocol conversion. If Worker logs show a complete `message_stop` but the client still reports an HTTP 200 malformed response, inspect New API or another proxy in front of the Worker for SSE buffering, rewriting, or early connection termination.
-
-### Version
-
-`/version` is public:
+## Diagnostics
 
 ```bash
 curl https://YOUR-WORKER.workers.dev/version
-```
 
-### Model list
-
-```bash
 curl https://YOUR-WORKER.workers.dev/v1/models \
   -H "Authorization: Bearer YOUR_GATEWAY_ACCESS_KEY"
-```
 
-The gateway tries configured Primary upstreams in order. If one upstream does not implement `/v1/models`, the next one is attempted. A successful upstream list is merged with client-facing aliases from `MODEL_MAPPING`. When no upstream exposes a model-list endpoint, configured aliases and Fallback model names can still be returned.
-
-You can also run:
-
-```powershell
-.\scripts\models-check.ps1
-```
-
-or:
-
-```bash
-./scripts/models-check.sh
-```
-
-### Health
-
-```bash
 curl https://YOUR-WORKER.workers.dev/health \
   -H "Authorization: Bearer YOUR_GATEWAY_ACCESS_KEY"
-```
 
-Or run:
-
-```powershell
-.\scripts\health-check.ps1
-```
-
-or:
-
-```bash
-./scripts/health-check.sh
-```
-
-### Metrics
-
-```bash
 curl https://YOUR-WORKER.workers.dev/metrics \
   -H "Authorization: Bearer YOUR_GATEWAY_ACCESS_KEY"
 ```
 
-`/health` and `/metrics` expose two current-isolate views:
+`/health` and `/metrics` provide client request stats plus per-node attempts, successes, failures, active connections, and average latency. One client request may produce multiple node attempts. All data resets when the isolate recycles.
 
-- client request, success, failure, Fallback activation, and Fallback success counters;
-- per-upstream attempt, success, failure, active-stream, and average time-to-response-headers metrics.
+## Reliability mechanisms
 
-A client request can produce multiple upstream attempts, so the two groups do not match. All values reset with the isolate and are not daily global totals.
+### 429 handling
+
+Treated as node-level limits: the node cools down and traffic shifts to other same-tier or higher-tier nodes. Honors `Retry-After`. Never disables an entire provider.
+
+### 503 handling
+
+503/502/504 are treated as node/provider anomalies. After 3 consecutive similar failures, a lightweight circuit breaker opens for 30 seconds, then enters half-open state for probing. Never permanently disables on first failure.
+
+### First Event Guard
+
+HTTP 200 does not mean success for streaming requests. The gateway waits for the first valid event before confirming success and committing the response to the client. Failover is allowed before the first event (empty streams, connection resets, malformed SSE, timeouts). Transparent switching is forbidden after it, preventing duplicate tool calls and corrupted JSON.
+
+### Retry budget
+
+| Workload | free | paid | plus | Total |
+|----------|------|------|------|-------|
+| General | ≤2 | ≤1 | – | ≤3 |
+| Coding | ≤2 | ≤1 | ≤1 | ≤4 |
+
+Total capped at 5 to prevent retry storms.
 
 ## Local verification
 
@@ -310,40 +316,28 @@ npm run check:deploy
 Verification includes:
 
 - Worker JavaScript syntax;
-- version consistency;
-- local Markdown links;
-- dashboard, `/version`, `/v1/models`, `/health`, and `/metrics` smoke tests;
-- common secret-pattern scanning.
-
-## GitHub Releases
-
-Pushing a semantic version tag automatically triggers GitHub Actions to:
-
-1. run `npm ci` and `npm run verify`;
-2. confirm that the tag matches the `package.json` version;
-3. build ZIP and TAR.GZ archives plus SHA-256 checksums;
-4. create a GitHub Release and upload the assets.
-
-```bash
-git tag v5.14.0
-git push origin v5.14.0
-```
-
-See [docs/RELEASE.md](docs/RELEASE.md).
+- Version consistency;
+- Markdown local links;
+- Dashboard, `/version`, `/v1/models`, `/health`, `/metrics` smoke tests;
+- Node Scheduler tests (12 cases);
+- Reliability tests (12 cases: 429 cooldown, 503 circuit, Retry-After, retry budget, timeout splitting, client abort, etc.);
+- Common secret format scanning.
 
 ## Security
 
-- Never commit `.dev.vars`, `.env`, or `secrets*.json`;
-- never paste real tokens, full authorization headers, or user request bodies into public issues;
-- do not pass gateway keys in URL query parameters;
-- revoke and rotate exposed credentials immediately;
-- report vulnerabilities through a private GitHub Security Advisory.
+- Do not commit `.dev.vars`, `.env`, `secrets*.json`;
+- Do not paste real tokens, full auth headers, or user request bodies into Issues;
+- Do not pass gateway keys via URL query parameters;
+- Logs must never contain API keys, tokens, prompts, or responses — only Node IDs;
+- `ALLOW_UNSAFE_PROXY_ROUTES=false`, `ALLOW_INSECURE_HTTP_UPSTREAM=false`, `EXPOSE_UPSTREAM_INFO=false` are default security postures;
+- Compromised keys must be revoked immediately;
+- Report vulnerabilities privately through GitHub Security Advisory.
 
 See [SECURITY.md](SECURITY.md).
 
 ## Contributing
 
-Before submitting changes:
+Run before submitting:
 
 ```bash
 npm ci

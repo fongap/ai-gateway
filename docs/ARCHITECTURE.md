@@ -1,6 +1,18 @@
 # 架构说明 / Architecture
 
-![Smart Edge Gateway architecture](architecture.svg)
+## 总体架构
+
+```text
+Logical Model (MODELS_CONFIG)
+    ↓
+Policy (POLICIES_CONFIG)
+    ↓
+Node Scheduler
+    ↓
+Node Pool (NODES_CONFIG / legacy PRIMARY_API_TOKENS)
+    ↓
+Provider / Account / API Key
+```
 
 ## 请求路径
 
@@ -11,79 +23,152 @@ OpenAI / Anthropic Client
 Authentication, route allowlist, and body validation
            |
            v
-HTTPS enforcement, protocol conversion, and model mapping
+Model resolution (logical model → workload + policy)
            |
            v
-     Primary endpoint pool
+Node Scheduler (tier order → priority → health → latency)
            |
-      all attempts failed
-           v
-       Fallback 1
+     free-node pool  (first)
            |
-          failed
+       exhausted / failed
            v
-  Fallback 2 (optional)
+     paid-node pool
+           |
+       exhausted / failed
+           v
+     plus-node pool
+           |
+      legacy Fallback chain (compat mode only)
 ```
 
-## Primary
+## 核心抽象：Node
 
-Primary 端点参与正常流量调度。选择时综合：
+Node 是唯一调度单位。API Key、Token、Provider 都隐藏在 Node 之后。
 
-- 当前冷却状态（冷却中直接排除）；
-- 健康评分；
-- 滑动窗口请求量（达到上限直接排除）；
-- 当前并发（达到上限直接排除）；
-- 平滑响应延迟。
+每个 Node 包含：
 
-单次客户端请求最多尝试 `PRIMARY_MAX_ATTEMPTS` 个符合条件的 Primary 端点。端点失败后，网关根据状态码设置健康扣分和冷却。流式请求会一直占用并发计数，直到响应体结束或客户端取消。
+- `id`：人工可读标识，格式 `{tier}-node-{number}`；
+- `tier`：`free` / `paid` / `plus` 资源层级；
+- `priority`：同层内的优先级；
+- `secret_ref`：凭据引用，真实 Token 不进入配置主体；
+- `workloads`：支持的工作负载类型；
+- `capabilities`：能力声明（chat/stream/tools）；
+- `models`：支持的逻辑模型列表；
+- `limits.concurrency`：并发上限。
 
-## Fallback
+## 三层资源池
 
-Fallback 不参与正常轮询，并受独立硬并发上限保护。只有 Primary 有效尝试全部失败后才执行：
+| 层级 | 特点 | 默认用途 |
+|------|------|----------|
+| `free-node` | 成本最低，稳定性不确定 | 默认优先 |
+| `paid-node` | 稳定性较高 | 主要 fallback |
+| `plus-node` | 最高可靠性 | 关键任务、Coding 长任务 |
 
-1. `FALLBACK_PRIMARY_MODEL`；
-2. 第一兜底失败后，再执行可选的 `FALLBACK_SECONDARY_MODEL`。
+默认顺序 `free → paid → plus`。禁止 paid/plus 抢占 free。Critical 任务通过策略反转为 `plus → paid → free`。
 
-第二兜底未设置或为空时默认关闭，值为 `off` 时显式关闭。
+## Scheduler 选择流程
+
+按以下顺序筛选和排序：
+
+1. workload 匹配（逻辑模型映射，不分析 Prompt）；
+2. model 支持（节点 `models` 列表）；
+3. tier 顺序（策略定义）；
+4. priority 排序；
+5. cooldown 排除；
+6. circuit 状态排除；
+7. concurrency 排除；
+8. health 分数过滤；
+9. latency 排序。
+
+不做简单轮询。
+
+## 运行时状态
+
+Node 运行状态只保存在当前 Worker isolate 内存中：
+
+```text
+health, activeRequests, cooldownUntil,
+recent429s, recent503s, avgLatency, circuitState
+```
+
+不使用 KV、D1、Durable Objects。isolate 回收后重置；不同 Cloudflare 节点之间不会自动合并。`/health` 与 `/metrics` 适合故障诊断，不适合精确计费或全局统计。
+
+## 可靠性机制
+
+### 429 处理
+
+429 视为 Node 级限制：
+
+```text
+free-node-01 429 → cooldown → free-node-02 → free-node-03
+```
+
+不整个 Provider 禁用。支持 Retry-After 头。禁止 sleep。
+
+### 503 处理与 Circuit Breaker
+
+503/502/504 视为节点异常：
+
+```text
+Node 失败 → 记录失败
+多个同类失败(3次) → Circuit Breaker 开启(30s) → half-open 试探
+```
+
+不一次失败永久禁用。
+
+### First Event Guard
+
+流式请求中 HTTP 200 不代表成功：
+
+```text
+upstream response → 等待第一个有效 event → 确认成功 → 提交客户端
+```
+
+首 event 前允许 failover（空流、连接重置、畸形 SSE、超时）。首 event 后禁止透明切换，避免 tool call 重复和 JSON 损坏。
+
+### Retry Budget
+
+分层预算限制，总计不超过 5 次，避免 retry storm：
+
+| Workload | free | paid | plus |
+|----------|------|------|------|
+| General | ≤2 | ≤1 | - |
+| Coding | ≤2 | ≤1 | ≤1 |
+
+### 客户端取消
+
+Client abort → AbortController → upstream abort → release Node state。客户端主动取消不处罚 Node。
 
 ## 协议桥接
 
-Anthropic Messages 请求会转换为 OpenAI Chat Completions 请求；响应再转换回 Anthropic 格式。网关覆盖文本、图片、工具调用、并行工具、流式事件和部分 reasoning/thinking 兼容。
+Anthropic Messages 请求转换为 OpenAI Chat Completions；响应再转换回 Anthropic 格式。覆盖文本、图片、工具调用、并行工具、流式事件和部分 reasoning/thinking 兼容。
 
-第三方模型未提供的 Anthropic 原生语义无法由网关凭空补齐，包括可验证 thinking 签名和精确 Token 统计。
+第三方模型未提供的 Anthropic 原生语义无法由网关补齐，包括可验证 thinking 签名和精确 Token 统计。
 
-## 运行状态边界
+## 旧配置兼容
 
-端点健康分、并发、窗口计数和冷却状态保存在当前 Worker isolate 内存中，属于局部近似状态：
+未设置 `NODES_CONFIG` 时，旧配置自动转换：
 
-- isolate 回收后会重置；
-- 不同 Cloudflare 节点之间不会自动合并；
-- `/health` 与 `/metrics` 适合故障诊断，不适合精确计费或每日全局统计；
-- 一次客户端请求可能产生多次上游尝试。
+```text
+PRIMARY_API_TOKENS → free-node-01, free-node-02, ...
+FALLBACK_*         → fallback chain（保留原语义）
+MODEL_MAPPING      → 模型别名解析
+```
 
-需要跨 isolate 趋势时，可选接入 Analytics Engine。需要严格全局一致性时，应使用 Durable Objects 或外部协调存储。
+转换后的节点走同一个 Scheduler，行为一致。
 
 ## 默认路由策略
 
-白名单外路径和 `PUT`、`PATCH`、`DELETE` 等方法默认不会被转发。只有显式设置 `ALLOW_UNSAFE_PROXY_ROUTES=true` 才恢复通用透传模式。Primary 和 Fallback 默认只允许 HTTPS。
+白名单外路径和 `PUT`、`PATCH`、`DELETE` 等方法默认不会被转发。只有显式设置 `ALLOW_UNSAFE_PROXY_ROUTES=true` 才恢复通用透传模式。所有上游默认只允许 HTTPS。
 
-## Public and protected endpoints
+## Endpoints
 
 | Endpoint | Authentication | Purpose |
 |---|---|---|
-| `/` | No | Static dashboard and deployment guide |
-| `/version` | No | Project version and required-binding readiness |
-| `/v1/models` | Yes | Primary model-list failover plus configured gateway aliases |
-| `/health` | Yes | Current-isolate endpoint health snapshot |
-| `/metrics` | Yes | Current-isolate Prometheus text metrics |
+| `/` | No | Static status page |
+| `/version` | No | Project version and readiness |
+| `/v1/models` | Yes | Logical model list |
+| `/health` | Yes | Current-isolate node health snapshot |
+| `/metrics` | Yes | Current-isolate Prometheus metrics |
 | `/v1/chat/completions` | Yes | OpenAI-compatible gateway |
 | `/v1/messages` | Yes | Anthropic-compatible gateway |
-| `/v1/messages/count_tokens` | Yes | Approximate or disabled token count mode |
-
-## 统计边界
-
-`/health` 和 `/metrics` 分别记录客户端 API 请求与上游端点尝试。一次客户端请求可能触发多个 Primary 尝试和一次 Fallback 链，因此端点尝试数通常大于客户端请求数。所有计数仅属于当前 isolate。
-
-## 部署配置边界
-
-`wrangler.jsonc` 使用 `keep_vars: true` 保留控制台普通变量，但不通过 `secrets.required` 阻断首次部署。首次安装、代码更新和运行时重新配置仍由不同脚本处理；运行时通过明确的配置错误保护未完成设置的接口。Cloudflare Workers Builds 负责选择当前连接的目标 Worker，同一仓库无需硬编码多个 Worker 名称。
