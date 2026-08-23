@@ -39,7 +39,7 @@ Node Scheduler
     ↓
 Node Pool (NODES_CONFIG)
     ↓
-Provider / Account / API Key (secret_ref 环境变量)
+Provider / Account / API Key (token 环境变量)
 ```
 
 ### 三层 Node Pool
@@ -78,7 +78,7 @@ src/
 
 ## 核心能力
 
-- **Node 三层调度**：free/paid/plus 资源池，按 workload/model/tier/priority/cooldown/circuit/concurrency/health/latency 排序；
+- **Node 三层调度**：tier-1/tier-2/tier-3 资源池，按 workload/model/tier/priority/cooldown/circuit/concurrency/health/latency 排序；
 - OpenAI 与 Anthropic 双协议接入；
 - 默认启用路径与方法白名单；
 - 节点级 429 冷却与 Retry-After 支持，不整个 Provider 禁用；
@@ -177,18 +177,18 @@ Non-production deploy command: npx wrangler versions upload
 
 | 变量 | 说明 |
 |------|------|
-| `NODES_CONFIG` | JSON 数组，定义 free/paid/plus 节点 |
+| `NODES_CONFIG` | JSON 数组，定义 tier-1/tier-2/tier-3 节点 |
 | `MODELS_CONFIG` | JSON 对象，逻辑模型到 workload/policy 的映射 |
 | `POLICIES_CONFIG` | JSON 对象，策略定义 |
-| `TIER1_NODE_01` 等 | 节点 `secret_ref` 指向的环境变量（`Token@BaseURL` 格式） |
+| `TIER1_NODES_CONFIG` 等 | 按层分别配置，`token` 直接内嵌在节点中 |
 
 **NODES_CONFIG 示例：**
 
 ```json
 [
-  {"id":"tier-1-node-01","tier":"tier-1","secret_ref":"TIER1_NODE_01","models":{"general-air":"tier-1-provider/model-air","code-pro":"tier-1-provider/code-pro"}},
-  {"id":"tier-2-node-01","tier":"tier-2","secret_ref":"TIER2_NODE_01","models":{"code-pro":"tier-2-provider/code-pro"}},
-  {"id":"tier-3-node-01","tier":"tier-3","secret_ref":"TIER3_NODE_01","models":{"code-max":"tier-3-provider/code-max"}}
+  {"id":"tier-1-node-01","tier":"tier-1","token":"TIER1_NODE_01","models":{"general-air":"tier-1-provider/model-air","code-pro":"tier-1-provider/code-pro"}},
+  {"id":"tier-2-node-01","tier":"tier-2","token":"TIER2_NODE_01","models":{"code-pro":"tier-2-provider/code-pro"}},
+  {"id":"tier-3-node-01","tier":"tier-3","token":"TIER3_NODE_01","models":{"code-max":"tier-3-provider/code-max"}}
 ]
 ```
 

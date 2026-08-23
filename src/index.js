@@ -17,21 +17,21 @@
  *       ↓
  *   Node Pool (NODES_CONFIG)
  *       ↓
- *   Provider / Account / API Key (secret_ref 环境变量，Token@BaseURL 格式)
+ *   Provider / Account / API Key (token 内嵌在节点中，Token@BaseURL 格式)
  *
  * 部署清单：
  * 1. 将 GATEWAY_ACCESS_KEY 设置为 Secret。
  * 2. 将 NODES_CONFIG 设置为 Secret（JSON 数组，定义节点）。
- * 3. 为每个节点的 secret_ref 添加凭据环境变量。
+ * 3. 为每个节点配置 token 字段（Token@BaseURL 格式）。
  * 4. 可选设置 MODELS_CONFIG 与 POLICIES_CONFIG；未设置时使用默认策略。
  * 5. 部署后使用 GATEWAY_ACCESS_KEY 访问 /health，确认节点状态。
  *
  * 核心配置：
  * - GATEWAY_ACCESS_KEY         : 客户端访问网关的鉴权密钥（必需）
- * - NODES_CONFIG               : JSON 数组，定义 free/paid/tier-3 节点（必需）
+ * - NODES_CONFIG               : JSON 数组，定义 tier-1/tier-2/tier-3 节点（必需，token 内嵌）
  * - MODELS_CONFIG              : JSON 对象，逻辑模型到 workload/policy 的映射（可选）
  * - POLICIES_CONFIG            : JSON 对象，策略 tiers/max_attempts/retry_budget（可选）
- * - FREE_NODE_01 等            : 节点 secret_ref 指向的凭据环境变量（必需）
+ * - TIER1_NODES_CONFIG 等      : 按层分别配置，token 直接内嵌在节点中（必需至少一层）
  *
  * 运行保护：
  * - REQUEST_TIMEOUT_MS         : 上游首字节超时；默认 180000，范围 5000-180000
@@ -145,7 +145,6 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       <pre>[
   {"id":"tier-3-node-01","token":"sk-www@https://provider-e/v1","models":{"code-max":"model-e"}}
 ]</pre>
-  }
 ]</pre>
     </div>
     <div class="code-editor">
@@ -161,7 +160,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   "general-fast": {
     "tiers": ["tier-1", "tier-2"],
     "max_attempts": 3,
-    "retry_budget": { "free": 2, "paid": 1 }
+    "retry_budget": { "tier-1": 2, "tier-2": 1 }
   }
 }</pre>
     </div>

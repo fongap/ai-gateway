@@ -62,7 +62,7 @@ Node 是唯一调度单位。API Key、Token、Provider 都隐藏在 Node 之后
 | `paid-node` | 稳定性较高 | 主要 fallback |
 | `plus-node` | 最高可靠性 | 关键任务、Coding 长任务 |
 
-默认顺序 `free → paid → plus`。禁止 paid/plus 抢占 free。Critical 任务通过策略反转为 `plus → paid → free`。
+默认顺序 `tier-1 → tier-2 → tier-3`。禁止 paid/plus 抢占 free。Critical 任务通过策略反转为 `plus → paid → free`。
 
 ## Scheduler 选择流程
 

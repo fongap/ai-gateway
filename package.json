@@ -2,7 +2,7 @@
   "name": "ai-gateway",
   "version": "5.14.0",
   "private": true,
-  "description": "Personal AI Agent Node Scheduler. Cloudflare Workers-based AI Gateway with free/paid/plus node pools.",
+  "description": "Personal AI Agent Node Scheduler. Cloudflare Workers-based AI Gateway with tier-1/tier-2/tier-3 node pools.",
   "type": "module",
   "license": "MIT",
   "engines": {

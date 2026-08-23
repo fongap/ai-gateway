@@ -22,7 +22,7 @@ AI agents need to manage multiple providers, resource tiers, reliability charact
 AI Agent Node Scheduler provides one entry point to:
 
 - hide providers and API keys behind the Node abstraction, avoiding vendor lock-in;
-- schedule across `free → paid → plus` tier pools automatically, preferring free resources;
+- schedule across `tier-1 → tier-2 → tier-3` tier pools automatically, preferring free resources;
 - fail over to same-tier or higher-tier nodes on node failures;
 - expose both OpenAI and Anthropic-compatible endpoints;
 - support long-running agents with streaming and tool calls;
@@ -50,7 +50,7 @@ Provider / Account / API Key
 | `paid-node` | Paid pool | Higher stability | Main fallback |
 | `plus-node` | Plus pool | Highest reliability, highest cost | Critical tasks, long coding runs |
 
-Default order: `free → paid → plus`. Paid/plus nodes never preempt free nodes by being faster. Critical tasks can reverse the order via policy (`plus → paid → free`).
+Default order: `tier-1 → tier-2 → tier-3`. Paid/plus nodes never preempt free nodes by being faster. Critical tasks can reverse the order via policy (`plus → paid → free`).
 
 ### Code structure
 
@@ -78,7 +78,7 @@ src/
 
 ## Features
 
-- **Three-tier node scheduling**: free/paid/plus pools ranked by workload/model/tier/priority/cooldown/circuit/concurrency/health/latency;
+- **Three-tier node scheduling**: tier-1/tier-2/tier-3 pools ranked by workload/model/tier/priority/cooldown/circuit/concurrency/health/latency;
 - OpenAI and Anthropic-compatible endpoints;
 - Default route and method allowlist;
 - Per-node 429 cooldown with Retry-After support — never disables a whole provider;
@@ -171,18 +171,18 @@ Configure three JSON Secrets:
 
 | Variable | Purpose |
 |----------|---------|
-| `NODES_CONFIG` | JSON array defining free/paid/plus nodes |
+| `NODES_CONFIG` | JSON array defining tier-1/tier-2/tier-3 nodes |
 | `MODELS_CONFIG` | JSON object mapping logical models to workload/policy |
 | `POLICIES_CONFIG` | JSON object defining policies |
-| `TIER1_NODE_01` etc. | Env vars referenced by each node's `secret_ref` (`Token@BaseURL`) |
+| `TIER1_NODES_CONFIG` etc. | Per-tier config, `token` embedded in each node |
 
 **NODES_CONFIG example:**
 
 ```json
 [
-  {"id":"tier-1-node-01","tier":"tier-1","secret_ref":"TIER1_NODE_01","models":{"general-air":"tier-1-provider/model-air","code-pro":"tier-1-provider/code-pro"}},
-  {"id":"tier-2-node-01","tier":"tier-2","secret_ref":"TIER2_NODE_01","models":{"code-pro":"tier-2-provider/code-pro"}},
-  {"id":"tier-3-node-01","tier":"tier-3","secret_ref":"TIER3_NODE_01","models":{"code-max":"tier-3-provider/code-max"}}
+  {"id":"tier-1-node-01","tier":"tier-1","token":"TIER1_NODE_01","models":{"general-air":"tier-1-provider/model-air","code-pro":"tier-1-provider/code-pro"}},
+  {"id":"tier-2-node-01","tier":"tier-2","token":"TIER2_NODE_01","models":{"code-pro":"tier-2-provider/code-pro"}},
+  {"id":"tier-3-node-01","tier":"tier-3","token":"TIER3_NODE_01","models":{"code-max":"tier-3-provider/code-max"}}
 ]
 ```
 

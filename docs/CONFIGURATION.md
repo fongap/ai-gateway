@@ -32,7 +32,7 @@ JSON 数组，定义全部调度节点。每个节点字段：
 |------|------|------|
 | `id` | 是 | 节点 ID，推荐格式 `{tier}-node-{number}`，如 `tier-1-node-01` |
 | `tier` | 是 | `free` / `paid` / `plus` 三层之一 |
-| `secret_ref` | 是 | 指向环境变量的名称，变量值为 `Token@BaseURL` 格式 |
+| `models` | 否 | 逻辑模型到实际上游模型名的映射对象；为空时同名透传 |
 | `models` | 否 | 逻辑模型到实际上游模型名的映射对象；为空时同名透传 |
 | `priority` | 否 | 可选，数值越小越优先；默认 100 |
 | `provider` | 否 | 可选，服务商标识，仅用于诊断展示 |
@@ -45,7 +45,7 @@ JSON 数组，定义全部调度节点。每个节点字段：
   {
     "id": "tier-1-node-01",
     "tier": "tier-1",
-    "secret_ref": "TIER1_NODE_01",
+    "token": "TIER1_NODE_01",
     "models": {
       "general-air": "tier-1-provider/model-air",
       "code-pro": "tier-1-provider/code-pro"
@@ -54,7 +54,7 @@ JSON 数组，定义全部调度节点。每个节点字段：
   {
     "id": "tier-2-node-01",
     "tier": "tier-2",
-    "secret_ref": "TIER2_NODE_01",
+    "token": "TIER2_NODE_01",
     "models": {
       "code-pro": "tier-2-provider/code-pro"
     }
@@ -62,7 +62,7 @@ JSON 数组，定义全部调度节点。每个节点字段：
   {
     "id": "tier-3-node-01",
     "tier": "tier-3",
-    "secret_ref": "TIER3_NODE_01",
+    "token": "TIER3_NODE_01",
     "models": {
       "code-max": "tier-3-provider/code-max"
     }
@@ -74,7 +74,7 @@ JSON 数组，定义全部调度节点。每个节点字段：
 
 ## 节点凭据
 
-每个节点的 `secret_ref` 指向一个独立的环境变量，值为 OpenAI 兼容上游凭据：
+每个节点的 `token` 直接内嵌在节点定义中，值为 OpenAI 兼容上游凭据：
 
 ```text
 TIER1_NODE_01=sk-xxx@https://free-api.example/v1

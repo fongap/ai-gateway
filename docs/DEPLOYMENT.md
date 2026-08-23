@@ -27,10 +27,9 @@ npx --yes wrangler@4.114.0
 
 ```text
 GATEWAY_ACCESS_KEY    客户端访问密钥
-NODES_CONFIG          节点定义 JSON 数组（必需）
+NODES_CONFIG          节点定义 JSON 数组（必需，token 内嵌）
 MODELS_CONFIG         逻辑模型映射（可选，缺省走 general-fast 策略）
-POLICIES_CONFIG       策略定义（可选，缺省 free→paid 两层）
-FREE_NODE_01 等       各节点 secret_ref 指向的凭据（Token@BaseURL，必需）
+POLICIES_CONFIG       策略定义（可选，缺省 tier-1→tier-2 两层）
 ```
 
 配置示例见 `config/nodes.example.json`、`config/models.example.json`、`config/policies.example.json`。详细说明见 [CONFIGURATION.md](CONFIGURATION.md)。
