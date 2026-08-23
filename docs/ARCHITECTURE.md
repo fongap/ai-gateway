@@ -9,7 +9,7 @@ Policy (POLICIES_CONFIG)
     ↓
 Node Scheduler
     ↓
-Node Pool (NODES_CONFIG / legacy PRIMARY_API_TOKENS)
+Node Pool (NODES_CONFIG)
     ↓
 Provider / Account / API Key
 ```
@@ -142,10 +142,6 @@ Client abort → AbortController → upstream abort → release Node state。客
 Anthropic Messages 请求转换为 OpenAI Chat Completions；响应再转换回 Anthropic 格式。覆盖文本、图片、工具调用、并行工具、流式事件和部分 reasoning/thinking 兼容。
 
 第三方模型未提供的 Anthropic 原生语义无法由网关补齐，包括可验证 thinking 签名和精确 Token 统计。
-
-## 旧配置兼容
-
-已移除旧版 API 转发配置支持（`PRIMARY_API_TOKENS` / `FALLBACK_*` / `MODEL_MAPPING`）。网关仅使用 Node Scheduler 配置（`NODES_CONFIG` / `MODELS_CONFIG` / `POLICIES_CONFIG`）。
 
 ## 默认路由策略
 

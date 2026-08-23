@@ -775,7 +775,6 @@ async function handleRequest(request, env, ctx) {
                   modelConfig,
                   request.signal,
                   clientAbortListener,
-                  null,
                   logger
                 );
               } else {
@@ -783,7 +782,7 @@ async function handleRequest(request, env, ctx) {
                   request.signal.removeEventListener('abort', clientAbortListener);
                 }
                 const openAIData = await safeJsonResponse(upstream);
-                const message = openAIToAnthropicMessage(openAIData, requestedModel, modelConfig, null);
+                const message = openAIToAnthropicMessage(openAIData, requestedModel, modelConfig);
                 anthropicResponse = anthropicMessageToSseResponse(message);
               }
               return withCors(
@@ -803,7 +802,7 @@ async function handleRequest(request, env, ctx) {
             } else {
               openAIData = await safeJsonResponse(upstream);
             }
-            const anthropicMessage = openAIToAnthropicMessage(openAIData, requestedModel, modelConfig, null);
+            const anthropicMessage = openAIToAnthropicMessage(openAIData, requestedModel, modelConfig);
             recordSuccess(endpoint.id, elapsedMs);
             return new Response(JSON.stringify(anthropicMessage), {
               status: 200,
@@ -1441,7 +1440,7 @@ function normalizeReasoningEffort(value) {
   return 'medium';
 }
 
-function openAIToAnthropicMessage(data, requestedModel, modelConfig = {}, fallbackFeedback = null) {
+function openAIToAnthropicMessage(data, requestedModel, modelConfig = {}) {
   const responseModel = requestedModel;
   const choice = data?.choices?.[0] || {};
   const message = choice.message || {};
@@ -1571,7 +1570,7 @@ function normalizeToolArgumentsJson(value) {
   return JSON.stringify(obj);
 }
 
-function transformOpenAIStreamToAnthropic(upstream, requestedModel, requestId, modelConfig, requestSignal, clientAbortListener, fallbackFeedback = null, logger = console) {
+function transformOpenAIStreamToAnthropic(upstream, requestedModel, requestId, modelConfig, requestSignal, clientAbortListener, logger = console) {
   const responseModel = requestedModel;
 
   const reader = upstream.body.getReader();
@@ -3057,7 +3056,7 @@ function getLogger(env) {
 }
 
 // ============ 非流式响应重组 ============
-async function assembleNonStreamResponse(upstream, model, requestId, request, env, extraHeaders, logger, ctx, fallbackFeedback = null) {
+async function assembleNonStreamResponse(upstream, model, requestId, request, env, extraHeaders, logger, ctx) {
   const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
