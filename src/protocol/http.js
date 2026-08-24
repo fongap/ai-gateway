@@ -110,20 +110,6 @@ function joinPath(left, right) {
   return `/${[a.replace(/^\/+/, ''), b].filter(Boolean).join('/')}`;
 }
 
-// Timing-safe secret comparison via SHA-256 digests.
-export async function timingSafeEqual(a, b) {
-  const encoder = new TextEncoder();
-  const [hashA, hashB] = await Promise.all([
-    crypto.subtle.digest('SHA-256', encoder.encode(String(a ?? ''))),
-    crypto.subtle.digest('SHA-256', encoder.encode(String(b ?? ''))),
-  ]);
-  const viewA = new Uint8Array(hashA);
-  const viewB = new Uint8Array(hashB);
-  let result = 0;
-  for (let i = 0; i < 32; i++) result |= viewA[i] ^ viewB[i];
-  return result === 0;
-}
-
 export function parseBearer(value) {
   const raw = String(value || '').trim();
   return raw.toLowerCase().startsWith('bearer ') ? raw.slice(7).trim() : raw;

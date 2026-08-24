@@ -95,6 +95,10 @@ export function assertNodesArray(nodes, label = 'nodes config') {
       if (c !== undefined && (!Number.isFinite(c) || c < 1)) {
         throw new Error(`${label}: node "${id}" limits.concurrency must be >= 1`);
       }
+      const rpm = node.limits?.rpm;
+      if (rpm !== undefined && (!Number.isFinite(rpm) || rpm < 1)) {
+        throw new Error(`${label}: node "${id}" limits.rpm must be >= 1`);
+      }
     }
   }
 }

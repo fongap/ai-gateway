@@ -49,27 +49,52 @@ install 会引导你完成：Worker 命名 → 项目校验 → Cloudflare 登�
 
 ### Node 配置（普通变量，不含任何密钥）
 
+典型配置是**多 Key、多账户、多模型**。下面的 tier-1 示例混跑了三个免费 provider 的五个账号，对外暴露三个逻辑模型：
+
 ```json
 [
-  {
-    "id": "nvidia-01",
-    "provider": "nvidia",
-    "base_url": "https://integrate.api.nvidia.com/v1",
-    "priority": 10,
-    "models": { "general-air": "model-a", "code-pro": "model-b" },
-    "limits": { "concurrency": 1 }
-  }
+  { "id": "nvidia-01", "provider": "nvidia",   "base_url": "https://integrate.api.nvidia.com/v1", "priority": 10,
+    "models": { "general-air": "deepseek-ai/deepseek-v3.1", "code-pro": "qwen/qwen3-coder-480b" }, "limits": { "concurrency": 3 } },
+  { "id": "nvidia-02", "provider": "nvidia",   "base_url": "https://integrate.api.nvidia.com/v1", "priority": 10,
+    "models": { "general-air": "deepseek-ai/deepseek-v3.1", "code-pro": "qwen/qwen3-coder-480b" }, "limits": { "concurrency": 3 } },
+  { "id": "glm-01",    "provider": "zhipu",    "base_url": "https://open.bigmodel.cn/api/paas/v4", "priority": 20,
+    "models": { "general-air": "glm-4.7", "code-max": "glm-4.7" }, "limits": { "concurrency": 2 } },
+  { "id": "cerebras-01", "provider": "cerebras", "base_url": "https://api.cerebras.ai/v1", "priority": 20,
+    "models": { "code-pro": "llama-3.3-70b", "code-max": "llama-3.3-70b" }, "limits": { "concurrency": 2 } }
 ]
 ```
+
+对应的凭据 Secret（`NODE_SECRETS_01`）：
+
+```json
+{
+  "nvidia-01": "nvapi-aaaaaaaa",
+  "nvidia-02": "nvapi-bbbbbbbb",
+  "glm-01":    "cccccccc.xxxxxxxx",
+  "cerebras-01": "csk-dddddddd"
+}
+```
+
+**组织约定**（这也是调度器发挥最大效果的方式）：
+
+| 场景 | 配置方式 | 效果 |
+|------|----------|------|
+| 同一 provider 多账号 / 同一档位多 key | 放同一层、**priority 相同** | LRU 自动把顺序流量轮转摊到所有 key 上，首个 429 出现前可用配额 ≈ key 数 × 单 key 配额 |
+| 同层内表达偏好 | 不同 `priority`（10 先于 20） | 小值优先；大值只在小值节点全忙/冷却/熔断后接管 |
+| 备用键、付费键、兜底账号 | 放下一层 tier | 层是硬优先级：tier-1 有可用节点绝不消耗 tier-2 |
+| 一个节点服务多个逻辑模型 | `models` 里写多条映射 | 每个逻辑模型可映射到各节点不同的上游名 |
+| 万能兜底节点 | `"models": {}` 通配 | 任何请求都能落到它 |
+
+字段说明：
 
 | 字段 | 说明 |
 |------|------|
 | `id` | 稳定主键；`^[a-z0-9][a-z0-9-]{0,63}$`；全仓库唯一 |
 | `provider` | 可选标签，用于诊断展示 |
 | `base_url` | 必须 `https://`；不允许内嵌用户名/密码 |
-| `priority` | 数值越小优先级越高，默认 100 |
-| `models` | 逻辑模型 → 上游模型映射；空对象 = 通配 |
-| `limits.concurrency` | 节点并发上限，默认 2 |
+| `priority` | 数值越小优先级越高，默认 100；同层同级 = 轮转摊流 |
+| `models` | 逻辑模型 → 上游模型映射；空对象 = 通配所有逻辑模型 |
+| `limits.concurrency` | 节点并发上限，默认 2；按上游账号的实际限流配置 |
 
 配置变量命名：
 
@@ -82,7 +107,7 @@ GATEWAY_ACCESS_KEY                                  ← Secret：客户端访问
 ```
 
 - Tier 只由变量前缀决定；节点 JSON 中出现 `tier` 字段会被拒绝。
-- 单片上限 4500 字节（Cloudflare 变量限制为 5 KB，留有余量）；分片按完整 Node 边界切分。
+- 单片上限 4500 字节（Cloudflare 变量限制为 5 KB，留有余量）；分片按完整 Node 边界切分，几十个节点自动拆成多个 `_02/_03...` 分片。
 - 部署前校验：Duplicate ID、Missing Credential、Orphan Credential、Invalid URL、非法字段都会提前失败。
 
 ### 客户端接入
@@ -93,7 +118,7 @@ OpenAI 兼容客户端 Base URL 使用网关地址的 `/v1`；Claude Code 设置
 
 | 场景 | 行为 |
 |------|------|
-| 选择 | 同层内单次 O(n) 扫描：priority ASC → activeRequests ASC → health DESC → latency ASC |
+| 选择 | 同层内单次 O(n) 扫描：priority ASC → activeRequests ASC → health（带内视为持平）→ lastUsedAt（LRU 轮转）→ latency ASC；同优先级空闲节点按最久未用轮转，把顺序流量摊开以减少 429 |
 | 并发分散 | 多个 concurrency=1 的节点会自然摊开并发请求 |
 | 429 | 只冷却当前节点，优先读取 `Retry-After`（秒或 HTTP-date，钳制 1s–600s），同层其他节点继续服务 |
 | 401/403 | 视为凭据问题，该节点长冷却并退出当前请求候选 |

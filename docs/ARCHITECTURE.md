@@ -39,7 +39,7 @@ current tier → valid config → model supported → circuit available
 → cooldown expired → concurrency available → not already attempted (request-scoped Set)
 ```
 
-then one O(n) pass picks the best candidate: `priority ASC → activeRequests ASC → health DESC → avg latency ASC`. A failed node can never be retried within the same request, and a node that becomes eligible mid-request is never skipped.
+then one O(n) pass picks the best candidate: `priority ASC → activeRequests ASC → health (band ≥10) DESC → lastUsedAt ASC (LRU) → avg latency ASC`. Health differences inside the band are treated as noise so the LRU tiebreak can rotate sequential traffic across equal-priority free keys — spreading load prevents 429s instead of reacting to them. A failed node can never be retried within the same request, and a node that becomes eligible mid-request is never skipped.
 
 **Rotation vs fallback**: staying in the same tier is *node rotation*; moving to tier N+1 happens only when tier N has no candidate left. Tiers are hard precedence — tier-1 free capacity is always exhausted first.
 
@@ -58,7 +58,7 @@ Error classification (`classify.js`) maps every upstream outcome to exactly one 
 | 5xx, network, headers timeout | rotate | none | **yes** |
 | client abort | neutral | none | no |
 
-Circuit breaker: consecutive-failure state machine (CLOSED → OPEN after 3 counted failures → HALF_OPEN after the open period → single probe → CLOSED on success / OPEN on failure). Only transient failures count; any success resets the counter and closes the circuit — even a 429 during a probe proves liveness.
+Circuit breaker: consecutive-failure state machine (CLOSED → OPEN after 3 counted failures → HALF_OPEN after the open period → single probe → CLOSED on success / OPEN on failure). Only transient failures count; any success resets the counter and closes the circuit — even a 429 during a probe proves liveness. Counters are also time-bounded: a node idle for more than 5 minutes starts fresh, so incidents days apart cannot chain into a trip.
 
 Concurrency slots are claimed in `acquireSlot` (atomic with eligibility checks) and released exactly once on every path via success/failure/neutral outcome recording.
 

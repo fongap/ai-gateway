@@ -25,6 +25,32 @@ const HEALTH_COOLDOWN_RECOVERY = 10;
 const LATENCY_EWMA_ALPHA = 0.3;
 const MAX_STATE_ENTRIES = 256;
 const CLEANUP_INTERVAL_MS = 30_000;
+const STALE_FAILURE_MS = 300_000; // consecutive failures older than 5 min idle no longer chain
+
+// Per-node per-minute request counters (current UTC minute bucket only).
+// Used for optional limits.rpm soft quota shaping; NOT a hard limiter.
+const rpmBuckets = new Map(); // nodeId -> { minute, count }
+
+function currentMinute(now) {
+  return Math.floor(now / 60_000);
+}
+
+export function noteRpmRequest(nodeId, now) {
+  const minute = currentMinute(now);
+  const bucket = rpmBuckets.get(nodeId);
+  if (!bucket || bucket.minute !== minute) {
+    rpmBuckets.set(nodeId, { minute, count: 1 });
+    return;
+  }
+  bucket.count++;
+}
+
+// Requests already issued by this node within the current minute.
+export function rpmUsage(nodeId, now) {
+  const bucket = rpmBuckets.get(nodeId);
+  if (!bucket || bucket.minute !== currentMinute(now)) return 0;
+  return bucket.count;
+}
 
 const nodeState = new Map();
 let lastCleanup = 0;
@@ -83,6 +109,7 @@ export function acquireSlot(nodeId, now = Date.now()) {
   s.activeRequests++;
   s.totalRequests++;
   s.lastUsedAt = now;
+  noteRpmRequest(nodeId, now);
   maybeCleanup(now);
   return true;
 }
@@ -172,11 +199,22 @@ function maybeCleanup(now) {
       s.cooldownReason = null;
       s.healthScore = Math.min(HEALTH_MAX, s.healthScore + HEALTH_COOLDOWN_RECOVERY);
     }
+    // "Consecutive" must be time-bounded: a failure yesterday and one today
+    // are not consecutive. Decay the counter for idle nodes so old incidents
+    // cannot accumulate into a circuit trip.
+    if (s.activeRequests === 0 && s.consecutiveFailures > 0 && now - s.lastUsedAt > STALE_FAILURE_MS) {
+      s.consecutiveFailures = 0;
+    }
   }
   if (nodeState.size > MAX_STATE_ENTRIES) {
     const entries = [...nodeState.entries()].sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt);
     const target = Math.floor(MAX_STATE_ENTRIES * 0.75);
     for (let i = 0; i < nodeState.size - target; i++) nodeState.delete(entries[i][0]);
+  }
+  // Prune RPM buckets that belong to a previous minute.
+  const minute = currentMinute(now);
+  for (const [id, bucket] of rpmBuckets) {
+    if (bucket.minute !== minute) rpmBuckets.delete(id);
   }
 }
 
@@ -207,5 +245,6 @@ export function snapshotNode(nodeId, now = Date.now()) {
 // Test hook: wipe all isolate-local state between test cases.
 export function __resetAllStateForTests() {
   nodeState.clear();
+  rpmBuckets.clear();
   lastCleanup = 0;
 }

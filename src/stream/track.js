@@ -1,17 +1,17 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fongap Studio
-//
 // Tracked stream wrapper: the single place where a streaming response body is
 // relayed to the client while (a) enforcing the stream idle timeout and
 // (b) recording the node outcome exactly once:
 //   completed normally        -> onSuccess
-//   idle timeout / upstream error -> onFailure
+//   idle timeout / upstream error / clean close WITHOUT completion marker ->
+//                             onFailure
 //   client cancelled          -> onNeutral (never penalizes the node)
 //
 // Per-chunk work is minimal: bytes pass through untouched; only a small
-// rolling tail is kept to detect an in-band `event: error` marker.
+// rolling tail is kept to detect an in-band `event: error` marker and, when
+// `completionMarker` is set, whether the stream terminated properly. A clean
+// close without the marker is an upstream truncation and counts as a failure.
 
-export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFailure, onNeutral }) {
+export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFailure, onNeutral, completionMarker }) {
   if (!response.body) {
     onSuccess();
     return response;
@@ -20,13 +20,18 @@ export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFail
   const decoder = new TextDecoder();
   let diagnosticTail = '';
   let errorEventSeen = false;
+  let completionSeen = !completionMarker;
   let finished = false;
 
   const finalize = (result) => {
     if (finished) return;
     finished = true;
-    if (result === 'success') onSuccess();
-    else if (result === 'failure') onFailure();
+    if (result === 'success') {
+      // Clean close but the upstream never sent its termination marker:
+      // the output was truncated, so account it as a failure.
+      if (!completionSeen) onFailure();
+      else onSuccess();
+    } else if (result === 'failure') onFailure();
     else onNeutral();
   };
 
@@ -59,9 +64,14 @@ export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFail
         controller.close();
         return;
       }
-      if (!errorEventSeen) {
+      if (!errorEventSeen || !completionSeen) {
         diagnosticTail = (diagnosticTail + decoder.decode(value, { stream: true })).slice(-256);
-        errorEventSeen = /(?:^|\r?\n)event:\s*error\s*(?:\r?\n|$)/.test(diagnosticTail);
+        if (!errorEventSeen) {
+          errorEventSeen = /(?:^|\r?\n)event:\s*error\s*(?:\r?\n|$)/.test(diagnosticTail);
+        }
+        if (!completionSeen && completionMarker.test(diagnosticTail)) {
+          completionSeen = true;
+        }
       }
       controller.enqueue(value);
     },

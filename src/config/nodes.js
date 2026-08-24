@@ -63,6 +63,7 @@ function buildConfig(env) {
       ready: false,
       accessKeyBound,
       nodes: [],
+      tiers: { 1: [], 2: [], 3: [] },
       nodesTotal: nodesDeclared,
       nodesUsable: 0,
       diagnostics,
@@ -131,11 +132,18 @@ function buildConfig(env) {
   else if (nodes.length < nodesDeclared) status = 'degraded';
   else status = 'ready';
 
+  // Precompute tier groups (priority-sorted) once per isolate; the scheduler
+  // must not re-group or re-sort on the request hot path.
+  const tiers = { 1: [], 2: [], 3: [] };
+  for (const node of nodes) tiers[Number(node.tier.slice(5))].push(node);
+  for (const list of Object.values(tiers)) list.sort((a, b) => a.priority - b.priority);
+
   return {
     status,
     ready: nodes.length > 0,
     accessKeyBound,
     nodes,
+    tiers,
     nodesTotal: nodesDeclared,
     nodesUsable: nodes.length,
     diagnostics,
@@ -191,6 +199,7 @@ function buildRuntimeNode(rawNode, tier, credentials, allowInsecure, sourceKey, 
 
   const priority = Number(rawNode.priority);
   const concurrency = Number(rawNode.limits?.concurrency);
+  const rpm = Number(rawNode.limits?.rpm);
 
   return {
     id,
@@ -200,7 +209,11 @@ function buildRuntimeNode(rawNode, tier, credentials, allowInsecure, sourceKey, 
     credential,
     priority: Number.isFinite(priority) ? priority : 100,
     models,
-    limits: { concurrency: Number.isFinite(concurrency) && concurrency >= 1 ? Math.trunc(concurrency) : 2 },
+    limits: {
+      concurrency: Number.isFinite(concurrency) && concurrency >= 1 ? Math.trunc(concurrency) : 2,
+      // Soft per-minute request quota; undefined = unlimited.
+      ...(Number.isFinite(rpm) && rpm >= 1 ? { rpm: Math.trunc(rpm) } : {}),
+    },
   };
 }
 

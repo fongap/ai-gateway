@@ -40,6 +40,11 @@ Breaking release: the node configuration and secret management model was redesig
 - Model-field rewriting skipped entirely when logical == upstream model; per-line parse skipped when a line cannot contain the field.
 - New black-box integration test suite runs the real worker.fetch pipeline against mocked upstreams (24 scenarios).
 - Added benchmark/benchmark.mjs measuring gateway added overhead vs a direct mocked upstream.
+- Scheduler LRU tiebreak: sequential traffic rotates across equal-priority nodes instead of concentrating on one until it rate-limits (429 prevention, not reaction).
+- Health score differences within a ±10 band are treated as ties so load spreading is not defeated by single-success noise.
+- Gateway access key digest cached per isolate: one SHA-256 per request instead of two, same timing-safe either-header semantics.
+- Tier grouping and priority sorting precomputed at config load; removed from the request hot path.
+- Consecutive-failure counters decay after 5 minutes idle so time-separated incidents cannot chain into a circuit trip.
 ## 5.14.0 - 2026-08-06
 
 - 在 `wrangler.jsonc` 中声明 `GATEWAY_ACCESS_KEY` 与 `PRIMARY_API_TOKENS` 为必需 Secret，阻止缺少绑定的错误部署；

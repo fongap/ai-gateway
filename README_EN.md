@@ -72,7 +72,7 @@ GATEWAY_ACCESS_KEY        Secret: client access key
 
 | Scenario | Behavior |
 |----------|----------|
-| Selection | single O(n) pass per attempt: priority ASC → activeRequests ASC → health DESC → latency ASC |
+| Selection | single O(n) pass per attempt: priority ASC → activeRequests ASC → health (band) → lastUsedAt (LRU rotation across equal-priority keys) → latency ASC |
 | Concurrency | parallel requests spread across concurrency-limited nodes |
 | 429 | cools only the failing node, honors Retry-After (seconds/HTTP-date, clamped 1s–600s) |
 | 401/403 | credential problem: long node-local cooldown, excluded from the request |

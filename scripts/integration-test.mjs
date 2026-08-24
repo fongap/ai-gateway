@@ -210,6 +210,27 @@ await test('concurrency spreads parallel requests across equal nodes', async () 
   assert.equal(new Set(responses).size, 4, `expected 4 distinct nodes, got ${responses.join(',')}`);
 });
 
+await test('LRU tiebreak rotates sequential requests across equal-priority nodes', async () => {
+  resetMock();
+  for (const id of ['lru-a', 'lru-b', 'lru-c']) {
+    routeHandlers[`${id}.example.com`] = () => jsonUpstream(okCompletion());
+  }
+  const ids = ['lru-a', 'lru-b', 'lru-c'];
+  const env = makeEnv({
+    tier1: ids.map((id) => basicNode(id)), // identical priority
+    secrets: Object.fromEntries(ids.map((id) => [id, 'k'])),
+  });
+  // Sequential (not concurrent) requests must rotate instead of hammering lru-a.
+  const served = [];
+  for (let i = 0; i < 3; i++) {
+    const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+    assert.equal(res.status, 200);
+    served.push(await res.text(), res.headers.get('x-gateway-node'));
+  }
+  const nodes = [served[1], served[3], served[5]];
+  assert.equal(new Set(nodes).size, 3, `expected rotation across 3 nodes, got ${nodes.join(',')}`);
+});
+
 // ---- 429 / Retry-After -----------------------------------------------------
 
 await test('429 isolates the node; same-tier B serves; tier-2 untouched', async () => {

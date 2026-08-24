@@ -19,7 +19,7 @@ import { loadGatewayConfig } from '../config/nodes.js';
 import { loadModelsConfig } from '../config/models.js';
 import { loadPoliciesConfig, getPolicy } from '../config/policies.js';
 import { getLimits } from '../config/timeouts.js';
-import { groupNodesByTier, pickCandidate, supportsModel } from '../scheduler/scheduler.js';
+import { pickCandidate, supportsModel, tierHasDeferredCapacity } from '../scheduler/scheduler.js';
 import {
   recordSuccess, recordFailure, recordNeutralEnd,
   applyHealthPenalty, getCooldownRemainingMs,
@@ -31,7 +31,7 @@ import {
 import {
   buildTargetUrl, buildUpstreamHeaders, corsHeaders,
   readBodyTextWithLimit, BodyTooLargeError, safeReadErrorBody, trimDiagnostic,
-  parseBearer, timingSafeEqual,
+  parseBearer,
 } from '../protocol/http.js';
 import { validateOpenAIChatRequest, isOpenAIStreamingResponse } from '../protocol/openai.js';
 import {
@@ -81,6 +81,27 @@ function gatewayError(request, env, route, status, message, requestId, details, 
   });
 }
 
+// Cached digest of the gateway access key (immutable per isolate).
+let cachedAccessKey = null;
+let cachedAccessKeyDigest = null;
+
+function getAccessKeyDigest(accessKey) {
+  if (cachedAccessKey === accessKey && cachedAccessKeyDigest) return Promise.resolve(cachedAccessKeyDigest);
+  return crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(accessKey ?? '')))
+    .then((digest) => {
+      cachedAccessKey = accessKey;
+      cachedAccessKeyDigest = new Uint8Array(digest);
+      return cachedAccessKeyDigest;
+    });
+}
+
+function constantTimeEquals(a, b) {
+  if (a.length !== b.length) return false;
+  let result = 0;
+  for (let i = 0; i < a.length; i++) result |= a[i] ^ b[i];
+  return result === 0;
+}
+
 export async function handleRequest(request, env, ctx) {
   const logger = getLogger(env);
   const requestId = crypto.randomUUID();
@@ -102,11 +123,24 @@ export async function handleRequest(request, env, ctx) {
   if (route !== 'version') {
     const bearer = parseBearer(request.headers.get('authorization'));
     const xApiKey = String(request.headers.get('x-api-key') || '').trim();
-    const [bearerOk, xApiOk] = await Promise.all([
-      timingSafeEqual(bearer, accessKey),
-      timingSafeEqual(xApiKey, accessKey),
-    ]);
-    if (!bearerOk && !xApiOk) {
+    const presented = [];
+    if (bearer) presented.push(bearer);
+    if (xApiKey) presented.push(xApiKey);
+    let authorized = false;
+    if (presented.length > 0) {
+      // The expected digest is cached per isolate: one SHA-256 per request
+      // instead of two, with the same either-header-matches semantics and a
+      // constant-time comparison.
+      const expected = await getAccessKeyDigest(accessKey);
+      for (const candidate of presented) {
+        const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(candidate));
+        if (constantTimeEquals(new Uint8Array(digest), expected)) {
+          authorized = true;
+          break;
+        }
+      }
+    }
+    if (!authorized) {
       return gatewayError(request, env, route, 401, 'Unauthorized: gateway access key is invalid or missing.', requestId);
     }
   }
@@ -173,7 +207,7 @@ export async function handleRequest(request, env, ctx) {
       'Gateway misconfigured: no usable nodes. Check TIER*_NODES_CONFIG_* and NODE_SECRETS_*.',
       requestId, { configuration_status: config.status, diagnostics: config.diagnostics.slice(0, 5) });
   }
-  const tiers = groupNodesByTier(config.nodes);
+  const tiers = config.tiers;
   const supported = TIER_ORDER.some((t) => tiers[t].some((n) => supportsModel(n, requestedModel)));
   if (!supported) {
     return gatewayError(request, env, route, 404,
@@ -204,7 +238,7 @@ export async function handleRequest(request, env, ctx) {
     }
   }
 
-  return buildExhaustedResponse(request, env, route, requestId, requestedModel, state, config);
+  return buildExhaustedResponse(request, env, route, requestId, requestedModel, state, tiers);
 }
 
 // ---- One attempt against one node -----------------------------------------
@@ -322,14 +356,15 @@ async function handleSuccess(s) {
     let bodyResponse = new Response(guarded.body, { status: 200, headers });
 
     if (route === 'openai_chat') {
-      bodyResponse = trackStreamResponse(bodyResponse, {
+      let tracked = trackStreamResponse(new Response(guarded.body, { status: 200, headers }), {
         idleTimeoutMs: limits.streamIdleTimeoutMs,
+        completionMarker: /data:\s*\[DONE\]\s*(?:\r?\n|$)/,
         onSuccess: () => recordSuccess(node.id, latencyMs),
         onFailure: () => recordFailure(node.id, { counted: true, cooldownMs: 2_000, reason: 'stream_interrupted' }),
         onNeutral: () => recordNeutralEnd(node.id),
       });
-      if (needsModelRewrite) bodyResponse = rewriteStreamModelField(bodyResponse, requestedModel);
-      return { response: bodyResponse };
+      if (needsModelRewrite) tracked = rewriteStreamModelField(tracked, requestedModel);
+      return { response: tracked };
     }
 
     // anthropic_messages: transform then track the CLIENT-facing stream so an
@@ -372,7 +407,13 @@ async function handleSuccess(s) {
     if (upstreamWasStreaming) {
       const tracked = trackStreamResponse(
         new Response(upstream.body, { status: 200, headers: finalHeaders(env, request, upstream.headers, extraHeaders) }),
-        { idleTimeoutMs: limits.streamIdleTimeoutMs, ...trackCallbacks },
+        {
+          idleTimeoutMs: limits.streamIdleTimeoutMs,
+          // A passthrough stream that closes without [DONE] is a truncation:
+          // deliver what arrived, but account the node failure.
+          completionMarker: /data:\s*\[DONE\]\s*(?:\r?\n|$)/,
+          ...trackCallbacks,
+        },
       );
       return { response: needsModelRewrite ? rewriteStreamModelField(tracked, requestedModel) : tracked };
     }
@@ -518,26 +559,52 @@ function rewriteStreamModelField(response, logicalModel) {
   });
 }
 
-function buildExhaustedResponse(request, env, route, requestId, requestedModel, state, config) {
+function buildExhaustedResponse(request, env, route, requestId, requestedModel, state, tiers) {
   const last = state.attempts[state.attempts.length - 1];
   const nothingAttempted = state.attempts.length === 0;
-  const status = nothingAttempted ? 429 : last?.status === 429 ? 429 : 502;
-  const remaining = config.nodes.map((n) => getCooldownRemainingMs(n.id)).filter((v) => v > 0);
-  const minRemaining = remaining.length ? Math.min(...remaining) : 0;
-  const message = nothingAttempted
-    ? 'All eligible nodes are temporarily unavailable (cooldown or circuit open).'
-    : `All nodes failed for model "${requestedModel}".`;
-  const extraHeaders = status === 429 && minRemaining > 0
-    ? { 'retry-after': String(Math.ceil(minRemaining / 1000)) }
-    : undefined;
+
+  // Distinguish WHY no node was available:
+  //   saturated (all candidates busy at concurrency/RPM caps) -> 503 + short
+  //     Retry-After so bursty multi-agent clients back off instead of hammering;
+  //   cooling / circuit open -> 429 + the smallest remaining cooldown;
+  //   real failures -> 502.
+  let status;
+  let message;
+  let retryAfterSec;
+  if (nothingAttempted) {
+    const deferred = TIER_ORDER.some((t) =>
+      tierHasDeferredCapacity(tiers[t], requestedModel, state.attempted));
+    if (deferred) {
+      status = 503;
+      message = 'All eligible nodes are at capacity. Retry shortly.';
+      retryAfterSec = 1;
+    } else {
+      const remaining = Object.values(tiers).flat()
+        .map((n) => getCooldownRemainingMs(n.id))
+        .filter((v) => v > 0);
+      const minRemaining = remaining.length ? Math.min(...remaining) : 0;
+      status = 429;
+      message = 'All eligible nodes are temporarily unavailable (cooldown or circuit open).';
+      if (minRemaining > 0) retryAfterSec = Math.ceil(minRemaining / 1000);
+    }
+  } else {
+    status = last?.status === 429 ? 429 : 502;
+    message = `All nodes failed for model "${requestedModel}".`;
+    if (status === 429) {
+      const remaining = Object.values(tiers).flat()
+        .map((n) => getCooldownRemainingMs(n.id))
+        .filter((v) => v > 0);
+      if (remaining.length) retryAfterSec = Math.ceil(Math.min(...remaining) / 1000);
+    }
+  }
+
   return new Response(JSON.stringify({
     error: {
       message,
       details: {
         attempts: state.attempts,
         requested_model: requestedModel,
-        nodes_total: config.nodes.length,
-        retry_after_ms: minRemaining || undefined,
+        nodes_total: Object.values(tiers).flat().length,
       },
     },
   }), {
@@ -546,7 +613,7 @@ function buildExhaustedResponse(request, env, route, requestId, requestedModel, 
       'content-type': 'application/json;charset=UTF-8',
       'cache-control': 'no-store',
       'x-request-id': requestId,
-      ...(extraHeaders || {}),
+      ...(retryAfterSec ? { 'retry-after': String(retryAfterSec) } : {}),
       ...corsHeaders(request, env),
     },
   });
