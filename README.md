@@ -9,7 +9,7 @@
 [![License](https://img.shields.io/badge/license-MIT-2ea44f)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-43853d?logo=node.js&logoColor=white)](package.json)
 
-运行在 Cloudflare Workers 上的个人 AI Agent 资源调度层。以 `free-node / paid-node / plus-node` 三层节点模型管理多个 AI 服务商资源，为 Coding Agent、办公 Agent 和本地 AI 应用提供低成本、高可靠、可自动故障切换的统一入口。
+运行在 Cloudflare Workers 上的个人 AI Agent 资源调度层。以 `tier-1 / tier-2 / tier-3` 三层节点模型管理多个 AI 服务商资源，为 Coding Agent、办公 Agent 和本地 AI 应用提供低成本、高可靠、可自动故障切换的统一入口。
 
 - OpenAI Chat Completions：`/v1/chat/completions`
 - Anthropic Messages / Claude Code：`/v1/messages`
@@ -37,20 +37,20 @@ Policy (POLICIES_CONFIG)
     ↓
 Node Scheduler
     ↓
-Node Pool (TIER1_NODES_CONFIG)
+Node Pool (TIER1_NODES_CONFIG_01..)
     ↓
-Provider / Account / API Key (token 环境变量)
+Provider / Account / API Key (token 内嵌在节点中)
 ```
 
 ### 三层 Node Pool
 
-| 层级 | 名称 | 特点 | 默认用途 |
+| 层级 | 定位 | 特点 | 默认用途 |
 |------|------|------|----------|
-| `free-node` | 免费资源池 | 成本最低，稳定性不确定 | 默认优先 |
-| `paid-node` | 付费资源池 | 稳定性较高，成本可接受 | 主要 fallback |
-| `plus-node` | 增强资源池 | 最高可靠性，成本最高 | 关键任务、Coding 长任务 |
+| `tier-1` | 免费资源池 | 成本最低，稳定性不确定 | 默认优先 |
+| `tier-2` | 付费资源池 | 稳定性较高，成本可接受 | 主要 fallback |
+| `tier-3` | 增强资源池 | 最高可靠性，成本最高 | 关键任务、Coding 长任务 |
 
-默认调度顺序：`tier-1 → tier-2 → tier-3`。禁止因为 paid/plus 更快而自动抢占 free。
+默认调度顺序：`tier-1 → tier-2 → tier-3`。禁止因为 tier-2/tier-3 更快而自动抢占 tier-1。
 
 ### 代码结构
 
@@ -85,7 +85,7 @@ src/
 - 503/502/504 轻量 Circuit Breaker，3 次同类失败后短暂熔断；
 - First Event Guard：流式请求在首个有效 event 前允许 failover，之后禁止透明切换；
 - 超时拆分：`UPSTREAM_HEADERS_TIMEOUT` / `FIRST_EVENT_TIMEOUT` / `STREAM_IDLE_TIMEOUT`；
-- Retry Budget：free ≤2、paid ≤1、plus ≤1，总计 ≤5；
+- Retry Budget：tier-1 ≤2、tier-2 ≤1、tier-3 ≤1，总计 ≤5；
 - 客户端取消不处罚节点；
 - 按上游 hostname 配置模型映射、能力和独立 `invoke_url`；
 - 支持普通响应、流式响应、图片和工具调用转换；
@@ -116,7 +116,7 @@ chmod +x scripts/*.sh
 ./scripts/install.sh
 ```
 
-安装脚本会完成 Node.js 检查、完整测试、Wrangler dry-run、Cloudflare 账户确认、配置校验、临时 Secrets 文件部署和可选在线验证。临时文件会在结束后删除。
+安装脚本会完成 Node.js 检查、完整测试、Wrangler dry-run、Cloudflare 账户确认、配置校验、节点配置按完整 Node 边界自动分片（`TIER1_NODES_CONFIG_01..`）、临时 Secrets 文件部署和可选在线验证。临时文件会在结束后删除。
 
 真实凭据不会写入仓库。
 
@@ -162,7 +162,7 @@ Non-production deploy command: npx wrangler versions upload
 
 5. 点击 **Save and Deploy**，先完成 Worker 的首次部署；
 6. 打开 `https://YOUR-WORKER.workers.dev/`，此时会显示"Worker 已部署，等待完成配置"的初始化页面；
-7. 在该 Worker 的 **Settings → Variables and Secrets** 中添加 `GATEWAY_ACCESS_KEY` 与 `TIER1_NODES_CONFIG`，类型选择 **Secret**，然后点击 **Deploy**；
+7. 在该 Worker 的 **Settings → Variables and Secrets** 中添加 `GATEWAY_ACCESS_KEY` 与 `TIER1_NODES_CONFIG_01`，类型选择 **Secret**，然后点击 **Deploy**；
 8. 配置生效后，初始化页面会在 5 秒内自动刷新到正常网关主页。
 
 ### 一个仓库部署多个 Workers
@@ -173,24 +173,35 @@ Non-production deploy command: npx wrangler versions upload
 
 ## 配置
 
-通过三个 JSON Secret 配置完整的 Node 调度系统：
+通过 JSON Secret 配置完整的 Node 调度系统。节点配置按层拆分为固定两位编号的分片（每片 ≤4500 bytes，自动按完整 Node 边界拆分）：
 
 | 变量 | 说明 |
 |------|------|
-| `TIER1_NODES_CONFIG` | JSON 数组，tier-1 层节点定义（token 内嵌） |
+| `TIER1_NODES_CONFIG_01` | tier-1 层节点定义分片 1（token 内嵌） |
+| `TIER1_NODES_CONFIG_02` ... | tier-1 层节点较多时的后续分片，编号连续 |
+| `TIER2_NODES_CONFIG_01` ... | tier-2 层节点定义分片（可选） |
+| `TIER3_NODES_CONFIG_01` ... | tier-3 层节点定义分片（可选） |
 | `MODELS_CONFIG` | JSON 对象，逻辑模型到 workload/policy 的映射 |
 | `POLICIES_CONFIG` | JSON 对象，策略定义 |
-| `TIER1_NODES_CONFIG` 等 | 按层分别配置，`token` 直接内嵌在节点中 |
 
-**TIER1_NODES_CONFIG 示例：**
+**TIER1_NODES_CONFIG_01 示例：**
 
 ```json
 [
-  {"id":"tier-1-node-01","tier":"tier-1","token":"sk-xxx@https://provider-a/v1","models":{"general-air":"tier-1-provider/model-air","code-pro":"tier-1-provider/code-pro"}},
-  {"id":"tier-2-node-01","tier":"tier-2","token":"sk-yyy@https://provider-b/v1","models":{"code-pro":"tier-2-provider/code-pro"}},
-  {"id":"tier-3-node-01","tier":"tier-3","token":"sk-zzz@https://provider-c/v1","models":{"code-max":"tier-3-provider/code-max"}}
+  {"id":"tier-1-node-01","tier":"tier-1","token":"sk-xxx@https://provider-a/v1","models":{"general-air":"tier-1-provider/model-air","code-pro":"tier-1-provider/code-pro"}}
 ]
 ```
+
+配置较大时由安装脚本按完整 Node 边界自动拆分为：
+
+```text
+TIER1_NODES_CONFIG_01
+TIER1_NODES_CONFIG_02
+TIER1_NODES_CONFIG_03
+...
+```
+
+运行时按编号数值顺序加载并透明合并为一个统一的节点池，不影响 tier、provider、priority、models、并发、冷却、熔断、重试预算等任何调度语义。
 
 **MODELS_CONFIG 示例：**
 
@@ -296,8 +307,8 @@ curl https://YOUR-WORKER.workers.dev/metrics \
 
 ### Retry Budget
 
-| Workload | free | paid | plus | 总计 |
-|----------|------|------|------|------|
+| Workload | tier-1 | tier-2 | tier-3 | 总计 |
+|----------|--------|--------|--------|------|
 | General | ≤2 | ≤1 | - | ≤3 |
 | Coding | ≤2 | ≤1 | ≤1 | ≤4 |
 
@@ -317,6 +328,7 @@ npm run check:deploy
 - 版本号一致性；
 - Markdown 本地链接；
 - Dashboard、`/version`、`/v1/models`、`/health`、`/metrics` 冒烟测试；
+- 节点配置分片测试（三层多分片、编号排序、损坏分片隔离、重复 ID 检测、8/20 KB 自动拆分、旧格式迁移等）；
 - Node Scheduler 调度测试（12 项）；
 - 可靠性测试（12 项：429 冷却、503 熔断、Retry-After、Retry Budget、超时拆分、Client Abort 等）；
 - 常见密钥格式扫描。

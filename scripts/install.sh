@@ -43,6 +43,14 @@ fi
 read -r -p "启用严格模型白名单？[y/N]: " STRICT_INPUT
 STRICT_MODEL_MAPPING=false; yesno "$STRICT_INPUT" && STRICT_MODEL_MAPPING=true
 
+read -r -p "tier-1 节点配置 JSON 文件路径（必需）: " TIER1_NODES_FILE
+[[ -f "$TIER1_NODES_FILE" ]] || fail "tier-1 节点配置文件不存在。"
+node scripts/manage-nodes-config.mjs validate --file "$TIER1_NODES_FILE"
+read -r -p "tier-2 节点配置 JSON 文件路径（可选，留空跳过）: " TIER2_NODES_FILE
+if [[ -n "$TIER2_NODES_FILE" ]]; then [[ -f "$TIER2_NODES_FILE" ]] || fail "tier-2 节点配置文件不存在。"; node scripts/manage-nodes-config.mjs validate --file "$TIER2_NODES_FILE"; fi
+read -r -p "tier-3 节点配置 JSON 文件路径（可选，留空跳过）: " TIER3_NODES_FILE
+if [[ -n "$TIER3_NODES_FILE" ]]; then [[ -f "$TIER3_NODES_FILE" ]] || fail "tier-3 节点配置文件不存在。"; node scripts/manage-nodes-config.mjs validate --file "$TIER3_NODES_FILE"; fi
+
 FALLBACK_ENABLED=false
 FALLBACK_API_TOKEN=""
 FALLBACK_BASE_URL=""
@@ -61,13 +69,20 @@ if yesno "$FALLBACK_INPUT"; then
     node scripts/validate-fallback-config.mjs
 fi
 
+# 按完整 Node 边界自动拆分为 TIERx_NODES_CONFIG_01.. 分片（三个 Tier 共用同一套分片函数）。
 TEMP="$(mktemp "${TMPDIR:-/tmp}/gateway-install.XXXXXX.json")"
 chmod 600 "$TEMP"
-cleanup(){ rm -f "$TEMP"; unset GATEWAY_ACCESS_KEY PRIMARY_API_TOKENS FALLBACK_API_TOKEN; }
+NODES_PLAN="$(mktemp "${TMPDIR:-/tmp}/gateway-install-nodes.XXXXXX.json")"
+chmod 600 "$NODES_PLAN"
+cleanup(){ rm -f "$TEMP" "$NODES_PLAN"; unset GATEWAY_ACCESS_KEY PRIMARY_API_TOKENS FALLBACK_API_TOKEN; }
 trap cleanup EXIT
 export GATEWAY_ACCESS_KEY PRIMARY_API_TOKENS PRIMARY_BASE_URL MODEL_MAPPING STRICT_MODEL_MAPPING
 export FALLBACK_ENABLED FALLBACK_API_TOKEN FALLBACK_BASE_URL FALLBACK_PRIMARY_MODEL FALLBACK_SECONDARY_MODEL
-node - "$TEMP" <<'NODE'
+PLAN_ARGS=(plan --tier1 "$TIER1_NODES_FILE" --out "$NODES_PLAN")
+[[ -n "${TIER2_NODES_FILE:-}" ]] && PLAN_ARGS+=(--tier2 "$TIER2_NODES_FILE")
+[[ -n "${TIER3_NODES_FILE:-}" ]] && PLAN_ARGS+=(--tier3 "$TIER3_NODES_FILE")
+node scripts/manage-nodes-config.mjs "${PLAN_ARGS[@]}"
+node - "$TEMP" "$NODES_PLAN" <<'NODE'
 import fs from 'node:fs';
 const out={
   GATEWAY_ACCESS_KEY:process.env.GATEWAY_ACCESS_KEY,
@@ -88,6 +103,7 @@ if(process.env.FALLBACK_ENABLED==='true') Object.assign(out,{
   FALLBACK_BASE_URL:process.env.FALLBACK_BASE_URL,
   FALLBACK_PRIMARY_MODEL:process.env.FALLBACK_PRIMARY_MODEL
 });
+Object.assign(out,JSON.parse(fs.readFileSync(process.argv[3],'utf8')).secrets);
 fs.writeFileSync(process.argv[2],JSON.stringify(out,null,2));
 NODE
 

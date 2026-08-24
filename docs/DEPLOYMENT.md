@@ -26,10 +26,10 @@ npx --yes wrangler@4.114.0
 ## 必需 Secret
 
 ```text
-GATEWAY_ACCESS_KEY    客户端访问密钥
-TIER1_NODES_CONFIG    节点定义 JSON 数组（必需，token 内嵌）
-MODELS_CONFIG         逻辑模型映射（可选，缺省走 general-fast 策略）
-POLICIES_CONFIG       策略定义（可选，缺省 tier-1→tier-2 两层）
+GATEWAY_ACCESS_KEY         客户端访问密钥
+TIER1_NODES_CONFIG_01..    节点定义 JSON 数组分片（必需，token 内嵌；按完整 Node 边界自动拆分）
+MODELS_CONFIG              逻辑模型映射（可选，缺省走 general-fast 策略）
+POLICIES_CONFIG            策略定义（可选，缺省 tier-1→tier-2 两层）
 ```
 
 配置示例见 `config/nodes.example.json`、`config/models.example.json`、`config/policies.example.json`。详细说明见 [CONFIGURATION.md](CONFIGURATION.md)。
@@ -59,7 +59,7 @@ chmod +x scripts/*.sh
 1. 检查 Node.js、npm 和 Worker 名称；
 2. 执行 `npm ci`、完整测试与 Wrangler dry-run；
 3. 显示当前 Cloudflare 登录账户；
-4. 校验 `TIER1_NODES_CONFIG`、`MODELS_CONFIG` 和 `POLICIES_CONFIG`；
+4. 校验 `TIER1_NODES_CONFIG_01..` 分片、`MODELS_CONFIG` 和 `POLICIES_CONFIG`；
 5. 使用权限受限的临时 JSON 文件部署代码与 Secrets；
 6. 结束后删除临时文件；
 7. 可选执行 `/version`、`/health` 和 `/v1/models` 在线验证。
@@ -86,7 +86,7 @@ Linux / macOS：
 wrangler deploy --keep-vars
 ```
 
-它不会尝试读取或重写已有 Secret。当前 Worker 尚未设置 `GATEWAY_ACCESS_KEY` 或 `TIER1_NODES_CONFIG` 时，代码仍可先部署；根页面会显示配置状态，受保护接口在配置完成前返回明确错误。
+它不会尝试读取或重写已有 Secret。当前 Worker 尚未设置 `GATEWAY_ACCESS_KEY` 或 `TIER1_NODES_CONFIG_01` 时，代码仍可先部署；根页面会显示配置状态，受保护接口在配置完成前返回明确错误。
 
 ### 3. 重新配置运行时变量
 
@@ -102,7 +102,7 @@ Linux / macOS：
 ./scripts/reconfigure.sh
 ```
 
-该脚本使用 `wrangler secret bulk` 更新运行时配置，不重新上传本地代码。更新 `TIER1_NODES_CONFIG` / `MODELS_CONFIG` / `POLICIES_CONFIG` 或节点凭据时使用此脚本。
+该脚本使用 `wrangler secret bulk` 更新运行时配置，不重新上传本地代码。更新节点分片（`TIERx_NODES_CONFIG_XX`）/ `MODELS_CONFIG` / `POLICIES_CONFIG` 或节点凭据时使用此脚本。更新节点配置时会自动按完整 Node 边界拆分为 `_01/_02/...` 分片，写入成功后删除不再需要的旧分片与旧版无后缀变量，且只操作本项目管理的节点 Secret。
 
 ## GitHub 自动部署到 Cloudflare
 
@@ -121,7 +121,7 @@ Non-production deploy command: npx wrangler versions upload
 
 ```text
 GATEWAY_ACCESS_KEY
-TIER1_NODES_CONFIG
+TIER1_NODES_CONFIG_01
 ```
 
 构建变量不能替代 Worker 运行时 Secret。第一次构建会先完成代码部署；随后在目标 Worker 中添加上述 Secret 并部署配置即可。多个 Worker 各自保存变量和 Secret，后续 GitHub 推送会继续自动覆盖各自代码。
@@ -166,7 +166,7 @@ curl https://YOUR-GATEWAY/version
 }
 ```
 
-`ready: true` 表示当前活动版本已绑定必需 Secret（`GATEWAY_ACCESS_KEY` 与 `TIER1_NODES_CONFIG`）。
+`ready: true` 表示当前活动版本已绑定必需 Secret（`GATEWAY_ACCESS_KEY` 与 `TIER1_NODES_CONFIG_01` 等节点分片）。
 
 随后执行：
 

@@ -13,7 +13,7 @@
     "check": "node --check src/index.js",
     "check:version": "node scripts/version-check.mjs",
     "check:links": "node scripts/link-check.mjs",
-    "test": "node scripts/config-validation-test.mjs && node scripts/smoke-test.mjs && node scripts/hardening-test.mjs && node scripts/scheduler-test.mjs && node scripts/reliability-test.mjs",
+    "test": "node scripts/config-validation-test.mjs && node scripts/nodes-shard-test.mjs && node scripts/smoke-test.mjs && node scripts/hardening-test.mjs && node scripts/scheduler-test.mjs && node scripts/reliability-test.mjs",
     "test:scheduler": "node scripts/scheduler-test.mjs",
     "test:reliability": "node scripts/reliability-test.mjs",
     "security:scan": "node scripts/secret-scan.mjs",

@@ -21,6 +21,39 @@ if($enable){
  try{node scripts/validate-fallback-config.mjs;if($LASTEXITCODE-ne0){throw 'Fallback 配置无效。'}}finally{Remove-Item Env:FALLBACK_API_TOKEN,Env:FALLBACK_BASE_URL,Env:FALLBACK_PRIMARY_MODEL,Env:FALLBACK_SECONDARY_MODEL -ErrorAction SilentlyContinue}
 }
 $temp=Join-Path ([IO.Path]::GetTempPath()) ('gateway-reconfigure-'+[guid]::NewGuid().ToString('N')+'.json')
+# ---- 节点配置：统一自动拆分为 TIERx_NODES_CONFIG_01.. 分片，并迁移/清理旧格式 ----
+$updNodes=Yes(Read-Host '更新节点配置（TIERx_NODES_CONFIG_XX 分片）？[y/N]')
+$nodesPlan=$null;$secretsList=$null;$nodesBulk=$null
+if($updNodes){
+ $tier1File=(Read-Host 'tier-1 节点配置 JSON 文件路径（必需）').Trim()
+ if(!$tier1File -or !(Test-Path $tier1File)){throw 'tier-1 节点配置文件不存在。'}
+ node scripts/manage-nodes-config.mjs validate --file $tier1File;if($LASTEXITCODE-ne0){throw 'tier-1 节点配置无效。'}
+ $planArgs=@('plan','--tier1',$tier1File)
+ foreach($n in 2,3){
+  $p=(Read-Host "tier-$n 节点配置 JSON 文件路径（可选，留空跳过）").Trim()
+  if($p){
+   if(!(Test-Path $p)){throw "tier-$n 节点配置文件不存在。"}
+   node scripts/manage-nodes-config.mjs validate --file $p;if($LASTEXITCODE-ne0){throw "tier-$n 节点配置无效。"}
+   $planArgs+=@("--tier$n",$p)
+  }
+ }
+ $secretsList=Join-Path ([IO.Path]::GetTempPath()) ('gateway-secrets-'+[guid]::NewGuid().ToString('N')+'.json')
+ & npx --yes 'wrangler@4.114.0' 'secret' 'list'|Set-Content -Path $secretsList -Encoding UTF8;if($LASTEXITCODE-ne0){throw '获取 Secret 列表失败。'}
+ $nodesPlan=Join-Path ([IO.Path]::GetTempPath()) ('gateway-nodes-plan-'+[guid]::NewGuid().ToString('N')+'.json')
+ node scripts/manage-nodes-config.mjs @planArgs @('--existing',$secretsList,'--out',$nodesPlan);if($LASTEXITCODE-ne0){throw '节点配置分片失败。'}
+}
 try{[IO.File]::WriteAllText($temp,($out|ConvertTo-Json -Depth 30),[Text.UTF8Encoding]::new($false));if(-not(Yes(Read-Host '确认覆盖上述 Worker 的运行时配置？[y/N]'))){throw '已取消。'};npx --yes 'wrangler@4.114.0' secret bulk $temp;if($LASTEXITCODE-ne0){throw '配置更新失败。'}}finally{if(Test-Path$temp){Remove-Item$temp-Force};$out.Clear()}
+if($nodesPlan){
+ try{
+  if(-not(Yes(Read-Host '确认写入节点分片并清理多余旧分片/旧单变量？[y/N]'))){throw '已取消节点配置更新。'}
+  $plan=Get-Content $nodesPlan -Raw -Encoding UTF8|ConvertFrom-Json
+  $nodesBulk=Join-Path ([IO.Path]::GetTempPath()) ('gateway-nodes-bulk-'+[guid]::NewGuid().ToString('N')+'.json')
+  [IO.File]::WriteAllText($nodesBulk,($plan.secrets|ConvertTo-Json -Depth 30),[Text.UTF8Encoding]::new($false))
+  npx --yes 'wrangler@4.114.0' secret bulk $nodesBulk;if($LASTEXITCODE-ne0){throw '节点分片写入失败。'}
+  foreach($k in $plan.delete){'y'|npx --yes 'wrangler@4.114.0' 'secret' 'delete' $k|Out-Null;if($LASTEXITCODE-ne0){throw "删除旧 Secret $k 失败。"};Write-Host "已删除旧 Secret：$k"}
+ }finally{
+  foreach($f in @($nodesPlan,$secretsList,$nodesBulk)){if($f -and(Test-Path $f)){Remove-Item $f -Force}}
+ }
+}
 Write-Host '配置已更新。'
 

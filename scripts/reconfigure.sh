@@ -17,8 +17,6 @@ MODEL_MAPPING=""
 if [[ -n "$MODEL_MAPPING_PATH" ]]; then node scripts/validate-model-mapping.mjs "$MODEL_MAPPING_PATH"; MODEL_MAPPING="$(cat "$MODEL_MAPPING_PATH")"; fi
 read -r -p '启用严格模型白名单？[y/N]: ' strict; STRICT=false; yesno "$strict" && STRICT=true
 read -r -p '启用 Fallback？[y/N]: ' fb
-TEMP="$(mktemp "${TMPDIR:-/tmp}/gateway-reconfigure.XXXXXX.json")"; chmod 600 "$TEMP"
-trap 'rm -f "$TEMP"; unset GATEWAY_ACCESS_KEY PRIMARY_API_TOKENS FALLBACK_API_TOKEN' EXIT
 export GATEWAY_ACCESS_KEY PRIMARY_API_TOKENS PRIMARY_BASE_URL MODEL_MAPPING STRICT
 if yesno "$fb"; then
   read -r -s -p 'FALLBACK_API_TOKEN: ' FALLBACK_API_TOKEN; echo
@@ -33,6 +31,32 @@ if yesno "$fb"; then
   FB=true
 else FB=false; fi
 export FB
+
+# ---- 节点配置：统一自动拆分为 TIERx_NODES_CONFIG_01.. 分片，并迁移/清理旧格式 ----
+read -r -p '更新节点配置（TIERx_NODES_CONFIG_XX 分片）？[y/N]: ' updnodes
+NODES_PLAN=""
+SECRETS_LIST=""
+NODES_BULK=""
+if yesno "$updnodes"; then
+  read -r -p 'tier-1 节点配置 JSON 文件路径（必需）: ' TIER1_NODES_FILE
+  [[ -f "$TIER1_NODES_FILE" ]] || fail 'tier-1 节点配置文件不存在。'
+  node scripts/manage-nodes-config.mjs validate --file "$TIER1_NODES_FILE"
+  read -r -p 'tier-2 节点配置 JSON 文件路径（可选，留空跳过）: ' TIER2_NODES_FILE
+  [[ -z "$TIER2_NODES_FILE" || -f "$TIER2_NODES_FILE" ]] || fail 'tier-2 节点配置文件不存在。'
+  [[ -z "$TIER2_NODES_FILE" ]] || node scripts/manage-nodes-config.mjs validate --file "$TIER2_NODES_FILE"
+  read -r -p 'tier-3 节点配置 JSON 文件路径（可选，留空跳过）: ' TIER3_NODES_FILE
+  [[ -z "$TIER3_NODES_FILE" || -f "$TIER3_NODES_FILE" ]] || fail 'tier-3 节点配置文件不存在。'
+  [[ -z "$TIER3_NODES_FILE" ]] || node scripts/manage-nodes-config.mjs validate --file "$TIER3_NODES_FILE"
+  SECRETS_LIST="$(mktemp "${TMPDIR:-/tmp}/gateway-secrets.XXXXXX.json")"; chmod 600 "$SECRETS_LIST"
+  npx --yes wrangler@4.114.0 secret list > "$SECRETS_LIST"
+  NODES_PLAN="$(mktemp "${TMPDIR:-/tmp}/gateway-nodes-plan.XXXXXX.json")"; chmod 600 "$NODES_PLAN"
+  PLAN_ARGS=(plan --tier1 "$TIER1_NODES_FILE" --existing "$SECRETS_LIST" --out "$NODES_PLAN")
+  [[ -n "${TIER2_NODES_FILE:-}" ]] && PLAN_ARGS+=(--tier2 "$TIER2_NODES_FILE")
+  [[ -n "${TIER3_NODES_FILE:-}" ]] && PLAN_ARGS+=(--tier3 "$TIER3_NODES_FILE")
+  node scripts/manage-nodes-config.mjs "${PLAN_ARGS[@]}"
+fi
+TEMP="$(mktemp "${TMPDIR:-/tmp}/gateway-reconfigure.XXXXXX.json")"; chmod 600 "$TEMP"
+trap 'rm -f "$TEMP" "$SECRETS_LIST" "$NODES_PLAN" "$NODES_BULK"; unset GATEWAY_ACCESS_KEY PRIMARY_API_TOKENS FALLBACK_API_TOKEN' EXIT
 node - "$TEMP" <<'NODE'
 import fs from 'node:fs';
 const enabled=process.env.FB==='true';
@@ -57,5 +81,21 @@ NODE
 read -r -p '确认覆盖上述 Worker 的运行时配置？[y/N]: ' confirm
 yesno "$confirm" || fail '已取消。'
 npx --yes wrangler@4.114.0 secret bulk "$TEMP"
+if [[ -n "$NODES_PLAN" ]]; then
+  read -r -p '确认写入节点分片并清理多余旧分片/旧单变量？[y/N]: ' nodesconfirm
+  yesno "$nodesconfirm" || fail '已取消节点配置更新。'
+  NODES_BULK="$(mktemp "${TMPDIR:-/tmp}/gateway-nodes-bulk.XXXXXX.json")"; chmod 600 "$NODES_BULK"
+  node - "$NODES_PLAN" "$NODES_BULK" <<'NODE'
+import fs from 'node:fs';
+const plan=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
+fs.writeFileSync(process.argv[3],JSON.stringify(plan.secrets,null,2));
+NODE
+  npx --yes wrangler@4.114.0 secret bulk "$NODES_BULK"
+  while IFS= read -r KEY; do
+    [[ -n "$KEY" ]] || continue
+    printf 'y\n' | npx --yes wrangler@4.114.0 secret delete "$KEY" >/dev/null || fail "删除旧 Secret ${KEY} 失败。"
+    echo "已删除旧 Secret：${KEY}"
+  done < <(node -e "const fs=require('node:fs');const p=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));for(const k of p.delete)console.log(k)" "$NODES_PLAN")
+fi
 echo '配置已更新；请执行健康检查。'
 

@@ -15,23 +15,22 @@
  *       ↓
  *   Node Scheduler（workload → model → tier → priority → cooldown → circuit → concurrency → health → latency）
  *       ↓
- *   Node Pool (TIER1/TIER2/TIER3_NODES_CONFIG)
+ *   Node Pool (TIER1/TIER2/TIER3_NODES_CONFIG_01.._NN)
  *       ↓
  *   Provider / Account / API Key (token 内嵌在节点中，Token@BaseURL 格式)
  *
  * 部署清单：
  * 1. 将 GATEWAY_ACCESS_KEY 设置为 Secret。
- * 2. 将 TIER1_NODES_CONFIG 设置为 Secret（JSON 数组，token 内嵌）。
+ * 2. 将 TIER1_NODES_CONFIG_01 等分片 Secret 设置好（JSON 数组，token 内嵌）。
  * 3. 为每个节点配置 token 字段（Token@BaseURL 格式）。
  * 4. 可选设置 MODELS_CONFIG 与 POLICIES_CONFIG；未设置时使用默认策略。
  * 5. 部署后使用 GATEWAY_ACCESS_KEY 访问 /health，确认节点状态。
  *
  * 核心配置：
- * - GATEWAY_ACCESS_KEY         : 客户端访问网关的鉴权密钥（必需）
- * - TIER1_NODES_CONFIG         : JSON 数组，tier-1 层节点定义（必需，token 内嵌）
- * - MODELS_CONFIG              : JSON 对象，逻辑模型到 workload/policy 的映射（可选）
- * - POLICIES_CONFIG            : JSON 对象，策略 tiers/max_attempts/retry_budget（可选）
- * - TIER2/TIER3_NODES_CONFIG   : JSON 数组，tier-2/tier-3 层节点（可选）
+ * - GATEWAY_ACCESS_KEY           : 客户端访问网关的鉴权密钥（必需）
+ * - TIERx_NODES_CONFIG_01.._NN   : JSON 数组分片，按层拆分节点定义（必需，token 内嵌）
+ * - MODELS_CONFIG                : JSON 对象，逻辑模型到 workload/policy 的映射（可选）
+ * - POLICIES_CONFIG              : JSON 对象，策略 tiers/max_attempts/retry_budget（可选）
  *
  * 运行保护：
  * - REQUEST_TIMEOUT_MS         : 上游首字节超时；默认 180000，范围 5000-180000
@@ -73,7 +72,7 @@
  */
 
 import { buildRoutePlan, getConfiguredNodes } from './scheduler/router.js';
-import { resolveUpstreamModel } from './config/nodes.js';
+import { resolveUpstreamModel, isNodesConfigBound } from './config/nodes.js';
 import { isCoolingDown as isNodeCoolingDown, isCircuitOpen as isNodeCircuitOpen, getNodeState as getNodeRuntimeState, recordRequestStart as recordNodeStart, recordSuccess as recordNodeSuccess, recordFailure as recordNodeFailure, recordNeutralEnd as recordNodeNeutralEnd, checkCleanup as checkNodeCleanup, nextCooldownMs as nextNodeCooldownMs, getRetryAfterMs } from './config/node-state.js';
 import { recordCircuitFailure, recordCircuitSuccess } from './reliability/circuit.js';
 
@@ -124,7 +123,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     <p style="font-size:14px;color:var(--muted);margin:0 0 16px">按层级分别配置 Secret，每层一个 JSON 数组。节点中的 <code>tier</code> 字段由配置文件名隐含（tier-1 层自动为 tier-1 节点，依此类推）。</p>
 
     <div class="code-editor">
-      <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>TIER1_NODES_CONFIG（token 直接内嵌）</span></div>
+      <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>TIER1_NODES_CONFIG_01（token 直接内嵌）</span></div>
       <pre>[
   // 同一 provider 的多账号
   {"id":"tier-1-node-01","token":"key-1@https://provider-a/v1","models":{"general-air":"model-a","code-pro":"model-a"}},
@@ -135,13 +134,13 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 ]</pre>
     </div>
     <div class="code-editor">
-      <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>TIER2_NODES_CONFIG</span></div>
+      <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>TIER2_NODES_CONFIG_01</span></div>
       <pre>[
   {"id":"tier-2-node-01","token":"sk-zzz@https://provider-d/v1","models":{"code-pro":"model-d"}}
 ]</pre>
     </div>
     <div class="code-editor">
-      <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>TIER3_NODES_CONFIG</span></div>
+      <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>TIER3_NODES_CONFIG_01</span></div>
       <pre>[
   {"id":"tier-3-node-01","token":"sk-www@https://provider-e/v1","models":{"code-max":"model-e"}}
 ]</pre>
@@ -252,7 +251,7 @@ function getDashboardHtml(env) {
 
 function getGatewayConfigurationState(env) {
   const gatewayAccessKeyBound = Boolean(readOptionalEnv(env, 'GATEWAY_ACCESS_KEY'));
-  const nodesConfigBound = Boolean(readOptionalEnv(env, 'TIER1_NODES_CONFIG') || readOptionalEnv(env, 'TIER2_NODES_CONFIG') || readOptionalEnv(env, 'TIER3_NODES_CONFIG'));
+  const nodesConfigBound = isNodesConfigBound(env);
   return {
     ready: gatewayAccessKeyBound && nodesConfigBound,
     gatewayAccessKeyBound,
@@ -285,21 +284,21 @@ function getSetupHtml(configuration) {
   <div class="success">首次部署成功，无需重新修改或上传源代码。</div>
   <div class="list">
     <div class="row"><code>GATEWAY_ACCESS_KEY</code>${status(configuration.gatewayAccessKeyBound)}</div>
-    <div class="row"><code>TIER1_NODES_CONFIG</code>${status(configuration.nodesConfigBound)}</div>
+    <div class="row"><code>TIER1_NODES_CONFIG_01</code>${status(configuration.nodesConfigBound)}</div>
   </div>
   <div class="steps">
     <strong>在 Cloudflare 中完成配置</strong>
-    <p style="font-size:13px;color:var(--muted);margin:5px 0 0">添加以下 5 个 Secret，全部为机密变量，不会出现在代码或日志中。</p>
+    <p style="font-size:13px;color:var(--muted);margin:5px 0 0">添加以下 Secret，全部为机密变量，不会出现在代码或日志中。</p>
     <div class="list" style="margin-top:14px">
       <div class="row"><code>GATEWAY_ACCESS_KEY</code>${status(configuration.gatewayAccessKeyBound)}</div>
-      <div class="row"><code>TIER1_NODES_CONFIG</code>${status(configuration.nodesConfigBound)}</div>
+      <div class="row"><code>TIER1_NODES_CONFIG_01</code>${status(configuration.nodesConfigBound)}</div>
           </div>
     <div class="code-editor" style="margin:16px 0 0">
       <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>GATEWAY_ACCESS_KEY</span></div>
       <pre><span class="str">your-random-access-key-here</span></pre>
     </div>
     <div class="code-editor">
-      <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>TIER1_NODES_CONFIG（token 内嵌在配置中）</span></div>
+      <div class="code-header"><i class="mac-dot dot-r"></i><i class="mac-dot dot-y"></i><i class="mac-dot dot-g"></i><span>TIER1_NODES_CONFIG_01（token 内嵌在配置中）</span></div>
       <pre>[
   // 同一 provider 多账号
   {"id":"tier-1-node-01","token":"key-1@https://provider-a/v1","models":{"general-air":"model"}},
@@ -308,7 +307,7 @@ function getSetupHtml(configuration) {
   {"id":"tier-1-node-03","token":"sk-xxx@https://provider-b/v1","models":{"code-pro":"model"}}
 ]</pre>
     </div>
-    <p style="font-size:12px;color:var(--muted);margin-top:12px;line-height:1.6">可选：<code>TIER2_NODES_CONFIG</code> + <code>TIER3_NODES_CONFIG</code> 增加更多层级；<code>MODELS_CONFIG</code> 定义逻辑模型映射；<code>POLICIES_CONFIG</code> 控制重试预算。保存后页面自动刷新。</p>
+    <p style="font-size:12px;color:var(--muted);margin-top:12px;line-height:1.6">可选：<code>TIER2_NODES_CONFIG_01</code> + <code>TIER3_NODES_CONFIG_01</code> 增加更多层级；配置较大时自动拆分为 <code>_02 / _03 ...</code> 分片；<code>MODELS_CONFIG</code> 定义逻辑模型映射；<code>POLICIES_CONFIG</code> 控制重试预算。保存后页面自动刷新。</p>
     </div>
   </div>
   <p class="note">页面只显示是否已绑定，不会读取或显示 Secret 内容。</p>
@@ -568,7 +567,7 @@ async function handleRequest(request, env, ctx) {
     const configuredNodes = getConfiguredNodes(env);
     if (configuredNodes.length === 0) {
       return gatewayError(request, env, isAnthropicClient, 500,
-        'Gateway misconfigured: TIER1_NODES_CONFIG is missing or no valid node tokens are bound.',
+        'Gateway misconfigured: TIER1_NODES_CONFIG_01 is missing or no valid node tokens are bound.',
         undefined, requestId);
     }
 
@@ -986,7 +985,7 @@ async function handleRequest(request, env, ctx) {
       requested_model: requestedModel,
       hint: route === 'anthropic_messages'
         ? 'The gateway converted /v1/messages to /v1/chat/completions. Node candidates were attempted in policy tier order.'
-        : 'Inspect attempts[] and verify TIER1_NODES_CONFIG, node health, and policy retry_budget.',
+        : 'Inspect attempts[] and verify TIERx_NODES_CONFIG_XX shards, node health, and policy retry_budget.',
       nodes_total: configuredNodes.length,
       tiers: {
         'tier-1': configuredNodes.filter(n => n.tier === 'tier-1').length,

@@ -5,39 +5,24 @@ GATEWAY_ACCESS_KEY="replace-with-a-long-random-key"
 
 # ============ Node Scheduler 配置（必需） ============
 # 按优先级顺序配置，tier-1 优先、tier-2、tier-3。
-# 每层为一个 JSON 数组。token 直接内嵌在节点配置中（Token@BaseURL 格式）。
+# 每层为一个 JSON 数组分片（固定两位编号 _01..，按完整 Node 边界自动拆分）。
+# token 直接内嵌在节点配置中（Token@BaseURL 格式）。
 
 # tier-1 层节点（默认优先）
-TIER1_NODES_CONFIG='[{"id":"tier-1-node-01","token":"sk-xxx@https://tier-1-provider/v1","models":{"general-air":"model-air"}}]'
+TIER1_NODES_CONFIG_01='[{"id":"tier-1-node-01","token":"sk-xxx@https://tier-1-provider/v1","models":{"general-air":"model-air"}}]'
+
+# 配置较大时编号依次递增：
+# TIER1_NODES_CONFIG_02='[{"id":"tier-1-node-02","token":"sk-yyy@https://tier-1-provider/v1","models":{"general-air":"model-air"}}]'
 
 # tier-2 层节点（可选）
-# TIER2_NODES_CONFIG='[{"id":"tier-2-node-01","token":"sk-yyy@https://tier-2-provider/v1","models":{"code-pro":"model-pro"}}]'
+# TIER2_NODES_CONFIG_01='[{"id":"tier-2-node-01","token":"sk-yyy@https://tier-2-provider/v1","models":{"code-pro":"model-pro"}}]'
 
 # tier-3 层节点（可选）
-# TIER3_NODES_CONFIG='[{"id":"tier-3-node-01","token":"sk-zzz@https://tier-3-provider/v1","models":{"code-max":"model-max"}}]'
+# TIER3_NODES_CONFIG_01='[{"id":"tier-3-node-01","token":"sk-zzz@https://tier-3-provider/v1","models":{"code-max":"model-max"}}]'
 
 # 可选：逻辑模型映射与策略。
 # MODELS_CONFIG='{"general-air":{"workload":"general","policy":"general-fast"}}'
 # POLICIES_CONFIG='{"general-fast":{"tiers":["tier-1","tier-2"],"max_attempts":3,"retry_budget":{"tier-1":2,"tier-2":1}}}'
-
-# 默认安全策略。
-ALLOW_UNSAFE_PROXY_ROUTES="false"
-ALLOW_INSECURE_HTTP_UPSTREAM="false"
-EXPOSE_UPSTREAM_INFO="false"
-FAKE_STREAM_PROTECTION="false"
-
-# 超时拆分。
-UPSTREAM_HEADERS_TIMEOUT="30000"
-FIRST_EVENT_TIMEOUT="60000"
-STREAM_IDLE_TIMEOUT="120000"
-
-# 其他。
-MODEL_LIST_TIMEOUT_MS="5000"
-LOG_LEVEL="info"
-
-# 可选：逻辑模型映射与策略。
-# MODELS_CONFIG='{"general-air":{"workload":"general","policy":"general-fast"}}'
-# POLICIES_CONFIG='{"general-fast":{"tiers":["free","paid"],"max_attempts":3,"retry_budget":{"free":2,"paid":1}}}'
 
 # 默认安全策略。
 ALLOW_UNSAFE_PROXY_ROUTES="false"

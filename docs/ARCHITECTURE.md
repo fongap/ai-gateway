@@ -9,7 +9,7 @@ Policy (POLICIES_CONFIG)
     ↓
 Node Scheduler
     ↓
-Node Pool (TIER1/TIER2/TIER3_NODES_CONFIG)
+Node Pool (TIER1/TIER2/TIER3_NODES_CONFIG_01..)
     ↓
 Provider / Account / API Key
 ```
@@ -28,15 +28,15 @@ Model resolution (logical model → workload + policy)
            v
 Node Scheduler (tier order → priority → health → latency)
            |
-     free-node pool  (first)
+     tier-1 pool  (first)
            |
        exhausted / failed
            v
-     paid-node pool
+     tier-2 pool
            |
        exhausted / failed
            v
-     plus-node pool
+     tier-3 pool
 ```
 
 ## 核心抽象：Node
@@ -56,11 +56,11 @@ Node 是唯一调度单位。API Key、Token、Provider 都隐藏在 Node 之后
 
 | 层级 | 特点 | 默认用途 |
 |------|------|----------|
-| `free-node` | 成本最低，稳定性不确定 | 默认优先 |
-| `paid-node` | 稳定性较高 | 主要 fallback |
-| `plus-node` | 最高可靠性 | 关键任务、Coding 长任务 |
+| `tier-1` | 成本最低，稳定性不确定 | 默认优先 |
+| `tier-2` | 稳定性较高 | 主要 fallback |
+| `tier-3` | 最高可靠性 | 关键任务、Coding 长任务 |
 
-默认顺序 `tier-1 → tier-2 → tier-3`。禁止 paid/plus 抢占 free。Critical 任务通过策略反转为 `plus → paid → free`。
+默认顺序 `tier-1 → tier-2 → tier-3`。禁止高层级抢占 tier-1。Critical 任务通过策略反转为 `tier-3 → tier-2 → tier-1`。
 
 ## Scheduler 选择流程
 
@@ -96,7 +96,7 @@ recent429s, recent503s, avgLatency, circuitState
 429 视为 Node 级限制：
 
 ```text
-free-node-01 429 → cooldown → free-node-02 → free-node-03
+tier-1-node-01 429 → cooldown → tier-1-node-02 → tier-1-node-03
 ```
 
 不整个 Provider 禁用。支持 Retry-After 头。禁止 sleep。
@@ -126,8 +126,8 @@ upstream response → 等待第一个有效 event → 确认成功 → 提交客
 
 分层预算限制，总计不超过 5 次，避免 retry storm：
 
-| Workload | free | paid | plus |
-|----------|------|------|------|
+| Workload | tier-1 | tier-2 | tier-3 |
+|----------|--------|--------|--------|
 | General | ≤2 | ≤1 | - |
 | Coding | ≤2 | ≤1 | ≤1 |
 

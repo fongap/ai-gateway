@@ -1,6 +1,6 @@
 # 配置说明 / Configuration
 
-网关以 Node Scheduler 为核心，通过 `TIER1_NODES_CONFIG` + `MODELS_CONFIG` + `POLICIES_CONFIG` 三个 JSON Secret 定义三层节点池（tier-1 / tier-2 / tier-3）。不依赖任何旧版 API 转发配置。
+网关以 Node Scheduler 为核心，通过 `TIER1_NODES_CONFIG_01..` 分片 + `MODELS_CONFIG` + `POLICIES_CONFIG` 等 JSON Secret 定义三层节点池（tier-1 / tier-2 / tier-3）。不依赖任何旧版 API 转发配置。
 
 ## 鉴权
 
@@ -24,21 +24,32 @@ x-api-key: <GATEWAY_ACCESS_KEY>
 
 # 一、核心配置
 
-## `TIER1_NODES_CONFIG`
+## 节点配置分片：`TIERx_NODES_CONFIG_01..`
 
-JSON 数组，定义全部调度节点。每个节点字段：
+每层节点的完整 JSON 数组由脚本按**完整 Node 边界**自动拆分为固定两位编号的分片，每个分片不超过 4500 bytes，且本身是完整合法的 JSON Array：
+
+```text
+TIER1_NODES_CONFIG_01
+TIER2_NODES_CONFIG_01
+TIER3_NODES_CONFIG_01
+```
+
+节点较多时编号依次递增（`_02`、`_03` …），运行时按数值顺序加载并透明合并为一个统一的层节点池。即使某一层只有一个很小的 Node，也使用 `_01`。禁止使用无后缀的 `TIERx_NODES_CONFIG` 或 `_1`、`_001` 等非法编号。
+
+分片只解决 Cloudflare Worker 单个 Secret 的大小限制，不影响 tier、provider、priority、models、token/Base URL、并发、冷却、熔断、重试预算、健康分、failover 与 Scheduler 的任何语义。
+
+每个节点字段：
 
 | 字段 | 必需 | 说明 |
 |------|------|------|
 | `id` | 是 | 节点 ID，推荐格式 `{tier}-node-{number}`，如 `tier-1-node-01` |
-| `tier` | 是 | `free` / `paid` / `plus` 三层之一 |
-| `models` | 否 | 逻辑模型到实际上游模型名的映射对象；为空时同名透传 |
+| `tier` | 否 | `tier-1` / `tier-2` / `tier-3` 之一；缺省由所在分片隐含 |
 | `models` | 否 | 逻辑模型到实际上游模型名的映射对象；为空时同名透传 |
 | `priority` | 否 | 可选，数值越小越优先；默认 100 |
 | `provider` | 否 | 可选，服务商标识，仅用于诊断展示 |
 | `limits.concurrency` | 否 | 可选，单节点并发上限；默认 2 |
 
-示例（保存为 Secret `TIER1_NODES_CONFIG`）：
+示例（保存为 Secret `TIER1_NODES_CONFIG_01`）：
 
 ```json
 [
@@ -52,23 +63,21 @@ JSON 数组，定义全部调度节点。每个节点字段：
     }
   },
   {
-    "id": "tier-2-node-01",
-    "tier": "tier-2",
+    "id": "tier-1-node-02",
+    "tier": "tier-1",
     "token": "sk-yyy@https://provider-b/v1",
     "models": {
-      "code-pro": "tier-2-provider/code-pro"
-    }
-  },
-  {
-    "id": "tier-3-node-01",
-    "tier": "tier-3",
-    "token": "sk-zzz@https://provider-c/v1",
-    "models": {
-      "code-max": "tier-3-provider/code-max"
+      "general-air": "provider-b/model-air"
     }
   }
 ]
 ```
+
+tier-2 / tier-3 使用完全相同的机制（`TIER2_NODES_CONFIG_01..` / `TIER3_NODES_CONFIG_01..`）。
+
+### 旧格式迁移
+
+早期版本使用无后缀单变量（`TIER1_NODES_CONFIG` 等）。新版本运行时会暂时兼容读取旧变量，但新部署禁止创建旧变量；`scripts/reconfigure` 重新配置节点后即迁移到 `_01/_02/...` 分片，并在写入成功后自动删除旧的无后缀变量与不再需要的多余分片。
 
 完整示例见 [../config/nodes.example.json](../config/nodes.example.json)。
 
@@ -83,7 +92,7 @@ JSON 数组，定义全部调度节点。每个节点字段：
 
 ## `MODELS_CONFIG`
 
-JSON 对象，定义客户端可见的逻辑模型。客户端只使用这些模型名，真实 Provider 模型名不暴露（由 `TIER1_NODES_CONFIG.models` 映射）。
+JSON 对象，定义客户端可见的逻辑模型。客户端只使用这些模型名，真实 Provider 模型名不暴露（由节点配置中的 `models` 映射）。
 
 每个模型字段：
 
@@ -116,7 +125,7 @@ JSON 对象，定义各策略如何选择节点层级。
 |------|------|
 | `tiers` | 层级尝试顺序，如 `["tier-1","tier-2","tier-3"]` |
 | `max_attempts` | 单次请求最大尝试数，范围 1–5 |
-| `retry_budget` | 各层级的尝试预算 `{ free, paid, plus }` |
+| `retry_budget` | 各层级的尝试预算，键为 `tier-1` / `tier-2` / `tier-3` |
 
 示例（保存为 Secret `POLICIES_CONFIG`）：
 
@@ -148,11 +157,11 @@ JSON 对象，定义各策略如何选择节点层级。
 
 | 层级 | 特点 | 默认用途 |
 |------|------|----------|
-| `free-node` | 稳定性不确定，tier-1 优先 | 默认优先 |
-| `paid-node` | 稳定性较高，tier-2 回退 | 主要 fallback |
-| `plus-node` | 最高可靠性，tier-3 保底 | 关键任务、Coding 长任务使用 tier-3 |
+| `tier-1` | 稳定性不确定，免费资源优先 | 默认优先 |
+| `tier-2` | 稳定性较高，付费回退 | 主要 fallback |
+| `tier-3` | 最高可靠性，保底层 | 关键任务、Coding 长任务 |
 
-默认调度顺序为 `tier-1 → tier-2 → tier-3`。禁止因为 paid/plus 更快而自动抢占 free。Critical 任务可通过策略反转为 `plus → paid → free`。
+默认调度顺序为 `tier-1 → tier-2 → tier-3`。禁止因为 tier-2/tier-3 更快而自动抢占 tier-1。Critical 任务可通过策略反转为 `tier-3 → tier-2 → tier-1`。
 
 ## 调度排序依据
 
@@ -252,7 +261,7 @@ OpenAI 与 Anthropic 接口要求 `Content-Type: application/json`。除 `Conten
 
 ## 模型列表
 
-`/v1/models` 返回 `TIER1_NODES_CONFIG` 中所有节点声明过的逻辑模型并集，按名称排序。不会查询或暴露任何上游真实模型目录，也不暴露上游地址。
+`/v1/models` 返回所有节点分片（`TIERx_NODES_CONFIG_XX`）中声明的逻辑模型并集，按名称排序。不会查询或暴露任何上游真实模型目录，也不暴露上游地址。
 
 | 变量 | 默认值 | 说明 |
 |---|---:|---|
@@ -297,7 +306,7 @@ CACHE_MAX_BODY_BYTES
 
 ### `/version`
 
-公开端点，返回项目版本及配置就绪状态（是否已绑定 `GATEWAY_ACCESS_KEY` 与 `TIER1_NODES_CONFIG`）。只返回布尔值，不返回 Secret 内容。
+公开端点，返回项目版本及配置就绪状态（是否已绑定 `GATEWAY_ACCESS_KEY` 与任一 `TIERx_NODES_CONFIG_XX` 节点分片或旧版单变量）。只返回布尔值，不返回 Secret 内容。
 
 ### `/health`
 

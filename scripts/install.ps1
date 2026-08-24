@@ -37,13 +37,32 @@ if(Confirm-Yes (Read-Host '配置 Fallback？[y/N]')){
  $env:FALLBACK_API_TOKEN=$secrets.FALLBACK_API_TOKEN;$env:FALLBACK_BASE_URL=$secrets.FALLBACK_BASE_URL;$env:FALLBACK_PRIMARY_MODEL=$secrets.FALLBACK_PRIMARY_MODEL;$env:FALLBACK_SECONDARY_MODEL=$secrets.FALLBACK_SECONDARY_MODEL
  try{node scripts/validate-fallback-config.mjs;if($LASTEXITCODE-ne0){throw 'Fallback 配置无效。'}}finally{Remove-Item Env:FALLBACK_API_TOKEN,Env:FALLBACK_BASE_URL,Env:FALLBACK_PRIMARY_MODEL,Env:FALLBACK_SECONDARY_MODEL -ErrorAction SilentlyContinue}
 }
+$tier1File=(Read-Host 'tier-1 节点配置 JSON 文件路径（必需）').Trim()
+if(!$tier1File -or !(Test-Path $tier1File)){throw 'tier-1 节点配置文件不存在。'}
+node scripts/manage-nodes-config.mjs validate --file $tier1File;if($LASTEXITCODE-ne0){throw 'tier-1 节点配置无效。'}
+$tierFiles=@{}
+$tierFiles[1]=$tier1File
+foreach($n in 2,3){
+ $p=(Read-Host "tier-$n 节点配置 JSON 文件路径（可选，留空跳过）").Trim()
+ if($p){
+  if(!(Test-Path $p)){throw "tier-$n 节点配置文件不存在。"}
+  node scripts/manage-nodes-config.mjs validate --file $p;if($LASTEXITCODE-ne0){throw "tier-$n 节点配置无效。"}
+  $tierFiles[$n]=$p
+ }
+}
 $secrets.FAKE_STREAM_PROTECTION='false';$secrets.ALLOW_UNSAFE_PROXY_ROUTES='false';$secrets.ALLOW_INSECURE_HTTP_UPSTREAM='false';$secrets.EXPOSE_UPSTREAM_INFO='false'
 $temp=Join-Path ([IO.Path]::GetTempPath()) ('gateway-install-'+[guid]::NewGuid().ToString('N')+'.json')
+# 按完整 Node 边界自动拆分为 TIERx_NODES_CONFIG_01.. 分片（三个 Tier 共用同一套分片函数）。
+$nodesPlan=Join-Path ([IO.Path]::GetTempPath()) ('gateway-install-nodes-'+[guid]::NewGuid().ToString('N')+'.json')
 try{
+ $planArgs=@('plan','--tier1',$tier1File,'--out',$nodesPlan)
+ foreach($n in 2,3){if($tierFiles[$n]){$planArgs+=@("--tier$n",$tierFiles[$n])}}
+ node scripts/manage-nodes-config.mjs @planArgs;if($LASTEXITCODE-ne0){throw '节点配置分片失败。'}
+ foreach($prop in ((Get-Content $nodesPlan -Raw -Encoding UTF8|ConvertFrom-Json).secrets.PSObject.Properties)){$secrets[$prop.Name]=$prop.Value}
  [IO.File]::WriteAllText($temp,($secrets|ConvertTo-Json -Depth 30),[Text.UTF8Encoding]::new($false))
  Write-Host "将首次部署 Worker：$workerName";if(-not(Confirm-Yes (Read-Host '确认继续？[y/N]'))){throw '已取消。'}
  Invoke-Wrangler @('deploy','--keep-vars','--secrets-file',$temp)
-}finally{if(Test-Path $temp){Remove-Item $temp -Force};$secrets.Clear()}
+}finally{if(Test-Path $temp){Remove-Item $temp -Force};if(Test-Path $nodesPlan){Remove-Item $nodesPlan -Force};$secrets.Clear()}
 $url=(Read-Host '部署后的网关 URL（留空跳过验证）').Trim()
 if($url){
  $uri=$null;if(-not[Uri]::TryCreate($url,[UriKind]::Absolute,[ref]$uri)-or$uri.Scheme-ne'https'){throw '网关 URL 必须为完整 HTTPS 地址。'}

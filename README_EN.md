@@ -9,7 +9,7 @@
 [![License](https://img.shields.io/badge/license-MIT-2ea44f)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-43853d?logo=node.js&logoColor=white)](package.json)
 
-A personal AI agent resource scheduling layer running on Cloudflare Workers. It manages multiple AI providers through a `free-node / paid-node / plus-node` three-tier node model, giving Coding Agents, office Agents, and local AI apps a low-cost, reliable entry point with automatic failover.
+A personal AI agent resource scheduling layer running on Cloudflare Workers. It manages multiple AI providers through a `tier-1 / tier-2 / tier-3` three-tier node model, giving Coding Agents, office Agents, and local AI apps a low-cost, reliable entry point with automatic failover.
 
 - OpenAI Chat Completions: `/v1/chat/completions`
 - Anthropic Messages / Claude Code: `/v1/messages`
@@ -37,20 +37,20 @@ Policy (POLICIES_CONFIG)
     ↓
 Node Scheduler
     ↓
-Node Pool (TIER1_NODES_CONFIG)
+Node Pool (TIER1_NODES_CONFIG_01..)
     ↓
 Provider / Account / API Key
 ```
 
 ### Three-tier Node Pool
 
-| Tier | Name | Traits | Default role |
-|------|------|--------|--------------|
-| `free-node` | Free pool | Lowest cost, uncertain stability | First choice |
-| `paid-node` | Paid pool | Higher stability | Main fallback |
-| `plus-node` | Plus pool | Highest reliability, highest cost | Critical tasks, long coding runs |
+| Tier | Positioning | Traits | Default role |
+|------|-------------|--------|--------------|
+| `tier-1` | Free pool | Lowest cost, uncertain stability | First choice |
+| `tier-2` | Paid pool | Higher stability | Main fallback |
+| `tier-3` | Plus pool | Highest reliability, highest cost | Critical tasks, long coding runs |
 
-Default order: `tier-1 → tier-2 → tier-3`. Paid/plus nodes never preempt free nodes by being faster. Critical tasks can reverse the order via policy (`plus → paid → free`).
+Default order: `tier-1 → tier-2 → tier-3`. Higher-tier nodes never preempt tier-1 nodes by being faster. Critical tasks can reverse the order via policy (`tier-3 → tier-2 → tier-1`).
 
 ### Code structure
 
@@ -85,7 +85,7 @@ src/
 - Lightweight circuit breaker for 503/502/504 after 3 consecutive failures;
 - First Event Guard: streaming failover allowed before the first valid event, forbidden after it;
 - Split timeouts: `UPSTREAM_HEADERS_TIMEOUT` / `FIRST_EVENT_TIMEOUT` / `STREAM_IDLE_TIMEOUT`;
-- Retry budget: free ≤2, paid ≤1, plus ≤1, total ≤5;
+- Retry budget: tier-1 ≤2, tier-2 ≤1, tier-3 ≤1, total ≤5;
 - Client cancellation does not penalize node health;
 - Per-host model aliases, capabilities, and independent `invoke_url` values;
 - Non-streaming and streaming conversion, images, and tool calls;
@@ -114,7 +114,7 @@ chmod +x scripts/*.sh
 ./scripts/install.sh
 ```
 
-The install script checks Node.js, runs full tests and Wrangler dry-run, confirms your Cloudflare account, validates configuration, deploys code and Secrets via restricted temporary files, and optionally verifies online endpoints. Temporary files are removed afterwards. Real credentials are never written to the repository.
+The install script checks Node.js, runs full tests and Wrangler dry-run, confirms your Cloudflare account, validates configuration, auto-shards node configs at full node boundaries (`TIER1_NODES_CONFIG_01..`), deploys code and Secrets via restricted temporary files, and optionally verifies online endpoints. Temporary files are removed afterwards. Real credentials are never written to the repository.
 
 ### Updating an existing Worker
 
@@ -156,7 +156,7 @@ Non-production deploy command: npx wrangler versions upload
 
 5. Click **Save and Deploy** for the first deployment;
 6. Visit `https://YOUR-WORKER.workers.dev/` — you will see the setup page;
-7. Add `GATEWAY_ACCESS_KEY` and `TIER1_NODES_CONFIG` as Secrets in **Settings → Variables and Secrets**, then click Deploy;
+7. Add `GATEWAY_ACCESS_KEY` and `TIER1_NODES_CONFIG_01` as Secrets in **Settings → Variables and Secrets**, then click Deploy;
 8. The page auto-refreshes within 5 seconds once configuration is ready.
 
 Multiple Workers can share one repository; each Worker keeps its own Secrets independently.
@@ -165,26 +165,35 @@ See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for details.
 
 ## Configuration
 
-### Configuration
-
-Configure three JSON Secrets:
+Configure JSON Secrets. Node configs are split into fixed two-digit numbered shards (each ≤4500 bytes, auto-split at full node boundaries):
 
 | Variable | Purpose |
 |----------|---------|
-| `TIER1_NODES_CONFIG` | JSON array, tier-1 nodes (token embedded) |
+| `TIER1_NODES_CONFIG_01` | tier-1 node definition shard 1 (token embedded) |
+| `TIER1_NODES_CONFIG_02` ... | Further tier-1 shards when nodes are many, consecutive numbering |
+| `TIER2_NODES_CONFIG_01` ... | tier-2 node definition shards (optional) |
+| `TIER3_NODES_CONFIG_01` ... | tier-3 node definition shards (optional) |
 | `MODELS_CONFIG` | JSON object mapping logical models to workload/policy |
 | `POLICIES_CONFIG` | JSON object defining policies |
-| `TIER1_NODES_CONFIG` etc. | Per-tier config, `token` embedded in each node |
 
-**TIER1_NODES_CONFIG example:**
+**TIER1_NODES_CONFIG_01 example:**
 
 ```json
 [
-  {"id":"tier-1-node-01","tier":"tier-1","token":"sk-xxx@https://provider-a/v1","models":{"general-air":"tier-1-provider/model-air","code-pro":"tier-1-provider/code-pro"}},
-  {"id":"tier-2-node-01","tier":"tier-2","token":"sk-yyy@https://provider-b/v1","models":{"code-pro":"tier-2-provider/code-pro"}},
-  {"id":"tier-3-node-01","tier":"tier-3","token":"sk-zzz@https://provider-c/v1","models":{"code-max":"tier-3-provider/code-max"}}
+  {"id":"tier-1-node-01","tier":"tier-1","token":"sk-xxx@https://provider-a/v1","models":{"general-air":"tier-1-provider/model-air","code-pro":"tier-1-provider/code-pro"}}
 ]
 ```
+
+Larger configs are automatically split by the install script at full node boundaries:
+
+```text
+TIER1_NODES_CONFIG_01
+TIER1_NODES_CONFIG_02
+TIER1_NODES_CONFIG_03
+...
+```
+
+At runtime the shards are loaded in numeric order and transparently merged into one unified node pool — without affecting tier, provider, priority, models, concurrency, cooldown, circuit breaker, retry budget, or any other scheduling semantics.
 
 **MODELS_CONFIG example:**
 
@@ -275,8 +284,8 @@ HTTP 200 does not mean success for streaming requests. The gateway waits for the
 
 ### Retry budget
 
-| Workload | free | paid | plus | Total |
-|----------|------|------|------|-------|
+| Workload | tier-1 | tier-2 | tier-3 | Total |
+|----------|--------|--------|--------|-------|
 | General | ≤2 | ≤1 | – | ≤3 |
 | Coding | ≤2 | ≤1 | ≤1 | ≤4 |
 
@@ -296,6 +305,7 @@ Verification includes:
 - Version consistency;
 - Markdown local links;
 - Dashboard, `/version`, `/v1/models`, `/health`, `/metrics` smoke tests;
+- Node config shard tests (multi-shard per tier, numeric ordering, corrupted shard isolation, duplicate ID detection, 8/20 KB auto-splitting, legacy migration, etc.);
 - Node Scheduler tests (12 cases);
 - Reliability tests (12 cases: 429 cooldown, 503 circuit, Retry-After, retry budget, timeout splitting, client abort, etc.);
 - Common secret format scanning.
