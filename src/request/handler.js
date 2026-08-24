@@ -597,25 +597,14 @@ function buildExhaustedResponse(request, env, route, requestId, requestedModel, 
     }
   }
 
-  return new Response(JSON.stringify({
-    error: {
-      message,
-      details: {
-        attempts: state.attempts,
-        requested_model: requestedModel,
-        nodes_total: Object.values(tiers).flat().length,
-      },
-    },
-  }), {
-    status,
-    headers: {
-      'content-type': 'application/json;charset=UTF-8',
-      'cache-control': 'no-store',
-      'x-request-id': requestId,
-      ...(retryAfterSec ? { 'retry-after': String(retryAfterSec) } : {}),
-      ...corsHeaders(request, env),
-    },
-  });
+  const details = {
+    attempts: state.attempts,
+    requested_model: requestedModel,
+    nodes_total: Object.values(tiers).flat().length,
+  };
+  // Route-aware body: Anthropic clients must receive Anthropic-shaped errors.
+  return gatewayError(request, env, route, status, message, requestId, details,
+    retryAfterSec ? { 'retry-after': String(retryAfterSec) } : undefined);
 }
 
 function buildClientErrorResponse(request, env, route, requestId, requestedModel, status, errorText, state) {

@@ -73,8 +73,10 @@ export function pickCandidate(tierNodes, requestedModel, attempted, now = Date.n
 }
 
 // True when this tier could serve the model if it had capacity right now
-// (every candidate busy at its concurrency limit or soft-RPM capped).
-// Used to distinguish "saturated" from "cooling down" in client responses.
+// (every candidate busy at its concurrency limit). Used to distinguish
+// "saturated" from "cooling down" in client responses. RPM is intentionally
+// not considered here: it is a soft cap and can never by itself make
+// pickCandidate return null.
 export function tierHasDeferredCapacity(tierNodes, requestedModel, attempted, now = Date.now()) {
   for (const node of tierNodes) {
     if (attempted.has(node.id)) continue;
@@ -82,7 +84,6 @@ export function tierHasDeferredCapacity(tierNodes, requestedModel, attempted, no
     if (peekAvailability(node.id, now) === 'no') continue;
     const s = getNodeState(node.id);
     if (s.activeRequests >= node.limits.concurrency) return true;
-    if (!underRpmCap(node, now)) return true;
   }
   return false;
 }

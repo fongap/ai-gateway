@@ -286,6 +286,27 @@ await test('saturation returns 503 with Retry-After instead of bare 429', async 
   assert.equal(second.headers.get('retry-after'), '1');
 });
 
+await test('anthropic-route exhaustion errors are Anthropic-shaped', async () => {
+  resetMock();
+  routeHandlers['anx.example.com'] = () => jsonUpstream({}, 429, { 'retry-after': '30' });
+  const env = makeEnv({ tier1: [basicNode('anx')], secrets: { anx: 'k' } });
+  // First request cools the only node; second hits the exhausted path.
+  await worker.fetch(new Request('https://gateway.example.com/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': ACCESS_KEY },
+    body: JSON.stringify({ model: 'general-air', max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] }),
+  }), env, {});
+  const res = await worker.fetch(new Request('https://gateway.example.com/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': ACCESS_KEY },
+    body: JSON.stringify({ model: 'general-air', max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] }),
+  }), env, {});
+  assert.equal(res.status, 429);
+  const body = await res.json();
+  assert.equal(body.type, 'error');
+  assert.equal(body.error.type, 'rate_limit_error');
+});
+
 // ---- 429 / Retry-After -----------------------------------------------------
 
 await test('429 isolates the node; same-tier B serves; tier-2 untouched', async () => {
