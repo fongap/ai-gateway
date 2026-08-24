@@ -64,6 +64,10 @@ function buildConfig(env) {
       accessKeyBound,
       nodes: [],
       tiers: { 1: [], 2: [], 3: [] },
+      bindings: {
+        tierShards: tierShards.map((s) => s.key).sort(),
+        secretShards: secretShards.map((s) => s.key).sort(),
+      },
       nodesTotal: nodesDeclared,
       nodesUsable: 0,
       diagnostics,
@@ -144,6 +148,10 @@ function buildConfig(env) {
     accessKeyBound,
     nodes,
     tiers,
+    bindings: {
+      tierShards: sortedTierShards.map((s) => s.key),
+      secretShards: sortedSecretShards.map((s) => s.key),
+    },
     nodesTotal: nodesDeclared,
     nodesUsable: nodes.length,
     diagnostics,

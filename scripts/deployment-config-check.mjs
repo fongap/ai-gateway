@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assertNodesArray, assertSecretsObject, buildPlan, parseJsonFile } from './nodes-shard.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
@@ -55,6 +56,26 @@ const releaseSource = read('scripts/prepare-release.mjs');
 for (const token of ['.wrangler-dry-run', 'node_modules', 'release']) {
   assert.match(releaseSource, new RegExp(token.replace(/[.*+?${}()|[\]\\]/g, '\\$&')), `Release staging must exclude ${token}`);
 }
+
+// The shipped config/ examples must always be valid new-schema configs and
+// demonstrate the intended multi-key / multi-account / multi-model layout.
+const configDir = path.join(root, 'config');
+const tier1 = parseJsonFile(path.join(configDir, 'tier1-nodes.example.json'));
+const tier2 = parseJsonFile(path.join(configDir, 'tier2-nodes.example.json'));
+const secrets = parseJsonFile(path.join(configDir, 'node-secrets.example.json'));
+assertNodesArray(tier1, 'config/tier1-nodes.example.json');
+assertNodesArray(tier2, 'config/tier2-nodes.example.json');
+assertSecretsObject(secrets, 'config/node-secrets.example.json');
+buildPlan({ tiers: { 1: tier1, 2: tier2 }, secretsMap: secrets });
+assert.ok(tier1.length >= 2, 'tier-1 example must demonstrate multiple keys');
+assert.ok(
+  new Set(tier1.map((n) => n.provider)).size >= 2 || new Set(tier1.map((n) => n.priority)).size >= 2,
+  'tier-1 example must demonstrate multiple providers or preference levels',
+);
+const logicalModels = new Set(tier1.flatMap((n) => Object.keys(n.models || {})));
+assert.ok(logicalModels.size >= 2, 'tier-1 example must demonstrate multiple logical models');
+JSON.parse(fs.readFileSync(path.join(configDir, 'models.example.json'), 'utf8'));
+JSON.parse(fs.readFileSync(path.join(configDir, 'policies.example.json'), 'utf8'));
 
 // Source tree must not contain legacy concepts.
 const srcFiles = [];

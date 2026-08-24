@@ -1,28 +1,4 @@
 {
-  "general-fast": {
-    "tiers": ["tier-1", "tier-2"],
-    "max_attempts": 3,
-    "retry_budget": {
-      "tier-1": 2,
-      "tier-2": 1
-    }
-  },
-  "coding-stable": {
-    "tiers": ["tier-1", "tier-2", "tier-3"],
-    "max_attempts": 4,
-    "retry_budget": {
-      "tier-1": 2,
-      "tier-2": 1,
-      "tier-3": 1
-    }
-  },
-  "critical-only": {
-    "tiers": ["tier-3", "tier-2", "tier-1"],
-    "max_attempts": 3,
-    "retry_budget": {
-      "tier-3": 1,
-      "tier-2": 1,
-      "tier-1": 1
-    }
-  }
+  "fast": { "max_attempts": 5 },
+  "stable": { "max_attempts": 3 }
 }

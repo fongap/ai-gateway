@@ -682,5 +682,39 @@ await test('unconfigured gateway reports invalid/unconfigured states', async () 
   assert.equal(body.error.details.configuration_status, 'unconfigured');
 });
 
+await test('setup page shows real binding state and diagnostics', async () => {
+  resetMock();
+  // tier-1 bound but its node has no credential: page must say exactly that.
+  const env = {
+    GATEWAY_ACCESS_KEY: ACCESS_KEY,
+    TIER1_NODES_CONFIG_01: JSON.stringify([basicNode('half')]),
+    // NODE_SECRETS missing entirely
+  };
+  const res = await worker.fetch(new Request('https://gateway.example.com/', {
+    headers: { accept: 'text/html' },
+  }), env, {});
+  assert.equal(res.status, 200);
+  const html = await res.text();
+  assert.match(html, /NODE_SECRETS_XX/);
+  assert.match(html, /未绑定/);
+  assert.match(html, /no credential found in NODE_SECRETS_/);
+  assert.match(html, /invalid|unconfigured/);
+});
+
+await test('setup page flags malformed shard JSON with a diagnostic', async () => {
+  resetMock();
+  const env = {
+    GATEWAY_ACCESS_KEY: ACCESS_KEY,
+    TIER1_NODES_CONFIG_01: '{not-json',
+    NODE_SECRETS_01: '{"half":"k"}',
+  };
+  const res = await worker.fetch(new Request('https://gateway.example.com/', {
+    headers: { accept: 'text/html' },
+  }), env, {});
+  const html = await res.text();
+  assert.match(html, /TIER1_NODES_CONFIG_01: invalid JSON/);
+  assert.match(html, /已绑定/);
+});
+
 if (!process.exitCode) console.log(`\nintegration tests passed (${passed}).`);
 else process.exit(1);

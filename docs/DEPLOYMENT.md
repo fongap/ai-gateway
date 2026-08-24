@@ -6,6 +6,7 @@
 
 - Node.js ≥ 20
 - A Cloudflare account (Workers Free plan is sufficient)
+- Node config JSON files — start from the ready-to-edit examples in [`config/`](../config/) (`tier1-nodes.example.json`, `tier2-nodes.example.json`, `node-secrets.example.json`, `models.example.json`, `policies.example.json`)
 
 ## First deploy
 

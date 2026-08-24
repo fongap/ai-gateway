@@ -41,18 +41,39 @@ sh scripts/install.sh     # Windows: powershell scripts/install.ps1
 
 ### Node config (plain variables, never credentials)
 
+Typical setups are **multi-key, multi-account, multi-model**. This tier-1 example mixes three free providers across four accounts serving three logical models:
+
 ```json
 [
-  {
-    "id": "nvidia-01",
-    "provider": "nvidia",
-    "base_url": "https://integrate.api.nvidia.com/v1",
-    "priority": 10,
-    "models": { "general-air": "model-a" },
-    "limits": { "concurrency": 1 }
-  }
+  { "id": "nvidia-01", "provider": "nvidia", "base_url": "https://integrate.api.nvidia.com/v1", "priority": 10,
+    "models": { "general-air": "deepseek-ai/deepseek-v3.1", "code-pro": "qwen/qwen3-coder-480b" },
+    "limits": { "concurrency": 3, "rpm": 40 } },
+  { "id": "nvidia-02", "provider": "nvidia", "base_url": "https://integrate.api.nvidia.com/v1", "priority": 10,
+    "models": { "general-air": "deepseek-ai/deepseek-v3.1" },
+    "limits": { "concurrency": 3, "rpm": 40 } },
+  { "id": "glm-01", "provider": "zhipu", "base_url": "https://open.bigmodel.cn/api/paas/v4", "priority": 20,
+    "models": { "general-air": "glm-4.7", "code-max": "glm-4.7" },
+    "limits": { "concurrency": 2, "rpm": 30 } }
 ]
 ```
+
+Matching credentials secret (`NODE_SECRETS_01`):
+
+```json
+{ "nvidia-01": "nvapi-xxx", "nvidia-02": "nvapi-yyy", "glm-01": "zzzz.id" }
+```
+
+**Layout conventions** (how the scheduler earns its keep):
+
+| Scenario | Configuration | Effect |
+|----------|---------------|--------|
+| Multiple accounts of one provider / same-tier keys | same tier, **equal priority** | LRU rotates traffic across keys; first 429 appears only after the combined quota is spent |
+| Preference within a tier | different `priority` (10 before 20) | lower value first; higher takes over only when lower is busy/cooling/open |
+| Backup / paid keys | lower tier | tiers are hard precedence: tier-2 is never touched while tier-1 has an eligible node |
+| One node serving several models | multiple `models` entries | each logical model maps to a different upstream name per node |
+| Catch-all node | `"models": {}` wildcard | serves any logical model |
+
+Complete ready-to-edit examples live in [`config/`](config/).
 
 Variable layout:
 

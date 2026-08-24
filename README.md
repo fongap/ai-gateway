@@ -77,6 +77,8 @@ install 会引导你完成：Worker 命名 → 项目校验 → Cloudflare 登�
 
 **组织约定**（这也是调度器发挥最大效果的方式）：
 
+可直接编辑的完整示例见 [`config/`](config/) 目录（tier-1/tier-2 节点、凭据、models、policies 各一份）。
+
 | 场景 | 配置方式 | 效果 |
 |------|----------|------|
 | 同一 provider 多账号 / 同一档位多 key | 放同一层、**priority 相同** | LRU 自动把顺序流量轮转摊到所有 key 上，首个 429 出现前可用配额 ≈ key 数 × 单 key 配额 |

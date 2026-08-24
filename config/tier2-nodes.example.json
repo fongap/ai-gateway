@@ -1,0 +1,14 @@
+[
+  {
+    "id": "openrouter-01",
+    "provider": "openrouter",
+    "base_url": "https://openrouter.ai/api/v1",
+    "priority": 10,
+    "models": {
+      "general-air": "deepseek/deepseek-chat",
+      "code-pro": "qwen/qwen3-coder",
+      "code-max": "anthropic/claude-sonnet-4.5"
+    },
+    "limits": { "concurrency": 4, "rpm": 20 }
+  }
+]
