@@ -231,6 +231,61 @@ await test('LRU tiebreak rotates sequential requests across equal-priority nodes
   assert.equal(new Set(nodes).size, 3, `expected rotation across 3 nodes, got ${nodes.join(',')}`);
 });
 
+await test('RPM cap rotates to sibling keys before exhausting a single key', async () => {
+  resetMock();
+  for (const id of ['rpm-a', 'rpm-b']) {
+    routeHandlers[`${id}.example.com`] = () => jsonUpstream(okCompletion());
+  }
+  const env = makeEnv({
+    tier1: [
+      basicNode('rpm-a', { limits: { concurrency: 5, rpm: 1 } }),
+      basicNode('rpm-b', { limits: { concurrency: 5, rpm: 1 } }),
+    ],
+    secrets: { 'rpm-a': 'k', 'rpm-b': 'k' },
+  });
+  const nodes = [];
+  for (let i = 0; i < 2; i++) {
+    const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+    assert.equal(res.status, 200);
+    nodes.push(res.headers.get('x-gateway-node'));
+  }
+  assert.deepEqual(nodes, ['rpm-a', 'rpm-b'], 'second request must rotate to the uncapped sibling');
+});
+
+await test('RPM cap is soft: a lone capped node still serves instead of failing', async () => {
+  resetMock();
+  routeHandlers['solo.example.com'] = () => jsonUpstream(okCompletion());
+  const env = makeEnv({
+    tier1: [basicNode('solo', { limits: { concurrency: 5, rpm: 1 } })],
+    secrets: { solo: 'k' },
+  });
+  for (let i = 0; i < 3; i++) {
+    const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+    assert.equal(res.status, 200, `request ${i + 1} must still succeed`);
+  }
+});
+
+await test('saturation returns 503 with Retry-After instead of bare 429', async () => {
+  resetMock();
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  routeHandlers['cap.example.com'] = async () => {
+    await gate;
+    return jsonUpstream(okCompletion());
+  };
+  const env = makeEnv({
+    tier1: [basicNode('cap', { limits: { concurrency: 1 } })],
+    secrets: { cap: 'k' },
+  });
+  const first = worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  await new Promise((r) => setTimeout(r, 10)); // let it claim the only slot
+  const second = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  release();
+  assert.equal(await first.then((r) => r.status), 200);
+  assert.equal(second.status, 503);
+  assert.equal(second.headers.get('retry-after'), '1');
+});
+
 // ---- 429 / Retry-After -----------------------------------------------------
 
 await test('429 isolates the node; same-tier B serves; tier-2 untouched', async () => {
@@ -526,6 +581,24 @@ await test('anthropic stream conversion emits message lifecycle events', async (
   assert.ok(types.includes('message_stop'));
   // Model name hidden: upstream model never leaks into the stream.
   assert.ok(!text.includes('up-model'));
+});
+
+await test('clean close without [DONE] is accounted as node failure', async () => {
+  resetMock();
+  const encoder = new TextEncoder();
+  routeHandlers['trunc.example.com'] = () => new Response(new ReadableStream({
+    pull(controller) {
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk('partial output'))}\n\n`));
+      controller.close(); // clean FIN, but no [DONE] -> truncated
+    },
+  }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  const env = makeEnv({ tier1: [basicNode('trunc')], secrets: { trunc: 'k' } });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
+  assert.equal(res.status, 200);
+  await res.text();
+  const s = getNodeState('trunc');
+  assert.equal(s.totalFailures, 1, 'truncated stream must count as failure');
+  assert.equal(s.totalSuccesses, 0);
 });
 
 await test('count_tokens approximates locally without upstream calls', async () => {

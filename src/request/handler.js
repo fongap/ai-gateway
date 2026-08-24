@@ -353,7 +353,6 @@ async function handleSuccess(s) {
     detach();
 
     const headers = finalHeaders(env, request, guarded.headers, extraHeaders);
-    let bodyResponse = new Response(guarded.body, { status: 200, headers });
 
     if (route === 'openai_chat') {
       let tracked = trackStreamResponse(new Response(guarded.body, { status: 200, headers }), {

@@ -54,6 +54,7 @@ Rules enforced at load time:
 - `priority`: number, smaller = higher precedence, default `100`.
 - `models`: object mapping logical → upstream model names. Empty/missing = wildcard.
 - `limits.concurrency`: integer ≥ 1, default `2`.
+- `limits.rpm`: optional soft per-minute request quota for the key (e.g. `25`). When a node's current-minute count reaches it, siblings with headroom are preferred; if every candidate is capped, the cap is ignored so requests still succeed. Set it to each key's documented RPM (e.g. free NVIDIA NIM ≈ 40, Groq free ≈ 30 — check the provider's current docs).
 
 ### Optional
 
@@ -66,6 +67,30 @@ Rules enforced at load time:
 ```
 
 Tier order is fixed: tier-1 → tier-2 → tier-3. A lower tier is used only when the current tier has no eligible node for the request. `max_attempts` (default 5, clamp 1–8) bounds total attempts per request across all tiers.
+
+### Recommended multi-key / multi-account layout
+
+```jsonc
+// TIER1_NODES_CONFIG_01 — same provider, two accounts, SAME priority:
+[
+  { "id": "nvidia-01", "base_url": "https://integrate.api.nvidia.com/v1", "priority": 10,
+    "models": { "general-air": "deepseek-ai/deepseek-v3.1", "code-pro": "qwen/qwen3-coder-480b" },
+    "limits": { "concurrency": 3, "rpm": 40 } },
+  { "id": "nvidia-02", "base_url": "https://integrate.api.nvidia.com/v1", "priority": 10,
+    "models": { "general-air": "deepseek-ai/deepseek-v3.1", "code-pro": "qwen/qwen3-coder-480b" },
+    "limits": { "concurrency": 3, "rpm": 40 } },
+  // different provider in the same tier, slightly lower preference:
+  { "id": "glm-01", "base_url": "https://open.bigmodel.cn/api/paas/v4", "priority": 20,
+    "models": { "general-air": "glm-4.7", "code-max": "glm-4.7" }, "limits": { "concurrency": 2 } }
+]
+
+// NODE_SECRETS_01
+{ "nvidia-01": "nvapi-...", "nvidia-02": "nvapi-...", "glm-01": "..." }
+```
+
+- Same priority within a tier = LRU rotation: sequential traffic spreads across all keys, so the first 429 appears only after the *combined* quota is spent.
+- Different priority = strict order; larger values take over only when smaller ones are busy/cooling/circuit-open.
+- Keys you want to conserve (paid, shared) belong in a lower tier, not a higher priority number.
 
 ### Runtime knobs
 

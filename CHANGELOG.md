@@ -45,6 +45,9 @@ Breaking release: the node configuration and secret management model was redesig
 - Gateway access key digest cached per isolate: one SHA-256 per request instead of two, same timing-safe either-header semantics.
 - Tier grouping and priority sorting precomputed at config load; removed from the request hot path.
 - Consecutive-failure counters decay after 5 minutes idle so time-separated incidents cannot chain into a circuit trip.
+- Optional per-key RPM quota (`limits.rpm`): soft cap that rotates traffic to sibling keys with headroom; never hard-fails a request.
+- Capacity saturation (all candidates busy at concurrency/RPM caps) now returns 503 + `Retry-After: 1` instead of a bare 429, so bursty multi-agent clients back off.
+- Passthrough streams that close cleanly without the `[DONE]` marker are accounted as node failures (truncation detection).
 ## 5.14.0 - 2026-08-06
 
 - 在 `wrangler.jsonc` 中声明 `GATEWAY_ACCESS_KEY` 与 `PRIMARY_API_TOKENS` 为必需 Secret，阻止缺少绑定的错误部署；

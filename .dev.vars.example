@@ -7,8 +7,13 @@ GATEWAY_ACCESS_KEY="replace-with-a-long-random-key"
 # Tier comes from the variable prefix. Shard values are JSON arrays; each shard
 # stays under the 5 KB Cloudflare variable limit (split at node boundaries).
 
-TIER1_NODES_CONFIG_01='[{"id":"nvidia-01","provider":"nvidia","base_url":"https://integrate.api.nvidia.com/v1","priority":10,"models":{"general-air":"model-a"},"limits":{"concurrency":1}}]'
-# TIER1_NODES_CONFIG_02='[{"id":"openrouter-01","provider":"openrouter","base_url":"https://openrouter.ai/api/v1","priority":50,"models":{"code-pro":"model-b"}}]'
+TIER1_NODES_CONFIG_01='[
+  {"id":"nvidia-01","provider":"nvidia","base_url":"https://integrate.api.nvidia.com/v1","priority":10,"models":{"general-air":"deepseek-ai/deepseek-v3.1","code-pro":"qwen/qwen3-coder-480b"},"limits":{"concurrency":3,"rpm":40}},
+  {"id":"nvidia-02","provider":"nvidia","base_url":"https://integrate.api.nvidia.com/v1","priority":10,"models":{"general-air":"deepseek-ai/deepseek-v3.1"},"limits":{"concurrency":3,"rpm":40}},
+  {"id":"glm-01","provider":"zhipu","base_url":"https://open.bigmodel.cn/api/paas/v4","priority":20,"models":{"code-max":"glm-4.7"},"limits":{"concurrency":2}}
+]'
+# 同层同 priority = LRU 轮转摊流；不同 priority = 严格先后。
+# NODE_SECRETS_01='{"nvidia-01":"nvapi-xxx","nvidia-02":"nvapi-yyy","glm-01":"zzz.id"}'
 # TIER2_NODES_CONFIG_01='[{"id":"fallback-01","base_url":"https://fallback.example.com/v1","models":{"general-air":"fa"}}]'
 # TIER3_NODES_CONFIG_01='[{"id":"last-resort-01","base_url":"https://last.example.com/v1","models":{}}]'
 
