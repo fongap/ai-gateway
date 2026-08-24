@@ -1,5 +1,45 @@
 # Changelog
 
+## 6.0.0 - 2026-08-24
+
+Breaking release: the node configuration and secret management model was redesigned. Old deployments must re-run configuration/deployment; no migration is provided.
+
+### Breaking
+
+- Reworked Node configuration: node configs are now plain variables (`TIER1/2/3_NODES_CONFIG_01..99`) and contain NO credential material; credential fields (token/api_key/authorization/...) in node JSON are rejected.
+- Removed the `token@base_url` format entirely. Provider credentials are stored separately in `NODE_SECRETS_*` secrets (`{ nodeId: credential }`).
+- Removed legacy free/paid/plus naming and all legacy compatibility aliases, parsers and warnings.
+- Removed the `tier` field from the node schema; a node's tier is derived only from its variable prefix.
+- Removed the response Cache API layer (CACHE_ENABLED / CACHE_MAX_AGE_SEC / CACHE_MAX_BODY_BYTES) and the Analytics Engine binding (AE_DATASET).
+- Removed ALLOW_UNSAFE_PROXY_ROUTES; the route allowlist is always enforced.
+- Unified body limit to MAX_BODY_BYTES (removed ANTHROPIC_MAX_BODY_BYTES).
+- Timeout variables renamed and unified: UPSTREAM_HEADERS_TIMEOUT_MS / FIRST_EVENT_TIMEOUT_MS / STREAM_IDLE_TIMEOUT_MS (removed REQUEST_TIMEOUT_MS and scattered per-module defaults).
+- AUTH_FAIL_COOLDOWN_MS default changed from 24h to 1h.
+- CORS is disabled by default; set ALLOWED_ORIGIN explicitly for browser clients.
+- POLICIES_CONFIG simplified to `{ max_attempts }`; MODELS_CONFIG simplified to `{ policy }`. Tier order is fixed tier-1 -> tier-2 -> tier-3 and no longer configurable.
+- Deployment scripts rewritten for the new variable + secret split; install/reconfigure generate a local wrangler.user.jsonc (gitignored).
+
+### Fixed
+
+- Priority semantics: priority ASC is the single ordering everywhere (smaller = higher precedence).
+- Retry budget handling replaced by a dynamic eligible candidate set recomputed before every attempt; failed nodes are never retried within one request and healthy nodes are never skipped when state changes.
+- Node-level 429 cooldown honors Retry-After (seconds or HTTP-date), clamped to [1s, 600s], and never expands beyond the failing node.
+- Same-tier rotation is strictly separated from tier fallback; tier-N+1 is used only when tier-N has no eligible node left for the request.
+- Circuit breaker consecutive-failure counting unified into one counter; interleaved successes keep it CLOSED, threshold failures OPEN it.
+- HALF_OPEN allows exactly one probe regardless of configured concurrency; probe success closes the circuit, probe failure reopens it with a fresh open period.
+- Concurrency slot accounting cannot leak: every attempt path decrements exactly once.
+- Streaming failover boundary fixed: the first-event guard runs on ALL streaming paths before bytes reach the client; after the first event transparent failover is impossible.
+- Gateway-generated 429 (all nodes cooling) now carries a Retry-After header.
+- Mid-stream upstream death delivers already-buffered bytes and closes cleanly instead of raising an opaque client error.
+
+### Changed
+
+- Unified Runtime Node model ({id, tier, provider, baseUrl, credential, priority, models, limits}); only the config layer touches env parsing and credentials.
+- src/index.js reduced to the Worker entry; logic moved to src/config, src/scheduler, src/reliability, src/protocol, src/stream, src/request, src/observability.
+- One SSE scanner shared by guard and transformers: each upstream SSE event is parsed exactly once.
+- Model-field rewriting skipped entirely when logical == upstream model; per-line parse skipped when a line cannot contain the field.
+- New black-box integration test suite runs the real worker.fetch pipeline against mocked upstreams (24 scenarios).
+- Added benchmark/benchmark.mjs measuring gateway added overhead vs a direct mocked upstream.
 ## 5.14.0 - 2026-08-06
 
 - 在 `wrangler.jsonc` 中声明 `GATEWAY_ACCESS_KEY` 与 `PRIMARY_API_TOKENS` 为必需 Secret，阻止缺少绑定的错误部署；

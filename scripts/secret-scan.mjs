@@ -18,7 +18,7 @@ const patterns = [
   ['Cloudflare API token assignment', /CLOUDFLARE_API_TOKEN\s*=\s*["']?[A-Za-z0-9_-]{30,}/g],
 ];
 
-const sensitiveNames = [/^\.dev\.vars$/, /^\.env(?:\..+)?$/, /^secrets.*\.json$/i];
+const sensitiveNames = [/^\.dev\.vars$/, /^\.env(?:\..+)?$/, /^secrets.*\.json$/i, /^wrangler\.user\.jsonc$/, /^gateway-.*-secrets.*\.json$/i];
 const findings = [];
 
 function walk(dir) {

@@ -1,33 +1,34 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Fongap Studio
+//
+// MODELS_CONFIG: logical model -> { policy }. Optional.
+// Parsed once per isolate; env vars are immutable at runtime.
+
+import { readEnv } from './env.js';
+
+let cachedEnv;
+let cachedModels;
+
 export function loadModelsConfig(env) {
-  const raw = env?.MODELS_CONFIG;
+  if (cachedEnv === env && cachedModels) return cachedModels;
+  cachedEnv = env;
+  const raw = readEnv(env, 'MODELS_CONFIG');
+  const models = {};
   if (raw) {
     try {
-      return parseAndValidateModels(JSON.parse(raw));
-    } catch (e) {
-      console.error('MODELS_CONFIG parse error:', e.message);
-      return {};
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        for (const [name, config] of Object.entries(parsed)) {
+          if (typeof name !== 'string' || !name.trim()) continue;
+          models[name.trim()] = {
+            policy: typeof config?.policy === 'string' && config.policy.trim() ? config.policy.trim() : 'default',
+          };
+        }
+      }
+    } catch {
+      console.error('MODELS_CONFIG parse error: invalid JSON; ignoring');
     }
   }
-  return {};
-}
-
-function parseAndValidateModels(models) {
-  if (!models || typeof models !== 'object' || Array.isArray(models)) return {};
-  const result = {};
-  for (const [name, config] of Object.entries(models)) {
-    if (typeof name !== 'string' || !name.trim()) continue;
-    if (!config || typeof config !== 'object') continue;
-    result[name] = {
-      workload: String(config.workload || 'general').trim(),
-      policy: String(config.policy || 'general-fast').trim(),
-    };
-  }
-  return result;
-}
-
-export function getModelInfo(modelName, modelsConfig, modelMapping) {
-  if (modelsConfig[modelName]) {
-    return modelsConfig[modelName];
-  }
-  return { workload: 'general', policy: 'general-fast' };
+  cachedModels = models;
+  return models;
 }

@@ -4,29 +4,33 @@
 
 ```bash
 npm ci
-npm run verify
+npm run verify        # syntax + version + config checks + tests + secret scan
+npm run check:deploy  # wrangler dry-run bundle
 ```
 
-## 修改原则
+## 修改原则 / Principles
 
-- 不提交真实 Token、私有域名、账户 ID 或用户数据；
-- 保持 OpenAI 与 Anthropic 两条协议路径兼容；
-- Fallback 不得进入正常 Primary 轮询；
-- 新增环境变量时同步更新源码顶部注释、Dashboard 和 `docs/CONFIGURATION.md`；
-- 影响响应格式的变更必须说明兼容性风险；
-- 避免为了展示效果引入 Worker 运行时依赖；
-- 修改功能或部署方式时同步更新 `README.md` 与 `README_EN.md`；
-- 修改版本时同步 `package.json`、`APP_META.version` 和 `CHANGELOG.md`。
+每个改动都应回答：是否提高免费 API 利用率？是否提高稳定性？是否降低 Worker CPU 开销？代码是否更简单、更可预测？
+Every change should answer: does it improve free-API utilization, reliability, Worker CPU cost, or predictability? If not, leave it out.
+
+- 不提交任何真实凭据（Token / `GATEWAY_ACCESS_KEY` / 上游账号）。
+  Never commit real credentials.
+- 保持 OpenAI / Anthropic 双协议路径行为一致。
+  Keep the OpenAI and Anthropic protocol paths behaviorally consistent.
+- 超时/冷却默认值只允许出现在 `src/config/timeouts.js`。
+  Timeout and cooldown defaults live only in `src/config/timeouts.js`.
+- 节点运行时状态只允许通过 `src/reliability/node-state.js` 修改。
+  Node runtime state is mutated only through `src/reliability/node-state.js`.
+- 流式行为改动必须保持 First Event Guard 边界语义（首事件前可切换节点，之后绝不）。
+  Streaming changes must preserve the first-event guard boundary.
+- 影响调度/可靠性/配置格式时，同步更新集成测试（`scripts/integration-test.mjs`）与文档。
+  Update integration tests and docs together with scheduling/config changes.
+- 影响对外行为时更新 `README.md` 与 `README_EN.md`；修改版本时同步 `package.json`、`APP_META.version` 与 `CHANGELOG.md`。
+  Update READMEs for user-visible changes; keep version fields in sync.
 
 ## Pull Request
 
-PR 至少说明：
-
-1. 问题与目标；
-2. 具体改动；
-3. 验证方法；
-4. 配置或兼容性变化；
-5. 安全、隐私、延迟或资源消耗影响。
+PR 请说明：目标、改动点、验证结果、破坏性变更、安全影响。
+Describe: goal, changes, verification, breaking changes, security impact.
 
 Use the repository Pull Request template and ensure all CI checks pass before requesting review.
-

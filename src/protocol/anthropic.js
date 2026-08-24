@@ -1,12 +1,24 @@
-import { corsHeaders } from './openai.js';
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Fongap Studio
+//
+// Anthropic Messages surface: request validation, error responses, and the
+// local /v1/messages/count_tokens approximation.
 
-export function anthropicErrorResponse(request, env, status, message, requestId, details, explicitType, extraHeaders) {
-  const error = {
-    type: explicitType || anthropicErrorTypeForStatus(status),
-    message: String(message || 'Unknown gateway error.'),
-  };
-  if (details) error.details = details;
-  return new Response(JSON.stringify({ type: 'error', error }, null, 2), {
+import { corsHeaders } from './http.js';
+
+export function anthropicErrorTypeForStatus(status) {
+  if (status === 400 || status === 413 || status === 415 || status === 422) return 'invalid_request_error';
+  if (status === 401) return 'authentication_error';
+  if (status === 403) return 'permission_error';
+  if (status === 404) return 'not_found_error';
+  if (status === 429) return 'rate_limit_error';
+  if (status === 529) return 'overloaded_error';
+  return 'api_error';
+}
+
+export function anthropicErrorResponse(request, env, status, message, requestId, extraHeaders) {
+  const error = { type: anthropicErrorTypeForStatus(status), message: String(message || 'Unknown gateway error.') };
+  return new Response(JSON.stringify({ type: 'error', error }), {
     status,
     headers: {
       'content-type': 'application/json;charset=UTF-8',
@@ -17,16 +29,6 @@ export function anthropicErrorResponse(request, env, status, message, requestId,
       ...(extraHeaders || {}),
     },
   });
-}
-
-export function anthropicErrorTypeForStatus(status) {
-  if (status === 400 || status === 413 || status === 415 || status === 422) return 'invalid_request_error';
-  if (status === 401) return 'authentication_error';
-  if (status === 403) return 'permission_error';
-  if (status === 404) return 'not_found_error';
-  if (status === 429) return 'rate_limit_error';
-  if (status === 529) return 'overloaded_error';
-  return 'api_error';
 }
 
 export function validateAnthropicMessagesRequest(body) {
@@ -46,16 +48,16 @@ export function validateAnthropicCountTokensRequest(body) {
 
 export function estimateAnthropicInputTokens(body) {
   let weightedChars = 0;
-  const countText = value => { weightedChars += String(value || '').length; };
+  const countText = (value) => { weightedChars += String(value || '').length; };
   if (typeof body.system === 'string') countText(body.system);
-  else if (Array.isArray(body.system)) body.system.forEach(x => countText(x?.text || x));
+  else if (Array.isArray(body.system)) for (const x of body.system) countText(x?.text || x);
   for (const message of body.messages || []) {
     weightedChars += 8;
     if (typeof message.content === 'string') countText(message.content);
     else for (const block of message.content || []) {
       if (block?.type === 'text') countText(block.text);
       else if (block?.type === 'tool_use') countText(JSON.stringify(block.input || {}));
-      else if (block?.type === 'tool_result') countText(convertToolResultToString(block.content, block.is_error));
+      else if (block?.type === 'tool_result') countText(toolResultToString(block.content, block.is_error));
       else if (block?.type === 'image') weightedChars += 6400;
       else countText(JSON.stringify(block));
     }
@@ -64,50 +66,17 @@ export function estimateAnthropicInputTokens(body) {
   return Math.max(1, Math.ceil(weightedChars / 4));
 }
 
-function convertToolResultToString(content, isError) {
+function toolResultToString(content, isError) {
   const prefix = isError ? '[Tool execution error]\n' : '';
   if (content === undefined || content === null) return prefix;
   if (typeof content === 'string') return prefix + content;
   if (!Array.isArray(content)) return prefix + JSON.stringify(content);
-  const parts = content.map(block => {
+  const parts = content.map((block) => {
     if (typeof block === 'string') return block;
     if (!block || typeof block !== 'object') return String(block ?? '');
     if (block.type === 'text') return block.text || '';
     if (block.type === 'image') return '[Tool-result image]';
-    if (block.type === 'document') return convertDocumentToText(block);
     return JSON.stringify(block);
   });
   return prefix + parts.filter(Boolean).join('\n');
-}
-
-function convertDocumentToText(block) {
-  const source = block?.source || {};
-  if (source.type === 'text') return String(source.data || source.text || '');
-  if (source.type === 'url') return `[Document URL: ${source.url || ''}]`;
-  if (source.type === 'base64') {
-    const mediaType = source.media_type || 'application/octet-stream';
-    if (mediaType.startsWith('text/') && source.data) {
-      try { return atob(String(source.data)); } catch {}
-    }
-    return `[Base64 document: ${mediaType}]`;
-  }
-  return '[Unsupported document]';
-}
-
-export function gatewayError(request, env, isAnthropic, status, message, details, requestId) {
-  return isAnthropic
-    ? anthropicErrorResponse(request, env, status, message, requestId, details, anthropicErrorTypeForStatus(status))
-    : jsonError(request, env, status, message, details, requestId);
-}
-
-function jsonError(request, env, status, message, details, requestId) {
-  return new Response(JSON.stringify({ error: { message, ...(details ? { details } : {}) } }, null, 2), {
-    status,
-    headers: {
-      'content-type': 'application/json;charset=UTF-8',
-      'cache-control': 'no-store',
-      'x-request-id': requestId || '',
-      ...corsHeaders(request, env),
-    },
-  });
 }

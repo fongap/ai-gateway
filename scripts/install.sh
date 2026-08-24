@@ -1,125 +1,92 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+# ai-gateway first-time install & deploy (new configuration schema).
+set -e
+cd "$(dirname "$0")/.."
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$ROOT"
-WRANGLER=(npx --yes wrangler@4.114.0)
-fail(){ echo "错误：$*" >&2; exit 1; }
-yesno(){ [[ "${1:-}" =~ ^([yY]|[yY][eE][sS])$ ]]; }
-command -v node >/dev/null 2>&1 || fail "未找到 Node.js 20+。"
-command -v npm >/dev/null 2>&1 || fail "未找到 npm。"
-[[ "$(node -p 'Number(process.versions.node.split(".")[0])')" -ge 20 ]] || fail "需要 Node.js 20 或更高版本。"
+command -v node >/dev/null 2>&1 || { echo "Node.js 20+ is required." >&2; exit 1; }
+[ "$(node --version | sed 's/^v//' | cut -d. -f1)" -ge 20 ] || { echo "Node.js 20+ is required." >&2; exit 1; }
 
-DEFAULT_WORKER_NAME="$(node -p "JSON.parse(require('fs').readFileSync('wrangler.jsonc','utf8')).name")"
-read -r -p "Worker 名称 [${DEFAULT_WORKER_NAME}]: " WORKER_NAME
-WORKER_NAME="${WORKER_NAME:-$DEFAULT_WORKER_NAME}"
-[[ "$WORKER_NAME" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || fail "Worker 名称必须为 1-63 位小写字母、数字或连字符，且不能以连字符开头或结尾。"
-node - "$WORKER_NAME" <<'NODE'
-import fs from 'node:fs';
-const path='wrangler.jsonc'; const config=JSON.parse(fs.readFileSync(path,'utf8'));
-config.name=process.argv[2]; fs.writeFileSync(path,JSON.stringify(config,null,2)+'\n');
-NODE
+echo "==> Worker name"
+DEFAULT_NAME="$(node -e 'console.log(JSON.parse(require("fs").readFileSync("wrangler.jsonc","utf8")).name)')"
+printf "Worker name [%s]: " "$DEFAULT_NAME"
+read -r WORKER_NAME
+WORKER_NAME="${WORKER_NAME:-$DEFAULT_NAME}"
+node -e '
+const fs = require("fs");
+const name = process.argv[1];
+if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) { console.error("invalid worker name"); process.exit(1); }
+const c = JSON.parse(fs.readFileSync("wrangler.jsonc", "utf8"));
+c.name = name;
+fs.writeFileSync("wrangler.jsonc", JSON.stringify(c, null, 2) + "\n");
+' "$WORKER_NAME"
 
+echo "==> Installing dependencies and verifying project"
 npm ci
 npm run verify
-npm run check:deploy
-if ! "${WRANGLER[@]}" whoami >/dev/null 2>&1; then "${WRANGLER[@]}" login; fi
-"${WRANGLER[@]}" whoami
 
-read -r -s -p "GATEWAY_ACCESS_KEY: " GATEWAY_ACCESS_KEY; echo
-read -r -s -p "PRIMARY_API_TOKENS（Token@https://BaseURL，多个用逗号分隔）: " PRIMARY_API_TOKENS; echo
-read -r -p "PRIMARY_BASE_URL（Token 已绑定 URL 时留空）: " PRIMARY_BASE_URL
-[[ -n "$GATEWAY_ACCESS_KEY" ]] || fail "GATEWAY_ACCESS_KEY 不能为空。"
-[[ -n "$PRIMARY_API_TOKENS" ]] || fail "PRIMARY_API_TOKENS 不能为空。"
-PRIMARY_API_TOKENS="$PRIMARY_API_TOKENS" PRIMARY_BASE_URL="$PRIMARY_BASE_URL" node scripts/validate-primary-config.mjs
+npx --yes wrangler@4.114.0 whoami || npx --yes wrangler@4.114.0 login
 
-read -r -p "MODEL_MAPPING JSON 文件路径（不需要则留空）: " MODEL_MAPPING_PATH
-MODEL_MAPPING=""
-if [[ -n "$MODEL_MAPPING_PATH" ]]; then
-  [[ -f "$MODEL_MAPPING_PATH" ]] || fail "MODEL_MAPPING 文件不存在。"
-  node scripts/validate-model-mapping.mjs "$MODEL_MAPPING_PATH"
-  MODEL_MAPPING="$(cat "$MODEL_MAPPING_PATH")"
-fi
-read -r -p "启用严格模型白名单？[y/N]: " STRICT_INPUT
-STRICT_MODEL_MAPPING=false; yesno "$STRICT_INPUT" && STRICT_MODEL_MAPPING=true
+echo "==> Node configuration"
+echo "Node configs are PLAIN variables without credentials; credentials go into a separate NODE_SECRETS file."
+read -r -p "tier-1 node config JSON file: " TIER1
+[ -n "$TIER1" ] && [ -f "$TIER1" ] || { echo "tier-1 file is required." >&2; exit 1; }
+PLAN_ARGS="validate --tier1 $TIER1"
+for N in 2 3; do
+  read -r -p "tier-$N node config JSON file (optional, empty to skip): " TIER_FILE
+  if [ -n "$TIER_FILE" ]; then
+    [ -f "$TIER_FILE" ] || { echo "file not found: $TIER_FILE" >&2; exit 1; }
+    PLAN_ARGS="$PLAN_ARGS --tier$N $TIER_FILE"
+  fi
+  eval "TIER$N=$TIER_FILE"
+done
+read -r -p "node secrets JSON file ({ \"node-id\": \"credential\" }): " SECRETS_FILE
+[ -n "$SECRETS_FILE" ] && [ -f "$SECRETS_FILE" ] || { echo "secrets file is required." >&2; exit 1; }
+PLAN_ARGS="$PLAN_ARGS --secrets $SECRETS_FILE"
+# shellcheck disable=SC2086
+node scripts/manage-nodes-config.mjs $PLAN_ARGS
 
-read -r -p "tier-1 节点配置 JSON 文件路径（必需）: " TIER1_NODES_FILE
-[[ -f "$TIER1_NODES_FILE" ]] || fail "tier-1 节点配置文件不存在。"
-node scripts/manage-nodes-config.mjs validate --file "$TIER1_NODES_FILE"
-read -r -p "tier-2 节点配置 JSON 文件路径（可选，留空跳过）: " TIER2_NODES_FILE
-if [[ -n "$TIER2_NODES_FILE" ]]; then [[ -f "$TIER2_NODES_FILE" ]] || fail "tier-2 节点配置文件不存在。"; node scripts/manage-nodes-config.mjs validate --file "$TIER2_NODES_FILE"; fi
-read -r -p "tier-3 节点配置 JSON 文件路径（可选，留空跳过）: " TIER3_NODES_FILE
-if [[ -n "$TIER3_NODES_FILE" ]]; then [[ -f "$TIER3_NODES_FILE" ]] || fail "tier-3 节点配置文件不存在。"; node scripts/manage-nodes-config.mjs validate --file "$TIER3_NODES_FILE"; fi
+echo "==> Sharding config into variables + secrets"
+TMP_PLAN="$(mktemp)"
+SHARD_ARGS="plan --secrets $SECRETS_FILE --out $TMP_PLAN"
+[ -n "${TIER1:-}" ] && SHARD_ARGS="$SHARD_ARGS --tier1 $TIER1"
+[ -n "${TIER2:-}" ] && SHARD_ARGS="$SHARD_ARGS --tier2 $TIER2"
+[ -n "${TIER3:-}" ] && SHARD_ARGS="$SHARD_ARGS --tier3 $TIER3"
+# shellcheck disable=SC2086
+node scripts/manage-nodes-config.mjs $SHARD_ARGS
 
-FALLBACK_ENABLED=false
-FALLBACK_API_TOKEN=""
-FALLBACK_BASE_URL=""
-FALLBACK_PRIMARY_MODEL=""
-FALLBACK_SECONDARY_MODEL=off
-read -r -p "配置 Fallback？[y/N]: " FALLBACK_INPUT
-if yesno "$FALLBACK_INPUT"; then
-  FALLBACK_ENABLED=true
-  read -r -s -p "FALLBACK_API_TOKEN: " FALLBACK_API_TOKEN; echo
-  read -r -p "FALLBACK_BASE_URL: " FALLBACK_BASE_URL
-  read -r -p "FALLBACK_PRIMARY_MODEL: " FALLBACK_PRIMARY_MODEL
-  read -r -p "FALLBACK_SECONDARY_MODEL（留空或 off 关闭）: " SECONDARY
-  FALLBACK_SECONDARY_MODEL="${SECONDARY:-off}"
-  FALLBACK_API_TOKEN="$FALLBACK_API_TOKEN" FALLBACK_BASE_URL="$FALLBACK_BASE_URL" \
-    FALLBACK_PRIMARY_MODEL="$FALLBACK_PRIMARY_MODEL" FALLBACK_SECONDARY_MODEL="$FALLBACK_SECONDARY_MODEL" \
-    node scripts/validate-fallback-config.mjs
-fi
+node -e '
+const fs = require("fs");
+const base = JSON.parse(fs.readFileSync("wrangler.jsonc", "utf8"));
+const plan = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+base.vars = plan.vars;
+fs.writeFileSync("wrangler.user.jsonc", JSON.stringify(base, null, 2) + "\n");
+' "$TMP_PLAN"
 
-# 按完整 Node 边界自动拆分为 TIERx_NODES_CONFIG_01.. 分片（三个 Tier 共用同一套分片函数）。
-TEMP="$(mktemp "${TMPDIR:-/tmp}/gateway-install.XXXXXX.json")"
-chmod 600 "$TEMP"
-NODES_PLAN="$(mktemp "${TMPDIR:-/tmp}/gateway-install-nodes.XXXXXX.json")"
-chmod 600 "$NODES_PLAN"
-cleanup(){ rm -f "$TEMP" "$NODES_PLAN"; unset GATEWAY_ACCESS_KEY PRIMARY_API_TOKENS FALLBACK_API_TOKEN; }
-trap cleanup EXIT
-export GATEWAY_ACCESS_KEY PRIMARY_API_TOKENS PRIMARY_BASE_URL MODEL_MAPPING STRICT_MODEL_MAPPING
-export FALLBACK_ENABLED FALLBACK_API_TOKEN FALLBACK_BASE_URL FALLBACK_PRIMARY_MODEL FALLBACK_SECONDARY_MODEL
-PLAN_ARGS=(plan --tier1 "$TIER1_NODES_FILE" --out "$NODES_PLAN")
-[[ -n "${TIER2_NODES_FILE:-}" ]] && PLAN_ARGS+=(--tier2 "$TIER2_NODES_FILE")
-[[ -n "${TIER3_NODES_FILE:-}" ]] && PLAN_ARGS+=(--tier3 "$TIER3_NODES_FILE")
-node scripts/manage-nodes-config.mjs "${PLAN_ARGS[@]}"
-node - "$TEMP" "$NODES_PLAN" <<'NODE'
-import fs from 'node:fs';
-const out={
-  GATEWAY_ACCESS_KEY:process.env.GATEWAY_ACCESS_KEY,
-  PRIMARY_API_TOKENS:process.env.PRIMARY_API_TOKENS,
-  PRIMARY_BASE_URL:process.env.PRIMARY_BASE_URL||'',
-  MODEL_MAPPING:process.env.MODEL_MAPPING||'',
-  STRICT_MODEL_MAPPING:process.env.STRICT_MODEL_MAPPING,
-  FALLBACK_ENABLED:process.env.FALLBACK_ENABLED,
-  FALLBACK_SECONDARY_MODEL:process.env.FALLBACK_SECONDARY_MODEL||'off',
-  FALLBACK_CLIENT_NOTICE_MODE:'headers',
-  FAKE_STREAM_PROTECTION:'false',
-  ALLOW_UNSAFE_PROXY_ROUTES:'false',
-  ALLOW_INSECURE_HTTP_UPSTREAM:'false',
-  EXPOSE_UPSTREAM_INFO:'false'
-};
-if(process.env.FALLBACK_ENABLED==='true') Object.assign(out,{
-  FALLBACK_API_TOKEN:process.env.FALLBACK_API_TOKEN,
-  FALLBACK_BASE_URL:process.env.FALLBACK_BASE_URL,
-  FALLBACK_PRIMARY_MODEL:process.env.FALLBACK_PRIMARY_MODEL
-});
-Object.assign(out,JSON.parse(fs.readFileSync(process.argv[3],'utf8')).secrets);
-fs.writeFileSync(process.argv[2],JSON.stringify(out,null,2));
-NODE
+printf "GATEWAY_ACCESS_KEY: "
+stty -echo 2>/dev/null || true
+read -r ACCESS_KEY
+stty echo 2>/dev/null || true
+echo ""
+TMP_BULK="$(mktemp)"
+GW_KEY="$ACCESS_KEY" node -e '
+const fs = require("fs");
+const plan = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+const bulk = { GATEWAY_ACCESS_KEY: process.env.GW_KEY, ...plan.secrets };
+fs.writeFileSync(process.argv[2], JSON.stringify(bulk));
+' "$TMP_PLAN" "$TMP_BULK"
 
-echo "将首次部署 Worker：$WORKER_NAME"
-read -r -p "确认继续？[y/N]: " CONFIRM
-yesno "$CONFIRM" || fail "已取消。"
-"${WRANGLER[@]}" deploy --keep-vars --secrets-file "$TEMP"
+npx --yes wrangler@4.114.0 deploy -c wrangler.user.jsonc --keep-vars
+npx --yes wrangler@4.114.0 secret bulk "$TMP_BULK"
+rm -f "$TMP_PLAN" "$TMP_BULK"
 
-read -r -p "部署后的网关 URL（例如 https://example.workers.dev；留空跳过验证）: " GATEWAY_URL
-if [[ -n "$GATEWAY_URL" ]]; then
-  [[ "$GATEWAY_URL" =~ ^https://[^[:space:]]+$ ]] || fail "网关 URL 必须是完整 HTTPS 地址。"
-  curl -fsS "${GATEWAY_URL%/}/version" >/dev/null || fail "/version 验证失败。"
-  curl -fsS "${GATEWAY_URL%/}/health" -H "Authorization: Bearer $GATEWAY_ACCESS_KEY" >/dev/null || fail "/health 验证失败。"
-  curl -fsS "${GATEWAY_URL%/}/v1/models" -H "Authorization: Bearer $GATEWAY_ACCESS_KEY" >/dev/null || fail "/v1/models 验证失败。"
-  echo "部署和运行验证均通过。"
+read -r -p "Gateway URL after deploy (empty to skip verification): " URL
+if [ -n "$URL" ]; then
+  case "$URL" in https://*) ;; *) echo "gateway URL must be https://" >&2; exit 1;; esac
+  printf "GATEWAY_ACCESS_KEY again: "; stty -echo 2>/dev/null || true; read -r ACCESS; stty echo 2>/dev/null || true; echo ""
+  curl -fsS "$URL/version" >/dev/null
+  curl -fsS "$URL/health" -H "Authorization: Bearer $ACCESS" >/dev/null
+  curl -fsS "$URL/v1/models" -H "Authorization: Bearer $ACCESS" >/dev/null
+  echo "Deploy and online verification passed."
 else
-  echo "部署完成；尚未执行线上健康检查。"
+  echo "Deploy finished; online verification skipped."
 fi
-

@@ -1,136 +1,233 @@
-// 统一节点配置分片模块：三个 Tier 共用同一套实现。
+#!/usr/bin/env node
+// SPDX-License-Identifier: MIT
+// Shared sharding + planning module for the new configuration schema.
 //
-// 命名规则（固定两位编号，从 _01 开始）：
-//   TIER1_NODES_CONFIG_01, TIER1_NODES_CONFIG_02, ...
-//   TIER2_NODES_CONFIG_01, TIER2_NODES_CONFIG_02, ...
-//   TIER3_NODES_CONFIG_01, TIER3_NODES_CONFIG_02, ...
+// Plain variables (no credential material allowed):
+//   TIER1_NODES_CONFIG_01 .. _99   JSON arrays of node configs
+//   TIER2_NODES_CONFIG_01 .. _99
+//   TIER3_NODES_CONFIG_01 .. _99
+// Secrets:
+//   GATEWAY_ACCESS_KEY
+//   NODE_SECRETS_01 .. _99         JSON objects { nodeId: credential }
 //
-// 约束：
-// - 按完整 Node 对象边界拆分，禁止截断 JSON；
-// - 每个分片序列化后不超过 SHARD_MAX_BYTES 字节；
-// - 每个分片本身是完整合法的 JSON Array。
-
+// Cloudflare Workers variable/secret size limit is 5 KB per value; shards are
+// capped below that with margin. Shards always split on complete entry
+// boundaries so every shard is valid standalone JSON.
 import fs from 'node:fs';
 
 export const SHARD_MAX_BYTES = 4500;
-export const MIN_SHARD_NUMBER = 1;
 export const MAX_SHARD_NUMBER = 99;
 
-// 本项目管理的全部节点配置 Secret（含旧版无后缀单变量）。
-export const MANAGED_SECRET_PATTERN = /^TIER[123]_NODES_CONFIG(?:_\d{2})?$/;
+export const MANAGED_VAR_PATTERN = /^TIER[123]_NODES_CONFIG_\d{2}$/;
+export const MANAGED_SECRET_PATTERN = /^(GATEWAY_ACCESS_KEY|NODE_SECRETS_\d{2})$/;
+
+const FORBIDDEN_NODE_FIELDS = ['token', 'credential', 'api_key', 'apikey', 'authorization', 'password', 'secret'];
 const VALID_TIER_PATTERN = /^[123]$/;
 
 function byteLength(str) {
   return Buffer.byteLength(str, 'utf8');
 }
 
-export function shardKeyName(tierNumber, index) {
-  if (!VALID_TIER_PATTERN.test(String(tierNumber))) {
-    throw new Error(`Invalid tier number: ${tierNumber}`);
+export function shardKeyName(kind, tierNumber, index) {
+  if (kind === 'var') {
+    if (!VALID_TIER_PATTERN.test(String(tierNumber))) throw new Error(`Invalid tier number: ${tierNumber}`);
+    return `TIER${tierNumber}_NODES_CONFIG_${pad(index)}`;
   }
-  if (!Number.isInteger(index) || index < MIN_SHARD_NUMBER || index > MAX_SHARD_NUMBER) {
-    throw new Error(`Invalid shard index: ${index} (expected ${MIN_SHARD_NUMBER}..${MAX_SHARD_NUMBER})`);
-  }
-  return `TIER${tierNumber}_NODES_CONFIG_${String(index).padStart(2, '0')}`;
+  if (kind === 'secret') return `NODE_SECRETS_${pad(index)}`;
+  throw new Error(`Unknown shard kind: ${kind}`);
 }
 
-export function parseNodesFile(filePath) {
+function pad(index) {
+  if (!Number.isInteger(index) || index < 1 || index > MAX_SHARD_NUMBER) {
+    throw new Error(`Invalid shard index: ${index} (expected 1..${MAX_SHARD_NUMBER})`);
+  }
+  return String(index).padStart(2, '0');
+}
+
+export function parseJsonFile(filePath) {
   let raw = fs.readFileSync(filePath, 'utf8');
-  // 兼容 Windows 工具写入的 UTF-8 BOM。
   if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
-  let parsed;
   try {
-    parsed = JSON.parse(raw);
+    return JSON.parse(raw);
   } catch (e) {
-    throw new Error(`${filePath} parse error: ${e.message}`);
+    throw new Error(`${filePath}: invalid JSON (${e.message})`);
   }
-  assertNodesArray(parsed, filePath);
-  return parsed;
 }
 
+// Validate one tier's node array. Throws with a precise message on any problem.
 export function assertNodesArray(nodes, label = 'nodes config') {
-  if (!Array.isArray(nodes)) {
-    throw new Error(`${label} must be a JSON array`);
-  }
+  if (!Array.isArray(nodes)) throw new Error(`${label} must be a JSON array`);
   const seen = new Set();
   for (const node of nodes) {
-    if (!node || typeof node !== 'object' || typeof node.id !== 'string' || !node.id.trim()) {
-      throw new Error(`${label} contains a node without a valid string "id"`);
+    if (!node || typeof node !== 'object' || Array.isArray(node)) {
+      throw new Error(`${label}: every entry must be an object`);
     }
-    if (seen.has(node.id)) {
-      throw new Error(`${label} contains duplicate node id "${node.id}"`);
+    const id = typeof node.id === 'string' ? node.id.trim() : '';
+    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id)) {
+      throw new Error(`${label}: node id "${String(node.id).slice(0, 40)}" missing or invalid (lowercase letters, digits, hyphens)`);
     }
-    seen.add(node.id);
+    if (seen.has(id)) throw new Error(`${label}: duplicate node id "${id}"`);
+    seen.add(id);
+    const forbidden = FORBIDDEN_NODE_FIELDS.filter((f) => f in node);
+    if (forbidden.length > 0) {
+      throw new Error(`${label}: node "${id}" contains forbidden credential field(s): ${forbidden.join(', ')}. Credentials belong in the NODE_SECRETS_* secret.`);
+    }
+    if ('tier' in node) {
+      throw new Error(`${label}: node "${id}" must not declare "tier"; the tier comes from the variable name`);
+    }
+    if (typeof node.base_url !== 'string' || !node.base_url.startsWith('https://')) {
+      throw new Error(`${label}: node "${id}" needs an https:// base_url`);
+    }
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(node.base_url);
+    } catch {
+      throw new Error(`${label}: node "${id}" has an invalid base_url`);
+    }
+    if (parsedUrl.username || parsedUrl.password) {
+      throw new Error(`${label}: node "${id}" base_url must not contain username/password`);
+    }
+    if (node.models !== undefined && (typeof node.models !== 'object' || node.models === null || Array.isArray(node.models))) {
+      if (!Array.isArray(node.models)) throw new Error(`${label}: node "${id}" models must be an object { logical: upstream }`);
+    }
+    if (node.limits !== undefined) {
+      const c = node.limits?.concurrency;
+      if (c !== undefined && (!Number.isFinite(c) || c < 1)) {
+        throw new Error(`${label}: node "${id}" limits.concurrency must be >= 1`);
+      }
+    }
   }
 }
 
-// 按完整 Node 边界贪心拆分。返回分片 JSON 字符串数组。
-export function splitNodesIntoShards(nodes, maxBytes = SHARD_MAX_BYTES) {
-  assertNodesArray(nodes);
+// Validate the credential map { nodeId: credential }.
+export function assertSecretsObject(obj, label = 'node secrets') {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    throw new Error(`${label} must be a JSON object { nodeId: credential }`);
+  }
+  const seen = new Set();
+  for (const [id, credential] of Object.entries(obj)) {
+    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id)) {
+      throw new Error(`${label}: key "${id}" is not a valid node id`);
+    }
+    if (seen.has(id)) throw new Error(`${label}: duplicate key "${id}"`);
+    seen.add(id);
+    if (typeof credential !== 'string' || !credential.trim()) {
+      throw new Error(`${label}: credential for "${id}" must be a non-empty string`);
+    }
+  }
+}
+
+// Greedy split of ordered entries into JSON-array shards at entry boundaries.
+function splitEntries(entries, maxBytes) {
   const shards = [];
   let current = [];
-  let currentBytes = 2; // '[]'
-  for (const node of nodes) {
-    const encoded = JSON.stringify(node);
-    const encodedBytes = byteLength(encoded);
+  let currentBytes = 2; // "[]"
+  for (const [key, encoded, encodedBytes] of entries) {
     if (encodedBytes + 2 > maxBytes) {
-      throw new Error(
-        `Node "${node.id}" itself is ${encodedBytes} bytes and exceeds the ${maxBytes}-byte shard limit; ` +
-        'trim this node definition (it cannot be split across shards).'
-      );
+      throw new Error(`Entry "${key}" itself is ${encodedBytes} bytes and exceeds the ${maxBytes}-byte shard limit; trim this entry.`);
     }
-    const joiner = current.length ? 1 : 0; // comma
+    const joiner = current.length > 0 ? 1 : 0;
     if (current.length > 0 && currentBytes + joiner + encodedBytes > maxBytes) {
       shards.push(current);
       current = [];
       currentBytes = 2;
     }
-    current.push(node);
-    currentBytes += (current.length > 1 ? 1 : 0) + encodedBytes;
+    current.push(encoded);
+    currentBytes += joiner + encodedBytes;
   }
   if (current.length > 0) shards.push(current);
-  return shards.map((group) => JSON.stringify(group));
+  return shards.map((list) => '[' + list.join(',') + ']');
 }
 
-// 单个 Tier → { "TIERx_NODES_CONFIG_01": "...", ... }
-export function buildTierShardSecrets(tierNumber, nodes, maxBytes = SHARD_MAX_BYTES) {
-  const secrets = {};
-  const keys = [];
-  const shardValues = splitNodesIntoShards(nodes, maxBytes);
-  shardValues.forEach((value, i) => {
-    const key = shardKeyName(tierNumber, i + 1);
-    secrets[key] = value;
-    keys.push(key);
+function nodesToEntries(nodes) {
+  return nodes.map((node) => {
+    const encoded = JSON.stringify(node);
+    return [node.id, encoded, byteLength(encoded)];
   });
-  return { secrets, keys };
 }
 
-// 三个 Tier 统一入口。tiers: { 1?: nodes[], 2?: nodes[], 3?: nodes[] }
-export function buildShardPlan(tiers, existingSecretNames = null, maxBytes = SHARD_MAX_BYTES) {
+function secretsToEntries(obj) {
+  return Object.entries(obj).map(([id, credential]) => {
+    const encoded = JSON.stringify({ [id]: credential }).replace(/^\{|\}$/g, '');
+    return [id, encoded, byteLength(encoded)];
+  });
+}
+
+// Build the full deployment plan.
+// tiers: { 1: nodes[], 2?: nodes[], 3?: nodes[] }, secretsMap: { nodeId: credential }
+export function buildPlan({ tiers, secretsMap, existingVarNames = [], existingSecretNames = [], maxBytes = SHARD_MAX_BYTES }) {
+  for (const tierNumber of [1, 2, 3]) {
+    if (tiers[tierNumber]) assertNodesArray(tiers[tierNumber], `TIER${tierNumber} nodes config`);
+  }
+  if (secretsMap) assertSecretsObject(secretsMap);
+
+  // Cross-validation: every node needs a credential, warn on orphan credentials.
+  const nodeIds = new Set();
+  for (const tierNumber of [1, 2, 3]) {
+    for (const node of tiers[tierNumber] ?? []) nodeIds.add(node.id.trim());
+  }
+  if (secretsMap) {
+    for (const id of Object.keys(secretsMap)) {
+      if (!nodeIds.has(id)) throw new Error(`credential "${id}" has no matching node in any tier config`);
+    }
+    for (const id of nodeIds) {
+      if (!(id in secretsMap)) throw new Error(`node "${id}" has no credential in the node secrets file`);
+    }
+  }
+
+  const vars = {};
   const secrets = {};
-  const plannedKeys = [];
+  const plannedVars = [];
+  const plannedSecrets = [];
   const tierSummary = {};
+
   for (const tierNumber of [1, 2, 3]) {
     const nodes = tiers[tierNumber];
-    if (!nodes) continue;
-    assertNodesArray(nodes, `TIER${tierNumber} nodes config`);
-    const { secrets: tierSecrets, keys } = buildTierShardSecrets(tierNumber, nodes, maxBytes);
-    Object.assign(secrets, tierSecrets);
-    plannedKeys.push(...keys);
-    tierSummary[tierNumber] = { nodes: nodes.length, shards: keys.length };
+    if (!nodes || nodes.length === 0) continue;
+    const shards = splitEntries(nodesToEntries(nodes), maxBytes);
+    shards.forEach((value, i) => {
+      const key = shardKeyName('var', tierNumber, i + 1);
+      vars[key] = value;
+      plannedVars.push(key);
+    });
+    tierSummary[tierNumber] = { nodes: nodes.length, shards: shards.length };
   }
-  const staleKeys = computeStaleSecrets(existingSecretNames, plannedKeys);
-  return { secrets, plannedKeys, tierSummary, delete: staleKeys };
-}
 
-// 计算需要删除的旧 Secret：
-// - 超出本次计划的多余分片（如 _03 不再需要）；
-// - 旧版无后缀单变量（迁移到 _01 后删除）。
-// 只匹配本项目管理的 TIER[123]_NODES_CONFIG(_XX)，绝不触碰其他 Secret。
-export function computeStaleSecrets(existingSecretNames, plannedKeys) {
-  if (!existingSecretNames) return [];
-  const planned = new Set(plannedKeys);
-  return existingSecretNames
-    .filter((name) => MANAGED_SECRET_PATTERN.test(name) && !planned.has(name))
+  if (secretsMap && Object.keys(secretsMap).length > 0) {
+    const entries = Object.entries(secretsMap)
+      .sort(([a], [b]) => a.localeCompare(b));
+    // Shard whole-object boundaries: accumulate entries until byte budget hit.
+    const shards = [];
+    let currentEntries = [];
+    let currentBytes = 2;
+    for (const [id, credential] of entries) {
+      const pair = `"${id}":${JSON.stringify(credential)}`;
+      const joiner = currentEntries.length > 0 ? 1 : 0;
+      if (currentEntries.length > 0 && currentBytes + joiner + byteLength(pair) > maxBytes) {
+        shards.push(currentEntries);
+        currentEntries = [];
+        currentBytes = 2;
+      }
+      currentEntries.push(pair);
+      currentBytes += joiner + byteLength(pair);
+      if (byteLength(pair) + 2 > maxBytes) {
+        throw new Error(`Credential "${id}" is too large for a single ${maxBytes}-byte shard.`);
+      }
+    }
+    if (currentEntries.length > 0) shards.push(currentEntries);
+    shards.forEach((entries_, i) => {
+      const key = shardKeyName('secret', null, i + 1);
+      secrets[key] = '{' + entries_.join(',') + '}';
+      plannedSecrets.push(key);
+    });
+  }
+
+  const planned = new Set([...plannedVars]);
+  const deleteVars = [...new Set(existingVarNames)].filter((name) => MANAGED_VAR_PATTERN.test(name) && !planned.has(name)).sort();
+  const plannedS = new Set(plannedSecrets);
+  const deleteSecrets = [...new Set(existingSecretNames)]
+    .filter((name) => /^NODE_SECRETS_\d{2}$/.test(name) && !plannedS.has(name))
     .sort();
+
+  return { vars, secrets, plannedVars, plannedSecrets, deleteVars, deleteSecrets, tierSummary };
 }

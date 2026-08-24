@@ -1,59 +1,99 @@
-[CmdletBinding()]param()
-$ErrorActionPreference='Stop';$Root=Split-Path -Parent $PSScriptRoot;Set-Location $Root
-function Read-SecretText([string]$Prompt){$s=Read-Host $Prompt -AsSecureString;$p=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($s);try{[Runtime.InteropServices.Marshal]::PtrToStringBSTR($p)}finally{[Runtime.InteropServices.Marshal]::ZeroFreeBSTR($p)}}
-function Yes([string]$v){$v-match'^(y|yes)$'}
-npx --yes 'wrangler@4.114.0' whoami;if($LASTEXITCODE-ne0){throw '请先登录 Cloudflare。'}
-$workerName=(Get-Content 'wrangler.jsonc' -Raw -Encoding UTF8|ConvertFrom-Json).name
-Write-Host "目标 Worker：$workerName"
-$out=[ordered]@{GATEWAY_ACCESS_KEY=Read-SecretText '新的 GATEWAY_ACCESS_KEY';PRIMARY_API_TOKENS=Read-SecretText '新的 PRIMARY_API_TOKENS'}
-$out.PRIMARY_BASE_URL=(Read-Host 'PRIMARY_BASE_URL（留空清除）').Trim();if(!$out.PRIMARY_BASE_URL){$out.PRIMARY_BASE_URL=$null}
-if(!$out.GATEWAY_ACCESS_KEY-or!$out.PRIMARY_API_TOKENS){throw '必需 Secret 不能为空。'}
-$env:PRIMARY_API_TOKENS=$out.PRIMARY_API_TOKENS;$env:PRIMARY_BASE_URL=$out.PRIMARY_BASE_URL
-try{node scripts/validate-primary-config.mjs;if($LASTEXITCODE-ne0){throw 'Primary 配置无效。'}}finally{Remove-Item Env:PRIMARY_API_TOKENS,Env:PRIMARY_BASE_URL -ErrorAction SilentlyContinue}
-$mapping=(Read-Host 'MODEL_MAPPING JSON 文件路径（留空清除）').Trim();$out.MODEL_MAPPING=$null
-if($mapping){node scripts/validate-model-mapping.mjs $mapping;if($LASTEXITCODE-ne0){throw 'MODEL_MAPPING 无效。'};$out.MODEL_MAPPING=(Get-Content $mapping -Raw -Encoding UTF8).Trim()}
-$out.STRICT_MODEL_MAPPING=$(if(Yes(Read-Host '启用严格模型白名单？[y/N]')){'true'}else{'false'})
-$enable=Yes(Read-Host '启用 Fallback？[y/N]');$out.FALLBACK_ENABLED=$(if($enable){'true'}else{'false'});$out.FALLBACK_SECONDARY_MODEL='off'
-foreach($k in @('FALLBACK_API_TOKEN','FALLBACK_BASE_URL','FALLBACK_PRIMARY_MODEL','FALLBACK_PRIMARY_TOKEN','FALLBACK_PRIMARY_BASE_URL','FALLBACK_SECONDARY_TOKEN','FALLBACK_SECONDARY_BASE_URL')){$out[$k]=$null}
-if($enable){
- $out.FALLBACK_API_TOKEN=Read-SecretText 'FALLBACK_API_TOKEN';$out.FALLBACK_BASE_URL=(Read-Host 'FALLBACK_BASE_URL').Trim();$out.FALLBACK_PRIMARY_MODEL=(Read-Host 'FALLBACK_PRIMARY_MODEL').Trim();$s=(Read-Host 'FALLBACK_SECONDARY_MODEL（留空或 off）').Trim();if($s){$out.FALLBACK_SECONDARY_MODEL=$s}
- $env:FALLBACK_API_TOKEN=$out.FALLBACK_API_TOKEN;$env:FALLBACK_BASE_URL=$out.FALLBACK_BASE_URL;$env:FALLBACK_PRIMARY_MODEL=$out.FALLBACK_PRIMARY_MODEL;$env:FALLBACK_SECONDARY_MODEL=$out.FALLBACK_SECONDARY_MODEL
- try{node scripts/validate-fallback-config.mjs;if($LASTEXITCODE-ne0){throw 'Fallback 配置无效。'}}finally{Remove-Item Env:FALLBACK_API_TOKEN,Env:FALLBACK_BASE_URL,Env:FALLBACK_PRIMARY_MODEL,Env:FALLBACK_SECONDARY_MODEL -ErrorAction SilentlyContinue}
-}
-$temp=Join-Path ([IO.Path]::GetTempPath()) ('gateway-reconfigure-'+[guid]::NewGuid().ToString('N')+'.json')
-# ---- 节点配置：统一自动拆分为 TIERx_NODES_CONFIG_01.. 分片，并迁移/清理旧格式 ----
-$updNodes=Yes(Read-Host '更新节点配置（TIERx_NODES_CONFIG_XX 分片）？[y/N]')
-$nodesPlan=$null;$secretsList=$null;$nodesBulk=$null
-if($updNodes){
- $tier1File=(Read-Host 'tier-1 节点配置 JSON 文件路径（必需）').Trim()
- if(!$tier1File -or !(Test-Path $tier1File)){throw 'tier-1 节点配置文件不存在。'}
- node scripts/manage-nodes-config.mjs validate --file $tier1File;if($LASTEXITCODE-ne0){throw 'tier-1 节点配置无效。'}
- $planArgs=@('plan','--tier1',$tier1File)
- foreach($n in 2,3){
-  $p=(Read-Host "tier-$n 节点配置 JSON 文件路径（可选，留空跳过）").Trim()
-  if($p){
-   if(!(Test-Path $p)){throw "tier-$n 节点配置文件不存在。"}
-   node scripts/manage-nodes-config.mjs validate --file $p;if($LASTEXITCODE-ne0){throw "tier-$n 节点配置无效。"}
-   $planArgs+=@("--tier$n",$p)
-  }
- }
- $secretsList=Join-Path ([IO.Path]::GetTempPath()) ('gateway-secrets-'+[guid]::NewGuid().ToString('N')+'.json')
- & npx --yes 'wrangler@4.114.0' 'secret' 'list'|Set-Content -Path $secretsList -Encoding UTF8;if($LASTEXITCODE-ne0){throw '获取 Secret 列表失败。'}
- $nodesPlan=Join-Path ([IO.Path]::GetTempPath()) ('gateway-nodes-plan-'+[guid]::NewGuid().ToString('N')+'.json')
- node scripts/manage-nodes-config.mjs @planArgs @('--existing',$secretsList,'--out',$nodesPlan);if($LASTEXITCODE-ne0){throw '节点配置分片失败。'}
-}
-try{[IO.File]::WriteAllText($temp,($out|ConvertTo-Json -Depth 30),[Text.UTF8Encoding]::new($false));if(-not(Yes(Read-Host '确认覆盖上述 Worker 的运行时配置？[y/N]'))){throw '已取消。'};npx --yes 'wrangler@4.114.0' secret bulk $temp;if($LASTEXITCODE-ne0){throw '配置更新失败。'}}finally{if(Test-Path$temp){Remove-Item$temp-Force};$out.Clear()}
-if($nodesPlan){
- try{
-  if(-not(Yes(Read-Host '确认写入节点分片并清理多余旧分片/旧单变量？[y/N]'))){throw '已取消节点配置更新。'}
-  $plan=Get-Content $nodesPlan -Raw -Encoding UTF8|ConvertFrom-Json
-  $nodesBulk=Join-Path ([IO.Path]::GetTempPath()) ('gateway-nodes-bulk-'+[guid]::NewGuid().ToString('N')+'.json')
-  [IO.File]::WriteAllText($nodesBulk,($plan.secrets|ConvertTo-Json -Depth 30),[Text.UTF8Encoding]::new($false))
-  npx --yes 'wrangler@4.114.0' secret bulk $nodesBulk;if($LASTEXITCODE-ne0){throw '节点分片写入失败。'}
-  foreach($k in $plan.delete){'y'|npx --yes 'wrangler@4.114.0' 'secret' 'delete' $k|Out-Null;if($LASTEXITCODE-ne0){throw "删除旧 Secret $k 失败。"};Write-Host "已删除旧 Secret：$k"}
- }finally{
-  foreach($f in @($nodesPlan,$secretsList,$nodesBulk)){if($f -and(Test-Path $f)){Remove-Item $f -Force}}
- }
-}
-Write-Host '配置已更新。'
+[CmdletBinding()]
+param()
+$ErrorActionPreference = 'Stop'
+$Root = Split-Path -Parent $PSScriptRoot
+Set-Location $Root
 
+function Read-SecretText([string]$Prompt) {
+  $s = Read-Host $Prompt -AsSecureString
+  $p = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($s)
+  try { [Runtime.InteropServices.Marshal]::PtrToStringBSTR($p) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($p) }
+}
+function Confirm-Yes([string]$Value) { return $Value -match '^(y|yes)$' }
+function Read-FilePath([string]$Prompt, [bool]$Required) {
+  $p = (Read-Host $Prompt).Trim()
+  if ($p -eq '' -and -not $Required) { return $null }
+  if ($p -eq '' -or !(Test-Path $p)) { throw "file not found: $p" }
+  return (Resolve-Path $p).Path
+}
+
+npx --yes 'wrangler@4.114.0' whoami
+if ($LASTEXITCODE -ne 0) { throw 'Login to Cloudflare first (npm run cf:login).' }
+$workerName = ((Get-Content (Join-Path $Root 'wrangler.jsonc') -Raw -Encoding UTF8 | ConvertFrom-Json).name)
+Write-Host "Target worker: $workerName"
+
+$userConfigPath = Join-Path $Root 'wrangler.user.jsonc'
+
+Write-Host '==> Node configuration update'
+$tierFiles = @{}
+foreach ($n in 1, 2, 3) {
+  $required = ($n -eq 1)
+  $p = Read-FilePath "tier-$n node config JSON file$(if(-not $required){' (optional, empty to skip)'})" $required
+  if ($p) { $tierFiles[$n] = $p }
+}
+$secretsFile = Read-FilePath 'node secrets JSON file ({ "node-id": "credential" })' $true
+
+# Existing managed names: vars from local wrangler.user.jsonc (if present),
+# secrets from `wrangler secret list`.
+$existingVarNames = @()
+if (Test-Path $userConfigPath) {
+  $prevVars = ((Get-Content $userConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json).vars)
+  if ($prevVars) { $existingVarNames = @($prevVars.PSObject.Properties.Name) }
+}
+
+$tmpFiles = @()
+try {
+  $existingVarsFile = Join-Path ([IO.Path]::GetTempPath()) ("gateway-vars-" + [guid]::NewGuid().ToString('N') + '.json')
+  [IO.File]::WriteAllText($existingVarsFile, ($existingVarNames | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+  $tmpFiles += $existingVarsFile
+
+  $planFile = Join-Path ([IO.Path]::GetTempPath()) ("gateway-plan-" + [guid]::NewGuid().ToString('N') + '.json')
+  $tmpFiles += $planFile
+
+  $planArgs = @('plan', '--secrets', $secretsFile, '--existing-vars', $existingVarsFile, '--out', $planFile)
+  foreach ($n in 1, 2, 3) { if ($tierFiles[$n]) { $planArgs += @("--tier$n", $tierFiles[$n]) } }
+  node scripts/manage-nodes-config.mjs @planArgs
+  if ($LASTEXITCODE -ne 0) { throw 'configuration planning failed.' }
+
+  $plan = Get-Content $planFile -Raw -Encoding UTF8 | ConvertFrom-Json
+
+  $userConfig = if (Test-Path $userConfigPath) {
+    Get-Content $userConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  } else {
+    Get-Content (Join-Path $Root 'wrangler.jsonc') -Raw -Encoding UTF8 | ConvertFrom-Json
+  }
+  $varsMap = [ordered]@{}
+  foreach ($prop in $plan.vars.PSObject.Properties) { $varsMap[$prop.Name] = $prop.Value }
+  $userConfig | Add-Member -NotePropertyName vars -NotePropertyValue $varsMap -Force
+  [IO.File]::WriteAllText($userConfigPath, ($userConfig | ConvertTo-Json -Depth 30) + "`n", [Text.UTF8Encoding]::new($false))
+
+  $bulkPath = Join-Path ([IO.Path]::GetTempPath()) ("gateway-secrets-" + [guid]::NewGuid().ToString('N') + '.json')
+  $tmpFiles += $bulkPath
+  $bulk = [ordered]@{}
+  if (Confirm-Yes (Read-Host 'Rotate GATEWAY_ACCESS_KEY? [y/N]')) {
+    $bulk['GATEWAY_ACCESS_KEY'] = Read-SecretText 'new GATEWAY_ACCESS_KEY'
+  }
+  foreach ($prop in $plan.secrets.PSObject.Properties) { $bulk[$prop.Name] = $prop.Value }
+  [IO.File]::WriteAllText($bulkPath, ($bulk | ConvertTo-Json -Depth 30), [Text.UTF8Encoding]::new($false))
+
+  Write-Host "==> Deploying updated variables and code for '$workerName'"
+  & npx --yes 'wrangler@4.114.0' deploy -c 'wrangler.user.jsonc' --keep-vars
+  if ($LASTEXITCODE -ne 0) { throw 'deploy failed.' }
+
+  Write-Host '==> Writing secrets'
+  & npx --yes 'wrangler@4.114.0' secret bulk $bulkPath
+  if ($LASTEXITCODE -ne 0) { throw 'secret bulk failed.' }
+
+  foreach ($key in $plan.deleteSecrets) {
+    'y' | & npx --yes 'wrangler@4.114.0' secret delete $key | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "failed to delete stale secret $key" }
+    Write-Host "deleted stale secret: $key"
+  }
+  foreach ($key in $plan.deleteVars) {
+    Write-Host "note: variable '$key' is no longer planned; remove it in the Cloudflare dashboard if still present."
+  }
+}
+finally {
+  foreach ($f in $tmpFiles) { if ($f -and (Test-Path $f)) { Remove-Item $f -Force } }
+}
+Write-Host 'Configuration updated.'

@@ -1,8 +1,8 @@
 {
   "name": "ai-gateway",
-  "version": "5.14.0",
+  "version": "6.0.0",
   "private": true,
-  "description": "Personal AI Agent Node Scheduler. Cloudflare Workers-based AI Gateway with tier-1/tier-2/tier-3 node pools.",
+  "description": "Free-API-first AI gateway for Cloudflare Workers: aggregate many free API keys into one stable endpoint with node-local cooldowns, tier fallback, and circuit-breaker recovery.",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -10,17 +10,18 @@
   },
   "scripts": {
     "build": "npm run verify",
-    "check": "node --check src/index.js",
+    "check": "node scripts/check-syntax.mjs",
     "check:version": "node scripts/version-check.mjs",
     "check:links": "node scripts/link-check.mjs",
-    "test": "node scripts/config-validation-test.mjs && node scripts/nodes-shard-test.mjs && node scripts/smoke-test.mjs && node scripts/hardening-test.mjs && node scripts/scheduler-test.mjs && node scripts/reliability-test.mjs",
-    "test:scheduler": "node scripts/scheduler-test.mjs",
-    "test:reliability": "node scripts/reliability-test.mjs",
+    "test": "node scripts/nodes-shard-test.mjs && node scripts/reliability-unit-test.mjs && node scripts/integration-test.mjs",
+    "test:integration": "node scripts/integration-test.mjs",
+    "bench": "node benchmark/benchmark.mjs --quick",
+    "bench:full": "node benchmark/benchmark.mjs",
     "security:scan": "node scripts/secret-scan.mjs",
-    "verify": "npm run check && npm run check:version && npm run check:deployment-config && npm run check:links && npm test && npm run security:scan",
+    "verify": "npm run check && npm run check:version && npm run check:deployment-config && npm run test && npm run security:scan",
     "checksums": "node scripts/generate-checksums.mjs",
     "dev": "node scripts/run-wrangler.mjs dev",
-    "deploy": "npx --yes wrangler@4.114.0 deploy --keep-vars",
+    "deploy": "node scripts/run-wrangler.mjs deploy --keep-vars",
     "tail": "npx --yes wrangler@4.114.0 tail",
     "cf:login": "npx --yes wrangler@4.114.0 login",
     "cf:whoami": "npx --yes wrangler@4.114.0 whoami",
@@ -33,10 +34,7 @@
     "ai-gateway",
     "openai-api",
     "anthropic-api",
-    "claude-code",
-    "llm",
-    "api-proxy",
-    "edge-computing",
-    "serverless"
+    "llm-router",
+    "api-proxy"
   ]
 }

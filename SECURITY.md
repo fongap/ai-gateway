@@ -20,14 +20,18 @@ If private advisories are unavailable, open a public Issue containing only a req
 
 ## Deployment responsibilities
 
-- Store `GATEWAY_ACCESS_KEY`, `PRIMARY_API_TOKENS`, and Fallback tokens as Cloudflare Secrets;
-- never commit `.dev.vars`, `.env`, or `secrets*.json`;
+- Store `GATEWAY_ACCESS_KEY` and all `NODE_SECRETS_*` shards as Cloudflare Secrets; node configs (`TIERx_NODES_CONFIG_*`) are plain variables and must never contain credential material;
+- never commit `.dev.vars`, `.env`, `secrets*.json`, or `wrangler.user.jsonc`;
 - never pass credentials through URL query parameters;
 - keep `/health` and `/metrics` protected;
 - revoke and rotate exposed or suspected credentials immediately;
 - review Worker logs before sharing them publicly.
 
-## 中文说明
+## Gateway-enforced protections
 
-仅维护主分支和最新发布版本。漏洞应通过 GitHub Security Advisory 私密报告，不要在公开 Issue 中粘贴 Token、完整请求头、私有地址、用户请求正文或可直接利用的漏洞细节。
-
+- Timing-safe gateway auth (Bearer / `x-api-key`);
+- strict upstream header allowlist — client credentials, cookies, forwarded and CF-private headers are never relayed;
+- HTTPS-only upstreams by default; `redirect: 'manual'` so redirects never carry credentials;
+- bounded request/response reads;
+- CORS disabled unless `ALLOWED_ORIGIN` is set explicitly;
+- credentials are excluded from every response, diagnostic endpoint, and log line.

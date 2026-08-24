@@ -9,7 +9,7 @@ const releaseDir = path.join(root, 'release');
 const stageRoot = path.join(releaseDir, '.staging');
 const stageDir = path.join(stageRoot, baseName);
 const excludedDirs = new Set(['.git', 'node_modules', '.wrangler', '.wrangler-dry-run', 'release']);
-const excludedNames = new Set(['.dev.vars', '.wrangler-dry-run-config.jsonc']);
+const excludedNames = new Set(['.dev.vars', '.wrangler-dry-run-config.jsonc', 'wrangler.user.jsonc']);
 
 fs.rmSync(releaseDir, { recursive: true, force: true });
 fs.mkdirSync(stageDir, { recursive: true });

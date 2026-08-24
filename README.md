@@ -1,361 +1,163 @@
 [简体中文](README.md) | [English](README_EN.md)
 
-# AI Agent Node Scheduler
+# ai-gateway
 
-**Personal AI Agent Resource Scheduling Layer**
-
+**Free-API-first AI Gateway for Cloudflare Workers**
 
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](https://developers.cloudflare.com/workers/)
 [![License](https://img.shields.io/badge/license-MIT-2ea44f)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-43853d?logo=node.js&logoColor=white)](package.json)
 
-运行在 Cloudflare Workers 上的个人 AI Agent 资源调度层。以 `tier-1 / tier-2 / tier-3` 三层节点模型管理多个 AI 服务商资源，为 Coding Agent、办公 Agent 和本地 AI 应用提供低成本、高可靠、可自动故障切换的统一入口。
+> ⚠️ **Breaking Change**：本版本重新设计了 Node 配置与 Secret 管理（`TIERx_NODES_CONFIG_*` 普通变量 + `NODE_SECRETS_*` Secret），不再兼容旧的 `token@base_url` / 内嵌凭据格式。旧部署请按下方说明重新配置。
+
+## 它解决什么问题
+
+把多个容易限流、失效、抖动的免费 API / API Key，聚合成一个尽可能稳定、轻量、自动恢复的统一 AI API：
+
+```text
+多个免费 API / Key
+        ↓
+   ai-gateway
+        ↓
+节点选择 / 负载分散（priority + concurrency）
+429 隔离 / Retry-After 冷却
+失败切换 / Circuit Breaker
+自动恢复 / HALF_OPEN 单探测
+流式 First Event Guard
+        ↓
+客户端只看到一个稳定 Endpoint
+```
+
+设计决策只回答四个问题：是否提高免费 API 利用率？是否提高稳定性？是否降低 Worker 自身开销？代码是否更可预测？
 
 - OpenAI Chat Completions：`/v1/chat/completions`
 - Anthropic Messages / Claude Code：`/v1/messages`
 - Anthropic Token Count：`/v1/messages/count_tokens`
 
-## 为什么需要它
+不做数据库、Redis、KV 状态同步、多租户、计费、Semantic Cache。运行状态是 Worker isolate 内存中的 best-effort 状态。
 
-AI Agent 需要同时管理多个模型供应商、不同资源等级、不同接口稳定性和临时限流。直接在每个 Agent 中维护这些差异，会导致配置分散、切换困难，并把故障处理逻辑重复写入多个应用。
-
-AI Agent Node Scheduler 提供一个统一入口，用于：
-
-- 将服务商和 API Key 隐藏到 Node 抽象之后，避免架构被特定免费 API 绑死；
-- 以 `tier-1 → tier-2 → tier-3` 三层资源池自动调度，优先使用免费资源；
-- 在节点异常时自动切换至同层或更高层节点；
-- 统一 OpenAI 与 Anthropic 两种接入方式；
-- 面向 Agent 稳定运行，支持长连接、工具调用和流式响应；
-- 在不引入独立服务器或数据库的情况下完成边缘部署。
-
-## 架构
-
-```
-Logical Model (MODELS_CONFIG)
-    ↓
-Policy (POLICIES_CONFIG)
-    ↓
-Node Scheduler
-    ↓
-Node Pool (TIER1_NODES_CONFIG_01..)
-    ↓
-Provider / Account / API Key (token 内嵌在节点中)
-```
-
-### 三层 Node Pool
-
-| 层级 | 定位 | 特点 | 默认用途 |
-|------|------|------|----------|
-| `tier-1` | 免费资源池 | 成本最低，稳定性不确定 | 默认优先 |
-| `tier-2` | 付费资源池 | 稳定性较高，成本可接受 | 主要 fallback |
-| `tier-3` | 增强资源池 | 最高可靠性，成本最高 | 关键任务、Coding 长任务 |
-
-默认调度顺序：`tier-1 → tier-2 → tier-3`。禁止因为 tier-2/tier-3 更快而自动抢占 tier-1。
-
-### 代码结构
-
-```text
-src/
-├─ index.js                   主入口，Node Scheduler 请求处理
-├─ config/
-│  ├─ nodes.js                Node 配置加载 + 节点模型映射
-│  ├─ models.js               Model 逻辑模型加载
-│  ├─ policies.js             Policy 策略加载
-│  └─ node-state.js           Node 运行时状态管理
-├─ scheduler/
-│  ├─ selector.js             Node 选择器（按 tier/priority/health/latency）
-│  └─ router.js               路由规划
-├─ reliability/
-│  ├─ health.js               健康检查响应
-│  ├─ circuit.js              轻量 Circuit Breaker
-│  └─ retry.js                Retry Budget + 超时拆分
-├─ stream/
-│  └─ guard.js                First Event Guard
-└─ protocol/
-   ├─ openai.js               OpenAI 协议工具
-   └─ anthropic.js            Anthropic 协议工具
-```
-
-## 核心能力
-
-- **Node 三层调度**：tier-1/tier-2/tier-3 资源池，按 workload/model/tier/priority/cooldown/circuit/concurrency/health/latency 排序；
-- OpenAI 与 Anthropic 双协议接入；
-- 默认启用路径与方法白名单；
-- 节点级 429 冷却与 Retry-After 支持，不整个 Provider 禁用；
-- 503/502/504 轻量 Circuit Breaker，3 次同类失败后短暂熔断；
-- First Event Guard：流式请求在首个有效 event 前允许 failover，之后禁止透明切换；
-- 超时拆分：`UPSTREAM_HEADERS_TIMEOUT` / `FIRST_EVENT_TIMEOUT` / `STREAM_IDLE_TIMEOUT`；
-- Retry Budget：tier-1 ≤2、tier-2 ≤1、tier-3 ≤1，总计 ≤5；
-- 客户端取消不处罚节点；
-- 按上游 hostname 配置模型映射、能力和独立 `invoke_url`；
-- 支持普通响应、流式响应、图片和工具调用转换；
-- 提供公开的 `/version`；
-- 提供鉴权保护且支持多端点容错的 `/v1/models`；
-- 提供鉴权保护的 `/health` 与 `/metrics`；
-- 可选接入 Cloudflare Analytics Engine。
-
-## 适用边界
-
-该项目用于把多个 OpenAI 兼容上游统一为一个稳定入口。它不是 Anthropic 官方代理，也不能让第三方模型自动获得 Anthropic 原生 thinking 签名、精确 Token 统计或全部协议语义。
-
-`/health` 与 `/metrics` 展示的是当前 Worker isolate 的局部运行状态，不是 Cloudflare 全球节点聚合统计。Node 运行状态只保存在 Worker 内存中，不使用 KV、D1 或 Durable Objects。
-
-## 最快部署
-
-### Windows PowerShell
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\scripts\install.ps1
-```
-
-### Linux / macOS
+## 快速开始
 
 ```bash
-chmod +x scripts/*.sh
-./scripts/install.sh
+git clone https://github.com/fongap/ai-gateway.git
+cd ai-gateway
+npm ci
+sh scripts/install.sh     # Windows: powershell scripts/install.ps1
 ```
 
-安装脚本会完成 Node.js 检查、完整测试、Wrangler dry-run、Cloudflare 账户确认、配置校验、节点配置按完整 Node 边界自动分片（`TIER1_NODES_CONFIG_01..`）、临时 Secrets 文件部署和可选在线验证。临时文件会在结束后删除。
+install 会引导你完成：Worker 命名 → 项目校验 → Cloudflare 登录 → 输入 Node 配置 JSON → 输入 Credential JSON → 分片校验 → 部署 → 写入 Secrets → 在线验证。
 
-真实凭据不会写入仓库。
-
-### 已有 Worker 的更新与重新配置
-
-只更新代码并保留现有运行时变量和 Secret：
-
-```powershell
-.\scripts\update.ps1
-```
-
-```bash
-./scripts/update.sh
-```
-
-修改密钥、模型映射或 Fallback：
-
-```powershell
-.\scripts\reconfigure.ps1
-```
-
-```bash
-./scripts/reconfigure.sh
-```
-
-`wrangler.jsonc` 已声明 `keep_vars: true`，代码更新不会读取或删除已有 Secret。首次部署不要求预先存在 Secret；未完成配置时，Worker 会正常上线，但受保护接口会返回明确的配置错误。
-
-## 从 GitHub 自动部署到 Cloudflare
-
-### 单个 Worker
-
-1. 将本仓库推送到 GitHub；
-2. 在 Cloudflare 控制台创建或选择目标 Worker；
-3. 在 Worker 的 **Settings → Builds** 中连接本仓库和生产分支 `main`；
-4. 使用以下构建配置：
-
-```text
-Root directory: /
-Build command: npm run build
-Deploy command: npx wrangler deploy
-Non-production deploy command: npx wrangler versions upload
-```
-
-5. 点击 **Save and Deploy**，先完成 Worker 的首次部署；
-6. 打开 `https://YOUR-WORKER.workers.dev/`，此时会显示"Worker 已部署，等待完成配置"的初始化页面；
-7. 在该 Worker 的 **Settings → Variables and Secrets** 中添加 `GATEWAY_ACCESS_KEY` 与 `TIER1_NODES_CONFIG_01`，类型选择 **Secret**，然后点击 **Deploy**；
-8. 配置生效后，初始化页面会在 5 秒内自动刷新到正常网关主页。
-
-### 一个仓库部署多个 Workers
-
-相同源码可以直接绑定多个已有 Worker，不需要复制仓库。每个 Worker 必须在自己的 **Settings → Variables and Secrets** 中独立配置运行时 Secret。
-
-详细步骤见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
-
-## 配置
-
-通过 JSON Secret 配置完整的 Node 调度系统。节点配置按层拆分为固定两位编号的分片（每片 ≤4500 bytes，自动按完整 Node 边界拆分）：
-
-| 变量 | 说明 |
-|------|------|
-| `TIER1_NODES_CONFIG_01` | tier-1 层节点定义分片 1（token 内嵌） |
-| `TIER1_NODES_CONFIG_02` ... | tier-1 层节点较多时的后续分片，编号连续 |
-| `TIER2_NODES_CONFIG_01` ... | tier-2 层节点定义分片（可选） |
-| `TIER3_NODES_CONFIG_01` ... | tier-3 层节点定义分片（可选） |
-| `MODELS_CONFIG` | JSON 对象，逻辑模型到 workload/policy 的映射 |
-| `POLICIES_CONFIG` | JSON 对象，策略定义 |
-
-**TIER1_NODES_CONFIG_01 示例：**
+### Node 配置（普通变量，不含任何密钥）
 
 ```json
 [
-  {"id":"tier-1-node-01","tier":"tier-1","token":"sk-xxx@https://provider-a/v1","models":{"general-air":"tier-1-provider/model-air","code-pro":"tier-1-provider/code-pro"}}
+  {
+    "id": "nvidia-01",
+    "provider": "nvidia",
+    "base_url": "https://integrate.api.nvidia.com/v1",
+    "priority": 10,
+    "models": { "general-air": "model-a", "code-pro": "model-b" },
+    "limits": { "concurrency": 1 }
+  }
 ]
 ```
 
-配置较大时由安装脚本按完整 Node 边界自动拆分为：
+| 字段 | 说明 |
+|------|------|
+| `id` | 稳定主键；`^[a-z0-9][a-z0-9-]{0,63}$`；全仓库唯一 |
+| `provider` | 可选标签，用于诊断展示 |
+| `base_url` | 必须 `https://`；不允许内嵌用户名/密码 |
+| `priority` | 数值越小优先级越高，默认 100 |
+| `models` | 逻辑模型 → 上游模型映射；空对象 = 通配 |
+| `limits.concurrency` | 节点并发上限，默认 2 |
+
+配置变量命名：
 
 ```text
-TIER1_NODES_CONFIG_01
-TIER1_NODES_CONFIG_02
-TIER1_NODES_CONFIG_03
-...
+TIER1_NODES_CONFIG_01, TIER1_NODES_CONFIG_02, ...   ← tier-1（第一资源池）
+TIER2_NODES_CONFIG_01, ...                          ← tier-2（次级资源池）
+TIER3_NODES_CONFIG_01, ...                          ← tier-3（最终兜底）
+NODE_SECRETS_01, NODE_SECRETS_02, ...               ← Secret：{ "node-id": "credential" }
+GATEWAY_ACCESS_KEY                                  ← Secret：客户端访问密钥
 ```
 
-运行时按编号数值顺序加载并透明合并为一个统一的节点池，不影响 tier、provider、priority、models、并发、冷却、熔断、重试预算等任何调度语义。
+- Tier 只由变量前缀决定；节点 JSON 中出现 `tier` 字段会被拒绝。
+- 单片上限 4500 字节（Cloudflare 变量限制为 5 KB，留有余量）；分片按完整 Node 边界切分。
+- 部署前校验：Duplicate ID、Missing Credential、Orphan Credential、Invalid URL、非法字段都会提前失败。
 
-**MODELS_CONFIG 示例：**
+### 客户端接入
 
-```json
-{
-  "general-air": {"workload":"general","policy":"general-fast"},
-  "code-pro": {"workload":"coding","policy":"coding-stable"},
-  "code-max": {"workload":"coding","policy":"coding-stable"}
-}
-```
+OpenAI 兼容客户端 Base URL 使用网关地址的 `/v1`；Claude Code 设置 `ANTHROPIC_BASE_URL` 为网关地址（不带 `/v1`），`ANTHROPIC_AUTH_TOKEN` 为 `GATEWAY_ACCESS_KEY`。
 
-**POLICIES_CONFIG 示例：**
+## 调度行为
 
-```json
-{
-  "general-fast": {"tiers":["tier-1","tier-2"],"max_attempts":3,"retry_budget":{"tier-1":2,"tier-2":1}},
-  "coding-stable": {"tiers":["tier-1","tier-2","tier-3"],"max_attempts":4,"retry_budget":{"tier-1":2,"tier-2":1,"tier-3":1}}
-}
-```
+| 场景 | 行为 |
+|------|------|
+| 选择 | 同层内单次 O(n) 扫描：priority ASC → activeRequests ASC → health DESC → latency ASC |
+| 并发分散 | 多个 concurrency=1 的节点会自然摊开并发请求 |
+| 429 | 只冷却当前节点，优先读取 `Retry-After`（秒或 HTTP-date，钳制 1s–600s），同层其他节点继续服务 |
+| 401/403 | 视为凭据问题，该节点长冷却并退出当前请求候选 |
+| 400/413/415/422 | 请求本身错误，立即返回，不换节点重放 |
+| 5xx/网络/超时 | 失败计数 → 同层轮换 → 连续 3 次 OPEN 熔断 30s |
+| Tier fallback | 仅当当前层没有任何 Eligible Node 时才进入下一层 |
+| 自动恢复 | 冷却到期自动回池；OPEN → HALF_OPEN 单探测 → 成功 CLOSED |
+| 流式 | 首个有效事件前可切换节点；之后绝不透明切换 |
 
-配置示例文件见 `config/nodes.example.json`、`config/models.example.json`、`config/policies.example.json`。
+Circuit 是连续失败状态机（非滑动窗口）：CLOSED →(连续 3 次 5xx/网络/超时)→ OPEN →(30s)→ HALF_OPEN → 单探测 → 成功 CLOSED / 失败重新 OPEN。429 与 401 不计入熔断。
 
-### Node 命名规范
+## 配置状态
 
-统一格式：`{tier}-node-{number}`
+| 状态 | 含义 |
+|------|------|
+| `unconfigured` | 关键配置不存在 |
+| `invalid` | 存在配置但无法构造任何可用 Node（含 Duplicate ID 等结构性冲突） |
+| `degraded` | 部分 Node 无效但仍可服务 |
+| `ready` | 全部声明节点可用 |
 
-```
-tier-1-node-01
-tier-1-node-02
-tier-2-node-01
-tier-3-node-01
-```
+`GET /health`（需鉴权）返回每个节点的健康、冷却、熔断与并发快照及配置诊断信息。
 
-禁止使用 `key1`、`token1`、`provider-key1`、`backup-key` 等命名。Node ID 会出现在日志、错误和健康状态中，必须人工可读。
+## 运行参数（全部可选）
 
-## 客户端调用
+| 变量 | 默认 | 说明 |
+|------|------|------|
+| `MAX_BODY_BYTES` | 20 MiB | 请求体上限 |
+| `UPSTREAM_HEADERS_TIMEOUT_MS` | 120000 (5s–600s) | 上游响应头超时 |
+| `FIRST_EVENT_TIMEOUT_MS` | 60000 (5s–600s) | 流式首事件超时 |
+| `STREAM_IDLE_TIMEOUT_MS` | 120000 (10s–600s) | 流式空闲超时 |
+| `RATE_LIMIT_COOLDOWN_MS` | 60000 (1s–600s) | 无 Retry-After 时的 429 冷却 |
+| `AUTH_FAIL_COOLDOWN_MS` | 3600000 (1min–7d) | 401/403 凭据冷却 |
+| `ALLOWED_ORIGIN` | 未设置 | 未设置时 CORS 完全关闭；设置具体 origin 或 `*` 开启 |
+| `EXPOSE_UPSTREAM_INFO` | false | true 时在诊断中暴露上游 host/path |
+| `FAKE_STREAM_PROTECTION` | false | 非 stream 请求转上游流式再重组 |
+| `ALLOW_INSECURE_HTTP_UPSTREAM` | false | 允许 http:// 上游（不推荐） |
+| `MODELS_CONFIG` | — | `{ "逻辑模型": { "policy": "策略名" } }` |
+| `POLICIES_CONFIG` | — | `{ "策略名": { "max_attempts": 5 } }` |
+| `LOG_LEVEL` | info | none/error/info/debug |
 
-### OpenAI 兼容
+## 端点
 
-```bash
-curl https://YOUR-WORKER.workers.dev/v1/chat/completions \
-  -H "Authorization: Bearer YOUR_GATEWAY_ACCESS_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"general-air","messages":[{"role":"user","content":"Hello"}]}'
-```
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/` | Dashboard（浏览器） |
+| GET | `/version` | 版本与配置状态（公开） |
+| GET | `/health` `/metrics` `/v1/models` | 诊断端点（需鉴权） |
+| POST | `/v1/chat/completions` | OpenAI Chat Completions |
+| POST | `/v1/messages` `/v1/messages/count_tokens` | Anthropic Messages |
 
-### Claude Code
+## 安全模型
 
-```json
-{
-  "env": {
-    "ANTHROPIC_BASE_URL": "https://YOUR-WORKER.workers.dev",
-    "ANTHROPIC_AUTH_TOKEN": "YOUR_GATEWAY_ACCESS_KEY",
-    "ANTHROPIC_MODEL": "code-pro"
-  }
-}
-```
+- 客户端鉴权：Bearer 或 `x-api-key`，SHA-256 摘要 timing-safe 比较。
+- Header allowlist：客户端的 Cookie / Forwarded / CF 私有头等不会转发给上游；上游 Authorization 只由 Runtime Node credential 生成。
+- 上游仅允许 `https://`（可显式放开 http），`redirect: 'manual'` 禁止带凭据跟随重定向。
+- Credential 永不出现在任何响应、日志或诊断端点中。
+- 平台层防护建议使用 Cloudflare WAF / Rate Limiting Rules（以 [官方文档](https://developers.cloudflare.com/waf/) 当前能力为准），Worker 内不维护全局限流状态。
 
-## 诊断接口
+## 性能
 
-### 查看版本
+调度候选选择是每次尝试前的单次 O(n) 扫描；静态配置在 isolate 内解析一次；SSE 事件全程只解析一次。`node benchmark/benchmark.mjs --quick` 可在本机测量 Gateway 相对直连 Mock Upstream 的附加开销（p50/p95/p99/RPS）。README 不发布跨项目绝对性能对比。
 
-```bash
-curl https://YOUR-WORKER.workers.dev/version
-```
+更多内容见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)、[docs/CONFIGURATION.md](docs/CONFIGURATION.md)、[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
 
-### 模型列表
+## License
 
-```bash
-curl https://YOUR-WORKER.workers.dev/v1/models \
-  -H "Authorization: Bearer YOUR_GATEWAY_ACCESS_KEY"
-```
-
-### 健康检查
-
-```bash
-curl https://YOUR-WORKER.workers.dev/health \
-  -H "Authorization: Bearer YOUR_GATEWAY_ACCESS_KEY"
-```
-
-### Metrics
-
-```bash
-curl https://YOUR-WORKER.workers.dev/metrics \
-  -H "Authorization: Bearer YOUR_GATEWAY_ACCESS_KEY"
-```
-
-`/health` 和 `/metrics` 同时提供客户端请求统计和各节点的尝试数、成功数、失败数、活动连接和平均延迟。一次客户端请求可能产生多次节点尝试。所有数据随 isolate 回收而重置。
-
-## 可靠性机制
-
-### 429 处理
-
-429 视为 Node 级限制：单个节点冷却，切换至同层其他节点或更高层。支持 `Retry-After` 头。不整个 Provider 禁用。
-
-### 503 熔断
-
-503/502/504 视为节点或 Provider 异常。3 次同类失败后轻量 Circuit Breaker 开启（30 秒），之后进入 half-open 状态试探。不一次失败永久禁用。
-
-### First Event Guard
-
-流式请求中 HTTP 200 不代表成功。Gateway 等待第一个有效 event 后才确认成功并提交给客户端。首 event 前允许 failover（包括空流、连接重置、畸形 SSE、超时）。首 event 后禁止透明切换，避免 tool call 重复和 JSON 损坏。
-
-### Retry Budget
-
-| Workload | tier-1 | tier-2 | tier-3 | 总计 |
-|----------|--------|--------|--------|------|
-| General | ≤2 | ≤1 | - | ≤3 |
-| Coding | ≤2 | ≤1 | ≤1 | ≤4 |
-
-总计不超过 5 次，禁止 retry storm。
-
-## 本地验证
-
-```bash
-npm ci
-npm run verify
-npm run check:deploy
-```
-
-验证内容包括：
-
-- Worker JavaScript 语法；
-- 版本号一致性；
-- Markdown 本地链接；
-- Dashboard、`/version`、`/v1/models`、`/health`、`/metrics` 冒烟测试；
-- 节点配置分片测试（三层多分片、编号排序、损坏分片隔离、重复 ID 检测、8/20 KB 自动拆分、旧格式迁移等）；
-- Node Scheduler 调度测试（12 项）；
-- 可靠性测试（12 项：429 冷却、503 熔断、Retry-After、Retry Budget、超时拆分、Client Abort 等）；
-- 常见密钥格式扫描。
-
-## 安全
-
-- 不要提交 `.dev.vars`、`.env`、`secrets*.json`；
-- 不要在 Issue 中粘贴真实 Token、完整鉴权头或用户请求正文；
-- 不要通过 URL 查询参数传递网关密钥；
-- 日志禁止输出 API Key、Token、Prompt、Response，只允许输出 Node ID；
-- `ALLOW_UNSAFE_PROXY_ROUTES=false`、`ALLOW_INSECURE_HTTP_UPSTREAM=false`、`EXPOSE_UPSTREAM_INFO=false` 为默认安全策略；
-- 已泄露的密钥必须立即作废并重新生成；
-- 漏洞请通过 GitHub Security Advisory 私密报告。
-
-详见 [SECURITY.md](SECURITY.md)。
-
-## 贡献
-
-提交前运行：
-
-```bash
-npm ci
-npm run verify
-```
-
-详细要求见 [CONTRIBUTING.md](CONTRIBUTING.md)。
-
-## 许可证
-
-[MIT License](LICENSE)
+[MIT](LICENSE)

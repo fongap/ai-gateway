@@ -1,44 +1,48 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Fongap Studio
+//
+// POLICIES_CONFIG: policy name -> { max_attempts }. Optional.
+// Tier order is fixed (tier-1 -> tier-2 -> tier-3, hard precedence) and is
+// intentionally NOT configurable: a lower tier may only be used when the
+// current tier has no eligible node left for this request.
+
+import { readEnv } from './env.js';
+
+const DEFAULT_POLICY = { maxAttempts: 5 };
+const MIN_ATTEMPTS = 1;
+const MAX_ATTEMPTS = 8;
+
+let cachedEnv;
+let cachedPolicies;
+
 export function loadPoliciesConfig(env) {
-  const raw = env?.POLICIES_CONFIG;
+  if (cachedEnv === env && cachedPolicies) return cachedPolicies;
+  cachedEnv = env;
+  const policies = {};
+  const raw = readEnv(env, 'POLICIES_CONFIG');
   if (raw) {
     try {
-      return parseAndValidatePolicies(JSON.parse(raw));
-    } catch (e) {
-      console.error('POLICIES_CONFIG parse error:', e.message);
-      return {};
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        for (const [name, config] of Object.entries(parsed)) {
+          if (typeof name !== 'string' || !name.trim()) continue;
+          const attempts = Number(config?.max_attempts);
+          policies[name.trim()] = {
+            maxAttempts: Number.isFinite(attempts)
+              ? Math.max(MIN_ATTEMPTS, Math.min(MAX_ATTEMPTS, Math.trunc(attempts)))
+              : DEFAULT_POLICY.maxAttempts,
+          };
+        }
+      }
+    } catch {
+      console.error('POLICIES_CONFIG parse error: invalid JSON; ignoring');
     }
   }
-  return {};
+  cachedPolicies = policies;
+  return policies;
 }
 
-function parseAndValidatePolicies(policies) {
-  if (!policies || typeof policies !== 'object' || Array.isArray(policies)) return {};
-  const result = {};
-  for (const [name, config] of Object.entries(policies)) {
-    if (typeof name !== 'string' || !name.trim()) continue;
-    if (!config || typeof config !== 'object') continue;
-    const tiers = Array.isArray(config.tiers) ? config.tiers.filter(t => ['tier-1', 'tier-2', 'tier-3'].includes(t)) : ['tier-1', 'tier-2'];
-    result[name] = {
-      tiers: tiers.length > 0 ? tiers : ['tier-1', 'tier-2'],
-      max_attempts: Math.max(1, Math.min(config.max_attempts || 3, 5)),
-retry_budget: config.retry_budget && typeof config.retry_budget === 'object'
-          ? {
-              'tier-1': Math.min(config.retry_budget['tier-1'] || 2, 3),
-              'tier-2': Math.min(config.retry_budget['tier-2'] || 1, 2),
-              'tier-3': Math.min(config.retry_budget['tier-3'] || 1, 1),
-            }
-          : { 'tier-1': 2, 'tier-2': 1, 'tier-3': 1 },
-    };
-  }
-  return result;
-}
-
-export const DEFAULT_POLICY = {
-  tiers: ['tier-1', 'tier-2'],
-  max_attempts: 3,
-  retry_budget: { 'tier-1': 2, 'tier-2': 1, 'tier-3': 1 },
-};
-
-export function getPolicy(policyName, policiesConfig) {
+export function getPolicy(modelName, modelsConfig, policiesConfig) {
+  const policyName = modelsConfig[modelName]?.policy || 'default';
   return policiesConfig[policyName] || DEFAULT_POLICY;
 }

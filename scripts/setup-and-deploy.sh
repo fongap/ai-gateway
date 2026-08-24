@@ -1,4 +1,5 @@
-#!/usr/bin/env bash
-set -euo pipefail
-exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/install.sh" "$@"
-
+#!/bin/sh
+# One-shot: install + configure + deploy.
+set -e
+cd "$(dirname "$0")/.."
+sh scripts/install.sh

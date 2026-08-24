@@ -17,3 +17,5 @@ release/
 
 .wrangler-*-config*.jsonc
 .wrangler-local-*.jsonc
+wrangler.user.jsonc
+.plan.json

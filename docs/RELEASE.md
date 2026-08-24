@@ -5,7 +5,7 @@
 发布前必须同步以下位置：
 
 1. `package.json` 中的 `version`；
-2. `src/index.js` 中的 `APP_META.version`；
+2. `src/observability/status.js` 中的 `APP_META.version`；
 3. `CHANGELOG.md` 中新增对应版本标题。
 
 随后更新依赖锁文件：
@@ -40,8 +40,8 @@ Windows PowerShell：
 输出：
 
 ```text
-release/smart-edge-gateway-vX.Y.Z.zip
-release/smart-edge-gateway-vX.Y.Z.tar.gz
+release/ai-gateway-vX.Y.Z.zip
+release/ai-gateway-vX.Y.Z.tar.gz
 release/SHA256SUMS
 ```
 
@@ -53,10 +53,10 @@ PowerShell 在系统没有 `tar` 命令时只生成 ZIP。
 
 ```bash
 git add .
-git commit -m "Release v5.14.0"
-git tag v5.14.0
+git commit -m "Release v6.0.0"
+git tag v6.0.0
 git push origin main
-git push origin v5.14.0
+git push origin v6.0.0
 ```
 
 `.github/workflows/release.yml` 会：

@@ -1,23 +1,21 @@
 #!/usr/bin/env node
-// 节点配置 Secret 管理工具（install / reconfigure 共用）。
+// Node configuration planner CLI shared by install / reconfigure.
 //
-// 子命令：
-//   validate --file F
-//       校验 JSON 数组节点配置文件。
-//   plan (--tier1 F [--tier2 F] [--tier3 F]) [--existing FILE|-] --out OUT
-//       生成部署计划：secrets（TIERx_NODES_CONFIG_01.. 分片）与 delete（多余旧分片/旧单变量）。
-//       existing 为当前 Worker 的 Secret 名列表（wrangler secret list 输出的 JSON 数组或纯文本每行一个）。
-//       计划中的完整 Secret 值只写入 --out 文件，stdout 只输出安全摘要。
-
+//   validate --tier1 FILE [--tier2 FILE] [--tier3 FILE] [--secrets FILE]
+//       Validate node config files and (optionally) cross-check credentials.
+//   plan --tier1 FILE [--tier2 FILE] [--tier3 FILE] --secrets FILE --out PLAN
+//        [--existing-vars FILE|-] [--existing-secrets FILE|-]
+//       Generate the deployment plan:
+//         { vars, secrets, deleteVars, deleteSecrets, tierSummary }
+//       Full values are written to --out only; stdout prints a safe summary.
 import fs from 'node:fs';
 import {
-  buildShardPlan,
-  parseNodesFile,
-  MANAGED_SECRET_PATTERN,
+  parseJsonFile, buildPlan,
+  MANAGED_VAR_PATTERN, MANAGED_SECRET_PATTERN,
 } from './nodes-shard.mjs';
 
 function fail(message) {
-  console.error(`错误：${message}`);
+  console.error(`error: ${message}`);
   process.exit(1);
 }
 
@@ -25,9 +23,9 @@ function parseArgs(argv) {
   const args = {};
   for (let i = 0; i < argv.length; i++) {
     const token = argv[i];
-    if (!token.startsWith('--')) fail(`未知参数：${token}`);
+    if (!token.startsWith('--')) fail(`unknown argument: ${token}`);
     const key = token.slice(2);
-    if (key === 'existing' && argv[i + 1] === '-') {
+    if (['existing-vars', 'existing-secrets'].includes(key) && argv[i + 1] === '-') {
       args[key] = '-';
       i++;
       continue;
@@ -38,75 +36,69 @@ function parseArgs(argv) {
   return args;
 }
 
-function readExistingNames(source) {
-  const raw = source === '-'
-    ? fs.readFileSync(0, 'utf8')
-    : fs.readFileSync(source, 'utf8');
-  const trimmed = raw.trim();
-  if (!trimmed) return [];
-  let parsed;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    return trimmed.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+function readNameList(source, pattern, label) {
+  let names;
+  if (source === '-') {
+    names = fs.readFileSync(0, 'utf8').split(/\r?\n/);
+  } else {
+    const raw = fs.readFileSync(source, 'utf8').trim();
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) throw new Error('not a JSON array');
+      names = parsed.map((item) => (typeof item === 'string' ? item : item?.name));
+    } catch {
+      names = raw.split(/\r?\n/);
+    }
   }
-  if (Array.isArray(parsed)) {
-    return parsed.map((item) => (typeof item === 'string' ? item : item?.name)).filter(Boolean);
-  }
-  fail('existing secret list must be a JSON array or one name per line');
+  return names.map((n) => String(n || '').trim()).filter(Boolean);
 }
 
 const [command, ...rest] = process.argv.slice(2);
 
 if (command === 'validate') {
   const args = parseArgs(rest);
-  if (!args.file) fail('validate 需要 --file 参数。');
+  const tiers = {};
+  for (const n of [1, 2, 3]) {
+    if (!args[`tier${n}`]) continue;
+    tiers[n] = parseJsonFile(args[`tier${n}`]);
+  }
+  const secretsMap = args.secrets ? parseJsonFile(args.secrets) : null;
   try {
-    const nodes = parseNodesFile(args.file);
-    console.log(`${args.file}: OK, ${nodes.length} node(s).`);
+    const plan = buildPlan({ tiers, secretsMap });
+    const totalNodes = Object.values(plan.tierSummary).reduce((s, t) => s + t.nodes, 0);
+    console.log(`OK: ${totalNodes} node(s), all credentials matched.`);
   } catch (e) {
     fail(e.message);
   }
 } else if (command === 'plan') {
   const args = parseArgs(rest);
-  if (!args.out) fail('plan 需要 --out 参数。');
-  if (!args.tier1 && !args.tier2 && !args.tier3) fail('plan 至少需要一个 --tierN 文件参数。');
+  if (!args.tier1) fail('plan requires --tier1');
+  if (!args.secrets) fail('plan requires --secrets');
+  if (!args.out) fail('plan requires --out');
   const tiers = {};
-  for (const tierNumber of [1, 2, 3]) {
-    const file = args[`tier${tierNumber}`];
-    if (!file) continue;
-    try {
-      tiers[tierNumber] = parseNodesFile(file);
-    } catch (e) {
-      fail(e.message);
-    }
+  for (const n of [1, 2, 3]) {
+    if (!args[`tier${n}`]) continue;
+    tiers[n] = parseJsonFile(args[`tier${n}`]);
   }
-  const existingNames = args.existing ? readExistingNames(args.existing) : null;
-  for (const name of existingNames ?? []) {
-    if (!MANAGED_SECRET_PATTERN.test(name)) {
-      fail(`existing 列表包含非本项目管理的 Secret：${name}`);
-    }
-  }
+  const secretsMap = parseJsonFile(args.secrets);
+  const existingVarNames = args['existing-vars'] ? readNameList(args['existing-vars'], MANAGED_VAR_PATTERN, 'vars') : [];
+  const existingSecretNames = args['existing-secrets'] ? readNameList(args['existing-secrets'], MANAGED_SECRET_PATTERN, 'secrets') : [];
   let plan;
   try {
-    plan = buildShardPlan(tiers, existingNames);
+    plan = buildPlan({ tiers, secretsMap, existingVarNames, existingSecretNames });
   } catch (e) {
     fail(e.message);
   }
-  if ((tiers[1]?.length ?? 0) === 0) {
-    fail('tier-1 节点配置为空：网关至少需要一个 tier-1 节点。');
-  }
   fs.writeFileSync(args.out, JSON.stringify(plan, null, 2));
   for (const [tierNumber, summary] of Object.entries(plan.tierSummary)) {
-    console.log(`tier-${tierNumber}: ${summary.nodes} node(s) → ${summary.shards} shard(s)`);
+    console.log(`tier-${tierNumber}: ${summary.nodes} node(s) -> ${summary.shards} shard(s)`);
   }
-  for (const key of plan.plannedKeys) {
-    const bytes = Buffer.byteLength(plan.secrets[key], 'utf8');
-    console.log(`write ${key} (${bytes} bytes)`);
-  }
-  for (const key of plan.delete) {
-    console.log(`delete ${key}`);
-  }
+  const secretCount = Object.keys(secretsMap).length;
+  console.log(`secrets: ${secretCount} credential(s) -> ${Object.keys(plan.secrets).length} shard(s)`);
+  for (const key of plan.plannedVars) console.log(`var     ${key} (${Buffer.byteLength(plan.vars[key], 'utf8')} bytes)`);
+  for (const key of plan.plannedSecrets) console.log(`secret  ${key}`);
+  for (const key of plan.deleteVars) console.log(`delete var ${key}`);
+  for (const key of plan.deleteSecrets) console.log(`delete secret ${key}`);
 } else {
-  fail('用法：manage-nodes-config.mjs <validate|plan> [options]');
+  fail('usage: manage-nodes-config.mjs <validate|plan> [options]');
 }
