@@ -2,7 +2,7 @@
 
 # ai-gateway
 
-**Free-API-first AI Gateway for Cloudflare Workers**
+**AI 聚合网关 · 多 API / 多 Key / 多模型，一个稳定端点**
 
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](https://developers.cloudflare.com/workers/)
 [![License](https://img.shields.io/badge/license-MIT-2ea44f)](LICENSE)
@@ -12,10 +12,10 @@
 
 ## 它解决什么问题
 
-把多个容易限流、失效、抖动的免费 API / API Key，聚合成一个尽可能稳定、轻量、自动恢复的统一 AI API：
+把多个容易限流、失效、抖动的上游 API / Key（免费或付费），聚合为一个稳定、轻量、自动恢复的统一 AI API。每个节点各司其职：轮转摊流、隔离限流、熔断自恢复、分层兜底——客户端只看到一个端点。
 
 ```text
-多个免费 API / Key
+多 API · 多 Key · 多模型
         ↓
    ai-gateway
         ↓
@@ -28,7 +28,7 @@
 客户端只看到一个稳定 Endpoint
 ```
 
-设计决策只回答四个问题：是否提高免费 API 利用率？是否提高稳定性？是否降低 Worker 自身开销？代码是否更可预测？
+设计决策只回答四个问题：是否提高上游配额利用率？是否提高稳定性？是否降低 Worker 自身开销？代码是否更可预测？
 
 - OpenAI Chat Completions：`/v1/chat/completions`
 - Anthropic Messages / Claude Code：`/v1/messages`

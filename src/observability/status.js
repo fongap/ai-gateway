@@ -11,7 +11,7 @@ import { corsHeaders, jsonError } from '../protocol/http.js';
 
 export const APP_META = Object.freeze({
   name: 'ai-gateway',
-  displayName: 'AI Gateway',
+  displayName: 'Smart AI Gateway',
   version: '6.0.0',
 });
 

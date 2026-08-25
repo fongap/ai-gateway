@@ -637,7 +637,7 @@ await test('dashboard renders diagnostics when degraded', async () => {
     headers: { accept: 'text/html' },
   }), env, {});
   const html = await res.text();
-  assert.match(html, /degraded/);
+  assert.match(html, /degraded/i);
   assert.match(html, /2\/3/);
   assert.match(html, /no credential found in NODE_SECRETS_/);
 });
@@ -768,7 +768,7 @@ await test('setup page shows real binding state and diagnostics', async () => {
   assert.match(html, /NODE_SECRETS_XX/);
   assert.match(html, /未绑定/);
   assert.match(html, /no credential found in NODE_SECRETS_/);
-  assert.match(html, /invalid|unconfigured/);
+  assert.match(html, /invalid|unconfigured/i);
 });
 
 await test('setup page flags malformed shard JSON with a diagnostic', async () => {

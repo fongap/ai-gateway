@@ -2,7 +2,7 @@
 
 ## Design goals
 
-One question gates every feature: does it make more free API capacity usable, more reliably, with less Worker CPU, in a more predictable way? If not, it is out of scope.
+One question gates every feature: does it make more upstream quota usable, more reliably, with less Worker CPU, in a more predictable way? If not, it is out of scope.
 
 ## Overview
 
@@ -39,9 +39,9 @@ current tier → valid config → model supported → circuit available
 → cooldown expired → concurrency available → not already attempted (request-scoped Set)
 ```
 
-then one O(n) pass picks the best candidate: `priority ASC → activeRequests ASC → health (band ≥10) DESC → lastUsedAt ASC (LRU) → avg latency ASC`. Health differences inside the band are treated as noise so the LRU tiebreak can rotate sequential traffic across equal-priority free keys — spreading load prevents 429s instead of reacting to them. A failed node can never be retried within the same request, and a node that becomes eligible mid-request is never skipped.
+then one O(n) pass picks the best candidate: `priority ASC → activeRequests ASC → health (band ≥10) DESC → lastUsedAt ASC (LRU) → avg latency ASC`. Health differences inside the band are treated as noise so the LRU tiebreak can rotate sequential traffic across equal-priority keys — spreading load prevents 429s instead of reacting to them. A failed node can never be retried within the same request, and a node that becomes eligible mid-request is never skipped.
 
-**Rotation vs fallback**: staying in the same tier is *node rotation*; moving to tier N+1 happens only when tier N has no candidate left. Tiers are hard precedence — tier-1 free capacity is always exhausted first.
+**Rotation vs fallback**: staying in the same tier is *node rotation*; moving to tier N+1 happens only when tier N has no candidate left. Tiers are hard precedence — the higher-preference pool is always exhausted first.
 
 ## Reliability model (src/reliability)
 

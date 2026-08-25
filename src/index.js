@@ -2,10 +2,10 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Fongap Studio
  *
- * ai-gateway — aggregate many free-tier AI APIs / keys into one stable
+ * ai-gateway — aggregate many upstream AI APIs / keys into one stable
  * endpoint on Cloudflare Workers.
  *
- *   multiple free APIs / keys
+ *   many APIs · many keys · many models
  *        ↓
  *   node selection / load spreading (priority + concurrency)
  *   429 isolation with Retry-After cooldowns

@@ -2,7 +2,7 @@
   "name": "ai-gateway",
   "version": "6.0.0",
   "private": true,
-  "description": "Free-API-first AI gateway for Cloudflare Workers: aggregate many free API keys into one stable endpoint with node-local cooldowns, tier fallback, and circuit-breaker recovery.",
+  "description": "AI aggregation gateway for Cloudflare Workers: many APIs, keys, and models behind one stable endpoint — node-local cooldowns, tier fallback, circuit-breaker recovery.",
   "type": "module",
   "license": "MIT",
   "engines": {

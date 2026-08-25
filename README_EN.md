@@ -2,16 +2,16 @@
 
 # ai-gateway
 
-**Free-API-first AI Gateway for Cloudflare Workers**
+**AI aggregation gateway — many APIs, many keys, many models, one stable endpoint**
 
 > ⚠️ **Breaking Change**: this release redesigned node configuration and secret management (`TIERx_NODES_CONFIG_*` plain variables + `NODE_SECRETS_*` secrets). The legacy `token@base_url` / embedded-credential format is gone. Existing deployments must re-run configuration.
 
 ## What problem it solves
 
-Aggregate many free APIs / API keys — prone to rate limits, outages and jitter — into one stable, lightweight, self-healing AI endpoint:
+Aggregate upstream APIs and keys — free or paid, prone to rate limits, outages and jitter — into one stable, lightweight, self-healing AI endpoint. Every node plays its own role: rotation spreads load, cooldowns isolate rate limits, circuit breakers self-heal, tiers provide fallback. Clients see a single endpoint.
 
 ```text
-multiple free APIs / keys
+many APIs · many keys · many models
         ↓
    ai-gateway
         ↓
@@ -41,7 +41,7 @@ sh scripts/install.sh     # Windows: powershell scripts/install.ps1
 
 ### Node config (plain variables, never credentials)
 
-Typical setups are **multi-key, multi-account, multi-model**. This tier-1 example mixes three free providers across four accounts serving three logical models:
+Typical setups are **multi-key, multi-account, multi-model**. This tier-1 example mixes three providers across four accounts serving three logical models:
 
 ```json
 [

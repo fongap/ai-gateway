@@ -10,8 +10,8 @@ npm run check:deploy  # wrangler dry-run bundle
 
 ## 修改原则 / Principles
 
-每个改动都应回答：是否提高免费 API 利用率？是否提高稳定性？是否降低 Worker CPU 开销？代码是否更简单、更可预测？
-Every change should answer: does it improve free-API utilization, reliability, Worker CPU cost, or predictability? If not, leave it out.
+每个改动都应回答：是否提高上游配额利用率？是否提高稳定性？是否降低 Worker CPU 开销？代码是否更简单、更可预测？
+Every change should answer: does it improve upstream quota utilization, reliability, Worker CPU cost, or predictability? If not, leave it out.
 
 - 不提交任何真实凭据（Token / `GATEWAY_ACCESS_KEY` / 上游账号）。
   Never commit real credentials.
