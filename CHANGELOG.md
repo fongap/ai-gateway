@@ -48,6 +48,7 @@ Breaking release: the node configuration and secret management model was redesig
 - Optional per-key RPM quota (`limits.rpm`): soft cap that rotates traffic to sibling keys with headroom; never hard-fails a request.
 - Capacity saturation (all candidates busy at concurrency/RPM caps) now returns 503 + `Retry-After: 1` instead of a bare 429, so bursty multi-agent clients back off.
 - Passthrough streams that close cleanly without the `[DONE]` marker are accounted as node failures (truncation detection).
+- Upstreams that answer `stream:true` requests with `200 + JSON` (some free providers embed errors this way) are now handled explicitly: embedded errors rotate to healthy nodes with proper status mapping, valid completions are synthesized into a well-formed SSE stream for streaming clients. Previously such bodies were relayed verbatim, which SSE clients (e.g. Claude Code) cannot parse — "streaming response ended before any complete data was received".
 ## 5.14.0 - 2026-08-06
 
 - 在 `wrangler.jsonc` 中声明 `GATEWAY_ACCESS_KEY` 与 `PRIMARY_API_TOKENS` 为必需 Secret，阻止缺少绑定的错误部署；

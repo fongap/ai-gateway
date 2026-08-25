@@ -416,15 +416,40 @@ async function handleSuccess(s) {
       );
       return { response: needsModelRewrite ? rewriteStreamModelField(tracked, requestedModel) : tracked };
     }
-    // Plain JSON passthrough.
+    // Upstream answered 200 but NOT with SSE. Some free providers return
+    // JSON bodies (sometimes with an embedded error object) even for
+    // stream:true requests. Handle explicitly instead of feeding the client
+    // a body it cannot parse as a stream.
+    const text = await safeReadErrorBody(upstream, 2 * 1024 * 1024);
+    let data;
     try {
-      const data = JSON.parse(await upstream.text());
+      data = JSON.parse(text);
+    } catch {
+      return rotateWithNeutralEnd(state, node, 'upstream_200_non_json_body');
+    }
+    if (data && typeof data === 'object' && data.error) {
+      // Provider returned 200 with an embedded error: treat as a real failure
+      // so the request rotates to a healthy node instead of relaying garbage.
+      const status = Number(data.error.status) >= 400 && Number(data.error.status) < 600
+        ? Math.trunc(Number(data.error.status))
+        : 502;
+      const classification = classifyUpstreamStatus(status, upstream.headers, env);
+      recordOutcome(state, node, classification, latencyMs, trimDiagnostic(data.error.message || 'embedded error', 200), exposeUpstreamInfo, status);
+      if (classification.action === 'stop') {
+        return { response: buildClientErrorResponse(request, env, route, requestId, requestedModel, status, text, state) };
+      }
+      return { rotate: true };
+    }
+    if (!clientWantsStream) {
       recordSuccess(node.id, latencyMs);
       if (data && typeof data === 'object') data.model = requestedModel;
       return { response: jsonResponse(200, data, env, request, extraHeaders) };
-    } catch (error) {
-      return rotateWithNeutralEnd(state, node, `invalid_upstream_json: ${trimDiagnostic(error.message, 120)}`);
     }
+    // Valid completion JSON for a streaming client: synthesize a proper SSE
+    // stream so SSE clients receive a well-formed event sequence.
+    recordSuccess(node.id, latencyMs);
+    if (data && typeof data === 'object') data.model = requestedModel;
+    return { response: synthesizeSseFromCompletion(data, env, request, extraHeaders) };
   }
 
   // ---- Anthropic messages ----
@@ -450,6 +475,49 @@ async function handleSuccess(s) {
 
 function upstreamModelOf(node, logicalModel) {
   return node.models[logicalModel] || logicalModel;
+}
+
+// Convert a full OpenAI completion object into a well-formed SSE stream
+// (delta chunks + finish chunk + [DONE]) for clients that requested
+// streaming but received JSON from the upstream.
+export function synthesizeSseFromCompletion(data, env, request, extraHeaders) {
+  const encoder = new TextEncoder();
+  const choices = Array.isArray(data?.choices) ? data.choices : [];
+  const base = {
+    id: data?.id || `chatcmpl-${crypto.randomUUID()}`,
+    object: 'chat.completion.chunk',
+    created: data?.created || Math.floor(Date.now() / 1000),
+    model: data?.model,
+  };
+  const stream = new ReadableStream({
+    start(controller) {
+      const emit = (obj) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
+      for (const choice of choices) {
+        const msg = choice.message || {};
+        const delta = { role: msg.role || 'assistant' };
+        if (msg.content) delta.content = msg.content;
+        if (msg.reasoning_content) delta.reasoning_content = msg.reasoning_content;
+        if (Array.isArray(msg.tool_calls) && msg.tool_calls.length) delta.tool_calls = msg.tool_calls;
+        emit({ ...base, choices: [{ index: choice.index ?? 0, delta, finish_reason: null }] });
+      }
+      for (const choice of choices) {
+        const finish = { index: choice.index ?? 0, delta: {}, finish_reason: choice.finish_reason || 'stop' };
+        emit({ ...base, choices: [finish], ...(data.usage ? { usage: data.usage } : {}) });
+      }
+      controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+      controller.close();
+    },
+  });
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-transform',
+      'x-accel-buffering': 'no',
+      ...(extraHeaders || {}),
+      ...corsHeaders(request, env),
+    },
+  });
 }
 
 function rotateWithNeutralEnd(state, node, reason) {

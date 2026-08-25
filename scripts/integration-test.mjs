@@ -642,6 +642,56 @@ await test('dashboard renders diagnostics when degraded', async () => {
   assert.match(html, /no credential found in NODE_SECRETS_/);
 });
 
+await test('upstream 200 + JSON error body rotates to a healthy node', async () => {
+  resetMock();
+  routeHandlers['je-a.example.com'] = () => jsonUpstream({
+    error: { message: 'quota exceeded for this key', status: 429 },
+  }); // provider quirk: 200 + embedded error
+  routeHandlers['je-b.example.com'] = () => sseResponse([chunk('from healthy'), finishChunk, doneEvent]);
+  const env = makeEnv({
+    tier1: [basicNode('je-a'), basicNode('je-b')],
+    secrets: { 'je-a': 'k', 'je-b': 'k' },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
+  assert.equal(res.status, 200);
+  const text = await res.text();
+  assert.match(text, /from healthy/);
+  assert.match(text, /\[DONE\]/);
+  const s = getNodeState('je-a');
+  assert.equal(s.totalFailures, 1, '200-with-error must count as failure');
+});
+
+await test('upstream 200 + plain JSON completion is synthesized into SSE for stream clients', async () => {
+  resetMock();
+  routeHandlers['js.example.com'] = () => jsonUpstream(okCompletion('up-model'));
+  const env = makeEnv({ tier1: [basicNode('js')], secrets: { js: 'k' } });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-type') || '', /text\/event-stream/);
+  const text = await res.text();
+  assert.match(text, /"content":"hello"/);
+  assert.match(text, /"finish_reason":"stop"/);
+  assert.match(text, /\[DONE\]/);
+  assert.ok(!text.includes('up-model'), 'synthesized stream must carry the logical model name');
+  const s = getNodeState('js');
+  assert.equal(s.totalSuccesses, 1);
+});
+
+await test('upstream 200 + JSON error body rotates for non-stream clients too', async () => {
+  resetMock();
+  routeHandlers['jn-a.example.com'] = () => jsonUpstream({ error: { message: 'insufficient quota' } });
+  routeHandlers['jn-b.example.com'] = () => jsonUpstream(okCompletion());
+  const env = makeEnv({
+    tier1: [basicNode('jn-a'), basicNode('jn-b')],
+    secrets: { 'jn-a': 'k', 'jn-b': 'k' },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.choices[0].message.content, 'hello');
+  assert.equal(getNodeState('jn-a').totalFailures, 1);
+});
+
 await test('count_tokens approximates locally without upstream calls', async () => {
   resetMock();
   const env = makeEnv({ tier1: [basicNode('ct')], secrets: { ct: 'k' } });
