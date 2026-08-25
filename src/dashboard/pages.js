@@ -34,10 +34,14 @@ const escapeHtml = (s) => String(s).replaceAll('&', '&amp;').replaceAll('<', '&l
 export function dashboardResponse(request, env) {
   const config = loadGatewayConfig(env);
   if (!config.ready) return setupResponse(config);
+  const diagHtml = config.diagnostics.length === 0
+    ? ''
+    : `<div class="diag"><b>配置诊断（${config.diagnostics.length} 条，被剔除的节点会在这里说明原因）</b><br>${config.diagnostics.map((d) => `· ${escapeHtml(d)}`).join('<br>')}</div>`;
   const html = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AI Gateway</title><style>${BASE_STYLES}</style></head>
 <body><main class="card">
 <h1>AI Gateway <span class="status ok">v${APP_META.version}</span></h1>
 <p>多免费 API / Key 聚合为统一稳定 Endpoint。配置状态：<b>${config.status}</b>（可用节点 ${config.nodesUsable}/${config.nodesTotal}）。</p>
+${diagHtml}
 <div class="row"><code>GATEWAY_ACCESS_KEY</code><span class="status ok">已配置</span></div>
 <div class="row"><code>TIERx_NODES_CONFIG_*</code><span class="status ${config.status === 'ready' ? 'ok' : 'pending'}">${config.status}</span></div>
 <h2>诊断端点（需鉴权）</h2>

@@ -622,6 +622,26 @@ await test('clean close without [DONE] is accounted as node failure', async () =
   assert.equal(s.totalSuccesses, 0);
 });
 
+await test('dashboard renders diagnostics when degraded', async () => {
+  resetMock();
+  const env = {
+    GATEWAY_ACCESS_KEY: ACCESS_KEY,
+    TIER1_NODES_CONFIG_01: JSON.stringify([
+      basicNode('good-1'),
+      basicNode('good-2'),
+      { ...basicNode('ghost'), id: 'ghost' }, // no credential -> excluded
+    ]),
+    NODE_SECRETS_01: JSON.stringify({ 'good-1': 'k', 'good-2': 'k' }),
+  };
+  const res = await worker.fetch(new Request('https://gateway.example.com/', {
+    headers: { accept: 'text/html' },
+  }), env, {});
+  const html = await res.text();
+  assert.match(html, /degraded/);
+  assert.match(html, /2\/3/);
+  assert.match(html, /no credential found in NODE_SECRETS_/);
+});
+
 await test('count_tokens approximates locally without upstream calls', async () => {
   resetMock();
   const env = makeEnv({ tier1: [basicNode('ct')], secrets: { ct: 'k' } });
