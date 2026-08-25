@@ -31,6 +31,7 @@
 设计决策只回答四个问题：是否提高上游配额利用率？是否提高稳定性？是否降低 Worker 自身开销？代码是否更可预测？
 
 - OpenAI Chat Completions：`/v1/chat/completions`
+- OpenAI Responses：`/v1/responses`（Codex / OpenCode 兼容，含 reasoning、function_call、流式事件）
 - Anthropic Messages / Claude Code：`/v1/messages`
 - Anthropic Token Count：`/v1/messages/count_tokens`
 
@@ -169,16 +170,20 @@ Circuit 是连续失败状态机（非滑动窗口）：CLOSED →(连续 3 次 
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/` | Dashboard（浏览器） |
+| GET | `/` | 公开首页（智能边缘网关入口；浏览器） |
 | GET | `/version` | 版本与配置状态（公开） |
 | GET | `/health` `/metrics` `/v1/models` | 诊断端点（需鉴权） |
 | POST | `/v1/chat/completions` | OpenAI Chat Completions |
+| POST | `/v1/responses` | OpenAI Responses（Codex / OpenCode 兼容，含流式事件、reasoning、function_call） |
 | POST | `/v1/messages` `/v1/messages/count_tokens` | Anthropic Messages |
+
+`/v1/models` 除逻辑模型名单外，还会为每个逻辑模型返回追加的能力元数据（`apiBackend`、`protocols`、`supports_reasoning_effort`、`reasoning_efforts`、`supports_tools`、`supports_vision`、`supports_stream`），来源是节点 Provider Profile，而非模型名猜测；这些追加字段向后兼容。
 
 ## 安全模型
 
 - 客户端鉴权：Bearer 或 `x-api-key`，SHA-256 摘要 timing-safe 比较。
 - Header allowlist：客户端的 Cookie / Forwarded / CF 私有头等不会转发给上游；上游 Authorization 只由 Runtime Node credential 生成。
+- 终结错误的响应携带 `x-should-retry: false`（429/503 除外，仍按 Retry-After 重试），避免 Codex / Claude 客户端盲重试而重复执行工具。
 - 上游仅允许 `https://`（可显式放开 http），`redirect: 'manual'` 禁止带凭据跟随重定向。
 - Credential 永不出现在任何响应、日志或诊断端点中。
 - 平台层防护建议使用 Cloudflare WAF / Rate Limiting Rules（以 [官方文档](https://developers.cloudflare.com/waf/) 当前能力为准），Worker 内不维护全局限流状态。

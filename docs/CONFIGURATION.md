@@ -52,6 +52,10 @@ Rules enforced at load time:
 - A `tier` field is rejected; the tier comes from the variable prefix.
 - `base_url` must be an absolute URL; `https://` unless `ALLOW_INSECURE_HTTP_UPSTREAM=true`; no embedded username/password.
 - `priority`: number, smaller = higher precedence, default `100`.
+- `provider`: a free-form label used for diagnostics and to derive a Provider Capability/Profile:
+  - Default (`nvidia`, `openrouter`, `cerebras`, `siliconflow`, most OpenAI-compatible APIs, or anything unknown) → `openai-compatible` profile (Chat native; Responses/Messages converted by the gateway).
+  - `anthropic`/`anthropic-native`/`claude` → `anthropic-native`; `openai`/`openai-responses-native`/`gpt`/`o1`/`o3` → `openai-responses-native`; `gemini`/`google`/`google-gemini` → `gemini-native`.
+  - The profile is a static descriptor only; it never carries credentials, circuit state, cooldowns, health, concurrency or tier.
 - `models`: object mapping logical → upstream model names. Empty/missing = wildcard.
 - `limits.concurrency`: integer ≥ 1, default `2`.
 - `limits.rpm`: optional soft per-minute request quota for the key (e.g. `25`). When a node's current-minute count reaches it, siblings with headroom are preferred; if every candidate is capped, the cap is ignored so requests still succeed. Set it to each key's documented RPM (e.g. free NVIDIA NIM ≈ 40, Groq free ≈ 30 — check the provider's current docs).
@@ -107,7 +111,8 @@ Tier order is fixed: tier-1 → tier-2 → tier-3. A lower tier is used only whe
 | `FAKE_STREAM_PROTECTION` | false | | Convert non-stream requests to streaming upstream + reassemble |
 | `ALLOW_INSECURE_HTTP_UPSTREAM` | false | | Allow http:// base_url |
 | `ANTHROPIC_COUNT_TOKENS_MODE` | approximate | approximate/disabled | Local token counting |
-| `ANTHROPIC_REASONING_REQUEST_MODE` | none | none/reasoning_effort/chat_template_kwargs/thinking | Reasoning passthrough style |
+| `ANTHROPIC_REASONING_REQUEST_MODE` | none | none/reasoning_effort/chat_template_kwargs/thinking | Reasoning passthrough style (Anthropic Messages) |
+| `RESPONSES_REASONING_MODE` | reasoning_effort | reasoning_effort/chat_template_kwargs/thinking | How `/v1/responses` `reasoning` maps to a chat-completions upstream |
 | `LOG_LEVEL` | info | none/error/info/debug | Logging verbosity |
 | `PROJECT_REPOSITORY_URL` | — | https URL | Shown on the dashboard |
 

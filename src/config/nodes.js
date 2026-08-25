@@ -31,6 +31,7 @@
 // an isolate is alive.
 
 import { readEnv, getBool } from './env.js';
+import { resolveProviderProfile } from './profiles.js';
 
 const SHARD_MAX_BYTES = 4500; // official variable size limit is 5 KB; keep margin
 const TIER_SHARD_PATTERN = /^TIER([123])_NODES_CONFIG_(\d{2})$/;
@@ -208,15 +209,18 @@ function buildRuntimeNode(rawNode, tier, credentials, allowInsecure, sourceKey, 
   const priority = Number(rawNode.priority);
   const concurrency = Number(rawNode.limits?.concurrency);
   const rpm = Number(rawNode.limits?.rpm);
+  const providerLabel = typeof rawNode.provider === 'string' && rawNode.provider.trim() ? rawNode.provider.trim() : 'unknown';
+  const profile = resolveProviderProfile(providerLabel);
 
   return {
     id,
     tier,
-    provider: typeof rawNode.provider === 'string' && rawNode.provider.trim() ? rawNode.provider.trim() : 'unknown',
+    provider: providerLabel,
     baseUrl: baseUrl.replace(/\/+$/, ''),
     credential,
     priority: Number.isFinite(priority) ? priority : 100,
     models,
+    profile,
     limits: {
       concurrency: Number.isFinite(concurrency) && concurrency >= 1 ? Math.trunc(concurrency) : 2,
       // Soft per-minute request quota; undefined = unlimited.

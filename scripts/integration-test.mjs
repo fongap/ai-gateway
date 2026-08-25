@@ -622,7 +622,7 @@ await test('clean close without [DONE] is accounted as node failure', async () =
   assert.equal(s.totalSuccesses, 0);
 });
 
-await test('dashboard renders diagnostics when degraded', async () => {
+await test('public home is served but never leaks internal diagnostics when degraded', async () => {
   resetMock();
   const env = {
     GATEWAY_ACCESS_KEY: ACCESS_KEY,
@@ -636,10 +636,19 @@ await test('dashboard renders diagnostics when degraded', async () => {
   const res = await worker.fetch(new Request('https://gateway.example.com/', {
     headers: { accept: 'text/html' },
   }), env, {});
+  assert.equal(res.status, 200);
   const html = await res.text();
-  assert.match(html, /degraded/i);
-  assert.match(html, /2\/3/);
-  assert.match(html, /no credential found in NODE_SECRETS_/);
+  // Public homepage content only: title, topic, model chip with public status.
+  assert.match(html, /智能边缘网关/);
+  assert.match(html, /一个入口，多个模型/);
+  assert.match(html, /general-air/);
+  assert.match(html, /可用/);
+  // Must NOT leak internal diagnostics, node counts, providers or credentials.
+  assert.ok(!html.includes('no credential found in NODE_SECRETS_'), 'must not leak credential diagnostics');
+  assert.ok(!html.includes('ghost'), 'must not leak node id');
+  assert.ok(!html.includes('2/3'), 'must not leak node counts');
+  assert.ok(!html.includes('/health'), 'must not link protected endpoints');
+  assert.ok(!html.includes('GATEWAY_ACCESS_KEY'), 'must not expose gateway key name');
 });
 
 await test('upstream 200 + JSON error body rotates to a healthy node', async () => {
@@ -752,26 +761,27 @@ await test('unconfigured gateway reports invalid/unconfigured states', async () 
   assert.equal(body.error.details.configuration_status, 'unconfigured');
 });
 
-await test('setup page shows real binding state and diagnostics', async () => {
+await test('public home renders when secrets are missing and leaks no internals', async () => {
   resetMock();
-  // tier-1 bound but its node has no credential: page must say exactly that.
   const env = {
     GATEWAY_ACCESS_KEY: ACCESS_KEY,
     TIER1_NODES_CONFIG_01: JSON.stringify([basicNode('half')]),
-    // NODE_SECRETS missing entirely
+    // NODE_SECRETS missing entirely -> no usable node
   };
   const res = await worker.fetch(new Request('https://gateway.example.com/', {
     headers: { accept: 'text/html' },
   }), env, {});
   assert.equal(res.status, 200);
   const html = await res.text();
-  assert.match(html, /NODE_SECRETS_XX/);
-  assert.match(html, /未绑定/);
-  assert.match(html, /no credential found in NODE_SECRETS_/);
-  assert.match(html, /invalid|unconfigured/i);
+  assert.match(html, /智能边缘网关/);
+  assert.match(html, /OPENAI_BASE_URL/);
+  assert.ok(!html.includes('NODE_SECRETS_XX'), 'must not leak binding internals');
+  assert.ok(!html.includes('未绑定'), 'must not leak binding state');
+  assert.ok(!html.includes('no credential found in NODE_SECRETS_'), 'must not leak credential diagnostics');
+  assert.ok(!html.includes('half'), 'must not leak node id');
 });
 
-await test('setup page flags malformed shard JSON with a diagnostic', async () => {
+await test('public home renders on malformed config without leaking diagnostics', async () => {
   resetMock();
   const env = {
     GATEWAY_ACCESS_KEY: ACCESS_KEY,
@@ -781,9 +791,28 @@ await test('setup page flags malformed shard JSON with a diagnostic', async () =
   const res = await worker.fetch(new Request('https://gateway.example.com/', {
     headers: { accept: 'text/html' },
   }), env, {});
+  assert.equal(res.status, 200);
   const html = await res.text();
-  assert.match(html, /TIER1_NODES_CONFIG_01: invalid JSON/);
-  assert.match(html, /已绑定/);
+  assert.match(html, /智能边缘网关/);
+  assert.ok(!html.includes('valid JSON'), 'must not leak config diagnostics');
+  assert.ok(!html.includes('half'), 'must not leak node id');
+  assert.ok(!html.includes('已绑定'), 'must not leak binding state');
+});
+
+await test('public home shows degraded status when all serving nodes are cooling', async () => {
+  resetMock();
+  const env = makeEnv({ tier1: [basicNode('de-a')], secrets: { 'de-a': 'k' } });
+  // Force the serving node into cooldown so availability is 'no'.
+  const state = getNodeState('de-a');
+  state.cooldownUntil = Date.now() + 60_000;
+  const res = await worker.fetch(new Request('https://gateway.example.com/', {
+    headers: { accept: 'text/html' },
+  }), env, {});
+  assert.equal(res.status, 200);
+  const html = await res.text();
+  assert.match(html, /general-air/);
+  assert.match(html, /降级/);
+  assert.ok(!html.includes('可用'), 'must not claim available when cooling');
 });
 
 if (!process.exitCode) console.log(`\nintegration tests passed (${passed}).`);

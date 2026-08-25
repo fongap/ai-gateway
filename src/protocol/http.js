@@ -66,7 +66,7 @@ export function htmlResponse(content) {
     headers: {
       'content-type': 'text/html;charset=UTF-8',
       'cache-control': 'no-store',
-      'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+      'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
       'x-content-type-options': 'nosniff',
       'referrer-policy': 'no-referrer',
       'x-frame-options': 'DENY',
@@ -173,4 +173,13 @@ export async function safeReadErrorBody(response, maxBytes = 4096) {
 
 export function trimDiagnostic(text, limit = 600) {
   return String(text || '').replace(/\s+/g, ' ').slice(0, limit);
+}
+
+// Terminal-error intent header: tells SDKs (Codex / Claude) NOT to auto-retry a
+// request the gateway already resolved — the gateway has internally rotated
+// across nodes, so a client-side blind retry risks re-executing a tool call.
+// Rate-limit (429) and capacity (503) responses stay retryable via Retry-After.
+export function shouldNotRetryHeaders(status) {
+  if (status === 429 || status === 503) return {};
+  return { 'x-should-retry': 'false' };
 }

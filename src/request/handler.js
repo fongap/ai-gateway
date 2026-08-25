@@ -31,7 +31,7 @@ import {
 import {
   buildTargetUrl, buildUpstreamHeaders, corsHeaders,
   readBodyTextWithLimit, BodyTooLargeError, safeReadErrorBody, trimDiagnostic,
-  parseBearer,
+  parseBearer, shouldNotRetryHeaders,
 } from '../protocol/http.js';
 import { validateOpenAIChatRequest, isOpenAIStreamingResponse } from '../protocol/openai.js';
 import {
@@ -40,6 +40,11 @@ import {
   estimateAnthropicInputTokens,
 } from '../protocol/anthropic.js';
 import { anthropicToOpenAIRequest, openAIToAnthropicMessage } from '../protocol/convert.js';
+import {
+  validateOpenAIResponsesRequest, responsesToOpenAIRequest, ResponseConversionError,
+  openAICompletionToResponses, transformOpenAIStreamToResponses,
+  synthesizeResponsesFromCompletion, responsesErrorResponse,
+} from '../protocol/responses/index.js';
 import { ensureFirstSseEvent, GUARD_ERROR } from '../stream/guard.js';
 import { transformOpenAIStreamToAnthropic } from '../stream/transform.js';
 import { collectOpenAIStreamObject } from '../stream/assemble.js';
@@ -51,7 +56,8 @@ import { dashboardResponse } from '../dashboard/pages.js';
 const TIER_ORDER = [1, 2, 3];
 const DIAGNOSTIC_BYTES = 4096;
 
-// Unified gateway error: Anthropic-style for Anthropic routes, OpenAI-style otherwise.
+// Unified gateway error: Anthropic-style for Anthropic routes, OpenAI
+// Responses-style for /v1/responses, OpenAI Chat-style otherwise.
 function gatewayError(request, env, route, status, message, requestId, details, extraHeaders) {
   if (route === 'anthropic_messages' || route === 'anthropic_count_tokens') {
     return new Response(JSON.stringify({
@@ -65,9 +71,13 @@ function gatewayError(request, env, route, status, message, requestId, details, 
         'request-id': requestId || '',
         'x-request-id': requestId || '',
         ...(extraHeaders || {}),
+        ...shouldNotRetryHeaders(status),
         ...corsHeaders(request, env),
       },
     });
+  }
+  if (route === 'openai_responses') {
+    return responsesErrorResponse(request, env, status, message, requestId, extraHeaders);
   }
   return new Response(JSON.stringify({ error: { message, ...(details ? { details } : {}) } }), {
     status,
@@ -76,6 +86,7 @@ function gatewayError(request, env, route, status, message, requestId, details, 
       'cache-control': 'no-store',
       'x-request-id': requestId || '',
       ...(extraHeaders || {}),
+      ...shouldNotRetryHeaders(status),
       ...corsHeaders(request, env),
     },
   });
@@ -153,6 +164,7 @@ export async function handleRequest(request, env, ctx) {
     case 'openai_chat':
     case 'anthropic_messages':
     case 'anthropic_count_tokens':
+    case 'openai_responses':
       break;
     default:
       return gatewayError(request, env, route, 404, 'Route not found.', requestId);
@@ -189,9 +201,10 @@ export async function handleRequest(request, env, ctx) {
     return jsonResponse(200, { input_tokens: estimateAnthropicInputTokens(bodyJson) }, env, request, { 'x-request-id': requestId });
   }
 
-  const validationError = route === 'anthropic_messages'
-    ? validateAnthropicMessagesRequest(bodyJson)
-    : validateOpenAIChatRequest(bodyJson);
+  let validationError;
+  if (route === 'openai_responses') validationError = validateOpenAIResponsesRequest(bodyJson);
+  else if (route === 'anthropic_messages') validationError = validateAnthropicMessagesRequest(bodyJson);
+  else validationError = validateOpenAIChatRequest(bodyJson);
   if (validationError) return gatewayError(request, env, route, 400, validationError, requestId);
 
   const requestedModel = String(bodyJson.model || '');
@@ -217,10 +230,23 @@ export async function handleRequest(request, env, ctx) {
   const policy = getPolicy(requestedModel, loadModelsConfig(env), loadPoliciesConfig(env));
   const exposeUpstreamInfo = String(env?.EXPOSE_UPSTREAM_INFO ?? '').trim().toLowerCase() === 'true';
 
-  // Anthropic requests convert once; per-attempt only the model name changes.
+  // Anthropic / Responses requests convert once; per-attempt only the model
+  // name changes. A Responses conversion error is a request-shape problem and
+  // never reaches an upstream (unsupported tool types etc.).
   const anthropicConversion = route === 'anthropic_messages'
     ? anthropicToOpenAIRequest(bodyJson, '', env)
     : null;
+  let responsesConversion = null;
+  if (route === 'openai_responses') {
+    try {
+      responsesConversion = responsesToOpenAIRequest(bodyJson, '', env);
+    } catch (error) {
+      if (error instanceof ResponseConversionError) {
+        return responsesErrorResponse(request, env, 400, error.message, requestId);
+      }
+      throw error;
+    }
+  }
 
   const state = { attempted: new Set(), attempts: [], totalAttempts: 0 };
 
@@ -230,7 +256,7 @@ export async function handleRequest(request, env, ctx) {
       if (!node) break; // tier exhausted -> fallback to next tier
       const outcome = await attemptNode({
         request, env, ctx, logger, requestId, route, node, requestedModel,
-        clientWantsStream, fakeStream, bodyJson, anthropicConversion,
+        clientWantsStream, fakeStream, bodyJson, anthropicConversion, responsesConversion,
         limits, exposeUpstreamInfo, state,
       });
       if (outcome.response) return outcome.response;
@@ -246,7 +272,7 @@ export async function handleRequest(request, env, ctx) {
 async function attemptNode(c) {
   const {
     request, env, logger, requestId, route, node, requestedModel, clientWantsStream,
-    fakeStream, bodyJson, anthropicConversion, limits, exposeUpstreamInfo, state,
+    fakeStream, bodyJson, anthropicConversion, responsesConversion, limits, exposeUpstreamInfo, state,
   } = c;
   const attemptStartMs = Date.now();
   c.attemptStartMs = attemptStartMs;
@@ -255,6 +281,8 @@ async function attemptNode(c) {
   let outboundBody;
   if (route === 'openai_chat') {
     outboundBody = JSON.stringify({ ...bodyJson, model: upstreamModel, ...(fakeStream ? { stream: true } : {}) });
+  } else if (route === 'openai_responses') {
+    outboundBody = JSON.stringify({ ...responsesConversion, model: upstreamModel });
   } else {
     outboundBody = JSON.stringify({ ...anthropicConversion, model: upstreamModel });
   }
@@ -323,7 +351,7 @@ async function attemptNode(c) {
 
 async function handleSuccess(s) {
   const { upstream, c, latencyMs, detach, upstreamWasStreaming } = s;
-  const { request, env, logger, requestId, route, node, requestedModel, clientWantsStream, fakeStream, limits, exposeUpstreamInfo, state } = c;
+  const { request, env, logger, requestId, route, node, requestedModel, bodyJson, clientWantsStream, fakeStream, limits, exposeUpstreamInfo, state } = c;
   const elapsedSinceStart = () => Date.now() - s.attemptStartMs;
 
   const extraHeaders = {
@@ -366,6 +394,18 @@ async function handleSuccess(s) {
       return { response: tracked };
     }
 
+    if (route === 'openai_responses') {
+      const transformed = transformOpenAIStreamToResponses(guarded, requestedModel, bodyJson, requestId, request.signal);
+      const tracked = trackStreamResponse(transformed, {
+        idleTimeoutMs: limits.streamIdleTimeoutMs,
+        completionMarker: /event:\s*response\.(?:completed|incomplete)\b/,
+        onSuccess: () => recordSuccess(node.id, latencyMs),
+        onFailure: () => recordFailure(node.id, { counted: true, cooldownMs: 2_000, reason: 'stream_interrupted' }),
+        onNeutral: () => recordNeutralEnd(node.id),
+      });
+      return { response: new Response(tracked.body, { status: 200, headers }) };
+    }
+
     // anthropic_messages: transform then track the CLIENT-facing stream so an
     // interrupted transform records against the node exactly once.
     const transformed = transformOpenAIStreamToAnthropic(guarded, requestedModel, requestId, request.signal);
@@ -384,6 +424,45 @@ async function handleSuccess(s) {
     onFailure: () => recordFailure(node.id, { counted: true, cooldownMs: 2_000, reason: 'stream_interrupted' }),
     onNeutral: () => recordNeutralEnd(node.id),
   };
+
+  // ---- OpenAI Responses (non-stream) ----
+  if (route === 'openai_responses') {
+    try {
+      let data;
+      if (upstreamWasStreaming) {
+        data = await collectOpenAIStreamObject(upstream, request.signal);
+      } else {
+        data = JSON.parse(await safeReadErrorBody(upstream, 2 * 1024 * 1024));
+      }
+      if (data && typeof data === 'object' && data.error) {
+        const status = Number(data.error.status) >= 400 && Number(data.error.status) < 600
+          ? Math.trunc(Number(data.error.status))
+          : 502;
+        const classification = classifyUpstreamStatus(status, upstream.headers, env);
+        recordOutcome(state, node, classification, latencyMs, trimDiagnostic(data.error.message || 'embedded error', 200), exposeUpstreamInfo, status);
+        if (classification.action === 'stop') {
+          return { response: buildClientErrorResponse(request, env, route, requestId, requestedModel, status, JSON.stringify(data), state) };
+        }
+        return { rotate: true };
+      }
+      if (!clientWantsStream) {
+        const responses = openAICompletionToResponses(data, requestedModel, bodyJson);
+        recordSuccess(node.id, latencyMs);
+        return { response: jsonResponse(200, responses, env, request, extraHeaders) };
+      }
+      // Stream requested but upstream returned a full object: synthesize a
+      // well-formed Responses SSE stream in one body.
+      recordSuccess(node.id, latencyMs);
+      return { response: synthesizeResponsesFromCompletion(data, requestedModel, bodyJson, { ...extraHeaders, ...corsHeaders(request, env) }) };
+    } catch (error) {
+      if (request.signal?.aborted) {
+        recordOutcome(state, node, classifyClientAbort(), elapsedSinceStart());
+        return { response: gatewayError(request, env, route, 499, 'Client closed the request during assembly.', requestId) };
+      }
+      recordOutcome(state, node, classifyFirstEventFailure(), latencyMs, error.message, exposeUpstreamInfo);
+      return { rotate: true };
+    }
+  }
 
   // ---- OpenAI chat ----
   if (route === 'openai_chat') {
@@ -688,9 +767,13 @@ function buildClientErrorResponse(request, env, route, requestId, requestedModel
         'cache-control': 'no-store',
         'request-id': requestId,
         'x-request-id': requestId,
+        ...shouldNotRetryHeaders(status),
         ...corsHeaders(request, env),
       },
     });
+  }
+  if (route === 'openai_responses') {
+    return responsesErrorResponse(request, env, status, detail, requestId);
   }
   return new Response(JSON.stringify({
     error: {
@@ -703,6 +786,7 @@ function buildClientErrorResponse(request, env, route, requestId, requestedModel
       'content-type': 'application/json;charset=UTF-8',
       'cache-control': 'no-store',
       'x-request-id': requestId,
+      ...shouldNotRetryHeaders(status),
       ...corsHeaders(request, env),
     },
   });
@@ -737,6 +821,7 @@ function detectRoute(method, pathname) {
   if (verb !== 'POST') return 'other';
   if (pathname === '/v1/messages/count_tokens' || pathname === '/messages/count_tokens') return 'anthropic_count_tokens';
   if (pathname === '/v1/messages' || pathname === '/messages') return 'anthropic_messages';
+  if (pathname === '/v1/responses' || pathname === '/responses') return 'openai_responses';
   if (pathname === '/v1/chat/completions' || pathname === '/chat/completions') return 'openai_chat';
   return 'other';
 }

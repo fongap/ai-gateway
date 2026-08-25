@@ -8,27 +8,69 @@ import { loadGatewayConfig } from '../config/nodes.js';
 import { snapshotNode } from '../reliability/node-state.js';
 import { gatewayStats } from './stats.js';
 import { corsHeaders, jsonError } from '../protocol/http.js';
+import { OPENAI_COMPATIBLE_PROFILE } from '../config/profiles.js';
 
 export const APP_META = Object.freeze({
   name: 'ai-gateway',
   displayName: 'Smart AI Gateway',
-  version: '6.0.0',
+  version: '6.1.0',
 });
 
 function sanitizePrometheusLabel(value) {
   return String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
 }
 
+// Logical model list with capability metadata. Model capability is derived from
+// the serving node's provider profile (never from model-name guessing), and the
+// gateway always exposes all three wire surfaces. Fields beyond the OpenAI
+// baseline are additive and backward-compatible.
 function buildModelsList(nodes) {
   const models = new Map();
-  for (const node of nodes) {
-    for (const logical of Object.keys(node.models || {})) {
-      if (!models.has(logical)) {
-        models.set(logical, { id: logical, object: 'model', created: 0, owned_by: APP_META.name });
-      }
+  const touch = (logical, node) => {
+    const profile = node.profile || OPENAI_COMPATIBLE_PROFILE;
+    let entry = models.get(logical);
+    if (!entry) {
+      entry = {
+        id: logical,
+        object: 'model',
+        created: 0,
+        owned_by: APP_META.name,
+        apiBackend: profile.id,
+        reasonings: [],
+        caps: { tools: false, reasoning: false, vision: false, stream: false },
+      };
+      models.set(logical, entry);
     }
+    if (entry.apiBackend === profile.id) entry.apiBackend = profile.id;
+    for (const e of profile.reasoning_efforts) {
+      if (!entry.reasonings.includes(e)) entry.reasonings.push(e);
+    }
+    entry.caps.tools = entry.caps.tools || profile.capabilities.tools;
+    entry.caps.reasoning = entry.caps.reasoning || profile.capabilities.reasoning;
+    entry.caps.vision = entry.caps.vision || profile.capabilities.vision;
+    entry.caps.stream = entry.caps.stream || profile.capabilities.stream;
+  };
+  for (const node of nodes) {
+    const keys = Object.keys(node.models || {});
+    for (const logical of keys) touch(logical, node);
   }
-  return { object: 'list', data: [...models.values()].sort((a, b) => a.id.localeCompare(b.id)) };
+  const data = [...models.values()]
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map((entry) => ({
+      id: entry.id,
+      object: 'model',
+      created: 0,
+      owned_by: APP_META.name,
+      apiBackend: entry.apiBackend,
+      protocols: ['chat_completions', 'responses', 'messages'],
+      supports_tools: entry.caps.tools,
+      supports_reasoning: entry.caps.reasoning,
+      supports_reasoning_effort: entry.caps.reasoning,
+      reasoning_efforts: entry.reasonings.sort(),
+      supports_vision: entry.caps.vision,
+      supports_stream: entry.caps.stream,
+    }));
+  return { object: 'list', data };
 }
 
 export function healthResponse(request, env, requestId) {
@@ -140,7 +182,7 @@ export function versionResponse(request, env) {
     display_name: APP_META.displayName,
     version: APP_META.version,
     runtime: 'Cloudflare Workers',
-    protocols: ['OpenAI Chat Completions', 'Anthropic Messages'],
+    protocols: ['OpenAI Chat Completions', 'OpenAI Responses', 'Anthropic Messages'],
     ...(repository ? { repository } : {}),
     configuration: {
       status: config.status,

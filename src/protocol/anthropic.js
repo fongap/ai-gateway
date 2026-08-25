@@ -4,7 +4,7 @@
 // Anthropic Messages surface: request validation, error responses, and the
 // local /v1/messages/count_tokens approximation.
 
-import { corsHeaders } from './http.js';
+import { corsHeaders, shouldNotRetryHeaders } from './http.js';
 
 export function anthropicErrorTypeForStatus(status) {
   if (status === 400 || status === 413 || status === 415 || status === 422) return 'invalid_request_error';
@@ -26,6 +26,7 @@ export function anthropicErrorResponse(request, env, status, message, requestId,
       'request-id': requestId || '',
       'x-request-id': requestId || '',
       ...corsHeaders(request, env),
+      ...shouldNotRetryHeaders(status),
       ...(extraHeaders || {}),
     },
   });

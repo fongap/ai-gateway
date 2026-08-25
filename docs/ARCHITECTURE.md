@@ -12,7 +12,7 @@ Client (OpenAI / Anthropic SDK)
 Request pipeline (src/request/handler.js)
    ↓
 Config Layer (src/config)          ← parses env shards ONCE per isolate
-   ↓  Runtime Node { id, tier, provider, baseUrl, credential, priority, models, limits }
+   ↓  Runtime Node { id, tier, provider, baseUrl, credential, priority, models, limits, profile }
 Scheduler (src/scheduler)
    ↓  dynamic eligible candidate set, recomputed before EVERY attempt
 Reliability (src/reliability)      ← node-local state: cooldowns, circuit, health
@@ -20,6 +20,17 @@ Protocol / Stream (src/protocol, src/stream)
    ↓
 Upstream providers
 ```
+
+## Responsibility split
+
+Two concerns are kept strictly apart:
+
+```text
+Scheduler / Reliability           →  decides WHICH node gets a request
+Protocol / Provider Capability    →  decides HOW the gateway talks to that node
+```
+
+`src/protocol/*` never schedules a node; `src/scheduler` and `src/reliability` never parse Responses events or know which wire format an upstream speaks. Streaming event conversion is separate from the HTTP transport.
 
 ## Config Layer → Runtime Node
 
@@ -68,6 +79,21 @@ Concurrency slots are claimed in `acquireSlot` (atomic with eligibility checks) 
 
 A shared SSE scanner feeds both the guard and the OpenAI→Anthropic transformer so each upstream event is parsed exactly once. Model-name rewriting on passthrough streams skips lines that cannot contain `"model"` and is skipped entirely when logical == upstream model.
 
+## OpenAI Responses protocol (`src/protocol/responses`)
+
+`/v1/responses` is a real Responses surface, not a shim. Because the upstream is a generic chat-completions provider, the module converts in both directions:
+
+- Inbound (`request.js`): Responses request → Chat Completions request. `input` items (message / function_call / function_call_output / reasoning), `tools`, `tool_choice`, `parallel_tool_calls`, `reasoning`, `instructions`, `max_output_tokens` are mapped losslessly. Unsupported host-managed tool types raise a clear 400.
+- Outbound (`response.js`): Chat Completions object → Responses response object (message / reasoning / function_call items, usage, status). Reasoning items preserve a `summary` facet and, when the upstream exposes opaque `encrypted_content`, relay it verbatim rather than flattening it into reasoning_text.
+- Streaming (`stream.js`): Chat Completions SSE → Responses SSE using the shared scanner, emitting the documented ordered event lifecycle (`response.created` … `response.completed`/`incomplete`/`failed`) with `sequence_number`. `events.js` owns the event framing; `reasoning.js` and `tools.js` own reasoning and function-call fidelity.
+- Errors (`events.js` + `index.js`): OpenAI Responses envelope `{ error: { message, type, param, code } }`. Terminal errors (any HTTP error other than 429/503) carry `x-should-retry: false` so clients do not blind-retry a request the gateway already resolved; 429/503 stay retryable via Retry-After. Fields a generic chat-completions upstream cannot represent losslessly (`context_management`, `mcp_servers`, `extra_body`, non-`effort` `output_config.*`) are rejected with the exact field name; `stop_sequences` and `top_k` are converted rather than rejected.
+
+Streaming failover is unchanged: the first-event guard runs on the raw upstream before `response.created` is synthesized, so no failover ever occurs after the first client-visible event.
+
+## Provider Capability / Profile (`src/config/profiles.js`)
+
+A node's `provider` label resolves to a static `profile` descriptor: `protocols` (native vs convert per surface) and capability flags (tools / reasoning / vision / stream) plus supported `reasoning_efforts`. Profiles never hold credentials, circuit state, cooldowns, health, concurrency or tier — those remain on the Runtime Node / Scheduler / Reliability layers. Providers that differ only by `base_url` + key + model name share the default `openai-compatible` profile; only genuine protocol-divergent providers (`anthropic-*`, `openai-*`, `gemini-*`) get a distinct profile. `/v1/models` derives its additive capability metadata from these profiles, never from model-name guesses.
+
 ## State boundaries
 
 Health, cooldowns, circuits and counters are isolate-local best-effort. No KV/D1/Durable Objects are used. This means scheduling decisions are per-isolate; that is accepted in exchange for zero-latency, zero-cost state.
@@ -82,7 +108,8 @@ src/
 │  ├─ timeouts.js            ALL timeout/cooldown defaults & Retry-After parsing
 │  ├─ nodes.js               shard merge → Runtime Node + configuration status
 │  ├─ models.js              MODELS_CONFIG (cached)
-│  └─ policies.js            POLICIES_CONFIG: max_attempts (cached)
+│  ├─ policies.js            POLICIES_CONFIG: max_attempts (cached)
+│  └─ profiles.js            Provider Capability/Profile descriptors (static)
 ├─ scheduler/
 │  └─ scheduler.js           dynamic candidate selection, tier grouping
 ├─ reliability/
@@ -90,9 +117,11 @@ src/
 │  └─ classify.js            error classification → action/cooldown/counted
 ├─ protocol/
 │  ├─ http.js                CORS, errors, header allowlist, URL join, body reads
-│  ├─ openai.js              OpenAI validation + helpers
+│  ├─ openai.js              OpenAI Chat validation + helpers
 │  ├─ anthropic.js           Anthropic validation/errors/count_tokens
-│  └─ convert.js             Anthropic↔OpenAI non-stream conversions
+│  ├─ convert.js             Anthropic↔OpenAI non-stream conversions
+│  └─ responses/             OpenAI Responses protocol (request/response/stream/
+│                            events/reasoning/tools/index) — never schedules nodes
 ├─ stream/
 │  ├─ guard.js               first-event guard + shared SSE scanner
 │  ├─ transform.js           OpenAI SSE → Anthropic SSE

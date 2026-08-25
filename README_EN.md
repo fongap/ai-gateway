@@ -25,6 +25,7 @@ clients see a single stable endpoint
 ```
 
 - OpenAI Chat Completions: `/v1/chat/completions`
+- OpenAI Responses: `/v1/responses` (Codex / OpenCode compatible, with reasoning, function_call and a full streaming event lifecycle)
 - Anthropic Messages / Claude Code: `/v1/messages`
 - Anthropic token count: `/v1/messages/count_tokens`
 
@@ -109,12 +110,15 @@ GATEWAY_ACCESS_KEY        Secret: client access key
 
 ### Runtime knobs (all optional)
 
-`MAX_BODY_BYTES`, `UPSTREAM_HEADERS_TIMEOUT_MS`, `FIRST_EVENT_TIMEOUT_MS`, `STREAM_IDLE_TIMEOUT_MS`, `RATE_LIMIT_COOLDOWN_MS`, `AUTH_FAIL_COOLDOWN_MS`, `ALLOWED_ORIGIN` (CORS off by default), `EXPOSE_UPSTREAM_INFO`, `FAKE_STREAM_PROTECTION`, `ALLOW_INSECURE_HTTP_UPSTREAM`, `MODELS_CONFIG`, `POLICIES_CONFIG`, `LOG_LEVEL`. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+`MAX_BODY_BYTES`, `UPSTREAM_HEADERS_TIMEOUT_MS`, `FIRST_EVENT_TIMEOUT_MS`, `STREAM_IDLE_TIMEOUT_MS`, `RATE_LIMIT_COOLDOWN_MS`, `AUTH_FAIL_COOLDOWN_MS`, `ALLOWED_ORIGIN` (CORS off by default), `EXPOSE_UPSTREAM_INFO`, `FAKE_STREAM_PROTECTION`, `ALLOW_INSECURE_HTTP_UPSTREAM`, `MODELS_CONFIG`, `POLICIES_CONFIG`, `RESPONSES_REASONING_MODE`, `LOG_LEVEL`. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+
+`GET /v1/models` reports logical models plus additive capability metadata (`apiBackend`, `protocols`, `supports_reasoning_effort`, `reasoning_efforts`, `supports_tools`, `supports_vision`, `supports_stream`), derived from each node's Provider Profile rather than model-name guessing. The extra fields are backward-compatible.
 
 ### Security model
 
 - Bearer / `x-api-key` auth with timing-safe SHA-256 comparison.
 - Strict header allowlist; upstream Authorization is built only from the runtime node credential.
+- Terminal error responses carry `x-should-retry: false` (429/503 excluded — those stay retryable via Retry-After) so Codex / Claude clients do not blind-retry a request that could re-execute a tool.
 - HTTPS-only upstreams by default; `redirect: 'manual'`.
 - Credentials never appear in responses, logs or diagnostics.
 - Use Cloudflare WAF / Rate Limiting rules for platform-level protection.

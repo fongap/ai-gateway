@@ -1,5 +1,36 @@
 # Changelog
 
+## 6.1.0 - 2026-08-25
+
+Protocol-compatibility release: adds a real OpenAI Responses `/v1/responses` surface and a Provider Capability/Profile layer, without touching the scheduling core. Everything is additive; no breaking changes.
+
+### Added
+
+- `POST /v1/responses` — a genuine OpenAI Responses endpoint (not a stub):
+  - Non-streaming: converts a Responses request → the generic chat-completions upstream, then assembles a Responses response object (message / reasoning / function_call output items, usage, status).
+  - Streaming: full Responses SSE lifecycle — `response.created` → `response.output_item.added` / `response.content_part.added` / `response.output_text.delta` · done / `response.reasoning_text.delta` · done / `response.function_call_arguments.delta` · done → `response.output_item.done` → `response.completed` / `response.incomplete` / `response.failed`, each with an ordered `sequence_number`.
+  - Reasoning preserved as a `reasoning` item (never flattened to text); thinking/thinking-delta handled as reasoning; upstream `reasoning_content` + `reasoning_effort` mapping. Reasoning items now carry an optional `summary` facet and a verbatim `encrypted_content` payload — opaque/redacted reasoning is relayed unchanged, never rewritten as reasoning_text.
+  - Function calling: tool definitions, `tool_choice`, `parallel_tool_calls`, `call_id` stability, streaming argument delta assembly, and function_call/function_call_output history round-trips.
+  - Error shapes per protocol: Responses clients get `{ error: { message, type, param, code } }`; Anthropic clients keep Anthropic errors; Chat clients keep OpenAI Chat errors. Terminal errors (anything other than 429/503) also carry `x-should-retry: false` so SDKs (Codex / Claude) do not blind-retry a request the gateway already resolved — preventing duplicate tool execution. 429/503 stay retryable via Retry-After.
+  - Unsupported host-managed tools (`web_search`, `file_search`, `computer_use`, `code_interpreter`, `custom`) return a clear 400 instead of being silently dropped. Fields a generic chat-completions upstream cannot represent losslessly (`context_management`, `mcp_servers`, `extra_body`, non-`effort` `output_config.*`) are likewise rejected with the exact field name; `stop_sequences` and `top_k` are converted (not rejected).
+- Public homepage (`GET /`) rebuilt as a minimal, public edge-gateway entry page: title `智能边缘网关`, one-liner `一个入口，多个模型`, deriving the API base from the request origin (`/v1`), server-rendered logical-model status (可用 / 降级 / 不可用 only), a short quick-start env block with a copy button, and `© 2026 Fongap Studio` footer. No "服务正常" hero badge, no node/provider/tier/key/count internals, no admin/dashboard/README content. `/health`, `/metrics` and `/v1/models` remain auth-protected and unchanged; status is computed server-side and collapsed so no node-level detail leaks.
+- `src/protocol/responses/` — a self-contained Responses protocol module (request / response / stream / events / reasoning / tools / index). Protocol layers never schedule nodes; Scheduler/Reliability never understand Responses events.
+- Provider Capability/Profile layer (`src/config/profiles.js`): a static descriptor per node describing native-vs-convert protocols and capability flags. CRT credentials, circuit state, cooldowns, health, concurrency and tier remain on the Runtime Node / Scheduler / Reliability layers.
+- `/v1/models` now reports additive capability metadata per logical model (`apiBackend`, `protocols`, `supports_reasoning_effort`, `reasoning_efforts`, `supports_tools`, `supports_vision`, `supports_stream`), derived from the provider profile — never from model-name guessing. Existing fields are unchanged (no breaking change).
+- New env knob `RESPONSES_REASONING_MODE` (default `reasoning_effort`), mirroring `ANTHROPIC_REASONING_REQUEST_MODE`, to control how Responses `reasoning` is projected onto a chat-completions upstream.
+- Contract tests: `scripts/codex-contract-test.mjs` (Responses, 14) and `scripts/claude-contract-test.mjs` (Claude Messages, 11), wired into `npm test`.
+
+### Unchanged (explicitly preserved)
+
+- Scheduling core, Reliability state machine (cooldowns, circuit, health, LRU, concurrency, RPM), Tier fallback, First Event Guard, stream idle timeout, request-scoped attempted-node set.
+- The generic OpenAI-compatible provider stays the default; only genuine protocol-divergent providers (`anthropic-*`, `openai-*`, `gemini-*`) resolve to a distinct profile. NVIDIA NIM / OpenRouter / Cerebras / SiliconFlow / most OpenAI-compatible APIs keep the default `openai-compatible` profile.
+- Provider recovery/retry from free-claude-code was NOT adopted; ai-gateway keeps its own lightweight Scheduler/Reliability responsibilities.
+
+### Notes
+
+- `/v1/responses` `previous_response_id` is accepted but ignored: ai-gateway is a stateless relay and the client supplies the full `input` items each turn; `store` is a no-op.
+- Reasoning `effort: "none"` is a no-op (chat-completions is opt-in) — no field is emitted.
+
 ## 6.0.0 - 2026-08-24
 
 Breaking release: the node configuration and secret management model was redesigned. Old deployments must re-run configuration/deployment; no migration is provided.
