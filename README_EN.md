@@ -107,13 +107,13 @@ GATEWAY_ACCESS_KEY        Secret: client access key
 
 ### Configuration states
 
-`unconfigured` / `invalid` / `degraded` / `ready` — surfaced via `GET /health`.
+`unconfigured` / `invalid` / `degraded` / `ready` — surfaced via `GET /health`. `invalid` (structural conflicts, duplicate IDs) or `unconfigured` means `ready=false` and the gateway **refuses to serve**; `degraded`/`ready` are servable.
 
 ### Runtime knobs (all optional)
 
-`MAX_BODY_BYTES`, `UPSTREAM_HEADERS_TIMEOUT_MS`, `FIRST_EVENT_TIMEOUT_MS`, `STREAM_IDLE_TIMEOUT_MS`, `RATE_LIMIT_COOLDOWN_MS`, `AUTH_FAIL_COOLDOWN_MS`, `ALLOWED_ORIGIN` (CORS off by default), `EXPOSE_UPSTREAM_INFO`, `FAKE_STREAM_PROTECTION`, `ALLOW_INSECURE_HTTP_UPSTREAM`, `MODELS_CONFIG`, `POLICIES_CONFIG`, `RESPONSES_REASONING_MODE`, `LOG_LEVEL`. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+`MAX_BODY_BYTES`, `UPSTREAM_HEADERS_TIMEOUT_MS`, `FIRST_EVENT_TIMEOUT_MS`, `STREAM_IDLE_TIMEOUT_MS`, `RATE_LIMIT_COOLDOWN_MS`, `AUTH_FAIL_COOLDOWN_MS`, `FAILOVER_BUDGET_MS` (whole-request failover budget, default 180s → stops rotating with a 504 once spent), `ALLOWED_ORIGIN` (CORS off by default), `EXPOSE_UPSTREAM_INFO` (when true, exposes node id/tier and per-attempt detail; by default responses expose only attempt count + aggregate `failure_kinds`), `FAKE_STREAM_PROTECTION`, `ALLOW_INSECURE_HTTP_UPSTREAM`, `MODELS_CONFIG`, `POLICIES_CONFIG`, `RESPONSES_REASONING_MODE`, `LOG_LEVEL`. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
-`GET /v1/models` reports logical models plus additive capability metadata (`apiBackend`, `protocols`, `supports_reasoning_effort`, `reasoning_efforts`, `supports_tools`, `supports_vision`, `supports_stream`), derived from each node's Provider Profile rather than model-name guessing. The extra fields are backward-compatible.
+`GET /v1/models` reports logical models plus additive capability metadata (`apiBackend`, `api_backends`, `protocols`, `supports_reasoning_effort`, `reasoning_efforts`, `supports_tools`, `supports_vision`, `supports_stream`). Capabilities come from the **Model Registry** (`MODELS_CONFIG`) and default conservatively (tools/reasoning/vision=false, stream=true) unless explicitly declared; `apiBackend` is `mixed` (with `api_backends`) when multiple backends serve the model. The extra fields are backward-compatible.
 
 ### Security model
 
@@ -122,7 +122,7 @@ GATEWAY_ACCESS_KEY        Secret: client access key
 - Terminal error responses carry `x-should-retry: false` (429/503 excluded — those stay retryable via Retry-After) so Codex / Claude clients do not blind-retry a request that could re-execute a tool.
 - HTTPS-only upstreams by default; `redirect: 'manual'`.
 - Credentials never appear in responses, logs or diagnostics.
-- Use Cloudflare WAF / Rate Limiting rules for platform-level protection.
+- Use Cloudflare WAF / Rate Limiting rules for platform-level protection. Optionally bind a Cloudflare Rate Limiting binding as `QUOTA_RATE_LIMITER` for **per-location (per-PoP)** distributed shaping — note it counts per Cloudflare location, is permissive, and is **not** a strict global/account quota; exact per-node counts remain the job of local `limits.rpm` (hard mode).
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for internals and [benchmark/benchmark.mjs](benchmark/benchmark.mjs) for measuring gateway overhead.
 
