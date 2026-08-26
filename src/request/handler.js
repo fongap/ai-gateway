@@ -181,7 +181,7 @@ export async function handleRequest(request, env, ctx) {
     }
   }
 
-  const state = { attempted: new Set(), attempts: [], totalAttempts: 0 };
+  const state = { attempted: new Set(), attempts: [], totalAttempts: 0, failureKinds: {}, logger, maxAttempts: policy.maxAttempts };
 
   for (const tierNumber of TIER_ORDER) {
     while (state.totalAttempts < policy.maxAttempts) {
@@ -250,6 +250,8 @@ async function attemptNode(c) {
         state.attempted.add(node.id);
         state.totalAttempts++;
         recordNeutralEnd(node.id);
+        noteFailure(state, 'rate_limit_global');
+        state.logger.info(`attempt ${state.totalAttempts}/${state.maxAttempts} node=${node.id} kind=rate_limit_global status=429`);
         state.attempts.push({ attempt: state.totalAttempts, node_id: node.id, status: 429, kind: 'rate_limit_global' });
         return { rotate: true };
       }
@@ -580,8 +582,17 @@ function rotateWithNeutralEnd(state, node, reason) {
   state.attempted.add(node.id);
   state.totalAttempts++;
   recordNeutralEnd(node.id);
+  noteFailure(state, reason);
+  state.logger.info(`attempt ${state.totalAttempts}/${state.maxAttempts} node=${node.id} kind=${reason} status=0`);
   state.attempts.push({ attempt: state.totalAttempts, node_id: node.id, status: 0, kind: reason });
   return { rotate: true };
+}
+
+// Aggregate failure-kind counter for the exhausted response. Kinds alone (no
+// node ids / no ordering) are safe to expose to clients by default and answer
+// the only question that matters when everything failed: HOW did it fail?
+function noteFailure(state, kind) {
+  state.failureKinds[kind] = (state.failureKinds[kind] || 0) + 1;
 }
 
 // Record a classified attempt outcome exactly once.
@@ -595,6 +606,13 @@ function recordOutcome(state, node, classification, latencyMs, diagnostic, expos
     applyHealthPenalty(node.id, classification.kind);
     recordFailure(node.id, { counted: classification.counted, cooldownMs: classification.cooldownMs || 0, reason: classification.kind });
   }
+
+  noteFailure(state, classification.kind);
+  state.logger.info(
+    `attempt ${state.totalAttempts}/${state.maxAttempts} node=${node.id} kind=${classification.kind}`
+    + ` status=${status} counted=${classification.counted} latency=${latencyMs ?? -1}ms`
+    + `${diagnostic && exposeUpstreamInfo ? ` detail=${trimDiagnostic(diagnostic, 200)}` : ''}`,
+  );
 
   const record = { attempt: state.totalAttempts, node_id: node.id, status, kind: classification.kind };
   if (latencyMs !== undefined && latencyMs >= 0) record.latency_ms = latencyMs;
