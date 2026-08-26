@@ -19,7 +19,7 @@
 ## 一图看懂
 
 ```mermaid
-flowchart LR
+flowchart TB
     A[请求] --> B[鉴权 / 路由]
     B --> C[Model Registry]
     C --> D[选节点]
