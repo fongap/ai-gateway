@@ -13,7 +13,7 @@ import { loadModelRegistry, modelRegistryEntry, servesModel } from '../config/re
 export const APP_META = Object.freeze({
   name: 'ai-gateway',
   displayName: 'Smart AI Gateway',
-  version: '1.2.0',
+  version: '1.2.1',
 });
 
 function sanitizePrometheusLabel(value) {
@@ -108,8 +108,9 @@ export function healthResponse(request, env, requestId) {
   return new Response(JSON.stringify({
     status: config.status,
     ready: config.ready,
-    nodes_total: config.nodes.length,
-    nodes_active: config.nodes.length - cooling,
+    nodes_total: config.nodesTotal,
+    nodes_usable: config.nodesUsable,
+    nodes_active: config.nodesUsable - cooling,
     nodes_cooling_down: cooling,
     tiers: {
       'tier-1': config.nodes.filter((n) => n.tier === 'tier-1').length,

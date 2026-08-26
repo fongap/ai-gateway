@@ -47,24 +47,48 @@ export function validateAnthropicCountTokensRequest(body) {
   return null;
 }
 
+// Script-aware conservative token estimation for /v1/messages/count_tokens.
+// A plain "chars / 4" rule badly under-counts CJK text (~1 token per Han
+// character) and dense JSON tool schemas. This estimator is deliberately
+// biased HIGH (over-estimating a context is safer than truncating it):
+//   ASCII/Latin      ~ 4 chars per token
+//   CJK / Kana       ~ 1 token per character
+//   tools JSON       ~ 3 chars per token + fixed per-tool overhead
+//   image blocks     fixed conservative allowance (~1600 tokens)
+// The result is an APPROXIMATION, not a tokenizer.
+const CJK_PATTERN = /[\u1100-\u11FF\u2E80-\u31FF\u3400-\u4DBF\u4E00-\u9FFF\uA960-\uA97F\uAC00-\uD7AF\uF900-\uFAFF\uFF66-\uFF9F]/;
+
+function estimateTextTokens(text) {
+  let cjk = 0;
+  let other = 0;
+  for (const ch of String(text || '')) {
+    if (CJK_PATTERN.test(ch)) cjk++;
+    else other++;
+  }
+  return cjk + other / 4;
+}
+
 export function estimateAnthropicInputTokens(body) {
-  let weightedChars = 0;
-  const countText = (value) => { weightedChars += String(value || '').length; };
+  let tokens = 0;
+  const countText = (value) => { tokens += estimateTextTokens(value); };
   if (typeof body.system === 'string') countText(body.system);
   else if (Array.isArray(body.system)) for (const x of body.system) countText(x?.text || x);
   for (const message of body.messages || []) {
-    weightedChars += 8;
+    tokens += 2; // per-message structural overhead
     if (typeof message.content === 'string') countText(message.content);
     else for (const block of message.content || []) {
       if (block?.type === 'text') countText(block.text);
       else if (block?.type === 'tool_use') countText(JSON.stringify(block.input || {}));
       else if (block?.type === 'tool_result') countText(toolResultToString(block.content, block.is_error));
-      else if (block?.type === 'image') weightedChars += 6400;
+      else if (block?.type === 'image') tokens += 1600;
       else countText(JSON.stringify(block));
     }
   }
-  countText(JSON.stringify(body.tools || []));
-  return Math.max(1, Math.ceil(weightedChars / 4));
+  // Tool schemas are dense JSON: charge them at a denser ratio plus a fixed
+  // per-tool overhead instead of the plain-text ratio.
+  const tools = Array.isArray(body.tools) ? body.tools : [];
+  tokens += JSON.stringify(tools).length / 3 + tools.length * 64;
+  return Math.max(1, Math.ceil(tokens));
 }
 
 function toolResultToString(content, isError) {

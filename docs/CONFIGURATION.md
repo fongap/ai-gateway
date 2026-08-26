@@ -56,9 +56,18 @@ Rules enforced at load time:
 - `models`: object mapping logical → upstream model names. Missing or explicitly-empty `{}` = wildcard (serves every registry model). A filled-but-invalid map (non-string value, bad structure) is a **config error** — the node is excluded with a diagnostic, never silently emptied into a wildcard.
 - Unknown node fields (`prioirty`) and unknown `limits` fields (`concurency`) are rejected; invalid `priority` / `limits.concurrency` / `limits.rpm` are rejected with a named diagnostic.
 - `limits.concurrency`: integer ≥ 1, default `2`.
-- `limits.rpm`: optional soft per-minute request quota for the key (e.g. `25`). When a node's current-minute count reaches it, siblings with headroom are preferred; if every candidate is capped, the cap is ignored so requests still succeed. Set it to each key's documented RPM (e.g. free NVIDIA NIM ≈ 40, Groq free ≈ 30 — check the provider's current docs).
+- `limits.rpm`: optional per-minute request quota for the key (e.g. `25`). Semantics are controlled by `limits.rpm_mode`:
+  - **hard（默认，显式配置了 `rpm` 即生效）** — the quota is treated as a real upstream/account limit: an exhausted node is skipped this minute, the tier falls through, and if every candidate is exhausted the client receives `503` + `Retry-After` pointing at the RPM minute boundary. The gateway never knowingly exceeds the configured count.
+  - **soft** — the legacy best-effort behavior: exhausted nodes remain last-resort candidates so a lone capped node still serves instead of failing.
+- `limits.rpm_mode`: `"hard"`(default) | `"soft"`. Any other value is rejected.
 
 > **Scope of `limits.*` and reliability state**: `limits.concurrency`, `limits.rpm`, cooldowns, circuit/health and RPM counters are **isolate-local** — per Cloudflare Worker isolate, best-effort shaping. They are **not** global hard limits and **not** provider-wide or cluster-accurate quotas. They are reset whenever an isolate restarts and must not be relied on for billing or per-key accounting.
+
+### Optional global quota coordination (strict keys)
+
+For keys with strict account-level quotas you can add a Workers Rate Limiting binding named `QUOTA_RATE_LIMITER` (binding name is what matters; consult your wrangler version's docs for the exact config syntax). When present, every dispatch to a **hard-RPM** node first performs a real cluster-wide check; a global deny rotates to the next candidate without counting a node failure. Without the binding this is a no-op and only isolate-local shaping applies.
+
+Concurrency cannot be coordinated globally without Durable Objects, which this project deliberately does not use: `limits.concurrency` stays isolate-local by design.
 
 ### Optional
 

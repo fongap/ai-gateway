@@ -18,8 +18,12 @@
 
 import { loadModelsConfig } from './models.js';
 
-const DEFAULT_CAPABILITIES = Object.freeze({ tools: true, reasoning: true, vision: false, stream: true });
-const DEFAULT_REASONING_EFFORTS = Object.freeze(['low', 'medium', 'high']);
+// Under-report capabilities, never over-report: an unlisted model is assumed to
+// support nothing beyond streaming. Only an explicit MODELS_CONFIG declaration
+// turns a capability on. This keeps /v1/models from promising tools/reasoning
+// for third-party OpenAI-compatible models that may not have them.
+const DEFAULT_CAPABILITIES = Object.freeze({ tools: false, reasoning: false, vision: false, stream: true });
+const DEFAULT_REASONING_EFFORTS = Object.freeze([]);
 const DEFAULT_POLICY = 'default';
 
 let cachedEnv;

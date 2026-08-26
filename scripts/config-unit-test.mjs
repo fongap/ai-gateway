@@ -117,6 +117,16 @@ test('invalid priority / concurrency / rpm are rejected with a named diagnostic'
   assert.ok(rpm.diagnostics.some((d) => d.includes('rpm')));
 });
 
+test('rpm_mode defaults to hard when rpm is set; soft is opt-in; invalid rejected', () => {
+  const def = loadGatewayConfig(makeEnv({ tier1: [node('d', { limits: { rpm: 10 } })], secrets: { d: 'x' } }));
+  assert.equal(def.nodes[0].limits.rpmMode, 'hard');
+  const soft = loadGatewayConfig(makeEnv({ tier1: [node('s', { limits: { rpm: 10, rpm_mode: 'soft' } })], secrets: { s: 'x' } }));
+  assert.equal(soft.nodes[0].limits.rpmMode, 'soft');
+  const bad = loadGatewayConfig(makeEnv({ tier1: [node('b', { limits: { rpm: 10, rpm_mode: 'unlimited' } })], secrets: { b: 'x' } }));
+  assert.equal(bad.nodes.length, 0);
+  assert.ok(bad.diagnostics.some((d) => d.includes('rpm_mode')));
+});
+
 test('valid priority defaults to 100 and concurrency to 2', () => {
   const cfg = loadGatewayConfig(makeEnv({ tier1: [node('ok')], secrets: { ok: 'x' } }));
   assert.equal(cfg.status, 'ready');
@@ -140,9 +150,13 @@ test('registry builds capability + policy from MODELS_CONFIG and fills conservat
   assert.equal(reg['code-pro'].policy, 'fast');
   assert.equal(reg['code-pro'].capabilities.vision, true);
   assert.deepEqual(reg['code-pro'].reasoning_efforts, ['high']);
+  // Under-report, never over-report: undeclared models claim nothing beyond
+  // streaming until MODELS_CONFIG explicitly declares the capability.
   const def = modelRegistryEntry(env, 'unknown-model');
-  assert.equal(def.capabilities.tools, true);
-  assert.equal(def.capabilities.vision, false, 'unknown models must be conservative (no vision)');
+  assert.equal(def.capabilities.tools, false, 'undeclared models must not promise tools');
+  assert.equal(def.capabilities.reasoning, false, 'undeclared models must not promise reasoning');
+  assert.equal(def.capabilities.vision, false);
+  assert.deepEqual(def.reasoning_efforts, [], 'no reasoning efforts without a declaration');
 });
 
 test('servesModel treats empty models as wildcard, mapped as explicit', () => {

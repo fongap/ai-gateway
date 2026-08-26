@@ -19,10 +19,10 @@ import { loadGatewayConfig } from '../config/nodes.js';
 import { loadModelsConfig } from '../config/models.js';
 import { loadPoliciesConfig, getPolicy } from '../config/policies.js';
 import { getLimits } from '../config/timeouts.js';
-import { pickCandidate, supportsModel, tierHasDeferredCapacity } from '../scheduler/scheduler.js';
+import { pickCandidate, supportsModel } from '../scheduler/scheduler.js';
 import {
   recordSuccess, recordFailure, recordNeutralEnd,
-  applyHealthPenalty, getCooldownRemainingMs,
+  applyHealthPenalty,
 } from '../reliability/node-state.js';
 import {
   classifyUpstreamStatus, classifyNetworkError, classifyFirstEventFailure,
@@ -31,11 +31,10 @@ import {
 import {
   buildTargetUrl, buildUpstreamHeaders, corsHeaders,
   readBodyTextWithLimit, BodyTooLargeError, safeReadErrorBody, trimDiagnostic,
-  parseBearer, shouldNotRetryHeaders,
 } from '../protocol/http.js';
 import { validateOpenAIChatRequest, isOpenAIStreamingResponse } from '../protocol/openai.js';
 import {
-  anthropicErrorResponse, anthropicErrorTypeForStatus,
+  anthropicErrorResponse,
   validateAnthropicMessagesRequest, validateAnthropicCountTokensRequest,
   estimateAnthropicInputTokens,
 } from '../protocol/anthropic.js';
@@ -43,7 +42,7 @@ import { anthropicToOpenAIRequest, openAIToAnthropicMessage } from '../protocol/
 import {
   validateOpenAIResponsesRequest, responsesToOpenAIRequest, ResponseConversionError,
   openAICompletionToResponses, transformOpenAIStreamToResponses,
-  synthesizeResponsesFromCompletion, responsesErrorResponse,
+  synthesizeResponsesFromCompletion,
 } from '../protocol/responses/index.js';
 import { ensureFirstSseEvent, GUARD_ERROR } from '../stream/guard.js';
 import { transformOpenAIStreamToAnthropic } from '../stream/transform.js';
@@ -52,66 +51,11 @@ import { trackStreamResponse } from '../stream/track.js';
 import { getLogger } from '../observability/logger.js';
 import { healthResponse, metricsResponse, modelsListResponse, versionResponse } from '../observability/status.js';
 import { dashboardResponse } from '../dashboard/pages.js';
+import { isAuthorized } from './auth.js';
+import { gatewayError, buildBudgetExhaustedResponse, buildExhaustedResponse, buildClientErrorResponse } from './errors.js';
+import { TIER_ORDER, normalizePath, detectRoute, acceptsHtml } from './router.js';
 
-const TIER_ORDER = [1, 2, 3];
 const DIAGNOSTIC_BYTES = 4096;
-
-// Unified gateway error: Anthropic-style for Anthropic routes, OpenAI
-// Responses-style for /v1/responses, OpenAI Chat-style otherwise.
-function gatewayError(request, env, route, status, message, requestId, details, extraHeaders) {
-  if (route === 'anthropic_messages' || route === 'anthropic_count_tokens') {
-    return new Response(JSON.stringify({
-      type: 'error',
-      error: { type: anthropicErrorTypeForStatus(status), message, ...(details ? { details } : {}) },
-    }), {
-      status,
-      headers: {
-        'content-type': 'application/json;charset=UTF-8',
-        'cache-control': 'no-store',
-        'request-id': requestId || '',
-        'x-request-id': requestId || '',
-        ...(extraHeaders || {}),
-        ...shouldNotRetryHeaders(status),
-        ...corsHeaders(request, env),
-      },
-    });
-  }
-  if (route === 'openai_responses') {
-    return responsesErrorResponse(request, env, status, message, requestId, extraHeaders);
-  }
-  return new Response(JSON.stringify({ error: { message, ...(details ? { details } : {}) } }), {
-    status,
-    headers: {
-      'content-type': 'application/json;charset=UTF-8',
-      'cache-control': 'no-store',
-      'x-request-id': requestId || '',
-      ...(extraHeaders || {}),
-      ...shouldNotRetryHeaders(status),
-      ...corsHeaders(request, env),
-    },
-  });
-}
-
-// Cached digest of the gateway access key (immutable per isolate).
-let cachedAccessKey = null;
-let cachedAccessKeyDigest = null;
-
-function getAccessKeyDigest(accessKey) {
-  if (cachedAccessKey === accessKey && cachedAccessKeyDigest) return Promise.resolve(cachedAccessKeyDigest);
-  return crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(accessKey ?? '')))
-    .then((digest) => {
-      cachedAccessKey = accessKey;
-      cachedAccessKeyDigest = new Uint8Array(digest);
-      return cachedAccessKeyDigest;
-    });
-}
-
-function constantTimeEquals(a, b) {
-  if (a.length !== b.length) return false;
-  let result = 0;
-  for (let i = 0; i < a.length; i++) result |= a[i] ^ b[i];
-  return result === 0;
-}
 
 export async function handleRequest(request, env, ctx) {
   const logger = getLogger(env);
@@ -137,29 +81,8 @@ export async function handleRequest(request, env, ctx) {
   if (!accessKey && route !== 'version') {
     return gatewayError(request, env, route, 500, 'Gateway misconfigured: GATEWAY_ACCESS_KEY is not set.', requestId);
   }
-  if (route !== 'version') {
-    const bearer = parseBearer(request.headers.get('authorization'));
-    const xApiKey = String(request.headers.get('x-api-key') || '').trim();
-    const presented = [];
-    if (bearer) presented.push(bearer);
-    if (xApiKey) presented.push(xApiKey);
-    let authorized = false;
-    if (presented.length > 0) {
-      // The expected digest is cached per isolate: one SHA-256 per request
-      // instead of two, with the same either-header-matches semantics and a
-      // constant-time comparison.
-      const expected = await getAccessKeyDigest(accessKey);
-      for (const candidate of presented) {
-        const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(candidate));
-        if (constantTimeEquals(new Uint8Array(digest), expected)) {
-          authorized = true;
-          break;
-        }
-      }
-    }
-    if (!authorized) {
-      return gatewayError(request, env, route, 401, 'Unauthorized: gateway access key is invalid or missing.', requestId);
-    }
+  if (route !== 'version' && !(await isAuthorized(request, accessKey))) {
+    return gatewayError(request, env, route, 401, 'Unauthorized: gateway access key is invalid or missing.', requestId);
   }
 
   switch (route) {
@@ -221,9 +144,13 @@ export async function handleRequest(request, env, ctx) {
 
   // ---- Candidate pool ----
   const config = loadGatewayConfig(env);
-  if (config.nodes.length === 0) {
+  // `ready` is the single serve/don't-serve gate: it is true only for the
+  // ready/degraded statuses. A structurally INVALID config (duplicate ids,
+  // conflicting shards) refuses service even if some nodes parsed — otherwise
+  // /health would say 503 while traffic kept flowing.
+  if (!config.ready) {
     return gatewayError(request, env, route, 500,
-      'Gateway misconfigured: no usable nodes. Check TIER*_NODES_CONFIG_* and NODE_SECRETS_*.',
+      'Gateway misconfigured: no usable node configuration. Check TIER*_NODES_CONFIG_* and NODE_SECRETS_*.',
       requestId,
       { configuration_status: config.status, ...(exposeUpstreamInfo ? { diagnostics: config.diagnostics.slice(0, 5) } : {}) });
   }
@@ -248,7 +175,7 @@ export async function handleRequest(request, env, ctx) {
       responsesConversion = responsesToOpenAIRequest(bodyJson, '', env);
     } catch (error) {
       if (error instanceof ResponseConversionError) {
-        return responsesErrorResponse(request, env, 400, error.message, requestId);
+        return gatewayError(request, env, route, 400, error.message, requestId);
       }
       throw error;
     }
@@ -306,6 +233,30 @@ async function attemptNode(c) {
     targetUrl = buildTargetUrl(node.baseUrl, '/v1/chat/completions');
   } catch {
     return rotateWithNeutralEnd(state, node, 'invalid_base_url');
+  }
+
+  // ---- Optional GLOBAL quota coordination --------------------------------
+  // isolate-local RPM/concurrency state can only shape traffic per Worker
+  // isolate; several isolates share the same upstream key. When the operator
+  // binds a Workers Rate Limiting binding as QUOTA_RATE_LIMITER, hard-RPM nodes
+  // get a real cluster-wide check before dispatch. Without the binding this is
+  // a no-op and the local hard/soft semantics apply.
+  if (node.limits.rpmMode === 'hard' && typeof env?.QUOTA_RATE_LIMITER?.limit === 'function') {
+    try {
+      const verdict = await env.QUOTA_RATE_LIMITER.limit({ key: node.id });
+      if (verdict && verdict.success === false) {
+        // Globally rate-limited: not the node's fault — no failure/cooldown,
+        // just move on to the next candidate.
+        state.attempted.add(node.id);
+        state.totalAttempts++;
+        recordNeutralEnd(node.id);
+        state.attempts.push({ attempt: state.totalAttempts, node_id: node.id, status: 429, kind: 'rate_limit_global' });
+        return { rotate: true };
+      }
+    } catch {
+      // A broken coordinator must never take the gateway down: proceed and let
+      // the local limits + circuit breaker do their job.
+    }
   }
 
   const headers = buildUpstreamHeaders(request, node.credential, requestId);
@@ -406,14 +357,16 @@ async function handleSuccess(s) {
     const headers = finalHeaders(env, request, guarded.headers, extraHeaders);
 
     if (route === 'openai_chat') {
-      let tracked = trackStreamResponse(new Response(guarded.body, { status: 200, headers }), {
+      const tracked = trackStreamResponse(new Response(guarded.body, { status: 200, headers }), {
         idleTimeoutMs: limits.streamIdleTimeoutMs,
         completionMarker: /data:\s*\[DONE\]\s*(?:\r?\n|$)/,
+        // Model rewrite happens INSIDE the tracked stream; wrapping yet another
+        // pull-based stream layer here stalls final chunks (see track.js).
+        ...(needsModelRewrite ? { rewriteModel: requestedModel } : {}),
         onSuccess: () => recordSuccess(node.id, latencyMs),
         onFailure: () => recordFailure(node.id, { counted: true, cooldownMs: 2_000, reason: 'stream_interrupted' }),
         onNeutral: () => recordNeutralEnd(node.id),
       });
-      if (needsModelRewrite) tracked = rewriteStreamModelField(tracked, requestedModel);
       return { response: tracked };
     }
 
@@ -513,10 +466,11 @@ async function handleSuccess(s) {
           // A passthrough stream that closes without [DONE] is a truncation:
           // deliver what arrived, but account the node failure.
           completionMarker: /data:\s*\[DONE\]\s*(?:\r?\n|$)/,
+          ...(needsModelRewrite ? { rewriteModel: requestedModel } : {}),
           ...trackCallbacks,
         },
       );
-      return { response: needsModelRewrite ? rewriteStreamModelField(tracked, requestedModel) : tracked };
+      return { response: tracked };
     }
     // Upstream answered 200 but NOT with SSE. Some free providers return
     // JSON bodies (sometimes with an embedded error object) even for
@@ -673,201 +627,4 @@ function jsonResponse(status, data, env, request, extraHeaders) {
       ...corsHeaders(request, env),
     },
   });
-}
-
-// Rewrite the model field in a passthrough OpenAI SSE stream. Lines that cannot
-// contain the field are never parsed, keeping per-chunk CPU minimal.
-function rewriteStreamModelField(response, logicalModel) {
-  if (!response.body) return response;
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  const encoder = new TextEncoder();
-  let lineBuffer = '';
-
-  const processLine = (line) => {
-    if (!line.startsWith('data:') || !line.includes('"model"')) return line;
-    const raw = line.slice(5).trimStart();
-    if (!raw || raw === '[DONE]') return line;
-    try {
-      const json = JSON.parse(raw);
-      if (json && typeof json === 'object' && json.model !== undefined) {
-        json.model = logicalModel;
-        return 'data: ' + JSON.stringify(json);
-      }
-    } catch { /* malformed lines pass through untouched */ }
-    return line;
-  };
-
-  const stream = new ReadableStream({
-    async pull(controller) {
-      try {
-        const { done, value } = await reader.read();
-        if (done) {
-          if (lineBuffer) {
-            controller.enqueue(encoder.encode(lineBuffer));
-            lineBuffer = '';
-          }
-          controller.close();
-          return;
-        }
-        lineBuffer += decoder.decode(value, { stream: true });
-        const lines = lineBuffer.split('\n');
-        lineBuffer = lines.pop() || '';
-        for (const line of lines) controller.enqueue(encoder.encode(processLine(line) + '\n'));
-      } catch (e) {
-        try { controller.error(e); } catch { /* closed */ }
-      }
-    },
-    cancel() { reader.cancel().catch(() => {}); },
-  });
-
-  return new Response(stream, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: response.headers,
-  });
-}
-
-function buildBudgetExhaustedResponse(request, env, route, requestId, requestedModel, state, exposeUpstreamInfo) {
-  // The gateway spent the whole failover budget rotating and still has no answer.
-  // Stop: return a clear, terminal error and the attempt COUNT only. Do not keep
-  // calling further upstreams, and do not leak the internal failure sequence by
-  // default. 504 + x-should-retry:false tells clients not to blind-retry a request
-  // the gateway already spent its budget resolving.
-  const status = 504;
-  const details = {
-    requested_model: requestedModel,
-    attempts: state.totalAttempts,
-    ...(exposeUpstreamInfo && state.attempts.length ? { attempts_detail: state.attempts } : {}),
-  };
-  return gatewayError(request, env, route, status,
-    `Gateway failover budget exhausted after ${state.totalAttempts} attempt(s).`, requestId, details);
-}
-
-function buildExhaustedResponse(request, env, route, requestId, requestedModel, state, tiers, exposeUpstreamInfo) {
-  const last = state.attempts[state.attempts.length - 1];
-  const nothingAttempted = state.attempts.length === 0;
-
-  // Distinguish WHY no node was available:
-  //   saturated (all candidates busy at concurrency/RPM caps) -> 503 + short
-  //     Retry-After so bursty multi-agent clients back off instead of hammering;
-  //   cooling / circuit open -> 429 + the smallest remaining cooldown;
-  //   real failures -> 502.
-  let status;
-  let message;
-  let retryAfterSec;
-  if (nothingAttempted) {
-    const deferred = TIER_ORDER.some((t) =>
-      tierHasDeferredCapacity(tiers[t], requestedModel, state.attempted));
-    if (deferred) {
-      status = 503;
-      message = 'All eligible nodes are at capacity. Retry shortly.';
-      retryAfterSec = 1;
-    } else {
-      const remaining = Object.values(tiers).flat()
-        .map((n) => getCooldownRemainingMs(n.id))
-        .filter((v) => v > 0);
-      const minRemaining = remaining.length ? Math.min(...remaining) : 0;
-      status = 429;
-      message = 'All eligible nodes are temporarily unavailable (cooldown or circuit open).';
-      if (minRemaining > 0) retryAfterSec = Math.ceil(minRemaining / 1000);
-    }
-  } else {
-    status = last?.status === 429 ? 429 : 502;
-    message = `All nodes failed for model "${requestedModel}".`;
-    if (status === 429) {
-      const remaining = Object.values(tiers).flat()
-        .map((n) => getCooldownRemainingMs(n.id))
-        .filter((v) => v > 0);
-      if (remaining.length) retryAfterSec = Math.ceil(Math.min(...remaining) / 1000);
-    }
-  }
-
-  const details = {
-    requested_model: requestedModel,
-    attempts: state.totalAttempts,
-    ...(exposeUpstreamInfo && state.attempts.length ? { attempts_detail: state.attempts } : {}),
-  };
-  // Route-aware body: Anthropic clients must receive Anthropic-shaped errors.
-  return gatewayError(request, env, route, status, message, requestId, details,
-    retryAfterSec ? { 'retry-after': String(retryAfterSec) } : undefined);
-}
-
-function buildClientErrorResponse(request, env, route, requestId, requestedModel, status, errorText, state, exposeUpstreamInfo) {
-  const detail = extractErrorMessage(errorText) || `Upstream returned HTTP ${status}.`;
-  const attemptsDetail = exposeUpstreamInfo && state.attempts.length
-    ? { attempts_detail: state.attempts.slice(-1) }
-    : {};
-  if (route === 'anthropic_messages') {
-    return new Response(JSON.stringify({
-      type: 'error',
-      error: { type: anthropicErrorTypeForStatus(status), message: detail },
-    }), {
-      status,
-      headers: {
-        'content-type': 'application/json;charset=UTF-8',
-        'cache-control': 'no-store',
-        'request-id': requestId,
-        'x-request-id': requestId,
-        ...shouldNotRetryHeaders(status),
-        ...corsHeaders(request, env),
-      },
-    });
-  }
-  if (route === 'openai_responses') {
-    return responsesErrorResponse(request, env, status, detail, requestId);
-  }
-  return new Response(JSON.stringify({
-    error: {
-      message: detail,
-      details: { requested_model: requestedModel, attempts: state.totalAttempts, ...attemptsDetail },
-    },
-  }), {
-    status,
-    headers: {
-      'content-type': 'application/json;charset=UTF-8',
-      'cache-control': 'no-store',
-      'x-request-id': requestId,
-      ...shouldNotRetryHeaders(status),
-      ...corsHeaders(request, env),
-    },
-  });
-}
-
-function extractErrorMessage(text) {
-  const raw = String(text || '').trim();
-  if (!raw) return '';
-  try {
-    const json = JSON.parse(raw);
-    return json?.error?.message || json?.message || trimDiagnostic(raw, 300);
-  } catch {
-    return trimDiagnostic(raw, 300);
-  }
-}
-
-// ---- Route helpers ---------------------------------------------------------
-
-export function normalizePath(pathname) {
-  return String(pathname || '/').replace(/\/+$/, '').toLowerCase() || '/';
-}
-
-function detectRoute(method, pathname) {
-  const verb = String(method).toUpperCase();
-  if (verb === 'GET') {
-    if (pathname === '/health') return 'health';
-    if (pathname === '/metrics') return 'metrics';
-    if (pathname === '/version') return 'version';
-    if (pathname === '/v1/models' || pathname === '/models') return 'models';
-    return 'other';
-  }
-  if (verb !== 'POST') return 'other';
-  if (pathname === '/v1/messages/count_tokens' || pathname === '/messages/count_tokens') return 'anthropic_count_tokens';
-  if (pathname === '/v1/messages' || pathname === '/messages') return 'anthropic_messages';
-  if (pathname === '/v1/responses' || pathname === '/responses') return 'openai_responses';
-  if (pathname === '/v1/chat/completions' || pathname === '/chat/completions') return 'openai_chat';
-  return 'other';
-}
-
-function acceptsHtml(request) {
-  return (request.headers.get('accept') || '').includes('text/html');
 }

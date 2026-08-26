@@ -23,7 +23,7 @@
 
 import { handleRequest } from './request/handler.js';
 import { isCountedRoute, gatewayStats, trackClientResponse } from './observability/stats.js';
-import { normalizePath } from './request/handler.js';
+import { normalizePath } from './request/router.js';
 import { sanitizedInternalError } from './observability/status.js';
 
 export default {

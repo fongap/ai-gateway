@@ -34,3 +34,20 @@ PR 请说明：目标、改动点、验证结果、破坏性变更、安全影�
 Describe: goal, changes, verification, breaking changes, security impact.
 
 Use the repository Pull Request template and ensure all CI checks pass before requesting review.
+
+## Commit Messages
+
+Commit messages must be meaningful; bare `update` / `fix` commits are not acceptable for a reliability-engineering codebase. Use Conventional-Commits-style prefixes:
+
+```
+feat: add request-level failover budget
+fix: prevent half-open probe leak in circuit breaker
+fix: reject malformed node models instead of treating them as wildcard
+refactor: split model registry out of provider profiles
+docs: clarify isolate-local quota semantics
+test: cover hard RPM exhaustion and SSE error envelopes
+chore: pin GitHub Actions to commit SHAs
+ui: refine public gateway entry page
+```
+
+Rules of thumb: one logical change per commit; the subject line states the *behavior* change, not the file list; scheduling/reliability changes should reference the regression test that covers them.

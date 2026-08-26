@@ -41,7 +41,8 @@ const FORBIDDEN_NODE_FIELDS = ['token', 'credential', 'api_key', 'apikey', 'auth
 // Fail-fast schema: any field outside this set is a typo/invalid and the node
 // is rejected instead of being silently accepted (or emptied into a wildcard).
 const ALLOWED_NODE_FIELDS = new Set(['id', 'provider', 'base_url', 'priority', 'models', 'limits']);
-const ALLOWED_LIMITS_FIELDS = new Set(['concurrency', 'rpm']);
+const ALLOWED_LIMITS_FIELDS = new Set(['concurrency', 'rpm', 'rpm_mode']);
+const RPM_MODES = new Set(['soft', 'hard']);
 
 let cachedEnv;
 let cachedResult;
@@ -136,10 +137,15 @@ function buildConfig(env) {
     if (!seenIds.has(nodeId)) diagnostics.push(`credential "${nodeId}" has no matching node config`);
   }
 
-  if (conflict) status = 'invalid';
-  else if (nodes.length === 0) status = 'invalid';
+  // Status semantics (strict, no contradictions):
+  //   unconfigured  key config missing entirely            -> ready=false
+  //   invalid       structural conflict OR zero usable     -> ready=false, never serve
+  //   degraded      some nodes unusable, >=1 usable        -> ready=true
+  //   ready         all declared nodes usable              -> ready=true
+  if (conflict || nodes.length === 0) status = 'invalid';
   else if (nodes.length < nodesDeclared) status = 'degraded';
   else status = 'ready';
+  const ready = status === 'ready' || status === 'degraded';
 
   // Precompute tier groups (priority-sorted) once per isolate; the scheduler
   // must not re-group or re-sort on the request hot path.
@@ -149,7 +155,7 @@ function buildConfig(env) {
 
   return {
     status,
-    ready: nodes.length > 0,
+    ready,
     accessKeyBound,
     nodes,
     tiers,
@@ -238,8 +244,8 @@ function buildRuntimeNode(rawNode, tier, credentials, allowInsecure, sourceKey, 
     profile,
     limits: {
       concurrency: limits.concurrency ?? 2,
-      // Soft per-minute request quota; undefined = unlimited.
-      ...(limits.rpm !== undefined ? { rpm: limits.rpm } : {}),
+      // Soft/hard per-minute request quota; undefined = unlimited.
+      ...(limits.rpm !== undefined ? { rpm: limits.rpm, rpmMode: limits.rpmMode ?? 'hard' } : {}),
     },
   };
 }
@@ -286,6 +292,18 @@ function parseLimits(raw, nodeId, diagnostics) {
       return null;
     }
     out.rpm = r;
+    // An explicitly configured RPM is treated as a real upstream/account quota:
+    // default to HARD (never exceed it locally). Opt back into the old
+    // best-effort behavior with "rpm_mode": "soft".
+    out.rpmMode = 'hard';
+  }
+  if ('rpm_mode' in raw) {
+    const mode = typeof raw.rpm_mode === 'string' ? raw.rpm_mode.trim().toLowerCase() : '';
+    if (!RPM_MODES.has(mode)) {
+      diagnostics.push(`node "${nodeId}": limits.rpm_mode must be "soft" or "hard"`);
+      return null;
+    }
+    out.rpmMode = mode;
   }
   return out;
 }

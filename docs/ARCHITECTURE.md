@@ -56,6 +56,8 @@ then one O(n) pass picks the best candidate: `priority ASC → activeRequests AS
 
 **Rotation vs fallback**: staying in the same tier is *node rotation*; moving to tier N+1 happens only when tier N has no candidate left. Tiers are hard precedence — the higher-preference pool is always exhausted first.
 
+**RPM semantics**: `limits.rpm` defaults to **hard** — an exhausted node is not a fallback candidate and the gateway never knowingly exceeds the configured quota; full exhaustion yields 503 + Retry-After at the RPM minute boundary. `"rpm_mode":"soft"` restores best-effort behavior. When a `QUOTA_RATE_LIMITER` Rate Limiting binding is bound, hard-RPM dispatches additionally pass a real cluster-wide check (denied → rotate, no node penalty). Concurrency remains isolate-local shaping.
+
 **Failover budget**: the whole request is bounded by `FAILOVER_BUDGET_MS` (default 180s). Time starts when the gateway receives the request; before each new attempt the remaining budget is checked and the attempt's own headers/first-event timeout is capped to `min(configured, remaining)`. When the budget is exhausted the gateway stops rotating and returns a terminal 504 with an attempt count instead of burning `headersTimeout × maxAttempts` (~600s worst case). Client abort is privileged, and streaming never fails over after the first client-visible event (first-event-before still rotes within budget).
 
 ## Reliability model (src/reliability)
@@ -81,7 +83,7 @@ All node-runtime state (health, EWMA latency, cooldowns, circuit, concurrency, R
 
 ## Streaming boundary (src/stream)
 
-`guard.js` implements the single first-event guard: it consumes the upstream SSE stream until the first valid JSON event (or `[DONE]`, timeout, abort, malformed data) and returns a replayable response. The guard runs on **every** streaming path before any byte reaches the client. After the first event there is no transparent failover — a mid-stream death delivers already-buffered bytes and closes cleanly (the missing completion marker exposes the truncation).
+`guard.js` implements the single first-event guard: it consumes the upstream SSE stream until the first valid JSON event (or `[DONE]`, timeout, abort, malformed data, or a JSON **error envelope** — `{"error":{...}}` counts as a failure so a zero-output HTTP-200 stream still rotates) and returns a replayable response. The guard runs on **every** streaming path before any byte reaches the client. After the first event there is no transparent failover — a mid-stream death delivers already-buffered bytes and closes cleanly (the missing completion marker exposes the truncation).
 
 A shared SSE scanner feeds both the guard and the OpenAI→Anthropic transformer so each upstream event is parsed exactly once. Model-name rewriting on passthrough streams skips lines that cannot contain `"model"` and is skipped entirely when logical == upstream model.
 
@@ -139,7 +141,10 @@ src/
 │  ├─ assemble.js            stream → full OpenAI object (fake-stream mode)
 │  └─ track.js               idle-timeout enforcement + node outcome tracking
 ├─ request/
-│  └─ handler.js             auth, routing, attempt loop
+│  ├─ handler.js             orchestration, attempt loop, per-route success paths
+│  ├─ auth.js                access-key digest + constant-time comparison
+│  ├─ router.js              route allowlist / path normalization
+│  └─ errors.js              protocol-shaped errors, Retry-After, topology policy
 ├─ observability/
 │  ├─ logger.js, stats.js    counters, client stream accounting
 │  └─ status.js              /health /metrics /version /v1/models

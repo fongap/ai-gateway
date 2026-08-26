@@ -29,13 +29,29 @@ function underRpmCap(node, now) {
   return rpmUsage(node.id, now) < rpm;
 }
 
+// A HARD rpm cap is a real upstream/account quota: once the isolate-local
+// counter reaches it the node must not be dispatched again this minute.
+// SOFT caps (explicit "rpm_mode": "soft") keep the old best-effort behavior.
+export function isHardRpmExhausted(node, now = Date.now()) {
+  const rpm = node.limits.rpm;
+  if (!rpm || node.limits.rpmMode === 'soft') return false;
+  return rpmUsage(node.id, now) >= rpm;
+}
+
+// Seconds until the current RPM minute window resets (for Retry-After).
+export function rpmWindowRetryAfterSec(now = Date.now()) {
+  return Math.max(1, Math.ceil((60_000 - (now % 60_000)) / 1000));
+}
+
 // Pick and claim the best eligible node from one tier, or return null.
 // `attempted` is the request-scoped Set of node ids that already failed.
 //
-// nodes with limits.rpm are SOFT-capped: when every candidate has exhausted
-// its per-minute quota the cap is ignored rather than failing the request —
-// a single-node setup must never hard-fail just because a minute boundary
-// hasn't arrived yet.
+// RPM semantics:
+//   hard (default when limits.rpm is set): an exhausted node is NOT a fallback
+//     candidate — the gateway would knowingly exceed the configured quota
+//     otherwise. When every candidate is exhausted the tier is skipped.
+//   soft ("rpm_mode":"soft"): exhausted nodes remain last-resort candidates so
+//     a lone capped node still serves instead of failing the request.
 export function pickCandidate(tierNodes, requestedModel, attempted, now = Date.now()) {
   let best = null;
   let bestState = null;
@@ -54,9 +70,12 @@ export function pickCandidate(tierNodes, requestedModel, attempted, now = Date.n
         bestState = s;
       }
     }
-    if (!bestUncapped || betterThan(s, node, bestUncappedState, bestUncapped)) {
-      bestUncapped = node;
-      bestUncappedState = s;
+    // Only SOFT-capped (or uncapped) nodes may serve past their counter.
+    if (!isHardRpmExhausted(node, now)) {
+      if (!bestUncapped || betterThan(s, node, bestUncappedState, bestUncapped)) {
+        bestUncapped = node;
+        bestUncappedState = s;
+      }
     }
   }
 
@@ -69,10 +88,8 @@ export function pickCandidate(tierNodes, requestedModel, attempted, now = Date.n
 }
 
 // True when this tier could serve the model if it had capacity right now
-// (every candidate busy at its concurrency limit). Used to distinguish
-// "saturated" from "cooling down" in client responses. RPM is intentionally
-// not considered here: it is a soft cap and can never by itself make
-// pickCandidate return null.
+// (every candidate busy at its concurrency limit or hard-RPM exhausted). Used
+// to distinguish "saturated" from "cooling down" in client responses.
 export function tierHasDeferredCapacity(tierNodes, requestedModel, attempted, now = Date.now()) {
   for (const node of tierNodes) {
     if (attempted.has(node.id)) continue;
@@ -80,6 +97,7 @@ export function tierHasDeferredCapacity(tierNodes, requestedModel, attempted, no
     if (peekAvailability(node.id, now) === 'no') continue;
     const s = getNodeState(node.id);
     if (s.activeRequests >= node.limits.concurrency) return true;
+    if (isHardRpmExhausted(node, now)) return true;
   }
   return false;
 }

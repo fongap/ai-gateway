@@ -21,6 +21,10 @@ export const GUARD_ERROR = {
   DONE_ONLY: 'done_only_stream',
   ABORTED: 'client_aborted',
   MALFORMED: 'malformed_first_event',
+  // HTTP 200 + a parseable JSON event that is an error envelope
+  // ({"error":{...}}). The node produced no model output, so the caller must
+  // still be allowed to rotate instead of committing the stream.
+  ERROR_ENVELOPE: 'first_event_error_envelope',
 };
 
 // Incremental SSE line scanner shared by every streaming path so each SSE
@@ -132,18 +136,29 @@ export async function ensureFirstSseEvent(upstreamResponse, timeoutMs, clientSig
       reject(guardError(code));
     };
 
+    // Some OpenAI-compatible providers answer HTTP 200 but stream a JSON error
+    // envelope ({"error":{...}}) as the first SSE event. That is NOT model
+    // output: committing it would close the failover boundary on a node that
+    // never produced anything, so it must rotate like any other first-event
+    // failure.
     const check = (data) => {
       if (data === '[DONE]') {
         // A bare [DONE] without any output event is an empty stream.
         finishErr(GUARD_ERROR.DONE_ONLY);
         return;
       }
+      let json;
       try {
-        JSON.parse(data);
-        finishOk();
+        json = JSON.parse(data);
       } catch {
         finishErr(GUARD_ERROR.MALFORMED);
+        return;
       }
+      if (json && typeof json === 'object' && !Array.isArray(json) && json.error) {
+        finishErr(GUARD_ERROR.ERROR_ENVELOPE);
+        return;
+      }
+      finishOk();
     };
 
     if (clientSignal?.aborted) {

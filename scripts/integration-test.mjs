@@ -256,17 +256,55 @@ await test('RPM cap rotates to sibling keys before exhausting a single key', asy
   assert.deepEqual(nodes, ['rpm-a', 'rpm-b'], 'second request must rotate to the uncapped sibling');
 });
 
-await test('RPM cap is soft: a lone capped node still serves instead of failing', async () => {
+await test('RPM soft mode keeps the legacy break-through: a lone capped node still serves', async () => {
   resetMock();
   routeHandlers['solo.example.com'] = () => jsonUpstream(okCompletion());
   const env = makeEnv({
-    tier1: [basicNode('solo', { limits: { concurrency: 5, rpm: 1 } })],
+    tier1: [basicNode('solo', { limits: { concurrency: 5, rpm: 1, rpm_mode: 'soft' } })],
     secrets: { solo: 'k' },
   });
   for (let i = 0; i < 3; i++) {
     const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
     assert.equal(res.status, 200, `request ${i + 1} must still succeed`);
   }
+});
+
+await test('RPM hard mode never exceeds the configured cap: exhaustion yields 503 at the minute boundary', async () => {
+  resetMock();
+  routeHandlers['hard.example.com'] = () => jsonUpstream(okCompletion());
+  const env = makeEnv({
+    tier1: [basicNode('hard', { limits: { concurrency: 5, rpm: 1 } })], // hard is the default
+    secrets: { hard: 'k' },
+  });
+  const first = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(first.status, 200);
+  const second = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(second.status, 503, 'hard-rpm exhaustion must not silently exceed the quota');
+  const retryAfter = Number(second.headers.get('retry-after'));
+  assert.ok(retryAfter >= 1 && retryAfter <= 60, `retry-after must point at the minute boundary, got ${retryAfter}`);
+  assert.equal(upstreamCalls.length, 1, 'the exhausted node must not be called again');
+});
+
+await test('global QUOTA_RATE_LIMITER deny rotates without counting a node failure', async () => {
+  resetMock();
+  routeHandlers['gb-a.example.com'] = () => jsonUpstream(okCompletion());
+  routeHandlers['gb-b.example.com'] = () => jsonUpstream(okCompletion());
+  const fakeBinding = {
+    limit: async ({ key }) => ({ success: key !== 'gb-a' }), // gb-a globally denied
+  };
+  const env = makeEnv({
+    tier1: [
+      basicNode('gb-a', { limits: { concurrency: 5, rpm: 100 } }),
+      basicNode('gb-b'),
+    ],
+    secrets: { 'gb-a': 'k', 'gb-b': 'k' },
+    extraEnv: { QUOTA_RATE_LIMITER: fakeBinding },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 200);
+  assert.deepEqual(upstreamCalls.map((c) => c.host), ['gb-b.example.com'],
+    'globally denied node must not receive the request');
+  assert.equal(getNodeState('gb-a').totalFailures, 0, 'global deny is not a node failure');
 });
 
 await test('saturation returns 503 with Retry-After instead of bare 429', async () => {
@@ -846,7 +884,7 @@ await test('public home model hint falls back to placeholder when nothing is ava
   }), env, {});
   assert.equal(res.status, 200);
   const html = await res.text();
-  assert.match(html, /OPENAI_MODEL=air/, 'must fall back to the conventional default model');
+  assert.match(html, /OPENAI_MODEL=&lt;model&gt;/, 'must show a placeholder when nothing is available');
 });
 
 // ---- Information exposure (P1) ---------------------------------------------
@@ -1002,7 +1040,7 @@ await test('/version is public and exposes only branding, no node/config topolog
   assert.equal(res.status, 200);
   const body = await res.json();
   assert.equal(body.name, 'ai-gateway');
-  assert.equal(body.version, '1.2.0');
+  assert.equal(body.version, '1.2.1');
   assert.equal(body.runtime, 'Cloudflare Workers');
   assert.ok(Array.isArray(body.protocols));
   const serialized = JSON.stringify(body);
@@ -1051,6 +1089,58 @@ await test('public home: brand & GitHub once, 通用/编程 grouped, no protocol
   assert.ok(!html.includes('OpenAI 兼容协议'), 'must not show protocol note');
   assert.ok(!html.includes('v1.2.0'), 'must not show the version');
   assert.ok(!html.includes('智能边缘网关'), 'must not carry the old brand');
+});
+
+await test('streaming relay delivers every chunk and terminates cleanly (torn [DONE], model rewrite)', async () => {
+  // Regression: stacked pull-based stream wrappers stalled on the final
+  // chunks — clients saw the first events but the stream never terminated.
+  resetMock();
+  const encoder = new TextEncoder();
+  routeHandlers['sr.example.com'] = () => {
+    const events = [
+      { id: 's', choices: [{ index: 0, delta: { content: '你' }, finish_reason: null }] },
+      { id: 's', choices: [{ index: 0, delta: { content: '好，世' }, finish_reason: null }] },
+      { id: 's', choices: [{ index: 0, delta: { content: '界' }, finish_reason: null }] },
+      { id: 's', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
+    ];
+    let i = 0;
+    return new Response(new ReadableStream({
+      async pull(c) {
+        if (i >= events.length) {
+          c.enqueue(encoder.encode('data: '));
+          await new Promise((r) => setTimeout(r, 5));
+          c.enqueue(encoder.encode('[DONE]'));
+          await new Promise((r) => setTimeout(r, 5));
+          c.enqueue(encoder.encode('\n\n'));
+          c.close();
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 15));
+        c.enqueue(encoder.encode(`data: ${JSON.stringify(events[i++])}\n\n`));
+      },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  // logical != upstream so the inline model rewrite path is active.
+  const env = makeEnv({ tier1: [basicNode('sr', { models: { air: 'up-air' } })], secrets: { sr: 'k' } });
+  const res = await worker.fetch(chatRequest({ model: 'air', messages: [{ role: 'user', content: 'Hi' }], stream: true }), env, {});
+  assert.equal(res.status, 200);
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let text = '';
+  for (;;) {
+    const x = await Promise.race([reader.read(), new Promise((s) => setTimeout(() => s({ timeout: true }), 3000))]);
+    if (x.timeout) throw new Error('stream never terminated');
+    if (x.done) break;
+    text += dec.decode(x.value, { stream: true });
+  }
+  console.log('STREAM:', JSON.stringify(text));
+  assert.match(text, /"content":"你"/);
+  assert.match(text, /好，世/);
+  assert.match(text, /"content":"界"/);
+  assert.match(text, /"finish_reason":"stop"/);
+  assert.match(text, /\[DONE\]/);
+  assert.ok(!text.includes('up-air'), 'upstream model must be rewritten to the logical name');
+  assert.equal(getNodeState('sr').totalSuccesses, 1, 'clean completion must record node success');
 });
 
 if (!process.exitCode) console.log(`\nintegration tests passed (${passed}).`);

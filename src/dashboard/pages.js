@@ -208,15 +208,16 @@ function renderModelGroups(models) {
 
 // Pick the quick-start example model deterministically: prefer a known
 // recommended, currently-available logical model; else any available model;
-// else fall back to the conventional default, `air`. Never take the first
-// string-sorted model.
+// else show a placeholder the operator must fill in (never a hardcoded model
+// that may not exist). Never take the first string-sorted model.
 const RECOMMENDED_ORDER = ['air', 'code-air', 'code-pro', 'code-max', 'general-air'];
+const MODEL_PLACEHOLDER = '<model>';
 function recommendedExampleModel(models) {
   for (const name of RECOMMENDED_ORDER) {
     if (models.some((m) => m.id === name && m.status === 'available')) return name;
   }
   const any = models.find((m) => m.status === 'available');
-  return any ? any.id : 'air';
+  return any ? any.id : MODEL_PLACEHOLDER;
 }
 
 function shell({ title, body }) {

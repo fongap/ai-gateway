@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.2.1 - 2026-08-26
+
+Reliability hardening release. No new features; this round makes the limits, capability claims and health semantics actually mean what they say.
+
+### Fixed
+
+- **P0 — RPM no longer breaks its own configured cap by default.** `limits.rpm` is now treated as a real upstream/account quota: an exhausted node is skipped (not used as a last-resort fallback), the tier is left, and when every candidate is exhausted the client gets `503` + `Retry-After` pointing at the RPM minute boundary. The previous always-break-through behavior remains available explicitly via `"limits": { "rpm": N, "rpm_mode": "soft" }`. Setting `limits.rpm_mode` to anything other than `soft`/`hard` is a config error.
+- **P0 — Optional global quota coordination for strict keys.** isolate-local state can only shape traffic per Worker isolate; several isolates share one upstream key. When a Workers Rate Limiting binding is present as `QUOTA_RATE_LIMITER`, hard-RPM nodes get a genuine cluster-wide check before dispatch (denied → rotate without counting a node failure). Without the binding nothing changes and local semantics apply. Concurrency leasing stays isolate-local and is documented as such — it cannot be made global without Durable Objects, which this project deliberately avoids.
+
+### Changed
+
+- **P1 — Model Registry defaults are now actually conservative.** An undeclared model reports `tools:false`, `reasoning:false`, `vision:false` (stream stays `true`) and empty `reasoning_efforts`. Only an explicit MODELS_CONFIG capability declaration turns a capability on: `/v1/models` must under-report, never over-report.
+- **P1 — Configuration status semantics unified.** A structural conflict (duplicate ids, conflicting shards, malformed shard JSON) now means `status:"invalid"` AND `ready:false` — the gateway refuses to serve instead of answering traffic while `/health` reports 503. `degraded`/`ready` remain servable (`ready:true`). `/health` now reports `nodes_total` (declared), `nodes_usable` and `nodes_active` separately instead of presenting usable count as total.
+- **P1 — First-event guard recognizes SSE error envelopes.** An HTTP 200 stream whose first event is a parseable `{"error":{...}}` envelope is treated as a first-event failure and rotates, instead of committing a zero-output stream and closing the failover boundary. Common with third-party OpenAI-compatible providers.
+- **P1 — count_tokens is script-aware and conservative.** ASCII ≈ chars/4; CJK ≈ 1 token per character; tool schemas charged at dense-JSON ratio + per-tool overhead; images at a fixed ~1600-token allowance. The old flat `chars/4` rule badly under-counted Chinese/Japanese input.
+- P2 — public homepage quick-start shows `OPENAI_MODEL=<model>` (placeholder) when no model is currently available instead of hardcoding `air`.
+- P2 — `src/request/handler.js` split: auth → `request/auth.js`, error builders → `request/errors.js`, routing → `request/router.js`. Orchestration and the attempt/success core stay in handler.js for now.
+- Docs: isolate-local vs global quota semantics, RPM mode table, commit-message convention (CONTRIBUTING.md).
+
 ## 1.2.0 - 2026-08-26
 
 Reliability + architecture-convergence release. No new protocols, providers or large features; this release makes the existing capability correct, stable and clear.
@@ -23,6 +42,11 @@ Reliability + architecture-convergence release. No new protocols, providers or l
 - `/version` is now purely public branding — the `configuration` block (`status`/`ready`/`nodes_total`/`nodes_usable`) is removed; the public homepage model hint is no longer hardcoded (`code-pro`) — it uses the first available registry model, or `<your-model>`.
 - **Stream assembly byte-accounting** counts UTF-8 bytes (not JS string length) across content, reasoning, tool-call names / ids / arguments so oversized `arguments` can no longer bypass the 2 MiB memory guard.
 - `limits.concurrency` / `limits.rpm` / cooldowns / circuit / health are explicitly documented as **isolate-local** shaping, not global or provider-wide quotas.
+
+## 历史版本（6.x 及更早 — 版本方案已重置为 1.x）
+
+> 以下为版本方案重置前的历史记录，仅作存档。当前版本线从 `1.2.0` 开始；
+> 6.x 从未作为正式 GitHub Release 发布过。
 
 ## 6.1.0 - 2026-08-25
 
