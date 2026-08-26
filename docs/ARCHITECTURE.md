@@ -81,6 +81,10 @@ Concurrency slots are claimed in `acquireSlot` (atomic with eligibility checks) 
 
 All node-runtime state (health, EWMA latency, cooldowns, circuit, concurrency, RPM counters) is **isolate-local** and best-effort; it is shared per worker isolate only, resets on restart, and is not a global or provider-wide quota.
 
+Failed attempts are aggregated into `failure_kinds` (kind counts only, no node ids). The exhausted response derives its terminal status from the dominant kind — `rate_limit` → 429, `timeout`/`first_event` → 504, otherwise 502 — instead of from whatever the last attempt happened to be, and exposes the aggregate map so operators can tell how a request failed without enabling full topology exposure.
+
+Local Anthropic `count_tokens` is a script-aware conservative approximation (ASCII ≈ chars/4, CJK ≈ 1 token/char, denser for tool JSON, fixed allowance for images), not a tokenizer.
+
 ## Streaming boundary (src/stream)
 
 `guard.js` implements the single first-event guard: it consumes the upstream SSE stream until the first valid JSON event (or `[DONE]`, timeout, abort, malformed data, or a JSON **error envelope** — `{"error":{...}}` counts as a failure so a zero-output HTTP-200 stream still rotates) and returns a replayable response. The guard runs on **every** streaming path before any byte reaches the client. After the first event there is no transparent failover — a mid-stream death delivers already-buffered bytes and closes cleanly (the missing completion marker exposes the truncation).

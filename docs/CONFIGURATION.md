@@ -127,7 +127,7 @@ Tier order is fixed: tier-1 → tier-2 → tier-3. A lower tier is used only whe
 | `EXPOSE_UPSTREAM_INFO` | false | | Expose upstream node/provider/tier + per-attempt detail in responses; `false` keeps client responses topology-safe |
 | `FAKE_STREAM_PROTECTION` | false | | Convert non-stream requests to streaming upstream + reassemble |
 | `ALLOW_INSECURE_HTTP_UPSTREAM` | false | | Allow http:// base_url |
-| `ANTHROPIC_COUNT_TOKENS_MODE` | approximate | approximate/disabled | Local token counting |
+| `ANTHROPIC_COUNT_TOKENS_MODE` | approximate | approximate/disabled | Local token counting. The estimator is script-aware and deliberately conservative: ASCII ≈ chars/4, CJK/Kana ≈ 1 token per character, tool schemas charged denser, images a fixed ~1600-token allowance. It is an approximation, not a tokenizer |
 | `ANTHROPIC_REASONING_REQUEST_MODE` | none | none/reasoning_effort/chat_template_kwargs/thinking | Reasoning passthrough style (Anthropic Messages) |
 | `RESPONSES_REASONING_MODE` | reasoning_effort | reasoning_effort/chat_template_kwargs/thinking | How `/v1/responses` `reasoning` maps to a chat-completions upstream |
 | `LOG_LEVEL` | info | none/error/info/debug | Logging verbosity |
@@ -145,6 +145,8 @@ Computed at config-load time and exposed on the auth-protected `/health`:
 | `invalid` | Config present but zero usable nodes, or structural conflict (duplicate ids / duplicate credential keys / invalid JSON) |
 | `degraded` | Some nodes unusable (e.g. missing credentials), at least one usable |
 | `ready` | All declared nodes usable |
+
+`ready` is `true` only for `ready`/`degraded`; `invalid`/`unconfigured` refuse service (`/health` returns 503, API requests return 500). `/health` also reports `nodes_total` (declared), `nodes_usable` and `nodes_active` separately.
 
 ## Local development
 
