@@ -8,68 +8,85 @@ import { loadGatewayConfig } from '../config/nodes.js';
 import { snapshotNode } from '../reliability/node-state.js';
 import { gatewayStats } from './stats.js';
 import { corsHeaders, jsonError } from '../protocol/http.js';
-import { OPENAI_COMPATIBLE_PROFILE } from '../config/profiles.js';
+import { loadModelRegistry, modelRegistryEntry, servesModel } from '../config/registry.js';
 
 export const APP_META = Object.freeze({
   name: 'ai-gateway',
   displayName: 'Smart AI Gateway',
-  version: '6.1.0',
+  version: '1.2.0',
 });
 
 function sanitizePrometheusLabel(value) {
   return String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
 }
 
-// Logical model list with capability metadata. Model capability is derived from
-// the serving node's provider profile (never from model-name guessing), and the
+// Logical model list with capability metadata. The Model Registry is the primary
+// source of the logical-model set AND its capabilities; provider profiles are
+// only ever used as a backend *label*, never as the model-capability truth. The
 // gateway always exposes all three wire surfaces. Fields beyond the OpenAI
 // baseline are additive and backward-compatible.
-function buildModelsList(nodes) {
+function buildModelsList(nodes, env) {
+  const registry = loadModelRegistry(env);
   const models = new Map();
-  const touch = (logical, node) => {
-    const profile = node.profile || OPENAI_COMPATIBLE_PROFILE;
-    let entry = models.get(logical);
-    if (!entry) {
-      entry = {
+
+  // The set of logical models = registry (primary) ∪ node mappings. Because a
+  // wildcard node can serve any registry model, but a registry model with no
+  // serving node is meaningless to a client, we list only models with ≥1
+  // serving node.
+  const logicalNames = new Set(Object.keys(registry));
+  for (const node of nodes) for (const key of Object.keys(node.models || {})) logicalNames.add(key);
+
+  const entryFor = (logical) => {
+    const reg = modelRegistryEntry(env, logical);
+    let e = models.get(logical);
+    if (!e) {
+      e = {
         id: logical,
         object: 'model',
         created: 0,
         owned_by: APP_META.name,
-        apiBackend: profile.id,
-        reasonings: [],
-        caps: { tools: false, reasoning: false, vision: false, stream: false },
+        apiBackends: new Set(),
+        reg,
       };
-      models.set(logical, entry);
+      models.set(logical, e);
     }
-    if (entry.apiBackend === profile.id) entry.apiBackend = profile.id;
-    for (const e of profile.reasoning_efforts) {
-      if (!entry.reasonings.includes(e)) entry.reasonings.push(e);
-    }
-    entry.caps.tools = entry.caps.tools || profile.capabilities.tools;
-    entry.caps.reasoning = entry.caps.reasoning || profile.capabilities.reasoning;
-    entry.caps.vision = entry.caps.vision || profile.capabilities.vision;
-    entry.caps.stream = entry.caps.stream || profile.capabilities.stream;
+    return e;
   };
+
   for (const node of nodes) {
+    // A wildcard node's models map is empty; it still serves every registry
+    // model. Otherwise it serves exactly the keys it declares.
     const keys = Object.keys(node.models || {});
-    for (const logical of keys) touch(logical, node);
+    const servedKeys = keys.length === 0 ? [...logicalNames] : keys.filter((k) => logicalNames.has(k));
+    for (const logical of servedKeys) {
+      if (!servesModel(node, logical)) continue;
+      const e = entryFor(logical);
+      if (node.profile?.id) e.apiBackends.add(node.profile.id);
+    }
   }
+
   const data = [...models.values()]
     .sort((a, b) => a.id.localeCompare(b.id))
-    .map((entry) => ({
-      id: entry.id,
-      object: 'model',
-      created: 0,
-      owned_by: APP_META.name,
-      apiBackend: entry.apiBackend,
-      protocols: ['chat_completions', 'responses', 'messages'],
-      supports_tools: entry.caps.tools,
-      supports_reasoning: entry.caps.reasoning,
-      supports_reasoning_effort: entry.caps.reasoning,
-      reasoning_efforts: entry.reasonings.sort(),
-      supports_vision: entry.caps.vision,
-      supports_stream: entry.caps.stream,
-    }));
+    .filter((e) => e.apiBackends.size > 0)
+    .map((e) => {
+      const backends = [...e.apiBackends];
+      const apiBackend = backends.length === 1 ? backends[0] : 'mixed';
+      return {
+        id: e.id,
+        object: 'model',
+        created: 0,
+        owned_by: APP_META.name,
+        apiBackend,
+        api_backends: backends,
+        protocols: ['chat_completions', 'responses', 'messages'],
+        supports_tools: e.reg.capabilities.tools,
+        supports_reasoning: e.reg.capabilities.reasoning,
+        supports_reasoning_effort: e.reg.capabilities.reasoning,
+        reasoning_efforts: [...e.reg.reasoning_efforts].sort(),
+        supports_vision: e.reg.capabilities.vision,
+        supports_stream: e.reg.capabilities.stream,
+      };
+    });
   return { object: 'list', data };
 }
 
@@ -85,8 +102,12 @@ export function healthResponse(request, env, requestId) {
     ...snapshotNode(n.id, now),
   }));
   const cooling = endpoints.filter((e) => e.status === 'cooling_down').length;
+  // A fully invalid or unconfigured gateway is not "healthy": fail with 503 so
+  // probe clients stop polling, while degraded/ready (some usable node) stay 200.
+  const statusCode = config.status === 'invalid' || config.status === 'unconfigured' ? 503 : 200;
   return new Response(JSON.stringify({
     status: config.status,
+    ready: config.ready,
     nodes_total: config.nodes.length,
     nodes_active: config.nodes.length - cooling,
     nodes_cooling_down: cooling,
@@ -108,7 +129,7 @@ export function healthResponse(request, env, requestId) {
     endpoints,
     request_id: requestId,
   }, null, 2), {
-    status: 200,
+    status: statusCode,
     headers: {
       'content-type': 'application/json;charset=UTF-8',
       'cache-control': 'no-store',
@@ -176,7 +197,9 @@ export function versionResponse(request, env) {
     const url = new URL(repositoryRaw);
     repository = url.protocol === 'https:' ? url.href.replace(/\/$/, '') : undefined;
   } catch { repository = undefined; }
-  const config = loadGatewayConfig(env);
+  // Public endpoint: expose only branding/version. Never leak configuration
+  // status, node counts, or topology here — that belongs to the auth-protected
+  // /health (and server logs).
   return new Response(JSON.stringify({
     name: APP_META.name,
     display_name: APP_META.displayName,
@@ -184,12 +207,6 @@ export function versionResponse(request, env) {
     runtime: 'Cloudflare Workers',
     protocols: ['OpenAI Chat Completions', 'OpenAI Responses', 'Anthropic Messages'],
     ...(repository ? { repository } : {}),
-    configuration: {
-      status: config.status,
-      ready: config.ready,
-      nodes_total: config.nodesTotal,
-      nodes_usable: config.nodesUsable,
-    },
   }, null, 2), {
     status: 200,
     headers: {
@@ -202,7 +219,7 @@ export function versionResponse(request, env) {
 
 export function modelsListResponse(request, env, requestId) {
   const config = loadGatewayConfig(env);
-  return new Response(JSON.stringify(buildModelsList(config.nodes)), {
+  return new Response(JSON.stringify(buildModelsList(config.nodes, env)), {
     status: 200,
     headers: {
       'content-type': 'application/json;charset=UTF-8',

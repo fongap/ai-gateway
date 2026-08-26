@@ -1,5 +1,9 @@
 {
   "general-air": { "policy": "fast" },
-  "code-pro": { "policy": "fast" },
+  "code-pro": {
+    "policy": "fast",
+    "capabilities": { "tools": true, "reasoning": true, "vision": false, "stream": true },
+    "reasoning_efforts": ["low", "medium", "high"]
+  },
   "code-max": { "policy": "stable" }
 }

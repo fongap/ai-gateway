@@ -53,10 +53,10 @@ PowerShell 在系统没有 `tar` 命令时只生成 ZIP。
 
 ```bash
 git add .
-git commit -m "Release v6.0.0"
-git tag v6.0.0
+git commit -m "Release v1.2.0"
+git tag v1.2.0
 git push origin main
-git push origin v6.0.0
+git push origin v1.2.0
 ```
 
 `.github/workflows/release.yml` 会：

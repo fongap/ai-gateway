@@ -22,6 +22,8 @@ export const MANAGED_VAR_PATTERN = /^TIER[123]_NODES_CONFIG_\d{2}$/;
 export const MANAGED_SECRET_PATTERN = /^(GATEWAY_ACCESS_KEY|NODE_SECRETS_\d{2})$/;
 
 const FORBIDDEN_NODE_FIELDS = ['token', 'credential', 'api_key', 'apikey', 'authorization', 'password', 'secret'];
+const ALLOWED_NODE_FIELDS = new Set(['id', 'provider', 'base_url', 'priority', 'models', 'limits']);
+const ALLOWED_LIMITS_FIELDS = new Set(['concurrency', 'rpm']);
 const VALID_TIER_PATTERN = /^[123]$/;
 
 function byteLength(str) {
@@ -75,6 +77,11 @@ export function assertNodesArray(nodes, label = 'nodes config') {
     if ('tier' in node) {
       throw new Error(`${label}: node "${id}" must not declare "tier"; the tier comes from the variable name`);
     }
+    for (const key of Object.keys(node)) {
+      if (!ALLOWED_NODE_FIELDS.has(key)) {
+        throw new Error(`${label}: node "${id}" has unknown field "${key}" (allowed: ${[...ALLOWED_NODE_FIELDS].join(', ')})`);
+      }
+    }
     if (typeof node.base_url !== 'string' || !node.base_url.startsWith('https://')) {
       throw new Error(`${label}: node "${id}" needs an https:// base_url`);
     }
@@ -87,10 +94,42 @@ export function assertNodesArray(nodes, label = 'nodes config') {
     if (parsedUrl.username || parsedUrl.password) {
       throw new Error(`${label}: node "${id}" base_url must not contain username/password`);
     }
-    if (node.models !== undefined && (typeof node.models !== 'object' || node.models === null || Array.isArray(node.models))) {
-      if (!Array.isArray(node.models)) throw new Error(`${label}: node "${id}" models must be an object { logical: upstream }`);
+    if (node.priority !== undefined) {
+      const num = typeof node.priority === 'number'
+        ? node.priority
+        : (typeof node.priority === 'string' && node.priority.trim() !== '' ? Number(node.priority) : NaN);
+      if (!Number.isFinite(num) || num < 0) {
+        throw new Error(`${label}: node "${id}" priority must be a non-negative number`);
+      }
+    }
+    // models: missing / explicit {} => wildcard. A filled-but-invalid map is a
+    // config error, never silently emptied into a wildcard.
+    if (node.models !== undefined && node.models !== null) {
+      if (Array.isArray(node.models)) {
+        for (const m of node.models) {
+          if (typeof m !== 'string' || !m.trim()) {
+            throw new Error(`${label}: node "${id}" models array entries must be non-empty strings`);
+          }
+        }
+      } else if (typeof node.models !== 'object') {
+        throw new Error(`${label}: node "${id}" models must be an object { logical: upstream }`);
+      } else {
+        for (const [logical, upstream] of Object.entries(node.models)) {
+          if (typeof upstream !== 'string' || !upstream.trim()) {
+            throw new Error(`${label}: node "${id}" models["${logical}"] must map to a non-empty upstream model string`);
+          }
+        }
+      }
     }
     if (node.limits !== undefined) {
+      if (node.limits === null || typeof node.limits !== 'object' || Array.isArray(node.limits)) {
+        throw new Error(`${label}: node "${id}" limits must be an object { concurrency, rpm }`);
+      }
+      for (const key of Object.keys(node.limits)) {
+        if (!ALLOWED_LIMITS_FIELDS.has(key)) {
+          throw new Error(`${label}: node "${id}" limits.${key} is not a supported limit (allowed: ${[...ALLOWED_LIMITS_FIELDS].join(', ')})`);
+        }
+      }
       const c = node.limits?.concurrency;
       if (c !== undefined && (!Number.isFinite(c) || c < 1)) {
         throw new Error(`${label}: node "${id}" limits.concurrency must be >= 1`);

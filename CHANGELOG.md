@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.2.0 - 2026-08-26
+
+Reliability + architecture-convergence release. No new protocols, providers or large features; this release makes the existing capability correct, stable and clear.
+
+### Fixed
+
+- **P0 — Half-Open circuit probe leak.** A half-open probe that ended in a non-counted outcome (429, 401/403, 404, client abort, or any neutral end) released only `activeRequests` but never `probeInFlight`, permanently stranding the node in `half-open`/`probeInFlight=true`. Probe completion is now centralized in `node-state.js` (`recoverFromHalfOpen`): success → `CLOSED`, counted transient failure → `OPEN` + fresh cooldown, 429/401/403/404/neutral → `CLOSED` + any node-local cooldown kept, always `probeInFlight=false` and `activeRequests` released. Nodes can be re-probed / re-scheduled afterwards.
+- **P0 — Illegal `models` config misread as wildcard.** `normalizeModels` silently emptied invalid entries into `{}`, which the scheduler interpreted as "serve every model". Now only a missing, `null`, or explicitly-empty `{}` is a wildcard; a filled-but-invalid `models` map (non-string values, bad structure, empty/whitespace keys on a non-empty map) is a config error → node excluded + precise diagnostic. Scalar/boolean `models` values can no longer slip through `Object.keys` into a wildcard.
+- **Fail-fast Node schema.** Unknown top-level fields (`prioirty`), unknown `limits` fields (`concurency`), and invalid `priority` / `limits.concurrency` / `limits.rpm` are now rejected with a named diagnostic instead of being silently defaulted. The deploy-time planner (`assertNodesArray`) was aligned to the same rules.
+
+### Added
+
+- `FAILOVER_BUDGET_MS` (default `180000`, clamped) — a whole-request failover budget. Time is counted from gateway request receipt; every new attempt checks the remaining budget and caps its own headers/first-event timeout to `min(configured, remaining)`. When the budget is gone the gateway stops rotating and returns a terminal 504 with an attempt count — no more worst-case `headersTimeout × maxAttempts` (≈600s) per Agent call. Client abort stays privileged; streaming never fails over after the first event; first-event-before is still allowed within budget.
+- **Model Registry** (`src/config/registry.js`). Model capability (tools / reasoning / vision / stream, reasoning efforts) and policy are now owned by the logical model, fed from `MODELS_CONFIG` (`{ policy, capabilities?, reasoning_efforts? }`). Provider Profile no longer claims model capability or false `native` transport (all upstreams are genuinely reached via the OpenAI Chat Completions path today). `/v1/models` enumerates registry models, is served by node mapping, and reports `api_backends` (+ `apiBackend: "mixed"` when multiple backends) instead of pretending a single backend.
+- Regression tests: half-open probe → 429 / 401 / 404 / neutral / client-abort with slot & probe leak checks; config fail-fast & wildcard cases; secret-shard index; failover budget behavior; topology-leak (default vs `EXPOSE_UPSTREAM_INFO=true`); model registry / `/v1/models` / homepage model status.
+
+### Changed
+
+- **Topology-leak reduction.** By default a client response exposes only `x-request-id`, requested model, attempt count, HTTP status, `Retry-After` and the necessary protocol error. `x-gateway-node`, `x-gateway-tier`, and the internal per-attempt sequence are only returned when `EXPOSE_UPSTREAM_INFO=true` (or via auth-protected `/health`). Config `diagnostics` and node ids are likewise gated.
+- `/health` now returns **503** for `invalid`/`unconfigured` configuration instead of unconditional 200; `ready`/`degraded` stay 200. Response JSON shape is unchanged.
+- `/version` is now purely public branding — the `configuration` block (`status`/`ready`/`nodes_total`/`nodes_usable`) is removed; the public homepage model hint is no longer hardcoded (`code-pro`) — it uses the first available registry model, or `<your-model>`.
+- **Stream assembly byte-accounting** counts UTF-8 bytes (not JS string length) across content, reasoning, tool-call names / ids / arguments so oversized `arguments` can no longer bypass the 2 MiB memory guard.
+- `limits.concurrency` / `limits.rpm` / cooldowns / circuit / health are explicitly documented as **isolate-local** shaping, not global or provider-wide quotas.
+
 ## 6.1.0 - 2026-08-25
 
 Protocol-compatibility release: adds a real OpenAI Responses `/v1/responses` surface and a Provider Capability/Profile layer, without touching the scheduling core. Everything is additive; no breaking changes.

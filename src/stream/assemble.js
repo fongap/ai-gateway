@@ -15,12 +15,19 @@ const MAX_ASSEMBLED_BYTES = 2 * 1024 * 1024;
 export async function collectOpenAIStreamObject(upstream, clientSignal) {
   const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
   let id = '';
   let created = Math.floor(Date.now() / 1000);
   let model = '';
   let usage = null;
   let currentBytes = 0;
   const choices = new Map();
+  // Count UTF-8 bytes (not JS string.length) as each part is appended, so that
+  // multi-byte text and large tool-call arguments/names/ids cannot bypass the
+  // 2 MiB assembled-body memory guard.
+  const countBytes = (value) => {
+    if (value) currentBytes += encoder.encode(value).length;
+  };
 
   const fail = async (message) => {
     await reader.cancel().catch(() => {});
@@ -49,12 +56,12 @@ export async function collectOpenAIStreamObject(upstream, clientSignal) {
       const text = extractOpenAITextContent(delta.content);
       if (text) {
         state.content += text;
-        currentBytes += text.length;
+        countBytes(text);
       }
       const reasoning = delta.reasoning_content ?? delta.reasoning;
       if (typeof reasoning === 'string' && reasoning) {
         state.reasoning_content += reasoning;
-        currentBytes += reasoning.length;
+        countBytes(reasoning);
       }
       for (const tc of delta.tool_calls || []) {
         const tcIdx = tc.index ?? 0;
@@ -62,10 +69,10 @@ export async function collectOpenAIStreamObject(upstream, clientSignal) {
           state.toolCalls.set(tcIdx, { id: '', type: 'function', function: { name: '', arguments: '' } });
         }
         const existing = state.toolCalls.get(tcIdx);
-        if (tc.id) existing.id = tc.id;
-        if (tc.type) existing.type = tc.type;
-        if (tc.function?.name) existing.function.name += tc.function.name;
-        if (tc.function?.arguments) existing.function.arguments += tc.function.arguments;
+        if (tc.id !== existing.id) { existing.id = tc.id; countBytes(tc.id); }
+        if (tc.type !== existing.type) existing.type = tc.type;
+        if (tc.function?.name) { existing.function.name += tc.function.name; countBytes(tc.function.name); }
+        if (tc.function?.arguments) { existing.function.arguments += tc.function.arguments; countBytes(tc.function.arguments); }
       }
       if (choice.finish_reason !== undefined && choice.finish_reason !== null) state.finish_reason = choice.finish_reason;
     }

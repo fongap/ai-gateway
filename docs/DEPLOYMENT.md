@@ -1,6 +1,6 @@
 # Deployment
 
-> Breaking change: deployment scripts target the 6.x configuration schema (plain node config variables + `NODE_SECRETS_*` secrets). Re-run install/reconfigure after upgrading; no migration is provided.
+> The deployment scripts target the current 1.x configuration schema (plain node config variables + `NODE_SECRETS_*` secrets). Re-run install/reconfigure after upgrading; no migration is provided across major schema lines.
 
 ## Prerequisites
 

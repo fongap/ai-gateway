@@ -171,7 +171,7 @@ Circuit 是连续失败状态机（非滑动窗口）：CLOSED →(连续 3 次 
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/` | 公开首页（智能边缘网关入口；浏览器） |
-| GET | `/version` | 版本与配置状态（公开） |
+| GET | `/version` | 版本信息（公开，仅品牌与版本号） |
 | GET | `/health` `/metrics` `/v1/models` | 诊断端点（需鉴权） |
 | POST | `/v1/chat/completions` | OpenAI Chat Completions |
 | POST | `/v1/responses` | OpenAI Responses（Codex / OpenCode 兼容，含流式事件、reasoning、function_call） |

@@ -147,4 +147,84 @@ await test('success resets consecutive failures and closes half-open', async () 
   assert.ok(Math.abs(getNodeState(id).avgLatencyMs - 26) < 1); // EWMA alpha .3
 });
 
-if (!process.exitCode) console.log(`reliability unit tests passed (${passed}/9).`);
+// ---- Half-open probe leak / resolution ------------------------------------
+// A probe that ends in a non-counted outcome (429 / 401 / 404 / neutral /
+// client abort) must release BOTH activeRequests AND probeInFlight, and the node
+// must become schedulable again. Regression for the stuck half-open bug.
+
+function openCircuitForProbe(id) {
+  for (let i = 0; i < CIRCUIT_FAILURE_THRESHOLD; i++) {
+    acquireSlot(id, now); tick(1);
+    recordFailure(id, { counted: true, cooldownMs: 50 }, now);
+  }
+  tick(CIRCUIT_OPEN_MS + 1);
+  assert.equal(peekAvailability(id, now), 'probe');
+  assert.ok(acquireSlot(id, now));
+  const s = getNodeState(id);
+  assert.equal(s.probeInFlight, true);
+  assert.equal(s.activeRequests, 1);
+}
+
+await test('half-open probe -> 429 proves liveness and releases the probe, keeping the cooldown', async () => {
+  const id = 'p429';
+  openCircuitForProbe(id);
+  const s = getNodeState(id);
+  recordFailure(id, { counted: false, cooldownMs: 30_000, reason: 'rate_limit' }, now + 1);
+  assert.equal(s.probeInFlight, false, 'probeInFlight must be released');
+  assert.equal(s.activeRequests, 0, 'activeRequests must be released');
+  assert.equal(s.circuitState, 'closed', 'a 429 during a probe must not keep half-open');
+  assert.equal(s.consecutiveFailures, 0);
+  assert.ok(getCooldownRemainingMs(id, now + 1) > 0, 'rate-limit cooldown must be kept');
+  tick(31_000);
+  assert.equal(peekAvailability(id, now), 'yes', 'node must be schedulable again after cooldown');
+});
+
+await test('half-open probe -> 401 recovers, keeps auth cooldown, no probe leak', async () => {
+  const id = 'p401';
+  openCircuitForProbe(id);
+  recordFailure(id, { counted: false, cooldownMs: 3_600_000, reason: 'auth' }, now + 1);
+  const s = getNodeState(id);
+  assert.equal(s.probeInFlight, false);
+  assert.equal(s.activeRequests, 0);
+  assert.equal(s.circuitState, 'closed');
+  assert.ok(getCooldownRemainingMs(id, now + 1) > 0);
+});
+
+await test('half-open probe -> 404 recovers, keeps model_missing cooldown, no probe leak', async () => {
+  const id = 'p404';
+  openCircuitForProbe(id);
+  recordFailure(id, { counted: false, cooldownMs: 5_000, reason: 'model_missing' }, now + 1);
+  const s = getNodeState(id);
+  assert.equal(s.probeInFlight, false, '404 probe must not stay in flight');
+  assert.equal(s.activeRequests, 0);
+  assert.equal(s.circuitState, 'closed');
+  assert.ok(getCooldownRemainingMs(id, now + 1) > 0, 'model_missing cooldown must be kept');
+});
+
+await test('half-open probe -> neutral end / client abort is not penalized and never stuck half-open', async () => {
+  const id = 'pneut';
+  openCircuitForProbe(id);
+  const before = getNodeState(id).totalFailures; // 3 (from opening the circuit)
+  recordNeutralEnd(id);
+  const s = getNodeState(id);
+  assert.equal(s.probeInFlight, false, 'neutral must release the probe');
+  assert.equal(s.activeRequests, 0);
+  assert.equal(s.circuitState, 'closed', 'neutral must recover from half-open');
+  assert.equal(s.consecutiveFailures, 0);
+  assert.equal(s.totalFailures, before, 'neutral must not add a failure');
+  assert.equal(peekAvailability(id, now), 'yes', 'node must be immediately schedulable (no cooldown)');
+});
+
+await test('half-open probe -> counted failure releases the probe and reopens the circuit', async () => {
+  const id = 'p5xx';
+  openCircuitForProbe(id);
+  recordFailure(id, { counted: true, cooldownMs: 0 }, now + 1);
+  const s = getNodeState(id);
+  assert.equal(s.probeInFlight, false, 'counted probe failure must release probeInFlight');
+  assert.equal(s.activeRequests, 0);
+  assert.equal(s.circuitState, 'open', 'counted probe failure must reopen the circuit');
+  tick(CIRCUIT_OPEN_MS + 1);
+  assert.equal(peekAvailability(id, now + 1), 'probe', 'node must be probe-ready again after the open period');
+});
+
+if (!process.exitCode) console.log(`reliability unit tests passed (${passed}).`);

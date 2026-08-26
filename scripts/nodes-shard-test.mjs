@@ -99,4 +99,16 @@ test('assertNodesArray rejects malformed entries', () => {
   assert.throws(() => assertSecretsObject({ a: '' }), /non-empty string/);
 });
 
-if (!process.exitCode) console.log(`nodes-shard tests passed (${passed}/11).`);
+test('assertNodesArray rejects unknown fields, invalid models values and invalid limits', () => {
+  assert.throws(() => assertNodesArray([node('a', { prioirty: 5 })]), /unknown field "prioirty"/);
+  assert.throws(() => assertNodesArray([node('a', { models: { x: 5 } })]), /models\["x"\]/);
+  assert.throws(() => assertNodesArray([node('a', { limits: { concurency: 2 } })]), /limits\.concurency/);
+  assert.throws(() => assertNodesArray([node('a', { priority: -1 })]), /priority/);
+});
+
+test('assertNodesArray allows wildcard (empty) models', () => {
+  assert.doesNotThrow(() => assertNodesArray([node('a', { models: {} })]));
+  assert.doesNotThrow(() => assertNodesArray([node('a', { models: undefined })]));
+});
+
+if (!process.exitCode) console.log(`nodes-shard tests passed (${passed}).`);

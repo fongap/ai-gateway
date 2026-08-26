@@ -183,6 +183,7 @@ await test('dynamic candidate set: failed node skipped, next candidate picked', 
   const env = makeEnv({
     tier1: [basicNode('dyn-a'), basicNode('dyn-b')],
     secrets: { 'dyn-a': 'k', 'dyn-b': 'k' },
+    extraEnv: { EXPOSE_UPSTREAM_INFO: 'true' },
   });
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.equal(res.status, 200);
@@ -204,6 +205,7 @@ await test('concurrency spreads parallel requests across equal nodes', async () 
   const env = makeEnv({
     tier1: ids.map((id) => basicNode(id, { limits: { concurrency: 1 } })),
     secrets: Object.fromEntries(ids.map((id) => [id, 'k'])),
+    extraEnv: { EXPOSE_UPSTREAM_INFO: 'true' },
   });
   const responses = await Promise.all(ids.map(() =>
     worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {}).then((r) => r.headers.get('x-gateway-node'))));
@@ -219,6 +221,7 @@ await test('LRU tiebreak rotates sequential requests across equal-priority nodes
   const env = makeEnv({
     tier1: ids.map((id) => basicNode(id)), // identical priority
     secrets: Object.fromEntries(ids.map((id) => [id, 'k'])),
+    extraEnv: { EXPOSE_UPSTREAM_INFO: 'true' },
   });
   // Sequential (not concurrent) requests must rotate instead of hammering lru-a.
   const served = [];
@@ -242,6 +245,7 @@ await test('RPM cap rotates to sibling keys before exhausting a single key', asy
       basicNode('rpm-b', { limits: { concurrency: 5, rpm: 1 } }),
     ],
     secrets: { 'rpm-a': 'k', 'rpm-b': 'k' },
+    extraEnv: { EXPOSE_UPSTREAM_INFO: 'true' },
   });
   const nodes = [];
   for (let i = 0; i < 2; i++) {
@@ -484,6 +488,7 @@ await test('first-event failure rotates to another node', async () => {
   const env = makeEnv({
     tier1: [basicNode('fe-a'), basicNode('fe-b')],
     secrets: { 'fe-a': 'k', 'fe-b': 'k' },
+    extraEnv: { EXPOSE_UPSTREAM_INFO: 'true' },
   });
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
   assert.equal(res.status, 200);
@@ -813,6 +818,197 @@ await test('public home shows degraded status when all serving nodes are cooling
   assert.match(html, /general-air/);
   assert.match(html, /降级/);
   assert.ok(!html.includes('可用'), 'must not claim available when cooling');
+});
+
+await test('public home model hint uses a registry model, never a hardcoded model', async () => {
+  resetMock();
+  const env = makeEnv({
+    tier1: [basicNode('h-a', { models: {} })], // wildcard serves registry models incl. code-max
+    secrets: { 'h-a': 'k' },
+    extraEnv: { MODELS_CONFIG: JSON.stringify({ 'code-max': { policy: 'fast' } }) },
+  });
+  const res = await worker.fetch(new Request('https://gateway.example.com/', {
+    headers: { accept: 'text/html' },
+  }), env, {});
+  assert.equal(res.status, 200);
+  const html = await res.text();
+  assert.match(html, /OPENAI_MODEL=code-max/);
+  assert.ok(!html.includes('OPENAI_MODEL=code-pro'), 'must not hardcode code-pro');
+});
+
+await test('public home model hint falls back to placeholder when nothing is available', async () => {
+  resetMock();
+  const env = makeEnv({ tier1: [basicNode('ph-a')], secrets: { 'ph-a': 'k' } });
+  const state = getNodeState('ph-a');
+  state.cooldownUntil = Date.now() + 60_000; // degrade all serving nodes
+  const res = await worker.fetch(new Request('https://gateway.example.com/', {
+    headers: { accept: 'text/html' },
+  }), env, {});
+  assert.equal(res.status, 200);
+  const html = await res.text();
+  assert.match(html, /OPENAI_MODEL=&lt;your-model&gt;/, 'must render an escaped placeholder');
+});
+
+// ---- Information exposure (P1) ---------------------------------------------
+
+await test('default success response does not leak node id / tier', async () => {
+  resetMock();
+  routeHandlers['leak.example.com'] = () => jsonUpstream(okCompletion());
+  const env = makeEnv({ tier1: [basicNode('leak')], secrets: { leak: 'k' } });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('x-gateway-node'), null, 'must not expose x-gateway-node by default');
+  assert.equal(res.headers.get('x-gateway-tier'), null, 'must not expose x-gateway-tier by default');
+  assert.ok(res.headers.get('x-request-id'), 'x-request-id must be present');
+});
+
+await test('default exhausted response keeps attempt count but no node_id / per-attempt detail', async () => {
+  resetMock();
+  routeHandlers['ex1.example.com'] = () => jsonUpstream({}, 503);
+  routeHandlers['ex2.example.com'] = () => jsonUpstream({}, 503);
+  const env = makeEnv({ tier1: [basicNode('ex1'), basicNode('ex2')], secrets: { 'ex1': 'k', 'ex2': 'k' } });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 502);
+  const body = await res.json();
+  assert.equal(body.error.details.attempts, 2, 'attempt COUNT is public by design');
+  assert.equal(body.error.details.attempts_detail, undefined, 'no per-attempt detail by default');
+  const serialized = JSON.stringify(body);
+  assert.ok(!serialized.includes('node_id') && !serialized.includes('ex1') && !serialized.includes('ex2'),
+    'must not leak node ids by default');
+});
+
+await test('EXPOSE_UPSTREAM_INFO=true exposes upstream headers and per-attempt detail', async () => {
+  resetMock();
+  routeHandlers['x1.example.com'] = () => jsonUpstream({}, 503);
+  routeHandlers['x2.example.com'] = () => jsonUpstream(okCompletion());
+  const env = makeEnv({
+    tier1: [basicNode('x1'), basicNode('x2')],
+    secrets: { 'x1': 'k', 'x2': 'k' },
+    extraEnv: { EXPOSE_UPSTREAM_INFO: 'true' },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('x-gateway-node'), 'x2');
+  assert.equal(res.headers.get('x-gateway-tier'), 'tier-1');
+
+  // Now a failing sequence exposes per-attempt nodes.
+  resetMock();
+  routeHandlers['x1.example.com'] = () => jsonUpstream({}, 503);
+  routeHandlers['x3.example.com'] = () => jsonUpstream({}, 503);
+  const env2 = makeEnv({
+    tier1: [basicNode('x1'), basicNode('x3')],
+    secrets: { 'x1': 'k', 'x3': 'k' },
+    extraEnv: { EXPOSE_UPSTREAM_INFO: 'true' },
+  });
+  const res2 = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env2, {});
+  const body = await res2.json();
+  assert.ok(Array.isArray(body.error.details.attempts_detail) && body.error.details.attempts_detail.length === 2);
+  const nodeIds = new Set(body.error.details.attempts_detail.map((a) => a.node_id));
+  assert.deepEqual([...nodeIds].sort(), ['x1', 'x3']);
+});
+
+// ---- Failover budget (P1) --------------------------------------------------
+
+await test('failover budget caps a single attempt and stops before calling the next node', async () => {
+  resetMock();
+  // budget=1200ms; first node sleeps longer than the budget, second would serve
+  // but must never be called once the budget is exhausted.
+  routeHandlers['budget-a.example.com'] = async () => {
+    await new Promise((r) => setTimeout(r, 1800));
+    return jsonUpstream({}, 502);
+  };
+  routeHandlers['budget-b.example.com'] = () => jsonUpstream(okCompletion());
+  const env = makeEnv({
+    tier1: [basicNode('budget-a'), basicNode('budget-b')],
+    secrets: { 'budget-a': 'k', 'budget-b': 'k' },
+    extraEnv: { FAILOVER_BUDGET_MS: '1200' },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 504, 'budget exhaustion must return a terminal 504');
+  assert.deepEqual(upstreamCalls.map((c) => c.host), ['budget-a.example.com'],
+    'must NOT call the next upstream after the budget is exhausted');
+  const body = await res.json();
+  assert.equal(body.error.details.attempts, 1);
+  assert.ok(!JSON.stringify(body).includes('budget-b'), 'must not leak the skipped node');
+  assert.equal(res.headers.get('x-should-retry'), 'false', 'budget-exhausted is terminal');
+});
+
+await test('budget remains available for fast requests, so normal failover still works', async () => {
+  resetMock();
+  routeHandlers['bz-a.example.com'] = () => jsonUpstream({}, 502);
+  routeHandlers['bz-b.example.com'] = () => jsonUpstream(okCompletion());
+  const env = makeEnv({
+    tier1: [basicNode('bz-a'), basicNode('bz-b')],
+    secrets: { 'bz-a': 'k', 'bz-b': 'k' },
+    extraEnv: { FAILOVER_BUDGET_MS: '5000' },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 200);
+  assert.deepEqual(upstreamCalls.map((c) => c.host), ['bz-a.example.com', 'bz-b.example.com']);
+});
+
+// ---- Model Registry / /v1/models -------------------------------------------
+
+await test('/v1/models reports registry capabilities and mixed backends', async () => {
+  resetMock();
+  const env = makeEnv({
+    tier1: [
+      basicNode('ma', { models: { 'general-air': 'up-model', 'code-max': 'up-code' } }),
+      { ...basicNode('ma-anthropic'), id: 'ma-anthropic', provider: 'anthropic', models: { 'code-max': 'claude-x' } },
+    ],
+    secrets: { ma: 'k', 'ma-anthropic': 'k' },
+    extraEnv: {
+      MODELS_CONFIG: JSON.stringify({
+        'code-max': { policy: 'fast', capabilities: { tools: true, reasoning: true, vision: false, stream: true }, reasoning_efforts: ['low', 'high'] },
+      }),
+    },
+  });
+  const res = await worker.fetch(new Request('https://gateway.example.com/v1/models', {
+    headers: { authorization: `Bearer ${ACCESS_KEY}` },
+  }), env, {});
+  assert.equal(res.status, 200);
+  const list = await res.json();
+  const codeMax = list.data.find((m) => m.id === 'code-max');
+  assert.ok(codeMax, 'registry model must be listed');
+  assert.deepEqual(codeMax.api_backends.sort(), ['anthropic-compatible', 'openai-compatible'], 'mixed backends must be listed');
+  assert.equal(codeMax.apiBackend, 'mixed', 'a model served by multiple backends must be mixed');
+  assert.equal(codeMax.supports_tools, true);
+  assert.equal(codeMax.supports_vision, false, 'capability comes from the registry, not the provider profile');
+  assert.deepEqual(codeMax.reasoning_efforts, ['high', 'low']);
+});
+
+// ---- /health and /version --------------------------------------------------
+
+await test('/health returns 503 for unconfigured/invalid config, 200 for degraded/ready', async () => {
+  resetMock();
+  const unconfigured = await worker.fetch(new Request('https://gateway.example.com/health', {
+    headers: { authorization: `Bearer ${ACCESS_KEY}` },
+  }), { GATEWAY_ACCESS_KEY: ACCESS_KEY }, {});
+  assert.equal(unconfigured.status, 503, 'unconfigured gateway must be 503');
+  const unconfiguredBody = await unconfigured.json();
+  assert.equal(unconfiguredBody.status, 'unconfigured');
+
+  const ready = await worker.fetch(new Request('https://gateway.example.com/health', {
+    headers: { authorization: `Bearer ${ACCESS_KEY}` },
+  }), makeEnv({ tier1: [basicNode('h')], secrets: { h: 'k' } }), {});
+  assert.equal(ready.status, 200, 'ready gateway must be 200');
+  const readyBody = await ready.json();
+  assert.equal(readyBody.status, 'ready');
+});
+
+await test('/version is public and exposes only branding, no node/config topology', async () => {
+  resetMock();
+  const res = await worker.fetch(new Request('https://gateway.example.com/version'), makeEnv({ tier1: [basicNode('v')], secrets: { v: 'k' } }), {});
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.name, 'ai-gateway');
+  assert.equal(body.version, '1.2.0');
+  assert.equal(body.runtime, 'Cloudflare Workers');
+  assert.ok(Array.isArray(body.protocols));
+  const serialized = JSON.stringify(body);
+  assert.ok(!serialized.includes('nodes_total') && !serialized.includes('nodes_usable')
+    && !serialized.includes('configuration') && !serialized.includes('status'),
+  'public /version must not expose configuration/topology');
 });
 
 if (!process.exitCode) console.log(`\nintegration tests passed (${passed}).`);

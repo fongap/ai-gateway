@@ -258,7 +258,7 @@ await test('responses first-event failover: empty upstream rotates before any ev
   resetMock();
   routeHandlers['fe-a.example.com'] = () => sseResponse([]);
   routeHandlers['fe-b.example.com'] = () => sseResponse([textChunk('ok'), finish(), doneEvent]);
-  const env = makeEnv({ tier1: [node('fe-a'), node('fe-b')], secrets: { 'fe-a': 'k', 'fe-b': 'k' } });
+  const env = makeEnv({ tier1: [node('fe-a'), node('fe-b')], secrets: { 'fe-a': 'k', 'fe-b': 'k' }, extraEnv: { EXPOSE_UPSTREAM_INFO: 'true' } });
   const res = await worker.fetch(responsesRequest({ model: 'code-max', input: 'hi', stream: true }), env, {});
   assert.equal(res.status, 200);
   assert.equal(upstreamCalls.length, 2);

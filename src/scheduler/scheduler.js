@@ -16,15 +16,11 @@
 // than 429 reaction.
 
 import { peekAvailability, acquireSlot, getNodeState, rpmUsage } from '../reliability/node-state.js';
+import { servesModel } from '../config/registry.js';
 
 export function supportsModel(node, logicalModel) {
   // Empty models map = wildcard (node serves any configured logical model).
-  for (const key in node.models) {
-    if (Object.hasOwn(node.models, key)) {
-      return Object.hasOwn(node.models, logicalModel);
-    }
-  }
-  return true;
+  return servesModel(node, logicalModel);
 }
 
 function underRpmCap(node, now) {

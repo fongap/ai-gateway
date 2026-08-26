@@ -1,6 +1,6 @@
 # Configuration
 
-> Breaking change: this document describes the 6.x configuration schema only. Old deployments must re-configure.
+> This document describes the current 1.x configuration schema (Node pools as plain variables + `NODE_SECRETS_*` secrets).
 
 ## Secrets (wrangler secret / dashboard "Secret")
 
@@ -52,23 +52,28 @@ Rules enforced at load time:
 - A `tier` field is rejected; the tier comes from the variable prefix.
 - `base_url` must be an absolute URL; `https://` unless `ALLOW_INSECURE_HTTP_UPSTREAM=true`; no embedded username/password.
 - `priority`: number, smaller = higher precedence, default `100`.
-- `provider`: a free-form label used for diagnostics and to derive a Provider Capability/Profile:
-  - Default (`nvidia`, `openrouter`, `cerebras`, `siliconflow`, most OpenAI-compatible APIs, or anything unknown) → `openai-compatible` profile (Chat native; Responses/Messages converted by the gateway).
-  - `anthropic`/`anthropic-native`/`claude` → `anthropic-native`; `openai`/`openai-responses-native`/`gpt`/`o1`/`o3` → `openai-responses-native`; `gemini`/`google`/`google-gemini` → `gemini-native`.
-  - The profile is a static descriptor only; it never carries credentials, circuit state, cooldowns, health, concurrency or tier.
-- `models`: object mapping logical → upstream model names. Empty/missing = wildcard.
+- `provider`: a free-form label used for diagnostics and to derive a Provider compatibility Profile. All upstreams are reached through the same OpenAI Chat Completions path today, so every profile reports Chat `native` and Responses/Messages `convert` — no profile claims a false `native` `/v1/messages`, `/v1/responses`, or Gemini endpoint. The profile id is only a compatibility hint for `/v1/models`. The profile never carries credentials, circuit state, cooldowns, health, concurrency or tier — and it is **not** the source of model capability (that is the Model Registry below).
+- `models`: object mapping logical → upstream model names. Missing or explicitly-empty `{}` = wildcard (serves every registry model). A filled-but-invalid map (non-string value, bad structure) is a **config error** — the node is excluded with a diagnostic, never silently emptied into a wildcard.
+- Unknown node fields (`prioirty`) and unknown `limits` fields (`concurency`) are rejected; invalid `priority` / `limits.concurrency` / `limits.rpm` are rejected with a named diagnostic.
 - `limits.concurrency`: integer ≥ 1, default `2`.
 - `limits.rpm`: optional soft per-minute request quota for the key (e.g. `25`). When a node's current-minute count reaches it, siblings with headroom are preferred; if every candidate is capped, the cap is ignored so requests still succeed. Set it to each key's documented RPM (e.g. free NVIDIA NIM ≈ 40, Groq free ≈ 30 — check the provider's current docs).
+
+> **Scope of `limits.*` and reliability state**: `limits.concurrency`, `limits.rpm`, cooldowns, circuit/health and RPM counters are **isolate-local** — per Cloudflare Worker isolate, best-effort shaping. They are **not** global hard limits and **not** provider-wide or cluster-accurate quotas. They are reset whenever an isolate restarts and must not be relied on for billing or per-key accounting.
 
 ### Optional
 
 ```jsonc
-// MODELS_CONFIG
-{ "general-air": { "policy": "fast" } }
+// MODELS_CONFIG (also the Model Registry)
+{ "general-air": { "policy": "fast" },
+  "code-pro": { "policy": "stable",
+                "capabilities": { "tools": true, "reasoning": true, "vision": false, "stream": true },
+                "reasoning_efforts": ["low", "medium", "high"] } }
 
 // POLICIES_CONFIG
 { "fast": { "max_attempts": 5 } }
 ```
+
+The **Model Registry** is the single source of truth for a logical model's capability (`capabilities.tools/reasoning/vision/stream`) and reasoning efforts. Node mapping only says *whether a node can serve the model*; the Provider Profile only says *how to talk to the upstream*. `/v1/models` does not derive capability from the provider profile.
 
 Tier order is fixed: tier-1 → tier-2 → tier-3. A lower tier is used only when the current tier has no eligible node for the request. `max_attempts` (default 5, clamp 1–8) bounds total attempts per request across all tiers.
 
@@ -106,8 +111,9 @@ Tier order is fixed: tier-1 → tier-2 → tier-3. A lower tier is used only whe
 | `STREAM_IDLE_TIMEOUT_MS` | 120000 | 10s–600s | Max gap between stream chunks |
 | `RATE_LIMIT_COOLDOWN_MS` | 60000 | 1s–600s | 429 cooldown without Retry-After |
 | `AUTH_FAIL_COOLDOWN_MS` | 3600000 | 1min–7d | 401/403 credential cooldown |
+| `FAILOVER_BUDGET_MS` | 180000 | 5s–900s | Whole-request failover budget: total wall-clock time spent rotating across nodes for one request |
 | `ALLOWED_ORIGIN` | *(unset)* | origin or `*` | CORS is OFF unless set |
-| `EXPOSE_UPSTREAM_INFO` | false | | Expose upstream host/path in diagnostics |
+| `EXPOSE_UPSTREAM_INFO` | false | | Expose upstream node/provider/tier + per-attempt detail in responses; `false` keeps client responses topology-safe |
 | `FAKE_STREAM_PROTECTION` | false | | Convert non-stream requests to streaming upstream + reassemble |
 | `ALLOW_INSECURE_HTTP_UPSTREAM` | false | | Allow http:// base_url |
 | `ANTHROPIC_COUNT_TOKENS_MODE` | approximate | approximate/disabled | Local token counting |
@@ -116,11 +122,11 @@ Tier order is fixed: tier-1 → tier-2 → tier-3. A lower tier is used only whe
 | `LOG_LEVEL` | info | none/error/info/debug | Logging verbosity |
 | `PROJECT_REPOSITORY_URL` | — | https URL | Shown on the dashboard |
 
-Removed in 6.x (do not set): `REQUEST_TIMEOUT_MS`, `ANTRHOPIC_MAX_BODY_BYTES`/`ANTHROPIC_MAX_BODY_BYTES`, `CACHE_ENABLED`, `CACHE_MAX_AGE_SEC`, `CACHE_MAX_BODY_BYTES`, `AE_DATASET`, `ALLOW_UNSAFE_PROXY_ROUTES`, `PRIMARY_*`, `FALLBACK_*`, `MODEL_MAPPING`, un-suffixed `TIERx_NODES_CONFIG`.
+Removed legacy variables (do not set): `REQUEST_TIMEOUT_MS`, `ANTRHOPIC_MAX_BODY_BYTES`/`ANTHROPIC_MAX_BODY_BYTES`, `CACHE_ENABLED`, `CACHE_MAX_AGE_SEC`, `CACHE_MAX_BODY_BYTES`, `AE_DATASET`, `ALLOW_UNSAFE_PROXY_ROUTES`, `PRIMARY_*`, `FALLBACK_*`, `MODEL_MAPPING`, un-suffixed `TIERx_NODES_CONFIG`.
 
 ## Configuration status
 
-Computed at config-load time and exposed on `/health` and `/version`:
+Computed at config-load time and exposed on the auth-protected `/health`:
 
 | Status | Condition |
 |--------|-----------|

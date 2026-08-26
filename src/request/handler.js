@@ -119,6 +119,12 @@ export async function handleRequest(request, env, ctx) {
   const requestUrl = new URL(request.url);
   const pathname = normalizePath(requestUrl.pathname);
   const route = detectRoute(request.method, pathname);
+  // Whole-request wall clock starts when the gateway receives the request. It
+  // bounds the total failover budget (see FAILOVER_BUDGET_MS) regardless of how
+  // many attempts / nodes / tiers are involved.
+  const requestStartMs = Date.now();
+  const failoverBudgetMs = getLimits(env).failoverBudgetMs;
+  const exposeUpstreamInfo = String(env?.EXPOSE_UPSTREAM_INFO ?? '').trim().toLowerCase() === 'true';
 
   if (request.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: corsHeaders(request, env) });
@@ -218,7 +224,8 @@ export async function handleRequest(request, env, ctx) {
   if (config.nodes.length === 0) {
     return gatewayError(request, env, route, 500,
       'Gateway misconfigured: no usable nodes. Check TIER*_NODES_CONFIG_* and NODE_SECRETS_*.',
-      requestId, { configuration_status: config.status, diagnostics: config.diagnostics.slice(0, 5) });
+      requestId,
+      { configuration_status: config.status, ...(exposeUpstreamInfo ? { diagnostics: config.diagnostics.slice(0, 5) } : {}) });
   }
   const tiers = config.tiers;
   const supported = TIER_ORDER.some((t) => tiers[t].some((n) => supportsModel(n, requestedModel)));
@@ -228,7 +235,6 @@ export async function handleRequest(request, env, ctx) {
   }
 
   const policy = getPolicy(requestedModel, loadModelsConfig(env), loadPoliciesConfig(env));
-  const exposeUpstreamInfo = String(env?.EXPOSE_UPSTREAM_INFO ?? '').trim().toLowerCase() === 'true';
 
   // Anthropic / Responses requests convert once; per-attempt only the model
   // name changes. A Responses conversion error is a request-shape problem and
@@ -252,19 +258,26 @@ export async function handleRequest(request, env, ctx) {
 
   for (const tierNumber of TIER_ORDER) {
     while (state.totalAttempts < policy.maxAttempts) {
+      // Failover budget gate: before preparing a NEW attempt, stop if the
+      // request has already consumed the whole budget. Never keep hammering
+      // upstreams once the client has waited ~FAILOVER_BUDGET_MS overall.
+      const remainingBudgetMs = failoverBudgetMs - (Date.now() - requestStartMs);
+      if (remainingBudgetMs <= 0) {
+        return buildBudgetExhaustedResponse(request, env, route, requestId, requestedModel, state, exposeUpstreamInfo);
+      }
       const node = pickCandidate(tiers[tierNumber], requestedModel, state.attempted);
       if (!node) break; // tier exhausted -> fallback to next tier
       const outcome = await attemptNode({
         request, env, ctx, logger, requestId, route, node, requestedModel,
         clientWantsStream, fakeStream, bodyJson, anthropicConversion, responsesConversion,
-        limits, exposeUpstreamInfo, state,
+        limits, exposeUpstreamInfo, state, failoverBudgetMs, requestStartMs,
       });
       if (outcome.response) return outcome.response;
       if (outcome.stop) break;
     }
   }
 
-  return buildExhaustedResponse(request, env, route, requestId, requestedModel, state, tiers);
+  return buildExhaustedResponse(request, env, route, requestId, requestedModel, state, tiers, exposeUpstreamInfo);
 }
 
 // ---- One attempt against one node -----------------------------------------
@@ -273,6 +286,7 @@ async function attemptNode(c) {
   const {
     request, env, logger, requestId, route, node, requestedModel, clientWantsStream,
     fakeStream, bodyJson, anthropicConversion, responsesConversion, limits, exposeUpstreamInfo, state,
+    failoverBudgetMs, requestStartMs,
   } = c;
   const attemptStartMs = Date.now();
   c.attemptStartMs = attemptStartMs;
@@ -297,10 +311,15 @@ async function attemptNode(c) {
   const headers = buildUpstreamHeaders(request, node.credential, requestId);
   const controller = new AbortController();
   let headersTimeoutHit = false;
+  // Cap this attempt's own wait by the remaining whole-request budget so the
+  // worst case is bounded: a single attempt never burns the entire budget AND
+  // never lets the total exceed FAILOVER_BUDGET_MS by more than one attempt.
+  const remainingBudgetMs = failoverBudgetMs - (Date.now() - requestStartMs);
+  const attemptHeadersTimeout = Math.min(limits.headersTimeoutMs, Math.max(1, remainingBudgetMs));
   const timeoutId = setTimeout(() => {
     headersTimeoutHit = true;
     controller.abort();
-  }, limits.headersTimeoutMs);
+  }, attemptHeadersTimeout);
   const onClientAbort = () => controller.abort();
   if (request.signal?.aborted) onClientAbort();
   else request.signal?.addEventListener('abort', onClientAbort, { once: true });
@@ -338,7 +357,7 @@ async function attemptNode(c) {
     const errorText = await safeReadErrorBody(upstream, DIAGNOSTIC_BYTES);
     recordOutcome(state, node, classification, latencyMs, errorText, exposeUpstreamInfo, upstream.status);
     if (classification.action === 'stop') {
-      return { response: buildClientErrorResponse(request, env, route, requestId, requestedModel, upstream.status, errorText, state) };
+      return { response: buildClientErrorResponse(request, env, route, requestId, requestedModel, upstream.status, errorText, state, exposeUpstreamInfo) };
     }
     return { rotate: true };
   }
@@ -354,10 +373,12 @@ async function handleSuccess(s) {
   const { request, env, logger, requestId, route, node, requestedModel, bodyJson, clientWantsStream, fakeStream, limits, exposeUpstreamInfo, state } = c;
   const elapsedSinceStart = () => Date.now() - s.attemptStartMs;
 
+  // Topology-leak policy (P1): by default a successful client response carries
+  // only x-request-id. Node id / tier are operational details exposed only when
+  // EXPOSE_UPSTREAM_INFO=true (debugging) or via the auth-protected /health.
   const extraHeaders = {
-    'x-gateway-node': node.id,
-    'x-gateway-tier': node.tier,
     'x-request-id': requestId,
+    ...(exposeUpstreamInfo ? { 'x-gateway-node': node.id, 'x-gateway-tier': node.tier } : {}),
   };
 
   const needsModelRewrite = requestedModel !== upstreamModelOf(node, requestedModel);
@@ -367,7 +388,9 @@ async function handleSuccess(s) {
   if (clientWantsStream && upstreamWasStreaming) {
     let guarded;
     try {
-      guarded = await ensureFirstSseEvent(upstream, limits.firstEventTimeoutMs, request.signal);
+      const remainingBudgetMs = (c.failoverBudgetMs ?? limits.failoverBudgetMs) - (Date.now() - (c.requestStartMs || s.attemptStartMs));
+      const firstEventTimeout = Math.min(limits.firstEventTimeoutMs, Math.max(1, remainingBudgetMs));
+      guarded = await ensureFirstSseEvent(upstream, firstEventTimeout, request.signal);
     } catch (e) {
       detach();
       const code = e?.code || GUARD_ERROR.EMPTY;
@@ -441,7 +464,7 @@ async function handleSuccess(s) {
         const classification = classifyUpstreamStatus(status, upstream.headers, env);
         recordOutcome(state, node, classification, latencyMs, trimDiagnostic(data.error.message || 'embedded error', 200), exposeUpstreamInfo, status);
         if (classification.action === 'stop') {
-          return { response: buildClientErrorResponse(request, env, route, requestId, requestedModel, status, JSON.stringify(data), state) };
+          return { response: buildClientErrorResponse(request, env, route, requestId, requestedModel, status, JSON.stringify(data), state, exposeUpstreamInfo) };
         }
         return { rotate: true };
       }
@@ -515,7 +538,7 @@ async function handleSuccess(s) {
       const classification = classifyUpstreamStatus(status, upstream.headers, env);
       recordOutcome(state, node, classification, latencyMs, trimDiagnostic(data.error.message || 'embedded error', 200), exposeUpstreamInfo, status);
       if (classification.action === 'stop') {
-        return { response: buildClientErrorResponse(request, env, route, requestId, requestedModel, status, text, state) };
+        return { response: buildClientErrorResponse(request, env, route, requestId, requestedModel, status, text, state, exposeUpstreamInfo) };
       }
       return { rotate: true };
     }
@@ -705,7 +728,23 @@ function rewriteStreamModelField(response, logicalModel) {
   });
 }
 
-function buildExhaustedResponse(request, env, route, requestId, requestedModel, state, tiers) {
+function buildBudgetExhaustedResponse(request, env, route, requestId, requestedModel, state, exposeUpstreamInfo) {
+  // The gateway spent the whole failover budget rotating and still has no answer.
+  // Stop: return a clear, terminal error and the attempt COUNT only. Do not keep
+  // calling further upstreams, and do not leak the internal failure sequence by
+  // default. 504 + x-should-retry:false tells clients not to blind-retry a request
+  // the gateway already spent its budget resolving.
+  const status = 504;
+  const details = {
+    requested_model: requestedModel,
+    attempts: state.totalAttempts,
+    ...(exposeUpstreamInfo && state.attempts.length ? { attempts_detail: state.attempts } : {}),
+  };
+  return gatewayError(request, env, route, status,
+    `Gateway failover budget exhausted after ${state.totalAttempts} attempt(s).`, requestId, details);
+}
+
+function buildExhaustedResponse(request, env, route, requestId, requestedModel, state, tiers, exposeUpstreamInfo) {
   const last = state.attempts[state.attempts.length - 1];
   const nothingAttempted = state.attempts.length === 0;
 
@@ -745,17 +784,20 @@ function buildExhaustedResponse(request, env, route, requestId, requestedModel, 
   }
 
   const details = {
-    attempts: state.attempts,
     requested_model: requestedModel,
-    nodes_total: Object.values(tiers).flat().length,
+    attempts: state.totalAttempts,
+    ...(exposeUpstreamInfo && state.attempts.length ? { attempts_detail: state.attempts } : {}),
   };
   // Route-aware body: Anthropic clients must receive Anthropic-shaped errors.
   return gatewayError(request, env, route, status, message, requestId, details,
     retryAfterSec ? { 'retry-after': String(retryAfterSec) } : undefined);
 }
 
-function buildClientErrorResponse(request, env, route, requestId, requestedModel, status, errorText, state) {
+function buildClientErrorResponse(request, env, route, requestId, requestedModel, status, errorText, state, exposeUpstreamInfo) {
   const detail = extractErrorMessage(errorText) || `Upstream returned HTTP ${status}.`;
+  const attemptsDetail = exposeUpstreamInfo && state.attempts.length
+    ? { attempts_detail: state.attempts.slice(-1) }
+    : {};
   if (route === 'anthropic_messages') {
     return new Response(JSON.stringify({
       type: 'error',
@@ -778,7 +820,7 @@ function buildClientErrorResponse(request, env, route, requestId, requestedModel
   return new Response(JSON.stringify({
     error: {
       message: detail,
-      details: { requested_model: requestedModel, attempts: state.attempts.slice(-1) },
+      details: { requested_model: requestedModel, attempts: state.totalAttempts, ...attemptsDetail },
     },
   }), {
     status,

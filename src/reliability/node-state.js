@@ -124,12 +124,9 @@ export function recordSuccess(nodeId, latencyMs, now = Date.now()) {
   s.avgLatencyMs = s.avgLatencyMs === 0 || typeof latencyMs !== 'number'
     ? Math.max(0, latencyMs || 0)
     : s.avgLatencyMs * (1 - LATENCY_EWMA_ALPHA) + latencyMs * LATENCY_EWMA_ALPHA;
-  // Upstream responded successfully: circuit is healthy again regardless of
-  // which state we were in (a 429/401 during a probe also proves liveness).
-  if (s.circuitState !== 'closed') {
-    s.circuitState = 'closed';
-    s.probeInFlight = false;
-  }
+  // Any successful upstream response proves the node is alive, so it always
+  // closes a half-open probe and never leaves a probe in flight.
+  recoverFromHalfOpen(s);
 }
 
 // Record a failure. `counted` marks transient upstream failures (5xx /
@@ -143,7 +140,16 @@ export function recordFailure(nodeId, { counted = false, cooldownMs = 0, reason 
     s.cooldownReason = reason;
   }
   s.consecutiveFailures = counted ? s.consecutiveFailures + 1 : 0;
-  if (!counted) return;
+
+  if (!counted) {
+    // Non-counted outcomes (429 / 401 / 403 / 404 / client 4xx). These never
+    // open the circuit. If one concludes a half-open probe, the node proved it
+    // was reachable (it gave an HTTP answer, even a reject), so it must leave
+    // half-open and become schedulable again once any node-local cooldown
+    // expires. NEVER leave probeInFlight stuck true.
+    recoverFromHalfOpen(s);
+    return;
+  }
 
   if (s.circuitState === 'half-open') {
     // Probe failed: reopen and restart the cooldown period.
@@ -156,7 +162,10 @@ export function recordFailure(nodeId, { counted = false, cooldownMs = 0, reason 
 }
 
 export function recordNeutralEnd(nodeId) {
-  releaseAndReturn(nodeId);
+  const s = releaseAndReturn(nodeId);
+  // A neutral end (client abort / no-charge) during a half-open probe must not
+  // punish the node nor leave it stuck half-open forever.
+  recoverFromHalfOpen(s);
 }
 
 function releaseAndReturn(nodeId) {
@@ -170,6 +179,20 @@ function openCircuit(s, now) {
   s.probeInFlight = false;
   s.cooldownUntil = now + CIRCUIT_OPEN_MS;
   s.cooldownReason = `circuit_open_after_${CIRCUIT_FAILURE_THRESHOLD}_failures`;
+}
+
+// Central half-open probe resolution. A probe that ends in anything other than
+// a *counted* transient failure has proved the node is reachable (success, 429,
+// 401/403, 404, client abort, or a neutral end). It must close the circuit,
+// release the probe slot, and clear the consecutive-failure chain so the node
+// can be scheduled again after any node-local cooldown expires. This is the ONLY
+// place that recovers from half-open; it guarantees probeInFlight can never leak.
+function recoverFromHalfOpen(s) {
+  if (s.circuitState === 'half-open' || s.probeInFlight) {
+    s.circuitState = 'closed';
+    s.probeInFlight = false;
+    s.consecutiveFailures = 0;
+  }
 }
 
 // ---- Health penalty helper -------------------------------------------------

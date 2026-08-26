@@ -34,10 +34,14 @@ import { readEnv, getBool } from './env.js';
 import { resolveProviderProfile } from './profiles.js';
 
 const SHARD_MAX_BYTES = 4500; // official variable size limit is 5 KB; keep margin
-const TIER_SHARD_PATTERN = /^TIER([123])_NODES_CONFIG_(\d{2})$/;
-const SECRET_SHARD_PATTERN = /^NODE_SECRETS_(\d{2})$/;
+export const TIER_SHARD_PATTERN = /^TIER([123])_NODES_CONFIG_(\d{2})$/;
+export const SECRET_SHARD_PATTERN = /^NODE_SECRETS_(\d{2})$/;
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const FORBIDDEN_NODE_FIELDS = ['token', 'credential', 'api_key', 'apikey', 'authorization', 'password', 'secret'];
+// Fail-fast schema: any field outside this set is a typo/invalid and the node
+// is rejected instead of being silently accepted (or emptied into a wildcard).
+const ALLOWED_NODE_FIELDS = new Set(['id', 'provider', 'base_url', 'priority', 'models', 'limits']);
+const ALLOWED_LIMITS_FIELDS = new Set(['concurrency', 'rpm']);
 
 let cachedEnv;
 let cachedResult;
@@ -53,8 +57,8 @@ function buildConfig(env) {
   const diagnostics = [];
   const accessKeyBound = Boolean(readEnv(env, 'GATEWAY_ACCESS_KEY'));
 
-  const tierShards = collectShards(env, TIER_SHARD_PATTERN, 'TIER1_NODES_CONFIG_', 'TIER1_NODES_CONFIG_01', diagnostics);
-  const secretShards = collectShards(env, SECRET_SHARD_PATTERN, 'NODE_SECRETS_', 'NODE_SECRETS_01', diagnostics);
+  const tierShards = collectShards(env, TIER_SHARD_PATTERN, 'TIER1_NODES_CONFIG_', 'TIER1_NODES_CONFIG_01', 2, diagnostics);
+  const secretShards = collectShards(env, SECRET_SHARD_PATTERN, 'NODE_SECRETS_', 'NODE_SECRETS_01', 1, diagnostics);
   const nodesDeclared = tierShards.reduce((sum, s) => sum + countArrayEntries(env[s.key]), 0);
 
   let status = 'unconfigured';
@@ -179,6 +183,14 @@ function buildRuntimeNode(rawNode, tier, credentials, allowInsecure, sourceKey, 
     diagnostics.push(`node "${id}": forbidden credential field(s) ${forbidden.join(', ')}; credentials belong in NODE_SECRETS_*`);
     return null;
   }
+  // Fail-fast: reject unknown top-level fields (e.g. `prioirty` typo) instead of
+  // silently ignoring them and guessing at intent.
+  for (const key of Object.keys(rawNode)) {
+    if (!ALLOWED_NODE_FIELDS.has(key)) {
+      diagnostics.push(`node "${id}": unknown field "${key}" (allowed: ${[...ALLOWED_NODE_FIELDS].join(', ')})`);
+      return null;
+    }
+  }
 
   const baseUrl = typeof rawNode.base_url === 'string' ? rawNode.base_url.trim() : '';
   let url;
@@ -206,9 +218,12 @@ function buildRuntimeNode(rawNode, tier, credentials, allowInsecure, sourceKey, 
   const models = normalizeModels(rawNode.models, id, diagnostics);
   if (models === null) return null;
 
-  const priority = Number(rawNode.priority);
-  const concurrency = Number(rawNode.limits?.concurrency);
-  const rpm = Number(rawNode.limits?.rpm);
+  const priority = parsePriority(rawNode.priority, id, diagnostics);
+  if (priority === null) return null;
+
+  const limits = parseLimits(rawNode.limits, id, diagnostics);
+  if (limits === null) return null;
+
   const providerLabel = typeof rawNode.provider === 'string' && rawNode.provider.trim() ? rawNode.provider.trim() : 'unknown';
   const profile = resolveProviderProfile(providerLabel);
 
@@ -218,37 +233,111 @@ function buildRuntimeNode(rawNode, tier, credentials, allowInsecure, sourceKey, 
     provider: providerLabel,
     baseUrl: baseUrl.replace(/\/+$/, ''),
     credential,
-    priority: Number.isFinite(priority) ? priority : 100,
+    priority,
     models,
     profile,
     limits: {
-      concurrency: Number.isFinite(concurrency) && concurrency >= 1 ? Math.trunc(concurrency) : 2,
+      concurrency: limits.concurrency ?? 2,
       // Soft per-minute request quota; undefined = unlimited.
-      ...(Number.isFinite(rpm) && rpm >= 1 ? { rpm: Math.trunc(rpm) } : {}),
+      ...(limits.rpm !== undefined ? { rpm: limits.rpm } : {}),
     },
   };
 }
 
-function normalizeModels(models, nodeId, diagnostics) {
-  const out = {};
-  if (Array.isArray(models)) {
-    for (const m of models) {
-      if (typeof m === 'string' && m.trim()) out[m.trim()] = m.trim();
-    }
-    return out;
-  }
-  if (!models) return out;
-  if (typeof models !== 'object' || Array.isArray(models)) {
-    diagnostics.push(`node "${nodeId}": models must be an object { logical: upstream }`);
+function parsePriority(raw, nodeId, diagnostics) {
+  if (raw === undefined) return 100;
+  const n = typeof raw === 'number' ? raw : (typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN);
+  if (!Number.isFinite(n) || n < 0) {
+    diagnostics.push(`node "${nodeId}": priority must be a non-negative number`);
     return null;
   }
-  for (const [k, v] of Object.entries(models)) {
-    if (typeof k === 'string' && k.trim() && typeof v === 'string' && v.trim()) out[k.trim()] = v.trim();
+  return Math.trunc(n);
+}
+
+function parseLimits(raw, nodeId, diagnostics) {
+  const out = {};
+  if (raw === undefined || raw === null) return out;
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    diagnostics.push(`node "${nodeId}": limits must be an object { concurrency, rpm }`);
+    return null;
+  }
+  for (const key of Object.keys(raw)) {
+    if (!ALLOWED_LIMITS_FIELDS.has(key)) {
+      diagnostics.push(`node "${nodeId}": limits.${key} is not a supported limit (allowed: ${[...ALLOWED_LIMITS_FIELDS].join(', ')})`);
+      return null;
+    }
+  }
+  const positiveInt = (value) => {
+    const n = typeof value === 'number' ? value : (typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN);
+    return Number.isFinite(n) && n >= 1 ? Math.trunc(n) : null;
+  };
+  if ('concurrency' in raw) {
+    const c = positiveInt(raw.concurrency);
+    if (c === null) {
+      diagnostics.push(`node "${nodeId}": limits.concurrency must be an integer >= 1`);
+      return null;
+    }
+    out.concurrency = c;
+  }
+  if ('rpm' in raw) {
+    const r = positiveInt(raw.rpm);
+    if (r === null) {
+      diagnostics.push(`node "${nodeId}": limits.rpm must be an integer >= 1`);
+      return null;
+    }
+    out.rpm = r;
   }
   return out;
 }
 
-function collectShards(env, pattern, loosePrefix, expectedExample, diagnostics) {
+function normalizeModels(models, nodeId, diagnostics) {
+  const out = {};
+  // Missing (`undefined`) => serve every configured logical model.
+  if (models === undefined || models === null) return out;
+
+  if (Array.isArray(models)) {
+    // A list of model names (logical == upstream). Empty array => wildcard.
+    if (models.length === 0) return out;
+    for (const m of models) {
+      if (typeof m !== 'string' || !m.trim()) {
+        diagnostics.push(`node "${nodeId}": models array entries must be non-empty strings`);
+        return null;
+      }
+      out[m.trim()] = m.trim();
+    }
+    return out;
+  }
+
+  // A scalar, boolean, etc. is an invalid structure, NOT a wildcard: never let
+  // a typo'd/illegal config silently clear the map into "serve everything".
+  if (typeof models !== 'object') {
+    diagnostics.push(`node "${nodeId}": models must be an object { logical: upstream }`);
+    return null;
+  }
+
+  const keys = Object.keys(models);
+  if (keys.length === 0) return out; // explicit `{}` => wildcard
+
+  for (const key of keys) {
+    if (typeof key !== 'string' || !key.trim()) {
+      diagnostics.push(`node "${nodeId}": models keys must be non-empty strings`);
+      return null;
+    }
+    const value = models[key];
+    if (typeof value !== 'string' || !value.trim()) {
+      diagnostics.push(`node "${nodeId}": models["${key}"] must map to a non-empty upstream model string`);
+      return null;
+    }
+    out[key.trim()] = value.trim();
+  }
+  return out;
+}
+
+// Collect shard variable names that match `pattern`. `indexGroup` is the
+// 1-based capture group holding the numeric shard index (tier pattern has the
+// index in group 2, secret pattern in group 1). Using the wrong group silently
+// yields NaN and breaks ordering, so it is passed explicitly per pattern.
+export function collectShards(env, pattern, loosePrefix, expectedExample, indexGroup, diagnostics) {
   const shards = [];
   for (const key of Object.keys(env || {})) {
     const match = pattern.exec(key);
@@ -256,7 +345,7 @@ function collectShards(env, pattern, loosePrefix, expectedExample, diagnostics) 
       shards.push({
         key,
         tierNumber: pattern.source.includes('TIER') ? Number(match[1]) : 0,
-        index: Number(match[2]),
+        index: Number(match[indexGroup]),
       });
       continue;
     }

@@ -13,6 +13,10 @@ const LIMITS = {
   RATE_LIMIT_COOLDOWN_MS: { min: 1_000, max: 600_000, def: 60_000 },
   AUTH_FAIL_COOLDOWN_MS: { min: 60_000, max: 7 * 86_400_000, def: 3_600_000 },
   MAX_BODY_BYTES: { min: 1024, max: 100 * 1024 * 1024, def: 20 * 1024 * 1024 },
+  // Whole-request failover budget: the total wall-clock time the gateway may
+  // spend rotating across nodes for ONE client request. Prevents the worst
+  // case of headersTimeout(120s) * maxAttempts(5) ≈ 600s per Agent call.
+  FAILOVER_BUDGET_MS: { min: 1_000, max: 900_000, def: 180_000 },
 };
 
 // Retry-After is always clamped into this window so a hostile or broken
@@ -32,6 +36,7 @@ export function getLimits(env) {
     rateLimitCooldownMs: clampInt(readEnv(env, 'RATE_LIMIT_COOLDOWN_MS'), LIMITS.RATE_LIMIT_COOLDOWN_MS.min, LIMITS.RATE_LIMIT_COOLDOWN_MS.max, LIMITS.RATE_LIMIT_COOLDOWN_MS.def),
     authFailCooldownMs: clampInt(readEnv(env, 'AUTH_FAIL_COOLDOWN_MS'), LIMITS.AUTH_FAIL_COOLDOWN_MS.min, LIMITS.AUTH_FAIL_COOLDOWN_MS.max, LIMITS.AUTH_FAIL_COOLDOWN_MS.def),
     maxBodyBytes: clampInt(readEnv(env, 'MAX_BODY_BYTES'), LIMITS.MAX_BODY_BYTES.min, LIMITS.MAX_BODY_BYTES.max, LIMITS.MAX_BODY_BYTES.def),
+    failoverBudgetMs: clampInt(readEnv(env, 'FAILOVER_BUDGET_MS'), LIMITS.FAILOVER_BUDGET_MS.min, LIMITS.FAILOVER_BUDGET_MS.max, LIMITS.FAILOVER_BUDGET_MS.def),
   };
   cache.set(env, cached);
   return cached;

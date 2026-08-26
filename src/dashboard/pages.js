@@ -17,7 +17,7 @@
 //     collapsed to exactly { 可用 | 降级 | 不可用 }; no node-level detail.
 
 import { loadGatewayConfig } from '../config/nodes.js';
-import { loadModelsConfig } from '../config/models.js';
+import { loadModelRegistry, servesModel } from '../config/registry.js';
 import { peekAvailability } from '../reliability/node-state.js';
 import { APP_META } from '../observability/status.js';
 import { htmlResponse } from '../protocol/http.js';
@@ -106,23 +106,15 @@ ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.
 try{document.execCommand('copy');}catch(e){}document.body.removeChild(ta);}
 })();</script>`;
 
-// A node serves a logical model when it declares it, or is a wildcard (empty
-// models map = serves any model). Mirrors scheduler.js supportsModel().
-function servesModel(node, model) {
-  const keys = Object.keys(node.models || {});
-  if (keys.length === 0) return true;
-  return Object.hasOwn(node.models, model);
-}
-
 // Collapse node-level availability into a public-safe per-model status.
 //   available    at least one serving node is currently healthy
 //   degraded     serving nodes exist but none is currently available
 //   unavailable  no configured node serves this logical model
-// No node ids, providers, tiers, counts or durations ever leave this function.
+// The model set = Model Registry (primary) ∪ node mappings. No node ids,
+// providers, tiers, counts or durations ever leave this function.
 function publicModelStatus(nodes, env) {
-  const names = new Set();
+  const names = new Set(Object.keys(loadModelRegistry(env)));
   for (const node of nodes) for (const key of Object.keys(node.models || {})) names.add(key);
-  for (const key of Object.keys(loadModelsConfig(env))) names.add(key);
   const list = [];
   for (const name of [...names].sort()) {
     const serving = nodes.filter((n) => servesModel(n, name));
@@ -174,6 +166,10 @@ export function dashboardResponse(request, env) {
   const config = loadGatewayConfig(env);
   const models = publicModelStatus(config.nodes || [], env);
   const apiBase = `${new URL(request.url).origin}/v1`;
+  // Never hardcode a concrete model: use the first currently-available logical
+  // model from the registry, else show a placeholder the operator must fill in.
+  const firstAvailable = models.find((m) => m.status === 'available');
+  const modelHint = firstAvailable ? firstAvailable.id : '<your-model>';
 
   const body = `
 <section class="hero">
@@ -195,7 +191,7 @@ export function dashboardResponse(request, env) {
     </div>
     <pre id="env">OPENAI_BASE_URL=${apiBase}
 OPENAI_API_KEY=your-api-key
-OPENAI_MODEL=code-pro</pre>
+OPENAI_MODEL=${escapeHtml(modelHint)}</pre>
   </div>
 </section>`;
 
