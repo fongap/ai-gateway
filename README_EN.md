@@ -97,6 +97,7 @@ GATEWAY_ACCESS_KEY        Secret: client access key
 | Selection | single O(n) pass per attempt: priority ASC → activeRequests ASC → health (band) → lastUsedAt (LRU rotation across equal-priority keys) → latency ASC |
 | Concurrency | parallel requests spread across concurrency-limited nodes |
 | 429 | cools only the failing node, honors Retry-After (seconds/HTTP-date, clamped 1s–600s) |
+| RPM quota | `limits.rpm` defaults to **hard**: an exhausted node is skipped, siblings with headroom are preferred, and when every candidate is exhausted the request gets `503 + Retry-After` (pointing at the minute boundary). `"rpm_mode": "soft"` restores the legacy best-effort break-through |
 | 401/403 | credential problem: long node-local cooldown, excluded from the request |
 | 400/413/415/422 | client error: returned immediately, no node rotation |
 | 5xx/network/timeout | failure accounting → same-tier rotation → circuit after 3 consecutive |

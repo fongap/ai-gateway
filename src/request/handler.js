@@ -32,7 +32,9 @@ import {
   buildTargetUrl, buildUpstreamHeaders, corsHeaders,
   readBodyTextWithLimit, BodyTooLargeError, safeReadErrorBody, trimDiagnostic,
 } from '../protocol/http.js';
-import { validateOpenAIChatRequest, isOpenAIStreamingResponse } from '../protocol/openai.js';
+import { validateOpenAIChatRequest, isOpenAIStreamingResponse, synthesizeSseFromCompletion } from '../protocol/openai.js';
+// Backward-compatible re-export: some tooling imports the synthesizer from here.
+export { synthesizeSseFromCompletion };
 import {
   anthropicErrorResponse,
   validateAnthropicMessagesRequest, validateAnthropicCountTokensRequest,
@@ -235,17 +237,21 @@ async function attemptNode(c) {
     return rotateWithNeutralEnd(state, node, 'invalid_base_url');
   }
 
-  // ---- Optional GLOBAL quota coordination --------------------------------
+  // ---- Optional distributed rate shaping (Cloudflare Rate Limiting) ---------
   // isolate-local RPM/concurrency state can only shape traffic per Worker
-  // isolate; several isolates share the same upstream key. When the operator
-  // binds a Workers Rate Limiting binding as QUOTA_RATE_LIMITER, hard-RPM nodes
-  // get a real cluster-wide check before dispatch. Without the binding this is
-  // a no-op and the local hard/soft semantics apply.
+  // isolate; several isolates share the same upstream key. Binding a Workers
+  // Rate Limiting binding as QUOTA_RATE_LIMITER adds a distributed (per-Cloudflare
+  // location) fixed-window check before dispatch. NOTE: Cloudflare Rate Limiting
+  // is counted per location, permissive and eventually consistent — it is NOT a
+  // strict global/account quota, and its threshold is fixed at the binding
+  // (limit=N, period=60), so it cannot express a different per-node
+  // limits.rpm value. Treat it as approximate distributed shaping; the local
+  // hard/soft semantics remain the source of truth for exact per-node counts.
   if (node.limits.rpmMode === 'hard' && typeof env?.QUOTA_RATE_LIMITER?.limit === 'function') {
     try {
       const verdict = await env.QUOTA_RATE_LIMITER.limit({ key: node.id });
       if (verdict && verdict.success === false) {
-        // Globally rate-limited: not the node's fault — no failure/cooldown,
+        // Distributed-limit denied: not the node's fault — no failure/cooldown,
         // just move on to the next candidate.
         state.attempted.add(node.id);
         state.totalAttempts++;
@@ -533,49 +539,6 @@ async function handleSuccess(s) {
 
 function upstreamModelOf(node, logicalModel) {
   return node.models[logicalModel] || logicalModel;
-}
-
-// Convert a full OpenAI completion object into a well-formed SSE stream
-// (delta chunks + finish chunk + [DONE]) for clients that requested
-// streaming but received JSON from the upstream.
-export function synthesizeSseFromCompletion(data, env, request, extraHeaders) {
-  const encoder = new TextEncoder();
-  const choices = Array.isArray(data?.choices) ? data.choices : [];
-  const base = {
-    id: data?.id || `chatcmpl-${crypto.randomUUID()}`,
-    object: 'chat.completion.chunk',
-    created: data?.created || Math.floor(Date.now() / 1000),
-    model: data?.model,
-  };
-  const stream = new ReadableStream({
-    start(controller) {
-      const emit = (obj) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
-      for (const choice of choices) {
-        const msg = choice.message || {};
-        const delta = { role: msg.role || 'assistant' };
-        if (msg.content) delta.content = msg.content;
-        if (msg.reasoning_content) delta.reasoning_content = msg.reasoning_content;
-        if (Array.isArray(msg.tool_calls) && msg.tool_calls.length) delta.tool_calls = msg.tool_calls;
-        emit({ ...base, choices: [{ index: choice.index ?? 0, delta, finish_reason: null }] });
-      }
-      for (const choice of choices) {
-        const finish = { index: choice.index ?? 0, delta: {}, finish_reason: choice.finish_reason || 'stop' };
-        emit({ ...base, choices: [finish], ...(data.usage ? { usage: data.usage } : {}) });
-      }
-      controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-      controller.close();
-    },
-  });
-  return new Response(stream, {
-    status: 200,
-    headers: {
-      'content-type': 'text/event-stream; charset=utf-8',
-      'cache-control': 'no-cache, no-transform',
-      'x-accel-buffering': 'no',
-      ...(extraHeaders || {}),
-      ...corsHeaders(request, env),
-    },
-  });
 }
 
 function rotateWithNeutralEnd(state, node, reason) {

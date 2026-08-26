@@ -910,9 +910,30 @@ await test('default exhausted response keeps attempt count but no node_id / per-
   const body = await res.json();
   assert.equal(body.error.details.attempts, 2, 'attempt COUNT is public by design');
   assert.equal(body.error.details.attempts_detail, undefined, 'no per-attempt detail by default');
+  assert.deepEqual(body.error.details.failure_kinds, { server: 2 }, 'aggregate failure kinds are public');
   const serialized = JSON.stringify(body);
   assert.ok(!serialized.includes('node_id') && !serialized.includes('ex1') && !serialized.includes('ex2'),
     'must not leak node ids by default');
+});
+
+await test('terminal status is driven by dominant failure kind, not the last attempt', async () => {
+  // 503 then 429: dominant server failure => 502 (not masked to 429 by the tail).
+  resetMock();
+  routeHandlers['tk1.example.com'] = () => jsonUpstream({}, 503);
+  routeHandlers['tk2.example.com'] = () => jsonUpstream({}, 429, { 'retry-after': '30' });
+  const env1 = makeEnv({ tier1: [basicNode('tk1'), basicNode('tk2')], secrets: { tk1: 'k', tk2: 'k' } });
+  const res1 = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env1, {});
+  assert.equal(res1.status, 502, 'dominant 5xx must stay 502 even when the last attempt was 429');
+  const b1 = await res1.json();
+  assert.deepEqual(b1.error.details.failure_kinds, { server: 1, rate_limit: 1 });
+
+  // All rate-limit => 429 (retryable).
+  resetMock();
+  routeHandlers['tk3.example.com'] = () => jsonUpstream({}, 429, { 'retry-after': '20' });
+  const env2 = makeEnv({ tier1: [basicNode('tk3')], secrets: { tk3: 'k' } });
+  const res2 = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env2, {});
+  assert.equal(res2.status, 429, 'all rate_limit attempts must return 429');
+  assert.ok(Number(res2.headers.get('retry-after')) > 0);
 });
 
 await test('EXPOSE_UPSTREAM_INFO=true exposes upstream headers and per-attempt detail', async () => {

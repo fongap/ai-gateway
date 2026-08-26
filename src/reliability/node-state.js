@@ -28,7 +28,9 @@ const CLEANUP_INTERVAL_MS = 30_000;
 const STALE_FAILURE_MS = 300_000; // consecutive failures older than 5 min idle no longer chain
 
 // Per-node per-minute request counters (current UTC minute bucket only).
-// Used for optional limits.rpm soft quota shaping; NOT a hard limiter.
+// Feeds limits.rpm shaping: in hard mode (the default when rpm is configured)
+// an exhausted node is not dispatched this minute; in soft mode it remains a
+// last-resort fallback. The counter is isolate-local and never a global quota.
 const rpmBuckets = new Map(); // nodeId -> { minute, count }
 
 function currentMinute(now) {

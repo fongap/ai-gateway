@@ -63,6 +63,9 @@ export function buildBudgetExhaustedResponse(request, env, route, requestId, req
   const details = {
     requested_model: requestedModel,
     attempts: state.totalAttempts,
+    ...(state.failureKinds && Object.keys(state.failureKinds).length
+      ? { failure_kinds: state.failureKinds }
+      : {}),
     ...(exposeUpstreamInfo && state.attempts.length ? { attempts_detail: state.attempts } : {}),
   };
   return gatewayError(request, env, route, status,
@@ -100,7 +103,10 @@ export function buildExhaustedResponse(request, env, route, requestId, requested
       if (minRemaining > 0) retryAfterSec = Math.ceil(minRemaining / 1000);
     }
   } else {
-    status = last?.status === 429 ? 429 : 502;
+    // Terminal status is driven by the aggregated failure kinds, not by whatever
+    // the last attempt happened to be. Otherwise a trailing 429 would mask a
+    // dominant upstream failure (and vice versa).
+    status = terminalStatus(state.failureKinds) ?? (last?.status === 429 ? 429 : 502);
     message = `All nodes failed for model "${requestedModel}".`;
     if (status === 429) {
       const remaining = Object.values(tiers).flat()
@@ -113,6 +119,9 @@ export function buildExhaustedResponse(request, env, route, requestId, requested
   const details = {
     requested_model: requestedModel,
     attempts: state.totalAttempts,
+    ...(state.failureKinds && Object.keys(state.failureKinds).length
+      ? { failure_kinds: state.failureKinds }
+      : {}),
     ...(exposeUpstreamInfo && state.attempts.length ? { attempts_detail: state.attempts } : {}),
   };
   // Route-aware body: Anthropic clients must receive Anthropic-shaped errors.
@@ -180,4 +189,25 @@ function extractErrorMessage(text) {
   } catch {
     return trimDiagnostic(raw, 300);
   }
+}
+
+// Map the aggregated per-attempt failure kinds to a terminal HTTP status.
+//   dominant rate_limit / distributed deny -> 429 (retryable)
+//   dominant timeout / first-event        -> 504 (spent, terminal)
+//   otherwise (server/network/auth/model) -> 502
+function dominantKind(failureKinds) {
+  let best = null;
+  let bestN = 0;
+  for (const [kind, n] of Object.entries(failureKinds || {})) {
+    if (n > bestN) { best = kind; bestN = n; }
+  }
+  return best;
+}
+
+function terminalStatus(failureKinds) {
+  const dom = dominantKind(failureKinds);
+  if (!dom) return null;
+  if (dom === 'rate_limit' || dom === 'rate_limit_global') return 429;
+  if (dom === 'timeout' || dom === 'first_event') return 504;
+  return 502;
 }

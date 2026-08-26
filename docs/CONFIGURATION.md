@@ -63,9 +63,11 @@ Rules enforced at load time:
 
 > **Scope of `limits.*` and reliability state**: `limits.concurrency`, `limits.rpm`, cooldowns, circuit/health and RPM counters are **isolate-local** — per Cloudflare Worker isolate, best-effort shaping. They are **not** global hard limits and **not** provider-wide or cluster-accurate quotas. They are reset whenever an isolate restarts and must not be relied on for billing or per-key accounting.
 
-### Optional global quota coordination (strict keys)
+### Optional distributed rate shaping (per-location)
 
-For keys with strict account-level quotas you can add a Workers Rate Limiting binding named `QUOTA_RATE_LIMITER` (binding name is what matters; consult your wrangler version's docs for the exact config syntax). When present, every dispatch to a **hard-RPM** node first performs a real cluster-wide check; a global deny rotates to the next candidate without counting a node failure. Without the binding this is a no-op and only isolate-local shaping applies.
+For keys that are rate-limited at the account level you can add a Cloudflare Workers Rate Limiting binding named `QUOTA_RATE_LIMITER` (binding name is what matters; consult your wrangler version's docs for the exact config syntax). When present, every dispatch to a **hard-RPM** node first performs a distributed (per-Cloudflare-location) fixed-window check; a deny rotates to the next candidate without counting a node failure. Without the binding this is a no-op and only isolate-local shaping applies.
+
+> **Scope caveat**: Cloudflare Rate Limiting is counted per location, permissive and eventually consistent — it is **not** a strict global/account quota and should not be relied on for accurate accounting. Its threshold is fixed at the binding (`limit=N`, `period=60`), so it cannot express a different `limits.rpm` per node; the local hard/soft semantics remain the exact per-node source of truth. Treat it as approximate distributed shaping, and use `limits.rpm` (hard mode) for exact per-node counts.
 
 Concurrency cannot be coordinated globally without Durable Objects, which this project deliberately does not use: `limits.concurrency` stays isolate-local by design.
 

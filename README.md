@@ -96,9 +96,9 @@ install 会引导你完成：Worker 命名 → 项目校验 → Cloudflare 登�
 | `provider` | 可选标签，用于诊断展示 |
 | `base_url` | 必须 `https://`；不允许内嵌用户名/密码 |
 | `priority` | 数值越小优先级越高，默认 100；同层同级 = 轮转摊流 |
-| `models` | 逻辑模型 → 上游模型映射；空对象 = 通配所有逻辑模型 |
-| `limits.concurrency` | 节点并发上限，默认 2；按上游账号的实际限流配置 |
-| `limits.rpm` | 可选；该 key 每分钟请求软配额（如 `25`），到量后同层兄弟 key 优先 |
+| `models` | 逻辑模型 → 上游模型映射；缺失 / 空对象 `{}` = 通配所有逻辑模型 |
+| `limits.concurrency` | 节点并发上限，默认 2；**isolate 本地** shaping，非全局硬限 |
+| `limits.rpm` | 可选；该 key 每分钟请求配额。默认 **hard**：到量后不再派发，全耗尽返回 `503 + Retry-After`；`"rpm_mode": "soft"` 才恢复旧的 best-effort 破限行为 |
 
 配置变量命名：
 
@@ -125,7 +125,7 @@ OpenAI 兼容客户端 Base URL 使用网关地址的 `/v1`；Claude Code 设置
 | 选择 | 同层内单次 O(n) 扫描：priority ASC → activeRequests ASC → health（带内视为持平）→ lastUsedAt（LRU 轮转）→ latency ASC；同优先级空闲节点按最久未用轮转，把顺序流量摊开以减少 429 |
 | 并发分散 | 多个 concurrency=1 的节点会自然摊开并发请求 |
 | 429 | 只冷却当前节点，优先读取 `Retry-After`（秒或 HTTP-date，钳制 1s–600s），同层其他节点继续服务 |
-| RPM 配额 | 节点可声明 `limits.rpm`（软上限）：未到配额的兄弟 key 优先；全部到配额时仍照常服务（不硬拒） |
+| RPM 配额 | `limits.rpm` 默认 hard：到量节点退出候选、优先用有额度的兄弟 key；全部耗尽返回 `503 + Retry-After`（指向分钟边界）；`rpm_mode: soft` 才允许破限 |
 | 容量饱和 | 全部候选节点并发/RPM 打满时返回 `503 + Retry-After: 1`，让多智能体客户端退避而非立即重试 |
 | 断流 | 中途断开/空闲超时：已缓冲字节送达客户端，节点记为失败；透传流缺少 `[DONE]` 的"干净"提前关闭同样计为失败 |
 | 401/403 | 视为凭据问题，该节点长冷却并退出当前请求候选 |
@@ -135,14 +135,14 @@ OpenAI 兼容客户端 Base URL 使用网关地址的 `/v1`；Claude Code 设置
 | 自动恢复 | 冷却到期自动回池；OPEN → HALF_OPEN 单探测 → 成功 CLOSED |
 | 流式 | 首个有效事件前可切换节点；之后绝不透明切换 |
 
-Circuit 是连续失败状态机（非滑动窗口）：CLOSED →(连续 3 次 5xx/网络/超时)→ OPEN →(30s)→ HALF_OPEN → 单探测 → 成功 CLOSED / 失败重新 OPEN。429 与 401 不计入熔断。
+Circuit 是连续失败状态机（非滑动窗口）：CLOSED →(连续 3 次 5xx/网络/超时)→ OPEN →(30s)→ HALF_OPEN → 单探测 → 成功 CLOSED / 失败重新 OPEN。429 与 401 不计入熔断。半开探测若返回 429 / 401 / 404 / 客户端中止等非 counted 结果，视为节点存活：关闭电路、释放探测（绝不留下 `probeInFlight` 悬挂），冷却到期后节点可再次参与调度。
 
 ## 配置状态
 
 | 状态 | 含义 |
 |------|------|
 | `unconfigured` | 关键配置不存在 |
-| `invalid` | 存在配置但无法构造任何可用 Node（含 Duplicate ID 等结构性冲突） |
+| `invalid` | 存在结构性冲突（Duplicate ID 等）或零可用 Node；**禁止服务**（`ready=false`，请求返回 500） |
 | `degraded` | 部分 Node 无效但仍可服务 |
 | `ready` | 全部声明节点可用 |
 
@@ -158,11 +158,12 @@ Circuit 是连续失败状态机（非滑动窗口）：CLOSED →(连续 3 次 
 | `STREAM_IDLE_TIMEOUT_MS` | 120000 (10s–600s) | 流式空闲超时 |
 | `RATE_LIMIT_COOLDOWN_MS` | 60000 (1s–600s) | 无 Retry-After 时的 429 冷却 |
 | `AUTH_FAIL_COOLDOWN_MS` | 3600000 (1min–7d) | 401/403 凭据冷却 |
+| `FAILOVER_BUDGET_MS` | 180000 (1s–900s) | 整请求故障转移总预算；到点停止轮转并返回 504 |
 | `ALLOWED_ORIGIN` | 未设置 | 未设置时 CORS 完全关闭；设置具体 origin 或 `*` 开启 |
-| `EXPOSE_UPSTREAM_INFO` | false | true 时在诊断中暴露上游 host/path |
+| `EXPOSE_UPSTREAM_INFO` | false | true 时在响应/失败中暴露 node id、tier 与逐次尝试详情；默认保持客户端拓扑安全（只暴露 attempts 计数与聚合 `failure_kinds`） |
 | `FAKE_STREAM_PROTECTION` | false | 非 stream 请求转上游流式再重组 |
 | `ALLOW_INSECURE_HTTP_UPSTREAM` | false | 允许 http:// 上游（不推荐） |
-| `MODELS_CONFIG` | — | `{ "逻辑模型": { "policy": "策略名" } }` |
+| `MODELS_CONFIG` | — | 即 **Model Registry**：`{ "逻辑模型": { "policy", "capabilities", "reasoning_efforts" } }` |
 | `POLICIES_CONFIG` | — | `{ "策略名": { "max_attempts": 5 } }` |
 | `LOG_LEVEL` | info | none/error/info/debug |
 
@@ -170,14 +171,14 @@ Circuit 是连续失败状态机（非滑动窗口）：CLOSED →(连续 3 次 
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/` | 公开首页（智能边缘网关入口；浏览器） |
+| GET | `/` | 公开服务入口页（Smart AI Gateway；浏览器） |
 | GET | `/version` | 版本信息（公开，仅品牌与版本号） |
 | GET | `/health` `/metrics` `/v1/models` | 诊断端点（需鉴权） |
 | POST | `/v1/chat/completions` | OpenAI Chat Completions |
 | POST | `/v1/responses` | OpenAI Responses（Codex / OpenCode 兼容，含流式事件、reasoning、function_call） |
 | POST | `/v1/messages` `/v1/messages/count_tokens` | Anthropic Messages |
 
-`/v1/models` 除逻辑模型名单外，还会为每个逻辑模型返回追加的能力元数据（`apiBackend`、`protocols`、`supports_reasoning_effort`、`reasoning_efforts`、`supports_tools`、`supports_vision`、`supports_stream`），来源是节点 Provider Profile，而非模型名猜测；这些追加字段向后兼容。
+`/v1/models` 除逻辑模型名单外，还会为每个逻辑模型返回追加的能力元数据（`apiBackend`、`api_backends`、`protocols`、`supports_reasoning_effort`、`reasoning_efforts`、`supports_tools`、`supports_vision`、`supports_stream`）。**能力来源是 Model Registry**（`MODELS_CONFIG`），默认保守（tools/reasoning/vision=false，仅 stream=true），只有显式声明才为 true；`apiBackend` 在多后端时为 `mixed` 并附 `api_backends` 数组。这些追加字段向后兼容。
 
 ## 安全模型
 
@@ -186,7 +187,7 @@ Circuit 是连续失败状态机（非滑动窗口）：CLOSED →(连续 3 次 
 - 终结错误的响应携带 `x-should-retry: false`（429/503 除外，仍按 Retry-After 重试），避免 Codex / Claude 客户端盲重试而重复执行工具。
 - 上游仅允许 `https://`（可显式放开 http），`redirect: 'manual'` 禁止带凭据跟随重定向。
 - Credential 永不出现在任何响应、日志或诊断端点中。
-- 平台层防护建议使用 Cloudflare WAF / Rate Limiting Rules（以 [官方文档](https://developers.cloudflare.com/waf/) 当前能力为准），Worker 内不维护全局限流状态。
+- 平台层防护建议使用 Cloudflare WAF / Rate Limiting Rules（以[官方文档](https://developers.cloudflare.com/waf/) 当前能力为准）。可选绑定 `QUOTA_RATE_LIMITER`（Cloudflare Rate Limiting）做**按位置（per-PoP）**的额外分布式限流——注意它按 Cloudflare location 局部计数、permissive，**不是严格的全局/账户配额**，精确的每节点计数仍由本地 `limits.rpm`（hard）负责。
 
 ## 性能
 
