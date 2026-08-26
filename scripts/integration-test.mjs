@@ -643,8 +643,8 @@ await test('public home is served but never leaks internal diagnostics when degr
   }), env, {});
   assert.equal(res.status, 200);
   const html = await res.text();
-  // Public homepage content only: title, topic, model chip with public status.
-  assert.match(html, /智能边缘网关/);
+  // Public homepage content only: brand once, topic, model chip with public status.
+  assert.match(html, /Smart AI Gateway/);
   assert.match(html, /一个入口，多个模型/);
   assert.match(html, /general-air/);
   assert.match(html, /可用/);
@@ -778,7 +778,7 @@ await test('public home renders when secrets are missing and leaks no internals'
   }), env, {});
   assert.equal(res.status, 200);
   const html = await res.text();
-  assert.match(html, /智能边缘网关/);
+  assert.match(html, /Smart AI Gateway/);
   assert.match(html, /OPENAI_BASE_URL/);
   assert.ok(!html.includes('NODE_SECRETS_XX'), 'must not leak binding internals');
   assert.ok(!html.includes('未绑定'), 'must not leak binding state');
@@ -798,7 +798,7 @@ await test('public home renders on malformed config without leaking diagnostics'
   }), env, {});
   assert.equal(res.status, 200);
   const html = await res.text();
-  assert.match(html, /智能边缘网关/);
+  assert.match(html, /Smart AI Gateway/);
   assert.ok(!html.includes('valid JSON'), 'must not leak config diagnostics');
   assert.ok(!html.includes('half'), 'must not leak node id');
   assert.ok(!html.includes('已绑定'), 'must not leak binding state');
@@ -816,7 +816,7 @@ await test('public home shows degraded status when all serving nodes are cooling
   assert.equal(res.status, 200);
   const html = await res.text();
   assert.match(html, /general-air/);
-  assert.match(html, /降级/);
+  assert.match(html, /波动/);
   assert.ok(!html.includes('可用'), 'must not claim available when cooling');
 });
 
@@ -846,7 +846,7 @@ await test('public home model hint falls back to placeholder when nothing is ava
   }), env, {});
   assert.equal(res.status, 200);
   const html = await res.text();
-  assert.match(html, /OPENAI_MODEL=&lt;your-model&gt;/, 'must render an escaped placeholder');
+  assert.match(html, /OPENAI_MODEL=air/, 'must fall back to the conventional default model');
 });
 
 // ---- Information exposure (P1) ---------------------------------------------
@@ -1009,6 +1009,48 @@ await test('/version is public and exposes only branding, no node/config topolog
   assert.ok(!serialized.includes('nodes_total') && !serialized.includes('nodes_usable')
     && !serialized.includes('configuration') && !serialized.includes('status'),
   'public /version must not expose configuration/topology');
+});
+
+await test('public home: brand & GitHub once, 通用/编程 grouped, no protocol or version leak', async () => {
+  resetMock();
+  const env = makeEnv({
+    tier1: [basicNode('g1', { models: {} })], // wildcard serves all registry models
+    secrets: { g1: 'k' },
+    extraEnv: {
+      MODELS_CONFIG: JSON.stringify({
+        air: { policy: 'fast' },
+        max: { policy: 'fast' },
+        'code-air': { policy: 'fast' },
+        'code-max': { policy: 'fast' },
+      }),
+    },
+  });
+  const res = await worker.fetch(new Request('https://gateway.example.com/', {
+    headers: { accept: 'text/html' },
+  }), env, {});
+  assert.equal(res.status, 200);
+  const html = await res.text();
+  // Brand only in the header; never repeated in body.
+  assert.equal(html.split('Smart AI Gateway').length - 1, 1, 'Smart AI Gateway must appear exactly once');
+  // GitHub only in the header (footer clone removed).
+  assert.equal(html.split('github.com').length - 1, 1, 'GitHub must appear exactly once');
+  // Structure: hero -> API -> grouped models (通用 then 编程) -> 快速接入.
+  assert.ok(html.indexOf('一个入口，多个模型') < html.indexOf('API 地址'));
+  assert.ok(html.indexOf('通用') < html.indexOf('编程'), '通用 group must precede 编程');
+  assert.ok(html.indexOf('编程') < html.indexOf('快速接入'));
+  // Group placement: air/max under 通用, code-air/code-max under 编程, never mixed.
+  const generalBlock = html.slice(html.indexOf('通用'), html.indexOf('编程'));
+  const programBlock = html.slice(html.indexOf('编程'), html.indexOf('快速接入'));
+  assert.match(generalBlock, /air/);
+  assert.match(generalBlock, /max/);
+  assert.ok(!generalBlock.includes('code-air'), 'code- models must not leak into 通用');
+  assert.match(programBlock, /code-air/);
+  assert.match(programBlock, /code-max/);
+  assert.ok(!programBlock.includes('>air<'), 'non-code models must not leak into 编程');
+  // No protocol note, no version, no old brand in the body.
+  assert.ok(!html.includes('OpenAI 兼容协议'), 'must not show protocol note');
+  assert.ok(!html.includes('v1.2.0'), 'must not show the version');
+  assert.ok(!html.includes('智能边缘网关'), 'must not carry the old brand');
 });
 
 if (!process.exitCode) console.log(`\nintegration tests passed (${passed}).`);
