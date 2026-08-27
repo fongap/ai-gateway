@@ -42,7 +42,9 @@ export function classifyUpstreamStatus(status, headers, env, now = Date.now()) {
   }
   if (status === 404) {
     // Usually "model not found on this node" -> mapping problem, not an outage.
-    return { kind: KIND.MODEL_MISSING, action: 'rotate', cooldownMs: 5_000, counted: false };
+    // The cooldown is applied to the (node, model) PAIR only, so a misconfigured
+    // model on one node never takes the node's other models (or siblings) down.
+    return { kind: KIND.MODEL_MISSING, action: 'rotate', cooldownMs: 5_000, counted: false, modelScoped: true };
   }
   if (status === 408 || status === 425 || status === 409) {
     return { kind: KIND.SERVER, action: 'rotate', cooldownMs: 0, counted: true };

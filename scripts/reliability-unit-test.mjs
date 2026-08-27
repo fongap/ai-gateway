@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import {
   acquireSlot, peekAvailability, recordSuccess, recordFailure, recordNeutralEnd,
   getNodeState, getCooldownRemainingMs, applyHealthPenalty,
+  rollbackRpmBucket, rpmUsage,
   CIRCUIT_FAILURE_THRESHOLD, CIRCUIT_OPEN_MS,
 } from '../src/reliability/node-state.js';
 import { parseRetryAfterMs } from '../src/config/timeouts.js';
@@ -225,6 +226,51 @@ await test('half-open probe -> counted failure releases the probe and reopens th
   assert.equal(s.circuitState, 'open', 'counted probe failure must reopen the circuit');
   tick(CIRCUIT_OPEN_MS + 1);
   assert.equal(peekAvailability(id, now + 1), 'probe', 'node must be probe-ready again after the open period');
+});
+
+await test('rollbackRpmBucket returns a pre-dispatch reservation without touching post-dispatch charges', async () => {
+  const id = 'rpm-rb';
+  // acquireSlot charges the current-minute RPM bucket.
+  assert.ok(acquireSlot(id, now));
+  assert.equal(rpmUsage(id, now), 1);
+  assert.equal(getNodeState(id).activeRequests, 1);
+  // Pre-dispatch neutral: release slot AND roll back the bucket.
+  recordNeutralEnd(id);
+  rollbackRpmBucket(id, now);
+  assert.equal(getNodeState(id).activeRequests, 0);
+  assert.equal(rpmUsage(id, now), 0, 'pre-dispatch reservation must be returned to the bucket');
+
+  // A real dispatched attempt: acquire -> success. The bucket stays charged.
+  assert.ok(acquireSlot(id, now));
+  recordSuccess(id, 5, now);
+  assert.equal(rpmUsage(id, now), 1, 'a dispatched attempt must keep its RPM charge');
+
+  // Excess rollbacks floor at 0 and never go negative.
+  assert.ok(acquireSlot(id, now)); // count: 1 -> 2
+  rollbackRpmBucket(id, now); rollbackRpmBucket(id, now); rollbackRpmBucket(id, now); rollbackRpmBucket(id, now);
+  assert.equal(rpmUsage(id, now), 0, 'rollback floors at 0 and never goes negative');
+});
+
+await test('rollbackRpmBucket is a no-op once the minute window has rolled over', async () => {
+  const id = 'rpm-rb2';
+  // Reservation in the current minute, then the minute rolls over with no new
+  // acquire in between. The stale bucket must not be touched: a fresh acquire
+  // in the new minute must start at 1, not be pre-charged by the old rollback.
+  assert.ok(acquireSlot(id, now));
+  assert.equal(rpmUsage(id, now), 1);
+  recordNeutralEnd(id);
+  tick(61_000);
+  rollbackRpmBucket(id, now); // stale bucket -> must be a no-op
+  assert.ok(acquireSlot(id, now));
+  assert.equal(rpmUsage(id, now), 1, 'cross-minute rollback must not charge down the new bucket');
+});
+
+await test('rollbackRpmBucket never fabricates a bucket for a node that never acquired', async () => {
+  const id = 'rpm-rb3';
+  rollbackRpmBucket(id, now); // no prior acquire
+  assert.equal(rpmUsage(id, now), 0, 'rollback must not create a bucket from nothing');
+  assert.ok(acquireSlot(id, now));
+  assert.equal(rpmUsage(id, now), 1, 'first real acquire starts the counter at 1, not 0 or negative');
 });
 
 if (!process.exitCode) console.log(`reliability unit tests passed (${passed}).`);

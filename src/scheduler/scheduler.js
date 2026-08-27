@@ -15,7 +15,7 @@
 // instead of hammering one node until it rate-limits — 429 prevention rather
 // than 429 reaction.
 
-import { peekAvailability, acquireSlot, getNodeState, rpmUsage } from '../reliability/node-state.js';
+import { peekAvailability, acquireSlot, getNodeState, rpmUsage, isModelCooling } from '../reliability/node-state.js';
 import { servesModel } from '../config/registry.js';
 
 export function supportsModel(node, logicalModel) {
@@ -62,6 +62,9 @@ export function pickCandidate(tierNodes, requestedModel, attempted, now = Date.n
     if (attempted.has(node.id)) continue;
     if (!supportsModel(node, requestedModel)) continue;
     if (peekAvailability(node.id, now) === 'no') continue;
+    // A (node, model) pair in model_missing cooldown is skipped without
+    // disabling the node for its other models.
+    if (isModelCooling(node.id, requestedModel, now)) continue;
     const s = getNodeState(node.id);
     if (s.activeRequests >= node.limits.concurrency) continue;
     if (underRpmCap(node, now)) {
@@ -95,6 +98,7 @@ export function tierHasDeferredCapacity(tierNodes, requestedModel, attempted, no
     if (attempted.has(node.id)) continue;
     if (!supportsModel(node, requestedModel)) continue;
     if (peekAvailability(node.id, now) === 'no') continue;
+    if (isModelCooling(node.id, requestedModel, now)) continue;
     const s = getNodeState(node.id);
     if (s.activeRequests >= node.limits.concurrency) return true;
     if (isHardRpmExhausted(node, now)) return true;

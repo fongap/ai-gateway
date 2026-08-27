@@ -38,7 +38,22 @@ function installMockFetch() {
     const handler = routeHandlers[url.hostname];
     if (!handler) throw new Error(`no mock upstream for ${url.hostname}`);
     if (init?.body) upstreamCalls.push({ host: url.hostname });
-    return handler(reqFor(url, init));
+    const signal = init?.signal;
+    // If the caller aborted before we even dispatched, surface it immediately
+    // (mirrors real fetch semantics: a pre-aborted signal rejects the fetch).
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    const res = handler(reqFor(url, init));
+    // Wire the abort signal into the upstream stream so a mid-stream client
+    // abort actually errors the body the gateway is pumping — without this the
+    // abort never reaches the streaming path and the slot only releases via
+    // the normal completion path (the "fake test" bug).
+    if (signal && res.body) {
+      const upstream = res.body;
+      const onAbort = () => { try { upstream.cancel(); } catch { /* already closed */ } };
+      if (signal.aborted) onAbort();
+      else signal.addEventListener('abort', onAbort, { once: true });
+    }
+    return res;
   };
 }
 function reqFor(url, init) {
@@ -62,11 +77,12 @@ const basicNode = (id, extra = {}) => ({
   id, provider: 'mock', base_url: `https://${id}.example.com/v1`,
   models: { 'general-air': 'up-model' }, ...extra,
 });
-function chatRequest(body, key = ACCESS_KEY) {
+function chatRequest(body, key = ACCESS_KEY, init = {}) {
   return new Request('https://gateway.example.com/v1/chat/completions', {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
     body: JSON.stringify(body),
+    signal: init.signal,
   });
 }
 function jsonUpstream(data, status = 200, headers = {}) {
@@ -212,10 +228,17 @@ await test('S6 client abort mid-stream: releases slot, no failure penalty', asyn
     },
   }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
   const env = makeEnv({ tier1: [basicNode('ab1')], secrets: { ab1: 'k' } });
-  const resPromise = worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }, ACCESS_KEY), env, {});
-  ac.abort();
+  const resPromise = worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }, ACCESS_KEY, { signal: ac.signal }), env, {});
   const res = await resPromise;
-  await res.text().catch(() => {});
+  // Wait for the first streamed chunk to reach the client, THEN abort mid-stream
+  // (before [DONE]). This makes the abort genuinely mid-stream rather than firing
+  // before the guard has even committed the first event.
+  const reader = res.body.getReader();
+  await reader.read();
+  reader.releaseLock();
+  ac.abort();
+  await res.body.cancel().catch(() => {});
+  await new Promise((r) => setTimeout(r, 10));
   const s = getNodeState('ab1');
   assert.equal(s.activeRequests, 0, 'abort must release the slot');
   assert.equal(s.totalFailures, 0, 'abort is neutral, not a failure');
@@ -322,6 +345,55 @@ await test('S10 node isolation: a circuit-open node leaves siblings serving', as
   const aCallsAfter = upstreamCalls.filter((c) => c.host === 'cir-a.example.com').length;
   assert.equal(aCallsAfter, aCalls, 'open-circuit node must not be re-contacted');
   assertNoLeaks(['cir-a', 'cir-b', 'cir-c']);
+});
+
+// ---- S11: fallback reserve keeps Tier 2 reachable when Tier 1 is wide ----
+// A Tier 1 of many failing free keys must NOT eat the whole attempt budget:
+// the default fallbackReservePerTier=1 holds back one attempt for every
+// lower tier that can still serve the model, so the paid Tier 2 always gets
+// a turn. With maxAttempts=5 and Tier 2 capable, Tier 1 is capped at 4
+// attempts and Tier 2 is reached.
+await test('S11 fallback reserve: a wide failing Tier 1 cannot starve Tier 2', async () => {
+  resetMock();
+  for (const id of ['fb1', 'fb2', 'fb3', 'fb4', 'fb5', 'fb6']) {
+    routeHandlers[`${id}.example.com`] = () => jsonUpstream({}, 503);
+  }
+  routeHandlers['paid.example.com'] = () => jsonUpstream(okCompletion);
+  const env = makeEnv({
+    tier1: ['fb1', 'fb2', 'fb3', 'fb4', 'fb5', 'fb6'].map((id) => basicNode(id, { limits: { concurrency: 20 } })),
+    tier2: [basicNode('paid', { limits: { concurrency: 20 } })],
+    secrets: { fb1: 'k', fb2: 'k', fb3: 'k', fb4: 'k', fb5: 'k', fb6: 'k', paid: 'k' },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 200, 'Tier 2 must serve — fallback reserve kept it reachable');
+  const tier1Calls = upstreamCalls.filter((c) => c.host.endsWith('.example.com') && c.host.startsWith('fb')).length;
+  const tier2Calls = upstreamCalls.filter((c) => c.host === 'paid.example.com').length;
+  assert.equal(tier2Calls, 1, 'paid Tier 2 node must be contacted exactly once');
+  assert.equal(tier1Calls, 4, 'Tier 1 must be capped at maxAttempts - reserve (4), not eat all 5');
+  assertNoLeaks(['fb1', 'fb2', 'fb3', 'fb4', 'fb5', 'fb6', 'paid']);
+});
+
+// ---- S12: fallback_reserve_per_tier=0 restores the original behavior -----
+// The config knob is an escape hatch: with 0 reservation Tier 1 may consume
+// the entire budget and Tier 2 is never reached (the original starvation
+// behavior). This proves the default is what actually fixes the bug.
+await test('S12 reserve=0 disables reservation: Tier 1 eats the budget, Tier 2 starves', async () => {
+  resetMock();
+  for (const id of ['nb1', 'nb2', 'nb3', 'nb4', 'nb5', 'nb6']) {
+    routeHandlers[`${id}.example.com`] = () => jsonUpstream({}, 503);
+  }
+  routeHandlers['paid2.example.com'] = () => jsonUpstream(okCompletion);
+  const env = makeEnv({
+    tier1: ['nb1', 'nb2', 'nb3', 'nb4', 'nb5', 'nb6'].map((id) => basicNode(id, { limits: { concurrency: 20 } })),
+    tier2: [basicNode('paid2', { limits: { concurrency: 20 } })],
+    secrets: { nb1: 'k', nb2: 'k', nb3: 'k', nb4: 'k', nb5: 'k', nb6: 'k', paid2: 'k' },
+    extraEnv: { POLICIES_CONFIG: '{"default":{"max_attempts":5,"fallback_reserve_per_tier":0}}' },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 502, 'with reserve=0 Tier 1 consumes the budget and the request fails');
+  const tier2Calls = upstreamCalls.filter((c) => c.host === 'paid2.example.com').length;
+  assert.equal(tier2Calls, 0, 'Tier 2 must NEVER be reached when reservation is disabled');
+  assertNoLeaks(['nb1', 'nb2', 'nb3', 'nb4', 'nb5', 'nb6', 'paid2']);
 });
 
 if (!process.exitCode) console.log(`\nstress tests passed (${passed}).`);

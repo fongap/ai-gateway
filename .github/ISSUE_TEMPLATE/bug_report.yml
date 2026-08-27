@@ -13,7 +13,7 @@ body:
     attributes:
       label: Gateway version
       description: Open the public `/version` endpoint and provide only the version number.
-      placeholder: 1.2.1
+      placeholder: 1.2.2
     validations:
       required: true
 

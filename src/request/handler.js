@@ -21,7 +21,7 @@ import { loadPoliciesConfig, getPolicy } from '../config/policies.js';
 import { getLimits } from '../config/timeouts.js';
 import { pickCandidate, supportsModel } from '../scheduler/scheduler.js';
 import {
-  recordSuccess, recordFailure, recordNeutralEnd,
+  recordSuccess, recordFailure, recordNeutralEnd, rollbackRpmBucket, recordModelMissing,
   applyHealthPenalty,
 } from '../reliability/node-state.js';
 import {
@@ -183,10 +183,16 @@ export async function handleRequest(request, env, ctx) {
     }
   }
 
-  const state = { attempted: new Set(), attempts: [], totalAttempts: 0, failureKinds: {}, logger, maxAttempts: policy.maxAttempts };
+  const state = { attempted: new Set(), attempts: [], totalAttempts: 0, failureKinds: {}, logger, maxAttempts: policy.maxAttempts, requestedModel };
 
   for (const tierNumber of TIER_ORDER) {
-    while (state.totalAttempts < policy.maxAttempts) {
+    // Fallback reserve: budget held back for each LOWER tier that can still
+    // serve this model, so a wide Tier 1 of failing free keys cannot eat the
+    // whole attempt budget and starve the paid fallback tiers. Recomputed per
+    // tier (not per attempt) because lower-tier candidates are never attempted
+    // until we reach them, so their "still has a chance" status is stable.
+    const reserve = fallbackReserve(tiers, tierNumber, requestedModel, state.attempted, policy.fallbackReservePerTier);
+    while (state.totalAttempts + reserve < policy.maxAttempts) {
       // Failover budget gate: before preparing a NEW attempt, stop if the
       // request has already consumed the whole budget. Never keep hammering
       // upstreams once the client has waited ~FAILOVER_BUDGET_MS overall.
@@ -207,6 +213,25 @@ export async function handleRequest(request, env, ctx) {
   }
 
   return buildExhaustedResponse(request, env, route, requestId, requestedModel, state, tiers, exposeUpstreamInfo);
+}
+
+// Budget held back for each lower tier that can still serve `requestedModel`
+// with a node not already attempted this request. A tier with no capable
+// candidate left does not get a reservation (it would only waste budget).
+// `reservePerTier` of 0 disables reservation and restores the original
+// "current tier may consume the whole budget" behavior.
+function fallbackReserve(tiers, currentTierNumber, requestedModel, attempted, reservePerTier) {
+  if (!reservePerTier) return 0;
+  const idx = TIER_ORDER.indexOf(currentTierNumber);
+  if (idx < 0) return 0;
+  let reserve = 0;
+  for (let i = idx + 1; i < TIER_ORDER.length; i++) {
+    const t = TIER_ORDER[i];
+    const hasUntriedCapable = tiers[t]?.some((n) =>
+      supportsModel(n, requestedModel) && !attempted.has(n.id));
+    if (hasUntriedCapable) reserve += reservePerTier;
+  }
+  return reserve;
 }
 
 // ---- One attempt against one node -----------------------------------------
@@ -234,7 +259,7 @@ async function attemptNode(c) {
   try {
     targetUrl = buildTargetUrl(node.baseUrl, '/v1/chat/completions');
   } catch {
-    return rotateWithNeutralEnd(state, node, 'invalid_base_url');
+    return rotateWithNeutralEnd(state, node, 'invalid_base_url', { preDispatch: true });
   }
 
   // ---- Optional distributed rate shaping (Cloudflare Rate Limiting) ---------
@@ -251,13 +276,18 @@ async function attemptNode(c) {
     try {
       const verdict = await env.QUOTA_RATE_LIMITER.limit({ key: node.id });
       if (verdict && verdict.success === false) {
-        // Distributed-limit denied: not the node's fault — no failure/cooldown,
-        // just move on to the next candidate.
+        // Distributed-limit denied: the request never reached an upstream, so
+        // it must NOT consume the upstream attempt budget (maxAttempts) —
+        // otherwise a Tier 1 of CF-denied free keys could starve every fallback
+        // tier without ever contacting a provider. It also must not charge the
+        // node's local RPM: release the slot AND roll back the RPM reservation
+        // acquireSlot just made. Mark the node attempted so it is not re-picked
+        // this request; the tier drains via `attempted` rather than totalAttempts.
         state.attempted.add(node.id);
-        state.totalAttempts++;
         recordNeutralEnd(node.id);
+        rollbackRpmBucket(node.id);
         noteFailure(state, 'rate_limit_global');
-        state.logger.info(`attempt ${state.totalAttempts}/${state.maxAttempts} node=${node.id} kind=rate_limit_global status=429`);
+        state.logger.info(`attempt ${state.totalAttempts}/${state.maxAttempts} node=${node.id} kind=rate_limit_global status=429 (pre-dispatch, budget not charged)`);
         state.attempts.push({ attempt: state.totalAttempts, node_id: node.id, status: 429, kind: 'rate_limit_global' });
         return { rotate: true };
       }
@@ -541,10 +571,16 @@ function upstreamModelOf(node, logicalModel) {
   return node.models[logicalModel] || logicalModel;
 }
 
-function rotateWithNeutralEnd(state, node, reason) {
+function rotateWithNeutralEnd(state, node, reason, { preDispatch = false } = {}) {
   state.attempted.add(node.id);
   state.totalAttempts++;
   recordNeutralEnd(node.id);
+  // Pre-dispatch neutrals (invalid base URL, etc.) never reached an upstream,
+  // so the RPM reservation acquireSlot made must be returned to the bucket —
+  // otherwise a structurally broken node silently burns its own per-minute RPM
+  // quota on traffic it never sent. Post-dispatch neutrals (200-with-non-json)
+  // keep the charge: the upstream WAS contacted.
+  if (preDispatch) rollbackRpmBucket(node.id);
   noteFailure(state, reason);
   state.logger.info(`attempt ${state.totalAttempts}/${state.maxAttempts} node=${node.id} kind=${reason} status=0`);
   state.attempts.push({ attempt: state.totalAttempts, node_id: node.id, status: 0, kind: reason });
@@ -563,7 +599,12 @@ function recordOutcome(state, node, classification, latencyMs, diagnostic, expos
   state.attempted.add(node.id);
   state.totalAttempts++;
 
-  if (classification.action === 'neutral') {
+  if (classification.modelScoped) {
+    // A 404 "model not found" is a (node, model) mapping mismatch, not a node
+    // health issue: cool the PAIR only, leave the node healthy for its other
+    // models, do not penalize health, do not feed the circuit.
+    recordModelMissing(node.id, state.requestedModel, classification.cooldownMs || 0);
+  } else if (classification.action === 'neutral') {
     recordNeutralEnd(node.id);
   } else {
     applyHealthPenalty(node.id, classification.kind);

@@ -4,7 +4,7 @@
 // worker.fetch() against a mocked global fetch upstream.
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
-import { __resetAllStateForTests, getNodeState } from '../src/reliability/node-state.js';
+import { __resetAllStateForTests, getNodeState, rpmUsage } from '../src/reliability/node-state.js';
 
 const ACCESS_KEY = 'test-access-key';
 
@@ -305,6 +305,7 @@ await test('global QUOTA_RATE_LIMITER deny rotates without counting a node failu
   assert.deepEqual(upstreamCalls.map((c) => c.host), ['gb-b.example.com'],
     'globally denied node must not receive the request');
   assert.equal(getNodeState('gb-a').totalFailures, 0, 'global deny is not a node failure');
+  assert.equal(rpmUsage('gb-a'), 0, 'pre-dispatch deny must roll back the RPM reservation');
 });
 
 await test('saturation returns 503 with Retry-After instead of bare 429', async () => {
@@ -326,6 +327,44 @@ await test('saturation returns 503 with Retry-After instead of bare 429', async 
   assert.equal(await first.then((r) => r.status), 200);
   assert.equal(second.status, 503);
   assert.equal(second.headers.get('retry-after'), '1');
+});
+
+await test('Retry-After takes the min across blocking reasons, filtered by model', async () => {
+  // Three nodes; the requested model (code-pro) is served by only two of them.
+  //   cp-fast : serves code-pro, concurrency=1, slot held -> frees in ~1s
+  //   cp-rpm  : serves code-pro, hard RPM exhausted      -> ~50s window
+  //   air-cool: serves general-air ONLY, node cooldown 90s -> does NOT serve code-pro
+  // Requesting code-pro must yield Retry-After=1 (cp-fast's concurrency wait),
+  // NOT 50 (cp-rpm's RPM window) and NOT 90 (air-cool's unrelated cooldown).
+  resetMock();
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  routeHandlers['cp-fast.example.com'] = async () => { await gate; return jsonUpstream(okCompletion()); };
+  routeHandlers['cp-rpm.example.com'] = () => jsonUpstream(okCompletion());
+  routeHandlers['air-cool.example.com'] = () => jsonUpstream({}, 429, { 'retry-after': '90' });
+  const env = makeEnv({
+    tier1: [
+      { ...basicNode('cp-fast'), models: { 'code-pro': 'up-c' }, limits: { concurrency: 1 } },
+      { ...basicNode('cp-rpm'), models: { 'code-pro': 'up-c2' }, limits: { concurrency: 5, rpm: 1 } },
+      { ...basicNode('air-cool'), models: { 'general-air': 'up-a' } },
+    ],
+    secrets: { 'cp-fast': 'k', 'cp-rpm': 'k', 'air-cool': 'k' },
+  });
+  // Hold cp-fast's only concurrency slot.
+  const hold = worker.fetch(chatRequest({ model: 'code-pro', messages: [] }), env, {});
+  await new Promise((r) => setTimeout(r, 10));
+  // Exhaust cp-rpm's hard RPM (1 request fills the per-minute bucket).
+  await worker.fetch(chatRequest({ model: 'code-pro', messages: [] }), env, {});
+  // Cool air-cool with a 90s node cooldown (it does not serve code-pro anyway).
+  await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  // Now request code-pro: cp-fast saturated, cp-rpm RPM-exhausted, air-cool
+  // excluded (does not serve code-pro). Retry-After must be 1, the concurrency
+  // node's short wait — proving the min is taken and unrelated nodes are filtered.
+  const res = await worker.fetch(chatRequest({ model: 'code-pro', messages: [] }), env, {});
+  release();
+  assert.equal(res.status, 503);
+  assert.equal(res.headers.get('retry-after'), '1',
+    'Retry-After must be the concurrency wait (1s), not the RPM window (~50s) or an unrelated model cooldown (90s)');
 });
 
 await test('anthropic-route exhaustion errors are Anthropic-shaped', async () => {
@@ -364,6 +403,46 @@ await test('429 isolates the node; same-tier B serves; tier-2 untouched', async 
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.equal(res.status, 200);
   assert.deepEqual(upstreamCalls.map((c) => c.host), ['r-a.example.com', 'r-b.example.com']);
+});
+
+await test('404 model_missing cools only the (node, model) pair, not the whole node', async () => {
+  resetMock();
+  // One node serving TWO logical models. 'code-pro' is mis-mapped upstream
+  // (returns 404); 'general-air' is healthy. A 404 on code-pro must cool the
+  // (node, code-pro) PAIR only — the node must stay fully schedulable for
+  // general-air, with no node-level cooldown and no health penalty.
+  routeHandlers['mm1.example.com'] = async (req) => {
+    const body = JSON.parse(await req.text());
+    if (body.model === 'up-code') return jsonUpstream({}, 404);
+    return jsonUpstream(okCompletion());
+  };
+  const env = makeEnv({
+    tier1: [{ ...basicNode('mm1'), models: { 'code-pro': 'up-code', 'general-air': 'up-air' } }],
+    secrets: { mm1: 'k' },
+  });
+  const { getCooldownRemainingMs, getModelCooldownRemainingMs, getNodeState } = await import('../src/reliability/node-state.js');
+
+  // 1. code-pro -> upstream 404 -> (mm1, code-pro) pair cools, request fails
+  //    (no other code-pro node). The node itself is NOT cooled.
+  const healthBefore = getNodeState('mm1').healthScore;
+  const r1 = await worker.fetch(chatRequest({ model: 'code-pro', messages: [] }), env, {});
+  assert.equal(r1.status, 502, 'lone code-pro node 404ing yields 502 (no fallback)');
+  assert.equal(getCooldownRemainingMs('mm1'), 0, 'node-level cooldown must NOT be set by a model_missing 404');
+  assert.ok(getModelCooldownRemainingMs('mm1', 'code-pro') > 0, '(mm1, code-pro) pair must be cooling');
+  assert.equal(getNodeState('mm1').healthScore, healthBefore, 'model_missing must not penalize node health');
+
+  // 2. general-air on the SAME node must still serve immediately — the 404 on
+  //    code-pro did not take the node down.
+  const r2 = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(r2.status, 200, 'general-air on the same node must still serve after a code-pro 404');
+  assert.equal(upstreamCalls[upstreamCalls.length - 1].host, 'mm1.example.com', 'mm1 was reused for general-air');
+
+  // 3. Re-requesting code-pro must NOT re-contact mm1: the (mm1, code-pro)
+  //    pair is cooling. (Response status is the #6 Retry-After concern; here
+  //    we only assert the model-cooling pair is not re-dispatched.)
+  const callsBefore = upstreamCalls.length;
+  await worker.fetch(chatRequest({ model: 'code-pro', messages: [] }), env, {});
+  assert.equal(upstreamCalls.length, callsBefore, 'model-cooling (node, model) pair must not be re-dispatched');
 });
 
 await test('Retry-After seconds sets node cooldown window', async () => {
@@ -1061,7 +1140,7 @@ await test('/version is public and exposes only branding, no node/config topolog
   assert.equal(res.status, 200);
   const body = await res.json();
   assert.equal(body.name, 'ai-gateway');
-  assert.equal(body.version, '1.2.1');
+  assert.equal(body.version, '1.2.2');
   assert.equal(body.runtime, 'Cloudflare Workers');
   assert.ok(Array.isArray(body.protocols));
   const serialized = JSON.stringify(body);

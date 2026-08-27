@@ -13,8 +13,8 @@
 import { corsHeaders, shouldNotRetryHeaders, trimDiagnostic } from '../protocol/http.js';
 import { anthropicErrorTypeForStatus } from '../protocol/anthropic.js';
 import { responsesErrorResponse } from '../protocol/responses/index.js';
-import { getCooldownRemainingMs } from '../reliability/node-state.js';
-import { supportsModel, isHardRpmExhausted, rpmWindowRetryAfterSec, tierHasDeferredCapacity } from '../scheduler/scheduler.js';
+import { getCooldownRemainingMs, getModelCooldownRemainingMs, getNodeState } from '../reliability/node-state.js';
+import { supportsModel, isHardRpmExhausted, tierHasDeferredCapacity } from '../scheduler/scheduler.js';
 import { TIER_ORDER } from './router.js';
 
 // Unified gateway error: Anthropic-style for Anthropic routes, OpenAI
@@ -78,30 +78,30 @@ export function buildExhaustedResponse(request, env, route, requestId, requested
 
   // Distinguish WHY no node was available:
   //   saturated (all candidates busy at concurrency caps or hard-RPM exhausted)
-  //     -> 503 + Retry-After pointing at the RPM minute boundary when that is
-  //     the binding constraint, so bursty multi-agent clients back off instead
-  //     of hammering;
+  //     -> 503, so bursty multi-agent clients back off instead of hammering;
   //   cooling / circuit open -> 429 + the smallest remaining cooldown;
   //   real failures -> 502.
+  // Retry-After is the EARLIEST moment any node that serves `requestedModel`
+  // could accept the request again. Only model-serving nodes are considered
+  // (a node cooling for an unrelated model must not inflate the wait), and only
+  // currently-blocking nodes contribute; the min across blocking reasons is
+  // taken so a concurrency-saturated node (frees in ~1s) is not masked by an
+  // unrelated node's long RPM window (e.g. 50s).
+  const now = Date.now();
   let status;
   let message;
   let retryAfterSec;
   if (nothingAttempted) {
     const deferred = TIER_ORDER.some((t) =>
-      tierHasDeferredCapacity(tiers[t], requestedModel, state.attempted));
+      tierHasDeferredCapacity(tiers[t], requestedModel, state.attempted, now));
     if (deferred) {
       status = 503;
       message = 'All eligible nodes are at capacity. Retry shortly.';
-      retryAfterSec = rpmBoundRetryAfterSec(tiers, requestedModel, state.attempted);
     } else {
-      const remaining = Object.values(tiers).flat()
-        .map((n) => getCooldownRemainingMs(n.id))
-        .filter((v) => v > 0);
-      const minRemaining = remaining.length ? Math.min(...remaining) : 0;
       status = 429;
       message = 'All eligible nodes are temporarily unavailable (cooldown or circuit open).';
-      if (minRemaining > 0) retryAfterSec = Math.ceil(minRemaining / 1000);
     }
+    retryAfterSec = earliestBlockingRetryAfterSec(tiers, requestedModel, now);
   } else {
     // Terminal status is driven by the aggregated failure kinds, not by whatever
     // the last attempt happened to be. Otherwise a trailing 429 would mask a
@@ -109,10 +109,7 @@ export function buildExhaustedResponse(request, env, route, requestId, requested
     status = terminalStatus(state.failureKinds) ?? (last?.status === 429 ? 429 : 502);
     message = `All nodes failed for model "${requestedModel}".`;
     if (status === 429) {
-      const remaining = Object.values(tiers).flat()
-        .map((n) => getCooldownRemainingMs(n.id))
-        .filter((v) => v > 0);
-      if (remaining.length) retryAfterSec = Math.ceil(Math.min(...remaining) / 1000);
+      retryAfterSec = earliestBlockingRetryAfterSec(tiers, requestedModel, now);
     }
   }
 
@@ -129,14 +126,39 @@ export function buildExhaustedResponse(request, env, route, requestId, requested
     retryAfterSec ? { 'retry-after': String(retryAfterSec) } : undefined);
 }
 
-// Seconds to the next RPM minute when hard-RPM exhaustion is among the reasons
-// this request could not be served; otherwise the default short backoff.
-function rpmBoundRetryAfterSec(tiers, requestedModel, attempted) {
-  const rpmBlocked = TIER_ORDER.some((t) => tiers[t].some((n) =>
-    !attempted.has(n.id)
-    && supportsModel(n, requestedModel)
-    && isHardRpmExhausted(n)));
-  return rpmBlocked ? rpmWindowRetryAfterSec() : 1;
+// Earliest moment any node that serves `requestedModel` could accept the
+// request again, as a Retry-After in seconds. A node cooling for an unrelated
+// model, or a healthy idle node, never contributes — only nodes that actually
+// serve this model AND are currently blocking it. The min across blocking
+// reasons is returned so the shortest real wait wins.
+function earliestBlockingRetryAfterSec(tiers, requestedModel, now = Date.now()) {
+  let minMs = Infinity;
+  for (const t of TIER_ORDER) {
+    for (const node of tiers[t] ?? []) {
+      if (!supportsModel(node, requestedModel)) continue;
+      const wait = blockingWaitMs(node, requestedModel, now);
+      if (wait < minMs) minMs = wait;
+    }
+  }
+  if (!Number.isFinite(minMs)) return undefined;
+  return Math.max(1, Math.ceil(minMs / 1000));
+}
+
+// Per-node wait until this (node, requestedModel) pair could serve again.
+// Returns Infinity when the node is healthy & idle (not blocking). Node-level
+// cooldown (429/auth/circuit) wins over the model-scoped cooldown (404). Hard
+// RPM exhaustion is bounded by the remaining minute window; concurrency
+// saturation has no timer so it estimates ~1s (slots free as in-flight
+// requests complete).
+function blockingWaitMs(node, requestedModel, now) {
+  const nodeCd = getCooldownRemainingMs(node.id, now);
+  if (nodeCd > 0) return nodeCd;
+  const modelCd = getModelCooldownRemainingMs(node.id, requestedModel, now);
+  if (modelCd > 0) return modelCd;
+  if (isHardRpmExhausted(node, now)) return Math.max(1, 60_000 - (now % 60_000));
+  const s = getNodeState(node.id);
+  if (s.activeRequests >= node.limits.concurrency) return 1_000;
+  return Infinity;
 }
 
 export function buildClientErrorResponse(request, env, route, requestId, requestedModel, status, errorText, state, exposeUpstreamInfo) {

@@ -26,6 +26,7 @@ const LATENCY_EWMA_ALPHA = 0.3;
 const MAX_STATE_ENTRIES = 256;
 const CLEANUP_INTERVAL_MS = 30_000;
 const STALE_FAILURE_MS = 300_000; // consecutive failures older than 5 min idle no longer chain
+const MODEL_MISSING_COOLDOWN_MS = 5_000; // (node,model) cooldown for a 404 mapping mismatch
 
 // Per-node per-minute request counters (current UTC minute bucket only).
 // Feeds limits.rpm shaping: in hard mode (the default when rpm is configured)
@@ -54,6 +55,22 @@ export function rpmUsage(nodeId, now) {
   return bucket.count;
 }
 
+// Roll back a per-minute RPM reservation when an attempt NEVER reached an
+// upstream (distributed rate limiter denied, invalid base URL, etc.). Called
+// alongside recordNeutralEnd in those pre-dispatch paths so the isolate-local
+// RPM counter does not charge a node for traffic it never sent. Post-dispatch
+// neutral ends (client abort mid-stream, 200-with-non-json-body) must NOT call
+// this: the upstream was contacted and the RPM charge is legitimate.
+// If the minute window has rolled over since the reservation was made, the old
+// bucket is already gone (or will be pruned) and there is nothing to roll back
+// in the current window — the reservation aged out naturally.
+export function rollbackRpmBucket(nodeId, now = Date.now()) {
+  const bucket = rpmBuckets.get(nodeId);
+  if (bucket && bucket.minute === currentMinute(now)) {
+    bucket.count = Math.max(0, bucket.count - 1);
+  }
+}
+
 const nodeState = new Map();
 let lastCleanup = 0;
 
@@ -71,6 +88,11 @@ function createState() {
     totalSuccesses: 0,
     totalFailures: 0,
     lastUsedAt: 0,
+    // Per-logical-model cooldown map: a 404 "model not found" cools only the
+    // (node, model) pair, NOT the whole node. Other models on the same node
+    // stay fully schedulable. Node-level cooldownUntil above is for real node
+    // health issues (429/auth/server/circuit); model_missing never touches it.
+    modelCooldowns: new Map(),
   };
 }
 
@@ -170,6 +192,36 @@ export function recordNeutralEnd(nodeId) {
   recoverFromHalfOpen(s);
 }
 
+// Record a model_missing (404) outcome. The node answered, so a half-open probe
+// resolves the same way a 429/401 would (recover, become schedulable), but the
+// cooldown is applied to the (node, model) PAIR only — the node stays healthy
+// for every other model it serves. model_missing never counts toward the
+// circuit (a mapping mismatch is not a transient outage) and never penalizes
+// node health (it says nothing about the node's ability to serve other models).
+export function recordModelMissing(nodeId, model, cooldownMs = MODEL_MISSING_COOLDOWN_MS, now = Date.now()) {
+  const s = releaseAndReturn(nodeId);
+  if (cooldownMs > 0) {
+    s.modelCooldowns.set(model, now + cooldownMs);
+  }
+  recoverFromHalfOpen(s);
+}
+
+// True when this (node, model) pair is in a model_missing cooldown. Used by
+// the scheduler to skip the pair without disabling the whole node.
+export function isModelCooling(nodeId, model, now = Date.now()) {
+  const s = nodeState.get(nodeId);
+  if (!s?.modelCooldowns?.size) return false;
+  const until = s.modelCooldowns.get(model);
+  return until ? until > now : false;
+}
+
+export function getModelCooldownRemainingMs(nodeId, model, now = Date.now()) {
+  const s = nodeState.get(nodeId);
+  if (!s?.modelCooldowns?.size) return 0;
+  const until = s.modelCooldowns.get(model);
+  return until && until > now ? until - now : 0;
+}
+
 function releaseAndReturn(nodeId) {
   const s = getNodeState(nodeId);
   s.activeRequests = Math.max(0, s.activeRequests - 1);
@@ -223,6 +275,12 @@ function maybeCleanup(now) {
       s.cooldownUntil = 0;
       s.cooldownReason = null;
       s.healthScore = Math.min(HEALTH_MAX, s.healthScore + HEALTH_COOLDOWN_RECOVERY);
+    }
+    // Drop expired (node, model) cooldowns so the map cannot grow unboundedly.
+    if (s.modelCooldowns?.size) {
+      for (const [model, until] of s.modelCooldowns) {
+        if (until <= now) s.modelCooldowns.delete(model);
+      }
     }
     // "Consecutive" must be time-bounded: a failure yesterday and one today
     // are not consecutive. Decay the counter for idle nodes so old incidents

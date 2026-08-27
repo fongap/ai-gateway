@@ -8,9 +8,11 @@
 
 import { readEnv } from './env.js';
 
-const DEFAULT_POLICY = { maxAttempts: 5 };
+const DEFAULT_POLICY = { maxAttempts: 5, fallbackReservePerTier: 1 };
 const MIN_ATTEMPTS = 1;
 const MAX_ATTEMPTS = 8;
+const MIN_RESERVE = 0;
+const MAX_RESERVE = MAX_ATTEMPTS;
 
 let cachedEnv;
 let cachedPolicies;
@@ -27,10 +29,19 @@ export function loadPoliciesConfig(env) {
         for (const [name, config] of Object.entries(parsed)) {
           if (typeof name !== 'string' || !name.trim()) continue;
           const attempts = Number(config?.max_attempts);
+          const reserve = Number(config?.fallback_reserve_per_tier);
           policies[name.trim()] = {
             maxAttempts: Number.isFinite(attempts)
               ? Math.max(MIN_ATTEMPTS, Math.min(MAX_ATTEMPTS, Math.trunc(attempts)))
               : DEFAULT_POLICY.maxAttempts,
+            // Budget reserved for each LOWER tier that can still serve this
+            // model, so a wide Tier 1 of failing free keys cannot starve the
+            // paid fallback tiers. 0 restores the old "Tier 1 may eat the
+            // whole budget" behavior. Default 1 guarantees each remaining
+            // capable tier at least one attempt.
+            fallbackReservePerTier: Number.isFinite(reserve)
+              ? Math.max(MIN_RESERVE, Math.min(MAX_RESERVE, Math.trunc(reserve)))
+              : DEFAULT_POLICY.fallbackReservePerTier,
           };
         }
       }

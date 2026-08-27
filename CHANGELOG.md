@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.2.2 - 2026-08-27
+
+Scheduling-boundary hardening release. No new protocols, providers or features; this round closes four ways the scheduler could waste free quota or starve the paid fallback, and makes the failure response's Retry-After honest. These only matter once free nodes grow past a handful — at 6→15→20 keys the original budget and RPM accounting stops guaranteeing that every fallback tier ever gets a turn.
+
+### Fixed
+
+- **P0 — A wide failing Tier 1 can no longer eat the whole attempt budget.** The per-tier attempt loop previously shared one `maxAttempts` counter across all tiers, so six failing free Tier-1 nodes could consume all 5 attempts and Tier 2 / Tier 3 were never reached. Each lower tier that can still serve the requested model now has a reserved budget (`fallbackReservePerTier`, default 1, configurable via `POLICIES_CONFIG`'s `fallback_reserve_per_tier`; 0 restores the original behavior). Tier 1 is capped at `maxAttempts - reserve`, guaranteeing every capable fallback tier at least one attempt.
+- **P0 — A distributed-rate-limiter deny no longer consumes an upstream attempt or a local RPM charge.** When `QUOTA_RATE_LIMITER` denied a candidate, the attempt never reached an upstream but the code still incremented `totalAttempts` and left the `acquireSlot` RPM reservation in place. A node that was CF-denied on every free key could therefore starve the fallback budget AND exhaust its own per-minute RPM on traffic it never sent. The deny path now rolls back the RPM reservation (`rollbackRpmBucket`) and does not charge the attempt budget — it still marks the node `attempted` so the tier drains via the candidate set rather than the budget.
+- **P1 — `model_missing` (404) cools the (node, model) pair, not the whole node.** A 404 mapping mismatch previously set a node-level cooldown, taking the node's other models (and same-tier siblings) down for 5s. The runtime state now keeps a per-node `modelCooldowns` map; a 404 cools only that `(node, logicalModel)` pair via `recordModelMissing`, leaves node health and the circuit untouched, and `pickCandidate` skips the cooling pair while the same node still serves its other models. The 404 classification carries `modelScoped: true` so the handler routes it to the pair-level path.
+- **P1 — `Retry-After` is now the real earliest availability, filtered by model and blocking reason.** The exhausted-response cooldown scan previously read every node's node-level cooldown regardless of whether it served the requested model, and the saturated case returned the RPM minute window whenever any node was hard-RPM-exhausted — so a concurrency-saturated node (frees in ~1s) could be masked by an unrelated node's 50s RPM window. Retry-After is now the min across all model-serving, currently-blocking nodes (`earliestBlockingRetryAfterSec`): node cooldown → model cooldown → RPM window → ~1s concurrency estimate, and unrelated-model nodes never contribute.
+
+### Changed
+
+- **P1 — The S6 "client abort mid-stream" stress test is no longer a fake test.** `chatRequest` did not pass its `AbortController` signal to the `Request`, and the mock `fetch` ignored `init.signal`, so `ac.abort()` never reached the worker and S6 passed only because the stream completed normally. The signal is now wired through and the mock honors it; S6 aborts after the first event reaches the client, genuinely exercising the `trackStreamResponse` `cancel()` → `onNeutral` → `recordNeutralEnd` path. Confirmed: the gateway does release the slot neutrally on a real mid-stream client abort (via `track.js`, not the handler's pre-first-event `onClientAbort`, which detaches once the first event is committed).
+- The stress suite grew from 10 to 12 scenarios (S11 fallback-reserve guarantee, S12 `fallback_reserve_per_tier:0` escape hatch). The reliability unit tests grew by 3 `rollbackRpmBucket` contract cases; integration tests grew by the model_missing isolation case and the model-filtered Retry-After case.
+
 ## 1.2.1 - 2026-08-26
 
 Reliability hardening release. No new features; this round makes the limits, capability claims and health semantics actually mean what they say.
