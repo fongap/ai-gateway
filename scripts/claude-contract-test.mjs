@@ -144,6 +144,25 @@ await test('claude streaming emits message lifecycle events and hides upstream m
   assert.ok(!text.includes('up-model'));
 });
 
+await test('claude stream [DONE] without finish_reason finalizes cleanly (no half-open)', async () => {
+  resetMock();
+  // An OpenAI-compatible provider (e.g. a free key) ends with only [DONE] after
+  // the final content delta, never sending an explicit finish_reason chunk. The
+  // transform must still finalize into a complete message_stop lifecycle rather
+  // than emit an error (which Claude Code treats as a half-open stream + retry).
+  routeHandlers['cdt.example.com'] = () => sseResponse([textChunk('hi there'), doneEvent]);
+  const env = makeEnv({ tier1: [node('cdt')], secrets: { cdt: 'k' } });
+  const res = await worker.fetch(messagesRequest({ model: 'claude-x', max_tokens: 64, stream: true, messages: [{ role: 'user', content: 'hi' }] }), env, {});
+  assert.equal(res.status, 200);
+  const text = await res.text();
+  const types = [...text.matchAll(/event: (.+)/g)].map((m) => m[1]);
+  assert.ok(types.includes('content_block_delta'), 'content must be delivered');
+  assert.ok(types.includes('message_delta'), 'a message_delta must follow');
+  assert.ok(types.includes('message_stop'), 'the stream must finalize with message_stop');
+  assert.ok(!text.includes('"type":"error"'), 'no error event for a [DONE]-terminated content stream');
+  assert.match(text, /"stop_reason":"end_turn"/, 'a missing finish_reason maps to end_turn');
+});
+
 await test('claude thinking is preserved as a thinking block, not text', async () => {
   resetMock();
   routeHandlers['cth.example.com'] = () => sseResponse([reasoningChunk('think-'), reasoningChunk('ing'), textChunk('done'), finish(), doneEvent]);

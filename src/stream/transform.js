@@ -160,8 +160,13 @@ export function transformOpenAIStreamToAnthropic(upstream, requestedModel, reque
       const scanner = createSseScanner((data) => {
         if (finished) return;
         if (data === '[DONE]') {
-          if (finishReason === null) failStream('Upstream stream ended before a completion marker was received.');
-          else finalize();
+          // Some OpenAI-compatible providers never send an explicit
+          // finish_reason chunk before [DONE] (or send only [DONE] after the
+          // final content delta). A content-producing stream must still be
+          // finalized into a complete Anthropic lifecycle (message_stop) rather
+          // than failed — otherwise Claude Code sees a half-open stream and
+          // retries. A genuinely empty stream is caught inside finalize().
+          finalize();
           return;
         }
         let json;
@@ -182,6 +187,12 @@ export function transformOpenAIStreamToAnthropic(upstream, requestedModel, reque
           scanner.push(decoder.decode(value, { stream: true }));
         }
         if (!finished) scanner.flush();
+        // EOF without [DONE] and without finish_reason is genuinely ambiguous:
+        // after the first-event guard a mid-stream upstream death ALSO surfaces
+        // as a clean close, so a missing finish_reason is the transform's only
+        // signal that this was a truncation. Keep it a failure so node health
+        // accounting stays correct (the client already got whichever deltas were
+        // flushed before the abort).
         if (!finished && finishReason === null) failStream('Upstream stream ended before a completion marker was received.');
         else finalize();
       } catch (e) {
