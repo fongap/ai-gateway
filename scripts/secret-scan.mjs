@@ -16,6 +16,7 @@ const patterns = [
   ['Google API key', new RegExp('A' + 'Iza[A-Za-z0-9_-]{20,}', 'g')],
   ['Private key', new RegExp('BEGIN (?:RSA|OPENSSH|EC) PRIVATE KEY', 'g')],
   ['Cloudflare API token assignment', /CLOUDFLARE_API_TOKEN\s*=\s*["']?[A-Za-z0-9_-]{30,}/g],
+  ['AWS access key ID', /\bAKIA[0-9A-Z]{16}\b/g],
 ];
 
 const sensitiveNames = [/^\.dev\.vars$/, /^\.env(?:\..+)?$/, /^secrets.*\.json$/i, /^wrangler\.user\.jsonc$/, /^gateway-.*-secrets.*\.json$/i];

@@ -82,11 +82,13 @@ Concurrency cannot be coordinated globally without Durable Objects, which this p
 
 // POLICIES_CONFIG
 { "fast": { "max_attempts": 5 } }
+// optional per-tier budget: { "tier1": N, "tier2": N, "tier3": N } (0 disables a tier)
+{ "fast": { "max_attempts": 5, "tier_attempts": { "tier1": 3, "tier2": 1, "tier3": 1 } } }
 ```
 
 The **Model Registry** is the single source of truth for a logical model's capability (`capabilities.tools/reasoning/vision/stream`) and reasoning efforts. Node mapping only says *whether a node can serve the model*; the Provider Profile only says *how to talk to the upstream*. `/v1/models` does not derive capability from the provider profile.
 
-Tier order is fixed: tier-1 → tier-2 → tier-3. A lower tier is used only when the current tier has no eligible node for the request. `max_attempts` (default 5, clamp 1–8) bounds total attempts per request across all tiers.
+Tier order is fixed: tier-1 → tier-2 → tier-3. A lower tier is used only when the current tier yields no eligible candidate for the request. `max_attempts` (default 5, clamp 1–8) bounds total attempts per request across all tiers. Each tier additionally has its own attempt budget: by default `max_attempts` is split so every tier that actually holds a schedulable candidate (model supported, not cooling / circuit-open) gets at least one attempt and the surplus goes to the highest (most-preferred) schedulable tier — maximizing free/priority resource use while always keeping the paid fallback reachable and never silently starving an intermediate tier. `tier_attempts` explicitly overrides a tier's budget (`0` disables it).
 
 ### Recommended multi-key / multi-account layout
 

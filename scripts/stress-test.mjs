@@ -373,11 +373,11 @@ await test('S11 fallback reserve: a wide failing Tier 1 cannot starve Tier 2', a
   assertNoLeaks(['fb1', 'fb2', 'fb3', 'fb4', 'fb5', 'fb6', 'paid']);
 });
 
-// ---- S12: fallback_reserve_per_tier=0 restores the original behavior -----
-// The config knob is an escape hatch: with 0 reservation Tier 1 may consume
-// the entire budget and Tier 2 is never reached (the original starvation
-// behavior). This proves the default is what actually fixes the bug.
-await test('S12 reserve=0 disables reservation: Tier 1 eats the budget, Tier 2 starves', async () => {
+// ---- S12: tier_attempts override is honored (explicit per-tier budget) ----
+// POLICIES_CONFIG tier_attempts overrides the computed default per-tier budget.
+// Here Tier 1 is explicitly capped at 2 attempts even though it has 6 nodes, so
+// a healthy Tier 2 is reached without letting Tier 1 eat the whole budget.
+await test('S12 tier_attempts override: caps Tier 1 at 2 so Tier 2 serves', async () => {
   resetMock();
   for (const id of ['nb1', 'nb2', 'nb3', 'nb4', 'nb5', 'nb6']) {
     routeHandlers[`${id}.example.com`] = () => jsonUpstream({}, 503);
@@ -387,37 +387,70 @@ await test('S12 reserve=0 disables reservation: Tier 1 eats the budget, Tier 2 s
     tier1: ['nb1', 'nb2', 'nb3', 'nb4', 'nb5', 'nb6'].map((id) => basicNode(id, { limits: { concurrency: 20 } })),
     tier2: [basicNode('paid2', { limits: { concurrency: 20 } })],
     secrets: { nb1: 'k', nb2: 'k', nb3: 'k', nb4: 'k', nb5: 'k', nb6: 'k', paid2: 'k' },
-    extraEnv: { POLICIES_CONFIG: '{"default":{"max_attempts":5,"fallback_reserve_per_tier":0}}' },
+    extraEnv: { POLICIES_CONFIG: '{"default":{"max_attempts":5,"tier_attempts":{"tier1":2,"tier2":1}}}' },
   });
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-  assert.equal(res.status, 502, 'with reserve=0 Tier 1 consumes the budget and the request fails');
-  const tier2Calls = upstreamCalls.filter((c) => c.host === 'paid2.example.com').length;
-  assert.equal(tier2Calls, 0, 'Tier 2 must NEVER be reached when reservation is disabled');
+  assert.equal(res.status, 200, 'Tier 2 must serve when Tier 1 is capped by tier_attempts');
+  const tier1Calls = upstreamCalls.filter((c) => c.host.startsWith('nb')).length;
+  assert.equal(tier1Calls, 2, 'tier_attempts must cap Tier 1 at exactly 2 attempts');
+  assert.equal(upstreamCalls.filter((c) => c.host === 'paid2.example.com').length, 1, 'Tier 2 must be reached');
   assertNoLeaks(['nb1', 'nb2', 'nb3', 'nb4', 'nb5', 'nb6', 'paid2']);
 });
 
-// ---- S13: fallback reserve never starves the CURRENT tier to zero attempts ----
-// With a tiny budget (maxAttempts=2) and three capable tiers, the naive
-// reserve (tier-2 + tier-3 = 2) would make Tier 1's loop condition
-// `0 + 2 < 2` false — Tier 1 (highest priority) would get ZERO attempts.
-// The reserve is capped at maxAttempts-1 so Tier 1 always gets at least one.
-await test('S13 reserve is capped: a tiny budget cannot starve Tier 1 to zero attempts', async () => {
+// ---- S13: per-tier default splits budget fairly, no tier silently starved ----
+// With max_attempts=3 and three schedulable tiers (one node each), the default
+// gives every tier exactly one attempt. The middle tier must be reached (not
+// starved), and Tier 1 (highest priority) must be tried before it.
+await test('S13 per-tier default: each schedulable tier gets a share, middle tier reached', async () => {
   resetMock();
   routeHandlers['fe1.example.com'] = () => jsonUpstream({}, 503);
-  routeHandlers['fe2.example.com'] = () => jsonUpstream({}, 503);
-  routeHandlers['fe3.example.com'] = () => jsonUpstream(okCompletion);
+  routeHandlers['fe2.example.com'] = () => jsonUpstream(okCompletion);
+  routeHandlers['fe3.example.com'] = () => jsonUpstream({}, 503);
   const env = makeEnv({
     tier1: [basicNode('fe1', { limits: { concurrency: 20 } })],
     tier2: [basicNode('fe2', { limits: { concurrency: 20 } })],
     tier3: [basicNode('fe3', { limits: { concurrency: 20 } })],
     secrets: { fe1: 'k', fe2: 'k', fe3: 'k' },
-    extraEnv: { POLICIES_CONFIG: '{"default":{"max_attempts":2,"fallback_reserve_per_tier":1}}' },
+    extraEnv: { POLICIES_CONFIG: '{"default":{"max_attempts":3}}' },
   });
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.equal(res.status, 200, 'request must eventually be served');
-  const fe1Calls = upstreamCalls.filter((c) => c.host === 'fe1.example.com').length;
-  assert.ok(fe1Calls >= 1, 'Tier 1 must get at least one attempt despite the tiny budget');
+  assert.equal(upstreamCalls.filter((c) => c.host === 'fe1.example.com').length, 1, 'Tier 1 gets exactly 1 attempt');
+  assert.equal(upstreamCalls.filter((c) => c.host === 'fe2.example.com').length, 1, 'middle Tier 2 is reached (not starved)');
+  assert.equal(upstreamCalls.filter((c) => c.host === 'fe3.example.com').length, 0, 'Tier 3 never reached (served in Tier 2)');
   assertNoLeaks(['fe1', 'fe2', 'fe3']);
+});
+
+// ---- S14: availability-aware budget — an unusable lower tier gets no budget ----
+// Tier 2's only node is cooling (cooldown/circuit), so it is NOT a schedulable
+// candidate. Budget must NOT be reserved for it: Tier 1 should get the FULL
+// budget instead of being capped by an unusable fallback.
+await test('S14 availability-aware: a cooling Tier 2 node does not consume Tier 1 budget', async () => {
+  resetMock();
+  for (const id of ['a1', 'a2', 'a3', 'a4', 'a5', 'a6']) {
+    routeHandlers[`${id}.example.com`] = () => jsonUpstream({}, 503);
+  }
+  routeHandlers['cool2.example.com'] = () => jsonUpstream({ error: { message: 'rl' } }, 429, { 'retry-after': '120' });
+  const env = makeEnv({
+    tier1: ['a1', 'a2', 'a3', 'a4', 'a5', 'a6'].map((id) => basicNode(id, { limits: { concurrency: 20 } })),
+    tier2: [basicNode('cool2', { limits: { concurrency: 20 } })],
+    secrets: { a1: 'k', a2: 'k', a3: 'k', a4: 'k', a5: 'k', a6: 'k', cool2: 'k' },
+  });
+  // Warm-up: 4 Tier-1 attempts (default 2-schedulable-tier share), then the
+  // only Tier-2 node answers 429 and cools (retry-after 120s).
+  await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.ok(getNodeState('cool2').cooldownUntil > Date.now(), 'cool2 must be cooling after the warm-up');
+  // Second request: cool2 is cooling -> tier-2 is NOT schedulable -> Tier 1 gets
+  // the whole budget (5), never reserving an attempt for an unusable tier.
+  const callsBefore = upstreamCalls.length;
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  const newCalls = upstreamCalls.slice(callsBefore);
+  assert.equal(res.status, 502, 'Tier 1 exhausts the whole budget and no usable fallback exists');
+  assert.equal(newCalls.filter((c) => c.host.startsWith('a')).length, 5,
+    'Tier 1 gets the FULL budget when the only Tier-2 candidate is cooling');
+  assert.equal(newCalls.filter((c) => c.host === 'cool2.example.com').length, 0,
+    'a cooling Tier-2 node is never re-contacted');
+  assertNoLeaks(['a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'cool2']);
 });
 
 if (!process.exitCode) console.log(`\nstress tests passed (${passed}).`);

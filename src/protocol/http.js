@@ -110,11 +110,6 @@ function joinPath(left, right) {
   return `/${[a.replace(/^\/+/, ''), b].filter(Boolean).join('/')}`;
 }
 
-export function parseBearer(value) {
-  const raw = String(value || '').trim();
-  return raw.toLowerCase().startsWith('bearer ') ? raw.slice(7).trim() : raw;
-}
-
 export class BodyTooLargeError extends Error {
   constructor() {
     super('Request body exceeds limit.');

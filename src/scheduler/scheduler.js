@@ -106,6 +106,25 @@ export function tierHasDeferredCapacity(tierNodes, requestedModel, attempted, no
   return false;
 }
 
+// Availability-aware capacity check used to decide whether a LOWER tier deserves
+// an attempt budget. A tier "has a schedulable node" only when it actually holds
+// a candidate the scheduler could dispatch for this model right now — not merely
+// because a node is *configured* to support the model. A node that is cooling,
+// circuit-open, or in a model-missing cooldown is NOT schedulable and must not
+// cause budget to be reserved (that budget is better spent on the current tier).
+// Concurrency/RPM saturation is still counted as schedulable: that capacity is
+// "deferred" and will free up within the request's failover budget.
+export function tierHasSchedulableNode(tierNodes, requestedModel, attempted, now = Date.now()) {
+  for (const node of tierNodes) {
+    if (attempted.has(node.id)) continue;
+    if (!supportsModel(node, requestedModel)) continue;
+    if (peekAvailability(node.id, now) === 'no') continue;
+    if (isModelCooling(node.id, requestedModel, now)) continue;
+    return true;
+  }
+  return false;
+}
+
 // Health differences below this band are noise (one success = +3); treat them
 // as a tie so LRU can rotate traffic across healthy equal-priority nodes.
 const HEALTH_TIE_BAND = 10;

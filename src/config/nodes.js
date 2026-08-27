@@ -32,6 +32,8 @@
 
 import { readEnv, getBool } from './env.js';
 import { resolveProviderProfile } from './profiles.js';
+import { loadModelsConfig, getModelsConfigDiagnostics } from './models.js';
+import { loadPoliciesConfig, getPoliciesConfigDiagnostics } from './policies.js';
 
 const SHARD_MAX_BYTES = 4500; // official variable size limit is 5 KB; keep margin
 export const TIER_SHARD_PATTERN = /^TIER([123])_NODES_CONFIG_(\d{2})$/;
@@ -137,13 +139,31 @@ function buildConfig(env) {
     if (!seenIds.has(nodeId)) diagnostics.push(`credential "${nodeId}" has no matching node config`);
   }
 
+  // Auxiliary configs (MODELS_CONFIG / POLICIES_CONFIG) must be as strict as
+  // the node config: malformed JSON, unknown fields, invalid capability types,
+  // invalid max_attempts / tier_attempts all surface as diagnostics rather than
+  // silently falling back to defaults.
+  const auxDiagnostics = [
+    ...getModelsConfigDiagnostics(env),
+    ...getPoliciesConfigDiagnostics(env),
+  ];
+  // A model that references a policy which is not defined is a real misconfig.
+  const models = loadModelsConfig(env);
+  for (const [model, mcfg] of Object.entries(models)) {
+    const pname = mcfg?.policy || 'default';
+    if (!loadPoliciesConfig(env)[pname]) {
+      auxDiagnostics.push(`MODELS_CONFIG: model "${model}" references unknown policy "${pname}"`);
+    }
+  }
+  diagnostics.push(...auxDiagnostics);
+
   // Status semantics (strict, no contradictions):
   //   unconfigured  key config missing entirely            -> ready=false
   //   invalid       structural conflict OR zero usable     -> ready=false, never serve
-  //   degraded      some nodes unusable, >=1 usable        -> ready=true
-  //   ready         all declared nodes usable              -> ready=true
+  //   degraded      some nodes unusable OR an aux config is bad, >=1 usable -> ready=true
+  //   ready         all declared nodes usable & aux configs clean -> ready=true
   if (conflict || nodes.length === 0) status = 'invalid';
-  else if (nodes.length < nodesDeclared) status = 'degraded';
+  else if (nodes.length < nodesDeclared || auxDiagnostics.length > 0) status = 'degraded';
   else status = 'ready';
   const ready = status === 'ready' || status === 'degraded';
 

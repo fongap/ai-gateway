@@ -19,7 +19,7 @@ import { loadGatewayConfig } from '../config/nodes.js';
 import { loadModelsConfig } from '../config/models.js';
 import { loadPoliciesConfig, getPolicy } from '../config/policies.js';
 import { getLimits } from '../config/timeouts.js';
-import { pickCandidate, supportsModel } from '../scheduler/scheduler.js';
+import { pickCandidate, supportsModel, tierHasSchedulableNode } from '../scheduler/scheduler.js';
 import {
   recordSuccess, recordFailure, recordNeutralEnd, rollbackRpmBucket, recordModelMissing,
   applyHealthPenalty,
@@ -185,20 +185,16 @@ export async function handleRequest(request, env, ctx) {
 
   const state = { attempted: new Set(), attempts: [], totalAttempts: 0, failureKinds: {}, logger, maxAttempts: policy.maxAttempts, requestedModel };
 
+  // Per-tier attempt budgets, computed ONCE per request (availability-aware):
+  // a lower tier only receives budget when it actually holds a schedulable
+  // candidate for this model, so budget is never "reserved" for a cooling /
+  // circuit-open tier. The loop below is strict tier precedence: a tier is
+  // drained (its budget spent) before the next tier is entered.
+  const tierCaps = computeTierCaps(tiers, requestedModel, state.attempted, policy);
   for (const tierNumber of TIER_ORDER) {
-    // Fallback reserve: budget held back for each LOWER tier that can still
-    // serve this model, so a wide Tier 1 of failing free keys cannot eat the
-    // whole attempt budget and starve the paid fallback tiers. Recomputed per
-    // tier (not per attempt) because lower-tier candidates are never attempted
-    // until we reach them, so their "still has a chance" status is stable.
-    // The reserve is capped at `maxAttempts - 1` so a small budget (e.g.
-    // maxAttempts=2 with three capable tiers) can never starve the CURRENT tier
-    // to zero attempts — the current tier always keeps at least one slot.
-    const reserve = Math.min(
-      fallbackReserve(tiers, tierNumber, requestedModel, state.attempted, policy.fallbackReservePerTier),
-      policy.maxAttempts - 1,
-    );
-    while (state.totalAttempts + reserve < policy.maxAttempts) {
+    const cap = tierCaps[tierNumber] ?? 0;
+    let usedInTier = 0;
+    while (usedInTier < cap && state.totalAttempts < policy.maxAttempts) {
       // Failover budget gate: before preparing a NEW attempt, stop if the
       // request has already consumed the whole budget. Never keep hammering
       // upstreams once the client has waited ~FAILOVER_BUDGET_MS overall.
@@ -208,6 +204,7 @@ export async function handleRequest(request, env, ctx) {
       }
       const node = pickCandidate(tiers[tierNumber], requestedModel, state.attempted);
       if (!node) break; // tier exhausted -> fallback to next tier
+      usedInTier++;
       const outcome = await attemptNode({
         request, env, ctx, logger, requestId, route, node, requestedModel,
         clientWantsStream, fakeStream, bodyJson, anthropicConversion, responsesConversion,
@@ -221,23 +218,31 @@ export async function handleRequest(request, env, ctx) {
   return buildExhaustedResponse(request, env, route, requestId, requestedModel, state, tiers, exposeUpstreamInfo);
 }
 
-// Budget held back for each lower tier that can still serve `requestedModel`
-// with a node not already attempted this request. A tier with no capable
-// candidate left does not get a reservation (it would only waste budget).
-// `reservePerTier` of 0 disables reservation and restores the original
-// "current tier may consume the whole budget" behavior.
-function fallbackReserve(tiers, currentTierNumber, requestedModel, attempted, reservePerTier) {
-  if (!reservePerTier) return 0;
-  const idx = TIER_ORDER.indexOf(currentTierNumber);
-  if (idx < 0) return 0;
-  let reserve = 0;
-  for (let i = idx + 1; i < TIER_ORDER.length; i++) {
-    const t = TIER_ORDER[i];
-    const hasUntriedCapable = tiers[t]?.some((n) =>
-      supportsModel(n, requestedModel) && !attempted.has(n.id));
-    if (hasUntriedCapable) reserve += reservePerTier;
-  }
-  return reserve;
+// Per-tier attempt budget: { tier1, tier2, tier3 } -> max attempts each.
+//   * A tier with no schedulable candidate for `requestedModel` gets 0 budget.
+//   * By default `max_attempts` is split so every schedulable tier gets at least
+//     one attempt and the surplus goes to the highest (most-preferred)
+//     schedulable tier — maximizing free/priority resource use while keeping
+//     the paid fallback reachable and never starving an intermediate tier.
+//   * `policy.tierAttempts` (POLICIES_CONFIG tier_attempts) overrides a tier's
+//     budget explicitly (0 disables it).
+// Budget is a per-tier UPPER bound; the shared state.maxAttempts still caps the
+// request's total upstream attempts, and FAILOVER_BUDGET_MS caps wall-clock.
+function computeTierCaps(tiers, requestedModel, attempted, policy) {
+  const now = Date.now();
+  const caps = {};
+  for (const t of TIER_ORDER) caps[t] = 0;
+  const schedulable = TIER_ORDER.filter((t) =>
+    tierHasSchedulableNode(tiers[t], requestedModel, attempted, now));
+  if (schedulable.length === 0) return caps;
+  const max = policy.maxAttempts;
+  const surplus = Math.max(0, max - schedulable.length);
+  schedulable.forEach((t, i) => {
+    // `t` is numeric (1/2/3); POLICIES_CONFIG tier_attempts uses string keys
+    // ('tier1'/'tier2'/'tier3').
+    caps[t] = policy.tierAttempts?.[`tier${t}`] ?? (i === 0 ? 1 + surplus : 1);
+  });
+  return caps;
 }
 
 // ---- One attempt against one node -----------------------------------------

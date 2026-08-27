@@ -8,6 +8,8 @@ import {
 import {
   loadModelRegistry, modelRegistryEntry, servesModel, isWildcardNode,
 } from '../src/config/registry.js';
+import { getModelsConfigDiagnostics } from '../src/config/models.js';
+import { getPoliciesConfigDiagnostics } from '../src/config/policies.js';
 
 let passed = 0;
 function test(name, fn) {
@@ -164,6 +166,85 @@ test('servesModel treats empty models as wildcard, mapped as explicit', () => {
   assert.equal(servesModel(node('w', { models: {} }), 'anything'), true);
   assert.equal(servesModel(node('m', { models: { only: 'x' } }), 'only'), true);
   assert.equal(servesModel(node('m', { models: { only: 'x' } }), 'other'), false);
+});
+
+// ---- Strict MODELS_CONFIG / POLICIES_CONFIG diagnostics --------------------
+// Auxiliary configs must be as fail-fast as the node config: malformed JSON and
+// field-level errors surface as diagnostics (visible via /health) + degraded
+// status instead of silently falling back to defaults.
+
+test('malformed MODELS_CONFIG is surfaced as a degraded-config diagnostic', () => {
+  const cfg = loadGatewayConfig(makeEnv({
+    tier1: [node('m1', { models: { 'general-air': 'up' } })],
+    secrets: { m1: 'k' },
+    extraEnv: { MODELS_CONFIG: '{not json' },
+  }));
+  assert.equal(cfg.status, 'degraded', 'a malformed MODELS_CONFIG must not stay ready');
+  assert.ok(cfg.diagnostics.some((d) => d.includes('MODELS_CONFIG')), `expected MODELS_CONFIG diagnostic, got ${cfg.diagnostics}`);
+});
+
+test('MODELS_CONFIG rejects unknown capabilities and non-boolean values', () => {
+  const diags = getModelsConfigDiagnostics(makeEnv({ extraEnv: {
+    MODELS_CONFIG: JSON.stringify({
+      'm': { capabilities: { tools: true, visionz: true, reasoning: 'yes' } },
+    }),
+  } }));
+  assert.ok(diags.some((d) => d.includes('capabilities.visionz')), 'unknown capability key must be flagged');
+  assert.ok(diags.some((d) => d.includes('capabilities.reasoning')), 'non-boolean capability must be flagged');
+});
+
+test('malformed POLICIES_CONFIG is surfaced as a degraded-config diagnostic', () => {
+  const cfg = loadGatewayConfig(makeEnv({
+    tier1: [node('p1')],
+    secrets: { p1: 'k' },
+    extraEnv: { POLICIES_CONFIG: '{bad' },
+  }));
+  assert.equal(cfg.status, 'degraded', 'a malformed POLICIES_CONFIG must not stay ready');
+  assert.ok(cfg.diagnostics.some((d) => d.includes('POLICIES_CONFIG')), `expected POLICIES_CONFIG diagnostic, got ${cfg.diagnostics}`);
+});
+
+test('POLICIES_CONFIG rejects unknown fields, invalid max_attempts, invalid tier_attempts', () => {
+  const diags = getPoliciesConfigDiagnostics(makeEnv({ extraEnv: {
+    POLICIES_CONFIG: JSON.stringify({
+      'bad': { max_attempts: 'abc', tier_attempts: { tier1: -1, tier9: 2 }, unknown_field: 1 },
+      'ok': { max_attempts: 5 },
+    }),
+  } }));
+  assert.ok(diags.some((d) => d.includes('unknown_field')), 'unknown policy field must be flagged');
+  assert.ok(diags.some((d) => d.includes('max_attempts')), 'invalid max_attempts must be flagged');
+  assert.ok(diags.some((d) => d.includes('tier_attempts.tier1')), 'out-of-range tier_attempts must be flagged');
+  assert.ok(diags.some((d) => d.includes('tier_attempts.tier9')), 'unknown tier key must be flagged');
+});
+
+test('a model referencing an undefined policy is a config diagnostic', () => {
+  const env = makeEnv({
+    tier1: [node('x1')],
+    secrets: { x1: 'k' },
+    extraEnv: {
+      MODELS_CONFIG: JSON.stringify({ 'general-air': { policy: 'missing-policy' } }),
+      POLICIES_CONFIG: JSON.stringify({ default: { max_attempts: 5 } }),
+    },
+  });
+  const cfg = loadGatewayConfig(env);
+  assert.ok(cfg.diagnostics.some((d) => d.includes('missing-policy')),
+    `unknown policy reference must be flagged, got ${cfg.diagnostics}`);
+});
+
+// ---- Strict MODELS_CONFIG / POLICIES_CONFIG defaults still serve -----------
+// A VALID aux config must not trip degraded, and getPolicy must still resolve.
+
+test('valid MODELS_CONFIG + POLICIES_CONFIG resolve and stay ready', () => {
+  const env = makeEnv({
+    tier1: [node('g1')],
+    secrets: { g1: 'k' },
+    extraEnv: {
+      MODELS_CONFIG: JSON.stringify({ 'general-air': { policy: 'fast', capabilities: { tools: true } } }),
+      POLICIES_CONFIG: JSON.stringify({ fast: { max_attempts: 6, tier_attempts: { tier1: 4, tier2: 1 } } }),
+    },
+  });
+  const cfg = loadGatewayConfig(env);
+  assert.equal(cfg.status, 'ready', 'a valid aux config must not degrade the gateway');
+  assert.equal(cfg.diagnostics.length, 0, 'valid config yields no diagnostics');
 });
 
 if (!process.exitCode) console.log(`config unit tests passed (${passed}).`);
