@@ -1184,7 +1184,7 @@ await test('/version is public and exposes only branding, no node/config topolog
   assert.equal(res.status, 200);
   const body = await res.json();
   assert.equal(body.name, 'ai-gateway');
-  assert.equal(body.version, '1.2.2');
+  assert.equal(body.version, '1.2.3');
   assert.equal(body.runtime, 'Cloudflare Workers');
   assert.ok(Array.isArray(body.protocols));
   const serialized = JSON.stringify(body);

@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.2.3 - 2026-08-27
+
+Scheduling, config-reliability and streaming hardening. No new protocols, providers or features. This release makes the per-tier failover budget explicit and availability-aware, makes `MODELS_CONFIG`/`POLICIES_CONFIG` as fail-fast as the node config, and closes a set of real-request edge cases. 1.2.3 supersedes the provisional 1.2.2 code (which never shipped a release); the reserve heuristic is replaced by the cleaner per-tier budget below.
+
+### Changed
+
+- **P0 — Per-tier attempt budgets replaced the `fallback_reserve_per_tier` reserve heuristic.** `max_attempts` still bounds the total attempts per request across all tiers, but each tier now has its own explicit budget. By default `max_attempts` is split so every tier that actually holds a schedulable candidate (model supported, not cooling / circuit-open / model-cooling) gets at least one attempt, and the surplus goes to the highest (most-preferred) schedulable tier — maximizing free/priority resource use while always keeping the paid fallback reachable and never silently starving an intermediate tier. Tier precedence is strict: a higher-preference pool is exhausted (its budget spent) before the next tier is entered, and budget is never reserved for an unusable tier. `POLICIES_CONFIG`'s `tier_attempts` (`{"tier1": N, "tier2": N, "tier3": N}`, `0` disables a tier) optionally overrides a tier's budget. The guarantee now holds under configs the reserve got wrong (e.g. `max_attempts=2` with three tiers no longer silently zeroes the current tier).
+
+### Fixed
+
+- **P0 — Streaming no longer corrupts multi-byte UTF-8 across SSE chunks.** `track.js` fed the same stream-stateful `TextDecoder` from two places (rewrite + diagnostic tail), so its internal multi-byte carry was advanced twice per chunk, mangling characters (e.g. CJK) split across chunk boundaries. The rewrite and tail now each use their own decoder.
+- **P0 — A distributed rate-limiter deny no longer consumes an upstream attempt or a local RPM charge** (from the provisional 1.2.2 code): the attempt is rolled back and the attempt budget is not charged, so a CF-denied free key cannot starve the fallback or exhaust its own RPM on traffic it never sent.
+- **P1 — A pure `rate_limit_global` failure now returns a `Retry-After` at the next fixed-window reset** instead of omitting the header (previously all-CF-denied requests surfaced a bare 429).
+- **P1 — 404s are disambiguated by error body**: a model-shaped 404 stays `model_missing` (model-scoped pair cooldown); an endpoint 404 is a new `endpoint_not_found` (whole-node cooldown), no longer masked as a model-mapping issue.
+- **P1 — `fallback_reserve` starvation/cap edge cases removed** by the per-tier budget model above (tests S12/S13 rewritten: `tier_attempts` override honored, default fair-share never starves the middle tier).
+
+### Added
+
+- **P1 — `MODELS_CONFIG` / `POLICIES_CONFIG` are now fail-fast, like the node config.** Malformed JSON, unknown fields, non-boolean capabilities, unknown capability keys, invalid `reasoning_efforts`, invalid `max_attempts`, invalid `tier_attempts`, and models referencing undefined policies all surface as diagnostics. `/health` (which reads `loadGatewayConfig`) now folds these in and downgrades the config status to `degraded` instead of silently falling back to defaults.
+
+### Changed
+
+- **P1 — Removed the dead lenient `parseBearer` from `src/protocol/http.js`** (strict auth lives in `src/request/auth.js`); no non-Bearer `Authorization` header is treated as an access key.
+- **P1 — Access keys and upstream Auth stay strict**: only `Bearer <token>` or `x-api-key` authenticate; pinned GitHub Actions full-commit SHAs remain.
+- **P2 — `scripts/secret-scan.mjs` also flags AWS access key IDs** (`AKIA...`).
+- Docs: `CONFIGURATION.md` / `ARCHITECTURE.md` updated for per-tier budgets, tier_attempts, and the availability-aware budget rule.
+
 ## 1.2.2 - 2026-08-27
 
 Scheduling-boundary hardening release. No new protocols, providers or features; this round closes four ways the scheduler could waste free quota or starve the paid fallback, and makes the failure response's Retry-After honest. These only matter once free nodes grow past a handful — at 6→15→20 keys the original budget and RPM accounting stops guaranteeing that every fallback tier ever gets a turn.
