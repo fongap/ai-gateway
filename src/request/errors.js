@@ -110,6 +110,13 @@ export function buildExhaustedResponse(request, env, route, requestId, requested
     message = `All nodes failed for model "${requestedModel}".`;
     if (status === 429) {
       retryAfterSec = earliestBlockingRetryAfterSec(tiers, requestedModel, now);
+      // A distributed rate-limiter deny (rate_limit_global) leaves no node
+      // cooldown — the node was never at fault. When that is what blocked
+      // everything, back the client off to the next fixed-window reset instead
+      // of omitting Retry-After entirely.
+      if (retryAfterSec === undefined && state.failureKinds?.rate_limit_global) {
+        retryAfterSec = distributedWindowRetryAfterSec(now);
+      }
     }
   }
 
@@ -159,6 +166,13 @@ function blockingWaitMs(node, requestedModel, now) {
   const s = getNodeState(node.id);
   if (s.activeRequests >= node.limits.concurrency) return 1_000;
   return Infinity;
+}
+
+// Seconds until the next fixed-window (60s) reset of the Cloudflare Rate
+// Limiting binding backing the distributed deny. Used as the Retry-After for a
+// pure rate_limit_global failure, where no node cooldown exists.
+function distributedWindowRetryAfterSec(now = Date.now()) {
+  return Math.max(1, Math.ceil((60_000 - (now % 60_000)) / 1000));
 }
 
 export function buildClientErrorResponse(request, env, route, requestId, requestedModel, status, errorText, state, exposeUpstreamInfo) {

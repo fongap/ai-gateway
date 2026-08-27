@@ -17,7 +17,13 @@ export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFail
     return response;
   }
   const reader = response.body.getReader();
-  const decoder = new TextDecoder();
+  // Two SEPARATE stream-stateful TextDecoders: the rewrite path and the
+  // diagnostic tail each consume the same raw chunk with { stream: true }.
+  // A single shared decoder instance would have its internal multi-byte UTF-8
+  // carry advanced twice per chunk, corrupting any multi-byte character (e.g.
+  // CJK) split across chunk boundaries.
+  const rewriteDecoder = new TextDecoder();
+  const tailDecoder = new TextDecoder();
   const encoder = rewriteModel !== undefined ? new TextEncoder() : null;
   let lineBuffer = '';
   let diagnosticTail = '';
@@ -57,7 +63,7 @@ export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFail
   // Decode + optional rewrite, returning the bytes to forward for this chunk.
   const forwardBytes = (value) => {
     if (!encoder) return value;
-    lineBuffer += decoder.decode(value, { stream: true });
+    lineBuffer += rewriteDecoder.decode(value, { stream: true });
     const lines = lineBuffer.split('\n');
     lineBuffer = lines.pop() || '';
     let out = '';
@@ -96,7 +102,7 @@ export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFail
         return;
       }
       if (!errorEventSeen || !completionSeen) {
-        diagnosticTail = (diagnosticTail + decoder.decode(value, { stream: true })).slice(-256);
+        diagnosticTail = (diagnosticTail + tailDecoder.decode(value, { stream: true })).slice(-256);
         if (!errorEventSeen) {
           errorEventSeen = /(?:^|\r?\n)event:\s*error\s*(?:\r?\n|$)/.test(diagnosticTail);
         }

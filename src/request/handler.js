@@ -191,7 +191,13 @@ export async function handleRequest(request, env, ctx) {
     // whole attempt budget and starve the paid fallback tiers. Recomputed per
     // tier (not per attempt) because lower-tier candidates are never attempted
     // until we reach them, so their "still has a chance" status is stable.
-    const reserve = fallbackReserve(tiers, tierNumber, requestedModel, state.attempted, policy.fallbackReservePerTier);
+    // The reserve is capped at `maxAttempts - 1` so a small budget (e.g.
+    // maxAttempts=2 with three capable tiers) can never starve the CURRENT tier
+    // to zero attempts — the current tier always keeps at least one slot.
+    const reserve = Math.min(
+      fallbackReserve(tiers, tierNumber, requestedModel, state.attempted, policy.fallbackReservePerTier),
+      policy.maxAttempts - 1,
+    );
     while (state.totalAttempts + reserve < policy.maxAttempts) {
       // Failover budget gate: before preparing a NEW attempt, stop if the
       // request has already consumed the whole budget. Never keep hammering
@@ -342,8 +348,8 @@ async function attemptNode(c) {
   // ---- Non-OK response ----
   if (!upstream.ok) {
     detach();
-    const classification = classifyUpstreamStatus(upstream.status, upstream.headers, env);
     const errorText = await safeReadErrorBody(upstream, DIAGNOSTIC_BYTES);
+    const classification = classifyUpstreamStatus(upstream.status, upstream.headers, env, undefined, errorText);
     recordOutcome(state, node, classification, latencyMs, errorText, exposeUpstreamInfo, upstream.status);
     if (classification.action === 'stop') {
       return { response: buildClientErrorResponse(request, env, route, requestId, requestedModel, upstream.status, errorText, state, exposeUpstreamInfo) };
@@ -452,7 +458,7 @@ async function handleSuccess(s) {
         const status = Number(data.error.status) >= 400 && Number(data.error.status) < 600
           ? Math.trunc(Number(data.error.status))
           : 502;
-        const classification = classifyUpstreamStatus(status, upstream.headers, env);
+        const classification = classifyUpstreamStatus(status, upstream.headers, env, undefined, data.error?.message || '');
         recordOutcome(state, node, classification, latencyMs, trimDiagnostic(data.error.message || 'embedded error', 200), exposeUpstreamInfo, status);
         if (classification.action === 'stop') {
           return { response: buildClientErrorResponse(request, env, route, requestId, requestedModel, status, JSON.stringify(data), state, exposeUpstreamInfo) };
@@ -527,7 +533,7 @@ async function handleSuccess(s) {
       const status = Number(data.error.status) >= 400 && Number(data.error.status) < 600
         ? Math.trunc(Number(data.error.status))
         : 502;
-      const classification = classifyUpstreamStatus(status, upstream.headers, env);
+      const classification = classifyUpstreamStatus(status, upstream.headers, env, undefined, data.error?.message || '');
       recordOutcome(state, node, classification, latencyMs, trimDiagnostic(data.error.message || 'embedded error', 200), exposeUpstreamInfo, status);
       if (classification.action === 'stop') {
         return { response: buildClientErrorResponse(request, env, route, requestId, requestedModel, status, text, state, exposeUpstreamInfo) };

@@ -45,7 +45,13 @@ export async function isAuthorized(request, accessKey) {
   return false;
 }
 
+// Parse a strict `Bearer <token>` Authorization header. Anything that is not a
+// Bearer scheme (Basic, Digest, a raw token with no scheme, empty token) is
+// rejected — the gateway never treats an arbitrary Authorization value as a
+// candidate access key. x-api-key remains the second accepted channel.
 function parseBearer(value) {
   const raw = String(value || '').trim();
-  return raw.toLowerCase().startsWith('bearer ') ? raw.slice(7).trim() : raw;
+  if (!raw.toLowerCase().startsWith('bearer ')) return '';
+  const token = raw.slice(7).trim();
+  return token || '';
 }

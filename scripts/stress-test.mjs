@@ -396,5 +396,29 @@ await test('S12 reserve=0 disables reservation: Tier 1 eats the budget, Tier 2 s
   assertNoLeaks(['nb1', 'nb2', 'nb3', 'nb4', 'nb5', 'nb6', 'paid2']);
 });
 
+// ---- S13: fallback reserve never starves the CURRENT tier to zero attempts ----
+// With a tiny budget (maxAttempts=2) and three capable tiers, the naive
+// reserve (tier-2 + tier-3 = 2) would make Tier 1's loop condition
+// `0 + 2 < 2` false — Tier 1 (highest priority) would get ZERO attempts.
+// The reserve is capped at maxAttempts-1 so Tier 1 always gets at least one.
+await test('S13 reserve is capped: a tiny budget cannot starve Tier 1 to zero attempts', async () => {
+  resetMock();
+  routeHandlers['fe1.example.com'] = () => jsonUpstream({}, 503);
+  routeHandlers['fe2.example.com'] = () => jsonUpstream({}, 503);
+  routeHandlers['fe3.example.com'] = () => jsonUpstream(okCompletion);
+  const env = makeEnv({
+    tier1: [basicNode('fe1', { limits: { concurrency: 20 } })],
+    tier2: [basicNode('fe2', { limits: { concurrency: 20 } })],
+    tier3: [basicNode('fe3', { limits: { concurrency: 20 } })],
+    secrets: { fe1: 'k', fe2: 'k', fe3: 'k' },
+    extraEnv: { POLICIES_CONFIG: '{"default":{"max_attempts":2,"fallback_reserve_per_tier":1}}' },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 200, 'request must eventually be served');
+  const fe1Calls = upstreamCalls.filter((c) => c.host === 'fe1.example.com').length;
+  assert.ok(fe1Calls >= 1, 'Tier 1 must get at least one attempt despite the tiny budget');
+  assertNoLeaks(['fe1', 'fe2', 'fe3']);
+});
+
 if (!process.exitCode) console.log(`\nstress tests passed (${passed}).`);
 else process.exit(1);

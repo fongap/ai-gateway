@@ -308,6 +308,29 @@ await test('global QUOTA_RATE_LIMITER deny rotates without counting a node failu
   assert.equal(rpmUsage('gb-a'), 0, 'pre-dispatch deny must roll back the RPM reservation');
 });
 
+await test('all nodes denied by distributed limiter returns 429 with a window-based Retry-After', async () => {
+  resetMock();
+  // Every node is denied by the distributed limiter before reaching upstream.
+  // rate_limit_global leaves no node cooldown (the node was never at fault), so
+  // the exhausted response must fall back to a Retry-After at the next fixed
+  // window reset rather than omitting the header.
+  routeHandlers['ga1.example.com'] = () => jsonUpstream(okCompletion());
+  routeHandlers['ga2.example.com'] = () => jsonUpstream(okCompletion());
+  const fakeBinding = {
+    limit: async () => ({ success: false }), // deny everything
+  };
+  const env = makeEnv({
+    tier1: [basicNode('ga1', { limits: { concurrency: 5, rpm: 100 } }), basicNode('ga2', { limits: { concurrency: 5, rpm: 100 } })],
+    secrets: { ga1: 'k', ga2: 'k' },
+    extraEnv: { QUOTA_RATE_LIMITER: fakeBinding },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 429, 'all-denied should surface as 429');
+  const retryAfter = Number(res.headers.get('retry-after'));
+  assert.ok(retryAfter >= 1 && retryAfter <= 60, `retry-after must point at the fixed-window reset, got ${retryAfter}`);
+  assert.deepEqual(upstreamCalls, [], 'no node may be contacted when the distributed limiter denies all');
+});
+
 await test('saturation returns 503 with Retry-After instead of bare 429', async () => {
   resetMock();
   let release;
@@ -413,7 +436,7 @@ await test('404 model_missing cools only the (node, model) pair, not the whole n
   // general-air, with no node-level cooldown and no health penalty.
   routeHandlers['mm1.example.com'] = async (req) => {
     const body = JSON.parse(await req.text());
-    if (body.model === 'up-code') return jsonUpstream({}, 404);
+    if (body.model === 'up-code') return jsonUpstream({ error: { message: 'Model not found' } }, 404);
     return jsonUpstream(okCompletion());
   };
   const env = makeEnv({
@@ -443,6 +466,27 @@ await test('404 model_missing cools only the (node, model) pair, not the whole n
   const callsBefore = upstreamCalls.length;
   await worker.fetch(chatRequest({ model: 'code-pro', messages: [] }), env, {});
   assert.equal(upstreamCalls.length, callsBefore, 'model-cooling (node, model) pair must not be re-dispatched');
+});
+
+await test('404 endpoint not found cools the whole node (config error, not model_missing)', async () => {
+  resetMock();
+  // An empty-body / generic 404 means the ENDPOINT is missing (wrong base_url
+  // or path), not a model-mapping issue. It must cool the WHOLE node briefly
+  // (so a broken endpoint is not hammered) and must NOT be treated as a
+  // model_missing (which would cool only one model pair).
+  routeHandlers['ep1.example.com'] = () => jsonUpstream({}, 404);
+  const env = makeEnv({
+    tier1: [{ ...basicNode('ep1'), models: { 'code-pro': 'up-c', 'general-air': 'up-a' } }],
+    secrets: { ep1: 'k' },
+  });
+  const { getCooldownRemainingMs, getModelCooldownRemainingMs } = await import('../src/reliability/node-state.js');
+  const r1 = await worker.fetch(chatRequest({ model: 'code-pro', messages: [] }), env, {});
+  assert.equal(r1.status, 502);
+  assert.ok(getCooldownRemainingMs('ep1') > 0, 'endpoint 404 must set a NODE-level cooldown');
+  assert.equal(getModelCooldownRemainingMs('ep1', 'code-pro'), 0, 'endpoint 404 must NOT set a model-scoped cooldown');
+  // general-air on the same node is also blocked during the node cooldown.
+  const r2 = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.notEqual(r2.status, 200, 'general-air must not serve while the node is cooling from an endpoint 404');
 });
 
 await test('Retry-After seconds sets node cooldown window', async () => {

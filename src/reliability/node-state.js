@@ -292,7 +292,12 @@ function maybeCleanup(now) {
   if (nodeState.size > MAX_STATE_ENTRIES) {
     const entries = [...nodeState.entries()].sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt);
     const target = Math.floor(MAX_STATE_ENTRIES * 0.75);
-    for (let i = 0; i < nodeState.size - target; i++) nodeState.delete(entries[i][0]);
+    // Capture `excess` ONCE before the loop: nodeState.delete shrinks
+    // nodeState.size inside the loop, so a bound of `nodeState.size - target`
+    // would shrink with every deletion and terminate early, leaving the map
+    // over MAX_STATE_ENTRIES.
+    const excess = nodeState.size - target;
+    for (let i = 0; i < excess; i++) nodeState.delete(entries[i][0]);
   }
   // Prune RPM buckets that belong to a previous minute.
   const minute = currentMinute(now);
