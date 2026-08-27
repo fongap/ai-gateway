@@ -121,7 +121,7 @@ Tier order is fixed: tier-1 → tier-2 → tier-3. A lower tier is used only whe
 | `MAX_BODY_BYTES` | 20971520 | 1KB–100MB | Request body limit |
 | `UPSTREAM_HEADERS_TIMEOUT_MS` | 120000 | 5s–600s | Time to upstream response headers |
 | `FIRST_EVENT_TIMEOUT_MS` | 60000 | 5s–600s | Streaming first-event guard timeout |
-| `STREAM_IDLE_TIMEOUT_MS` | 120000 | 10s–600s | Max gap between stream chunks |
+| `STREAM_IDLE_TIMEOUT_MS` | 90000 | 10s–600s | Max gap between stream chunks |
 | `RATE_LIMIT_COOLDOWN_MS` | 60000 | 1s–600s | 429 cooldown without Retry-After |
 | `AUTH_FAIL_COOLDOWN_MS` | 3600000 | 1min–7d | 401/403 credential cooldown |
 | `FAILOVER_BUDGET_MS` | 180000 | 5s–900s | Whole-request failover budget: total wall-clock time spent rotating across nodes for one request |

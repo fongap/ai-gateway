@@ -630,7 +630,11 @@ async function handleSuccess(s) {
 function makeNodeStreamTrack(c, node, latencyMs) {
   return {
     onSuccess: () => recordSuccess(node.id, latencyMs),
-    onFailure: () => recordFailure(node.id, { counted: true, cooldownMs: 2_000, reason: 'stream_interrupted' }),
+    // Field evidence (NVIDIA-hosted stalls mid-generation): 2s let a stalling
+    // node straight back into rotation. 60s matches the rate-limit cooldown —
+    // long enough to push repeat offenders out of candidate ordering without
+    // permanently discarding a node that had one transient blip.
+    onFailure: () => recordFailure(node.id, { counted: true, cooldownMs: 60_000, reason: 'stream_interrupted' }),
     onNeutral: () => recordNeutralEnd(node.id),
     onStreamStart: () => recordStreamStart(),
     onStreamEnd: (outcome, d) => {

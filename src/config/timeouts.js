@@ -9,7 +9,7 @@ import { readEnv, clampInt } from './env.js';
 const LIMITS = {
   UPSTREAM_HEADERS_TIMEOUT_MS: { min: 5_000, max: 600_000, def: 120_000 },
   FIRST_EVENT_TIMEOUT_MS: { min: 5_000, max: 600_000, def: 60_000 },
-  STREAM_IDLE_TIMEOUT_MS: { min: 10_000, max: 600_000, def: 120_000 },
+  STREAM_IDLE_TIMEOUT_MS: { min: 10_000, max: 600_000, def: 90_000 },
   RATE_LIMIT_COOLDOWN_MS: { min: 1_000, max: 600_000, def: 60_000 },
   AUTH_FAIL_COOLDOWN_MS: { min: 60_000, max: 7 * 86_400_000, def: 3_600_000 },
   MAX_BODY_BYTES: { min: 1024, max: 100 * 1024 * 1024, def: 20 * 1024 * 1024 },

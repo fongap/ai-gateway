@@ -1015,7 +1015,7 @@ await test('three consecutive mid-stream EOFs open the circuit', async () => {
     const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
     assert.equal(res.status, 200);
     await res.text();
-    // Each stream failure sets a short node cooldown; clear it so the next
+    // Each stream failure sets a node cooldown; clear it so the next
     // request actually reaches upstream instead of short-circuiting with 429.
     getNodeState('eof3').cooldownUntil = Date.now() - 1;
   }
