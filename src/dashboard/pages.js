@@ -17,6 +17,10 @@
 //   * Logical-model status is computed server-side from node availability and
 //     collapsed to exactly { 可用 | 波动 | 不可用 }; no node-level detail.
 //   * `/health`, `/metrics`, `/v1/models` stay auth-protected and untouched.
+//   * ONE exception, authenticated server-side: requests presenting the valid
+//     GATEWAY_ACCESS_KEY additionally get a Token 使用量 panel appended (a
+//     provider/tier/node usage breakdown, observability only, 非计费口径).
+//     The anonymous page is byte-identical to the panel-free layout.
 //
 // No external fonts, no framework, no icons library, no runtime dependency:
 // plain HTML + inline CSS + one tiny delegated copy handler.
@@ -25,6 +29,8 @@ import { loadGatewayConfig } from '../config/nodes.js';
 import { loadModelRegistry, servesModel } from '../config/registry.js';
 import { peekAvailability } from '../reliability/node-state.js';
 import { htmlResponse } from '../protocol/http.js';
+import { isAuthorized } from '../request/auth.js';
+import { summarizeTokenStats } from '../observability/tokens.js';
 
 export const GITHUB_URL = 'https://github.com/fongap/ai-gateway';
 
@@ -124,6 +130,41 @@ pre{margin:0;padding:0 24px 24px;font-family:ui-monospace,SFMono-Regular,Consola
 @media (prefers-reduced-motion:reduce){button.copy,.model{transition:none}}
 `;
 
+// Token usage panel styles are kept OUT of STYLES and injected only for
+// authenticated requests, so the public page carries zero token markup — the
+// anonymous layout is byte-identical to the panel-free page.
+const TOKEN_STYLES = `
+/* Token usage panel (authenticated requests only) */
+.tokens-block{margin-top:48px}
+.tokens-head{display:flex;align-items:baseline;justify-content:space-between;
+  gap:12px;flex-wrap:wrap}
+.tokens-head .scope{font-size:12px;color:var(--faint);white-space:nowrap}
+.tcards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;
+  margin-top:12px}
+.tcard{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+  padding:14px 16px;min-width:0}
+.tcard-k{font-size:12.5px;color:var(--muted)}
+.tcard-v{font-size:22px;font-weight:640;letter-spacing:-.02em;margin-top:4px;
+  font-variant-numeric:tabular-nums}
+.ttables{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;
+  margin-top:20px}
+.tgroup{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+  padding:14px 16px;min-width:0}
+.ttable{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
+.ttable th{font-weight:500;color:var(--muted);text-align:right;padding:4px 0;
+  border-bottom:1px solid var(--line);white-space:nowrap}
+.ttable td{padding:5px 0;border-bottom:1px solid var(--line);text-align:right;
+  font-variant-numeric:tabular-nums}
+.ttable th:first-child,.ttable td:first-child{text-align:left}
+.ttable tr:last-child td{border-bottom:none}
+.ttable .dim{font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;
+  word-break:break-all}
+@media(max-width:560px){
+  .tcards{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+  .ttables{grid-template-columns:1fr}
+}
+`;
+
 const GH_ICON = `<a class="github" href="${GITHUB_URL}" target="_blank" rel="noopener noreferrer" aria-label="GitHub 仓库">
 <svg viewBox="0 0 16 16" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a>`;
 
@@ -220,11 +261,69 @@ function recommendedExampleModel(models) {
   return any ? any.id : MODEL_PLACEHOLDER;
 }
 
-function shell({ title, body }) {
+// ---- Token usage panel (authenticated requests only) ------------------------
+
+// K/M/B compaction for card values. Never scientific notation, never NaN:
+// anything non-finite or negative renders as an em dash (it should not happen
+// — counters only grow — but the panel must stay robust).
+function fmtCount(n) {
+  if (!Number.isFinite(n) || n < 0) return '—';
+  if (n < 1000) return String(Math.trunc(n));
+  const [div, suffix] = n < 1e6 ? [1e3, 'K'] : n < 1e9 ? [1e6, 'M'] : [1e9, 'B'];
+  const v = n / div;
+  return `${v >= 100 ? Math.round(v) : v.toFixed(1)}${suffix}`;
+}
+
+// Usage coverage = reports / (reports + missing). 0/0 (nothing observed yet)
+// renders as an em dash, never as a fake 100%.
+function fmtCoverage(reports, missing) {
+  const d = reports + missing;
+  return d === 0 ? '—' : `${((reports / d) * 100).toFixed(1)}%`;
+}
+
+function tokenTable(title, rows) {
+  const inner = rows.length
+    ? `<table class="ttable"><thead><tr><th>维度</th><th>Input</th><th>Output</th><th>Total</th><th>覆盖率</th></tr></thead><tbody>` +
+      rows.map((r) => `<tr><td class="dim">${escapeHtml(r.name)}</td>` +
+        `<td>${fmtCount(r.input)}</td><td>${fmtCount(r.output)}</td>` +
+        `<td>${fmtCount(r.total)}</td><td>${fmtCoverage(r.reports, r.missing)}</td></tr>`).join('') +
+      `</tbody></table>`
+    : `<div class="empty">暂无数据。</div>`;
+  return `<div class="tgroup"><div class="group-title">${title}</div>${inner}</div>`;
+}
+
+// Server-rendered from summarizeTokenStats() directly — no browser fetch, no
+// second stats store, no Prometheus parsing. Rows are pre-sorted (total desc)
+// by the tokens module; the panel only slices Top-N. Dimension names were
+// sanitized at storage time and pass through escapeHtml here as well.
+function tokenPanel() {
+  const s = summarizeTokenStats();
+  return `
+<section class="tokens-block">
+  <div class="tokens-head">
+    <div class="sec">Token 使用量</div>
+    <span class="scope">Isolate-local · Observability only · 非计费口径</span>
+  </div>
+  <div class="tcards">
+    <div class="tcard"><div class="tcard-k">Total Tokens</div><div class="tcard-v">${fmtCount(s.totals.total)}</div></div>
+    <div class="tcard"><div class="tcard-k">Input Tokens</div><div class="tcard-v">${fmtCount(s.totals.input)}</div></div>
+    <div class="tcard"><div class="tcard-k">Output Tokens</div><div class="tcard-v">${fmtCount(s.totals.output)}</div></div>
+    <div class="tcard"><div class="tcard-k">Usage Coverage</div><div class="tcard-v">${fmtCoverage(s.totals.reports, s.totals.missing)}</div></div>
+  </div>
+  <div class="ttables">
+    ${tokenTable('By Model', s.byModel.slice(0, 8))}
+    ${tokenTable('By Provider', s.byProvider.slice(0, 8))}
+    ${tokenTable('By Tier', s.byTier)}
+    ${tokenTable('By Node (Top 5)', s.byNode.slice(0, 5))}
+  </div>
+</section>`;
+}
+
+function shell({ title, body, extraStyles = '' }) {
   return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="description" content="统一接入多个 AI 服务，自动完成节点切换、故障转移和模型映射，为客户端提供稳定、简洁的 API 入口。">
-<title>${escapeHtml(title)}</title><style>${STYLES}</style></head>
+<title>${escapeHtml(title)}</title><style>${STYLES}${extraStyles}</style></head>
 <body>
 <header class="wrap site-header">
   <div class="brand"><span class="mark" aria-hidden="true">δ</span>Smart AI Gateway</div>
@@ -238,7 +337,7 @@ ${COPY_SCRIPT}
 </body></html>`;
 }
 
-export function dashboardResponse(request, env) {
+export async function dashboardResponse(request, env) {
   const config = loadGatewayConfig(env);
   const models = publicModelStatus(config.nodes || [], env);
   const apiBase = `${new URL(request.url).origin}/v1`;
@@ -273,7 +372,19 @@ OPENAI_MODEL=${escapeHtml(defaultModel)}</pre>
   </div>
 </section>`;
 
-  return htmlResponse(shell({ title: 'AI Gateway · API 服务入口', body }));
+  // Token panel gate: only requests presenting the valid GATEWAY_ACCESS_KEY
+  // see the usage breakdown. Without a valid key (or without a configured
+  // key at all) the page is exactly the public layout — no token markup is
+  // even present in the string.
+  const accessKey = typeof env?.GATEWAY_ACCESS_KEY === 'string' ? env.GATEWAY_ACCESS_KEY : '';
+  const showTokens = accessKey ? await isAuthorized(request, accessKey) : false;
+  if (!showTokens) return htmlResponse(shell({ title: 'AI Gateway · API 服务入口', body }));
+
+  return htmlResponse(shell({
+    title: 'AI Gateway · API 服务入口 · Token 观测',
+    body: body + tokenPanel(),
+    extraStyles: TOKEN_STYLES,
+  }));
 }
 
 function escapeHtml(s) {

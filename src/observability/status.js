@@ -7,6 +7,7 @@
 import { loadGatewayConfig } from '../config/nodes.js';
 import { snapshotNode } from '../reliability/node-state.js';
 import { gatewayStats, streamStats } from './stats.js';
+import { tokenStats, summarizeTokenStats, tokenMetricSeries } from './tokens.js';
 import { corsHeaders, jsonError } from '../protocol/http.js';
 import { loadModelRegistry, modelRegistryEntry, servesModel } from '../config/registry.js';
 
@@ -126,6 +127,21 @@ export function healthResponse(request, env, requestId) {
       active_requests: gatewayStats.activeRequests,
       cancellations_total: gatewayStats.cancellations,
     },
+    token_stats: (() => {
+      const s = summarizeTokenStats();
+      return {
+        started_at: new Date(s.startedAt).toISOString(),
+        totals: {
+          input_tokens: s.totals.input,
+          output_tokens: s.totals.output,
+          total_tokens: s.totals.total,
+          usage_reports: s.totals.reports,
+          usage_missing: s.totals.missing,
+        },
+        usage_coverage: s.usageCoverage,
+        note: 'Isolate-local, best-effort, upstream-reported usage only; missing usage is never estimated. Not billing-grade.',
+      };
+    })(),
     diagnostics: config.diagnostics,
     endpoints,
     request_id: requestId,
@@ -171,6 +187,30 @@ export function metricsResponse(request, env) {
   counter('gateway_stream_idle_timeout_total', streamStats.idleTimeout);
   emit('gateway_stream_reader_error_total', 'counter', 'Interrupted: upstream reader threw mid-stream.');
   counter('gateway_stream_reader_error_total', streamStats.readerError);
+
+  // Token usage observability (isolate-local, NOT billing-grade). The
+  // unlabelled gateway totals are emitted FIRST: Prometheus text format keeps
+  // every line of the same name, and the /metrics delta helpers in the test
+  // suite read the first line, so labelled per-bucket series must not precede
+  // the totals.
+  emit('gateway_tokens_input_total', 'counter', 'Upstream-reported input tokens since isolate start (isolate-local, not billing-grade).');
+  counter('gateway_tokens_input_total', tokenStats.totals.input);
+  emit('gateway_tokens_output_total', 'counter', 'Upstream-reported output tokens since isolate start (isolate-local, not billing-grade).');
+  counter('gateway_tokens_output_total', tokenStats.totals.output);
+  emit('gateway_tokens_total', 'counter', 'Upstream-reported total tokens since isolate start (isolate-local, not billing-grade).');
+  counter('gateway_tokens_total', tokenStats.totals.total);
+  emit('gateway_token_usage_reports_total', 'counter', 'Responses whose upstream reported usable usage.');
+  counter('gateway_token_usage_reports_total', tokenStats.totals.reports);
+  emit('gateway_token_usage_missing_total', 'counter', 'Delivered responses whose upstream reported NO usable usage (never estimated).');
+  counter('gateway_token_usage_missing_total', tokenStats.totals.missing);
+  for (const b of tokenMetricSeries()) {
+    const label = `model="${sanitizePrometheusLabel(b.model)}",tier="${sanitizePrometheusLabel(b.tier)}",provider="${sanitizePrometheusLabel(b.provider)}",node_id="${sanitizePrometheusLabel(b.nodeId)}"`;
+    counter('gateway_tokens_total', b.total, label);
+    counter('gateway_tokens_input_total', b.input, label);
+    counter('gateway_tokens_output_total', b.output, label);
+    counter('gateway_token_usage_reports_total', b.reports, label);
+    counter('gateway_token_usage_missing_total', b.missing, label);
+  }
 
   emit('gateway_node_health_score', 'gauge', 'Node health score (1-100).');
   emit('gateway_node_circuit_state', 'gauge', 'Circuit state per node (0 closed, 1 half-open, 2 open).');

@@ -1,17 +1,24 @@
 // Tracked stream wrapper: the single place where a streaming response body is
 // relayed to the client while (a) enforcing the stream idle timeout, (b)
-// recording the node outcome exactly once, and (c) optionally rewriting the
-// SSE model field inline. Keeping the model rewrite INSIDE this layer instead
-// of wrapping yet another pull-based stream around it matters: stacked
-// pull-based stream wrappers can stall on their final chunks, which clients
-// experience as "first events arrive, then the stream never terminates".
+// recording the node outcome exactly once, (c) optionally rewriting the
+// SSE model field inline, and (d) optionally scanning reported usage. Keeping
+// the model rewrite INSIDE this layer instead of wrapping yet another
+// pull-based stream around it matters: stacked pull-based stream wrappers can
+// stall on their final chunks, which clients experience as "first events
+// arrive, then the stream never terminates".
 //
 // Per-chunk work is minimal: only a small rolling tail is kept to detect an
 // in-band `event: error` marker and, when `completionMarker` is set, whether
 // the stream terminated properly. A clean close without the marker is an
-// upstream truncation and counts as a failure.
+// upstream truncation and counts as a failure. The usage scan (only active
+// when `onUsage` is passed, i.e. on passthrough call sites — transformed
+// streams report usage from their own parse points) reuses the already
+// decoded tail text and is passive: it never injects, requests or estimates
+// usage; it only observes what the upstream volunteered.
 
-export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFailure, onNeutral, onStreamStart, onStreamEnd, completionMarker, rewriteModel }) {
+import { normalizeTokenUsage } from '../observability/tokens.js';
+
+export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFailure, onNeutral, onStreamStart, onStreamEnd, completionMarker, rewriteModel, onUsage }) {
   if (!response.body) {
     onSuccess();
     return response;
@@ -21,7 +28,9 @@ export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFail
   // diagnostic tail each consume the same raw chunk with { stream: true }.
   // A single shared decoder instance would have its internal multi-byte UTF-8
   // carry advanced twice per chunk, corrupting any multi-byte character (e.g.
-  // CJK) split across chunk boundaries.
+  // CJK) split across chunk boundaries. The usage scan adds no decoder — it
+  // reuses the tail's already-decoded STRING (sharing the decoded text is
+  // safe; sharing the decoder instance is not).
   const rewriteDecoder = new TextDecoder();
   const tailDecoder = new TextDecoder();
   const encoder = rewriteModel !== undefined ? new TextEncoder() : null;
@@ -30,6 +39,12 @@ export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFail
   let errorEventSeen = false;
   let completionSeen = !completionMarker;
   let finished = false;
+  // Passive usage scan state: lines that may still be split across chunks,
+  // the last usable reported usage object, and a once-only fire guard.
+  const usageScan = typeof onUsage === 'function';
+  let usageLines = '';
+  let usageCandidate = null;
+  let usageReported = false;
   // Stream-end telemetry: chunk/byte volume plus the interruption reason,
   // resolved at the failure branch that observed it.
   const startMs = Date.now();
@@ -37,9 +52,41 @@ export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFail
   let receivedBytes = 0;
   let failureReason = null;
 
+  // Incremental SSE line scan for `data: {... "usage": ...}` events. Only the
+  // LAST usable report wins, so an early empty `usage:{}` cannot clobber a
+  // later real report and two real reports keep the final one (providers that
+  // resend cumulative usage). The buffer is capped so a never-terminating
+  // line cannot grow it unbounded; scanning stops once the completion marker
+  // was seen (usage never follows [DONE]).
+  const scanUsageLine = (text) => {
+    usageLines += text;
+    if (usageLines.length > 64 * 1024) usageLines = '';
+    const lines = usageLines.split('\n');
+    usageLines = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.startsWith('data:') || !line.includes('"usage"')) continue;
+      const raw = line.slice(5).trim();
+      if (!raw || raw === '[DONE]') continue;
+      try {
+        const json = JSON.parse(raw);
+        if (json && typeof json === 'object' && json.usage !== undefined) {
+          if (normalizeTokenUsage(json.usage)) usageCandidate = json.usage;
+        }
+      } catch { /* malformed lines are ignored — passive scan */ }
+    }
+  };
+
   const finalize = (result) => {
     if (finished) return;
     finished = true;
+    // Fire the usage callback EXACTLY ONCE per stream, for success and
+    // failure alike (a truncated stream may still have carried real reported
+    // usage before it died). A client cancel ('neutral') closes the
+    // observation window: it records neither usage nor missing.
+    if (usageScan && !usageReported && result !== 'neutral') {
+      usageReported = true;
+      try { onUsage(usageCandidate); } catch { /* observability must never break the relay */ }
+    }
     const failed = result === 'failure' || (result === 'success' && !completionSeen);
     if (result === 'success') {
       // Clean close but the upstream never sent its termination marker:
@@ -124,7 +171,11 @@ export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFail
       chunkCount++;
       receivedBytes += value.byteLength;
       if (!errorEventSeen || !completionSeen) {
-        diagnosticTail = (diagnosticTail + tailDecoder.decode(value, { stream: true })).slice(-256);
+        const decoded = tailDecoder.decode(value, { stream: true });
+        // Scan BEFORE the completion-marker test: a single chunk carrying the
+        // usage event and [DONE] together must still be seen.
+        if (usageScan && !completionSeen) scanUsageLine(decoded);
+        diagnosticTail = (diagnosticTail + decoded).slice(-256);
         if (!errorEventSeen) {
           errorEventSeen = /(?:^|\r?\n)event:\s*error\s*(?:\r?\n|$)/.test(diagnosticTail);
         }

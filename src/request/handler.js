@@ -53,6 +53,7 @@ import { trackStreamResponse } from '../stream/track.js';
 import { getLogger } from '../observability/logger.js';
 import { healthResponse, metricsResponse, modelsListResponse, versionResponse } from '../observability/status.js';
 import { recordStreamStart, recordStreamCompleted, recordStreamInterrupted } from '../observability/stats.js';
+import { recordTokenUsage } from '../observability/tokens.js';
 import { dashboardResponse } from '../dashboard/pages.js';
 import { isAuthorized } from './auth.js';
 import { gatewayError, buildBudgetExhaustedResponse, buildExhaustedResponse, buildClientErrorResponse } from './errors.js';
@@ -467,13 +468,19 @@ async function handleSuccess(s) {
         // Model rewrite happens INSIDE the tracked stream; wrapping yet another
         // pull-based stream layer here stalls final chunks (see track.js).
         ...(needsModelRewrite ? { rewriteModel: requestedModel } : {}),
+        // Chat passthrough never parses chunks for protocol purposes, so this
+        // is the one streaming path whose usage is captured by track.js's
+        // passive scan. Transformed routes below report usage from the
+        // transform's parse point instead (onUsage NOT passed here), keeping
+        // exactly one capture per stream.
+        onUsage: (u) => recordTokens(c, node, u),
         ...makeNodeStreamTrack(c, node, latencyMs),
       });
       return { response: tracked };
     }
 
     if (route === 'openai_responses') {
-      const transformed = transformOpenAIStreamToResponses(guarded, requestedModel, bodyJson, requestId, request.signal);
+      const transformed = transformOpenAIStreamToResponses(guarded, requestedModel, bodyJson, requestId, request.signal, { onUsage: (u) => recordTokens(c, node, u) });
       const tracked = trackStreamResponse(transformed, {
         idleTimeoutMs: limits.streamIdleTimeoutMs,
         completionMarker: /event:\s*response\.(?:completed|incomplete)\b/,
@@ -484,7 +491,7 @@ async function handleSuccess(s) {
 
     // anthropic_messages: transform then track the CLIENT-facing stream so an
     // interrupted transform records against the node exactly once.
-    const transformed = transformOpenAIStreamToAnthropic(guarded, requestedModel, requestId, request.signal);
+    const transformed = transformOpenAIStreamToAnthropic(guarded, requestedModel, requestId, request.signal, { onUsage: (u) => recordTokens(c, node, u) });
     const tracked = trackStreamResponse(transformed, {
       idleTimeoutMs: limits.streamIdleTimeoutMs,
       // A stream that never reaches message_stop (truncated / errored mid-way)
@@ -516,6 +523,9 @@ async function handleSuccess(s) {
         }
         return { rotate: true };
       }
+      // Single usage capture point for BOTH delivered forms below (plain JSON
+      // and the synthesized Responses SSE) — the transform never runs here.
+      recordTokens(c, node, data?.usage);
       if (!clientWantsStream) {
         const responses = openAICompletionToResponses(data, requestedModel, bodyJson);
         recordSuccess(node.id, latencyMs);
@@ -542,6 +552,11 @@ async function handleSuccess(s) {
       try {
         const data = await collectOpenAIStreamObject(upstream, request.signal);
         recordSuccess(node.id, latencyMs);
+        // Assembled-from-stream usage (fake-stream protection and the
+        // upstream-stream / client-non-stream case): the collect helper
+        // already carries the final usage chunk — record it here, exactly
+        // once, instead of inside the passthrough scan.
+        recordTokens(c, node, data?.usage);
         data.model = requestedModel;
         return { response: jsonResponse(200, data, env, request, extraHeaders) };
       } catch (error) {
@@ -562,6 +577,10 @@ async function handleSuccess(s) {
           // deliver what arrived, but account the node failure.
           completionMarker: /data:\s*\[DONE\]\s*(?:\r?\n|$)/,
           ...(needsModelRewrite ? { rewriteModel: requestedModel } : {}),
+          // Defensive consistency with the streaming passthrough above (this
+          // branch is mutually exclusive with the assemble path below, so the
+          // scan can never double-count against a recordTokens call).
+          onUsage: (u) => recordTokens(c, node, u),
           ...makeNodeStreamTrack(c, node, latencyMs),
         },
       );
@@ -591,6 +610,9 @@ async function handleSuccess(s) {
       }
       return { rotate: true };
     }
+    // Single usage capture point for BOTH delivered forms below (plain JSON
+    // and the synthesized chat SSE) — nothing else parses this body.
+    recordTokens(c, node, data?.usage);
     if (!clientWantsStream) {
       recordSuccess(node.id, latencyMs);
       if (data && typeof data === 'object') data.model = requestedModel;
@@ -613,6 +635,10 @@ async function handleSuccess(s) {
     }
     const message = openAIToAnthropicMessage(data, requestedModel);
     recordSuccess(node.id, latencyMs);
+    // Single usage capture point: this branch serves both the plain JSON body
+    // and the upstream-stream-assembled object, for streaming and non-stream
+    // clients alike.
+    recordTokens(c, node, data?.usage);
     return { response: jsonResponse(200, message, env, request, extraHeaders) };
   } catch (error) {
     if (request.signal?.aborted) {
@@ -622,6 +648,14 @@ async function handleSuccess(s) {
     recordOutcome(state, node, classifyFirstEventFailure(), latencyMs, error.message, exposeUpstreamInfo);
     return { rotate: true };
   }
+}
+
+// Isolate-local token observability: called EXACTLY ONCE per delivered
+// response — from the non-stream parse points, or via the onUsage callback of
+// the one stream wrapper / transform that actually parsed the body. Rotating
+// attempts never reach here, so failover still yields a single record.
+function recordTokens(c, node, usage) {
+  recordTokenUsage({ model: c.requestedModel, tier: node.tier, provider: node.provider, nodeId: node.id, usage });
 }
 
 // Node-layer stream tracking: node outcome recording + stream-end telemetry.

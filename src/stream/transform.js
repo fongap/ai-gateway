@@ -15,7 +15,7 @@ import {
 import { extractOpenAITextContent } from '../protocol/openai.js';
 import { createSseScanner } from './guard.js';
 
-export function transformOpenAIStreamToAnthropic(upstream, requestedModel, requestId, clientSignal) {
+export function transformOpenAIStreamToAnthropic(upstream, requestedModel, requestId, clientSignal, { onUsage } = {}) {
   const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
@@ -25,9 +25,25 @@ export function transformOpenAIStreamToAnthropic(upstream, requestedModel, reque
   let nextBlockIndex = 0;
   let openBlock = null;
   let finishReason = null;
+  // usage starts zeroed because message_delta must always carry a usage block;
+  // usageSeen distinguishes "upstream reported it" from "never reported", so
+  // observability only fires onUsage for genuinely reported usage.
   let usage = { input_tokens: 0, output_tokens: 0 };
+  let usageSeen = false;
+  let usageReported = false;
   let validChoiceSeen = false;
   const pendingTools = new Map();
+
+  // Report captured usage EXACTLY ONCE per stream, when the observation
+  // window closes (finalize / failStream). A client cancel never reports:
+  // the window closed with the connection. Observability must never break
+  // the relay, so the callback is wrapped.
+  const reportUsage = () => {
+    if (usageReported) return;
+    usageReported = true;
+    if (typeof onUsage !== 'function') return;
+    try { onUsage(usageSeen ? usage : null); } catch { /* never break the stream */ }
+  };
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -37,6 +53,7 @@ export function transformOpenAIStreamToAnthropic(upstream, requestedModel, reque
       const failStream = (message) => {
         if (finished) return;
         finished = true;
+        reportUsage();
         emit('error', { type: 'error', error: { type: 'api_error', message } });
         try { controller.close(); } catch { /* already closed */ }
       };
@@ -84,7 +101,10 @@ export function transformOpenAIStreamToAnthropic(upstream, requestedModel, reque
           failStream(json.error.message || 'Upstream streaming error.');
           return true; // stop
         }
-        if (json?.usage) usage = mapUsageToAnthropic(json.usage);
+        if (json?.usage) {
+          usage = mapUsageToAnthropic(json.usage);
+          usageSeen = true;
+        }
         const choice = json?.choices?.[0];
         if (!choice) return false;
         validChoiceSeen = true;
@@ -118,6 +138,7 @@ export function transformOpenAIStreamToAnthropic(upstream, requestedModel, reque
           return;
         }
         finished = true;
+        reportUsage();
         closeOpenBlock();
         const sortedTools = [...pendingTools.entries()].sort((a, b) => a[0] - b[0]);
         for (const [, tool] of sortedTools) {
@@ -192,9 +213,15 @@ export function transformOpenAIStreamToAnthropic(upstream, requestedModel, reque
         // as a clean close, so a missing finish_reason is the transform's only
         // signal that this was a truncation. Keep it a failure so node health
         // accounting stays correct (the client already got whichever deltas were
-        // flushed before the abort).
-        if (!finished && finishReason === null) failStream('Upstream stream ended before a completion marker was received.');
-        else finalize();
+        // flushed before the abort). A CLIENT abort is different: the
+        // observation window closed with the connection, so neither usage nor
+        // missing is reported (the runtime cancels the body from here).
+        if (!finished) {
+          if (clientSignal?.aborted) {
+            // client hang-up: window closed, nothing to report
+          } else if (finishReason === null) failStream('Upstream stream ended before a completion marker was received.');
+          else finalize();
+        }
       } catch (e) {
         if (!clientSignal?.aborted) failStream(`Upstream stream interrupted: ${e?.message || e}`);
       } finally {

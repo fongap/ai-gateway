@@ -27,7 +27,7 @@ import {
   newResponseId, newMessageItemId, newReasoningItemId, newFunctionCallItemId, newCallId,
 } from './response.js';
 
-export function transformOpenAIStreamToResponses(upstream, requestedModel, request, requestId, clientSignal) {
+export function transformOpenAIStreamToResponses(upstream, requestedModel, request, requestId, clientSignal, { onUsage } = {}) {
   const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
@@ -35,7 +35,12 @@ export function transformOpenAIStreamToResponses(upstream, requestedModel, reque
   const createdAt = Math.floor(Date.now() / 1000);
   const events = new ResponsesEventBuilder();
   const outputs = [];
+  // usage stays the verbatim upstream (OpenAI chat) shape; usageSeen
+  // distinguishes "upstream reported it" from "never reported", so
+  // observability only fires onUsage for genuinely reported usage.
   let usage = {};
+  let usageSeen = false;
+  let usageReported = false;
   let finishReason = null;
   let terminal = false;
   let validChoiceSeen = false;
@@ -45,6 +50,17 @@ export function transformOpenAIStreamToResponses(upstream, requestedModel, reque
   let curReasoningEncrypted = '';
   const tools = new Map();
   const openItems = [];
+
+  // Report captured usage EXACTLY ONCE per stream, when the observation
+  // window closes (finalize / fail). A client cancel never reports: the
+  // window closed with the connection. Observability must never break the
+  // relay, so the callback is wrapped.
+  const reportUsage = () => {
+    if (usageReported) return;
+    usageReported = true;
+    if (typeof onUsage !== 'function') return;
+    try { onUsage(usageSeen ? usage : null); } catch { /* never break the stream */ }
+  };
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -173,6 +189,7 @@ export function transformOpenAIStreamToResponses(upstream, requestedModel, reque
         finalizeTools();
         if (terminal) return;
         terminal = true;
+        reportUsage();
         const status = finishReason === 'length' ? 'incomplete' : 'completed';
         const incompleteDetails = status === 'incomplete' ? { reason: 'max_output_tokens' } : null;
         const response = buildResponsesResponse({
@@ -190,6 +207,7 @@ export function transformOpenAIStreamToResponses(upstream, requestedModel, reque
         finalizeTools();
         if (terminal) return;
         terminal = true;
+        reportUsage();
         const response = buildResponsesResponse({
           id: responseId, created_at: createdAt, status: 'failed', model: requestedModel,
           output: outputs.filter(Boolean), usage: mapChatUsageToResponses(usage),
@@ -201,7 +219,10 @@ export function transformOpenAIStreamToResponses(upstream, requestedModel, reque
 
       const processChunk = (json) => {
         if (json?.error) { fail(json.error.message || 'Upstream streaming error.'); return; }
-        if (json?.usage) usage = json.usage;
+        if (json?.usage) {
+          usage = json.usage;
+          usageSeen = true;
+        }
         const choice = json?.choices?.[0];
         if (!choice) return;
         validChoiceSeen = true;
@@ -247,7 +268,13 @@ export function transformOpenAIStreamToResponses(upstream, requestedModel, reque
         }
         if (!terminal) scanner.flush();
         if (!terminal) {
-          if (finishReason === null) fail('Upstream stream ended before a completion marker was received.');
+          // A CLIENT abort closes the observation window: neither usage nor
+          // missing is reported (the runtime cancels the body from here).
+          // An upstream EOF without finish_reason stays a failure so node
+          // health accounting stays correct.
+          if (clientSignal?.aborted) {
+            // client hang-up: window closed, nothing to report
+          } else if (finishReason === null) fail('Upstream stream ended before a completion marker was received.');
           else finalize();
         }
       } catch (e) {
