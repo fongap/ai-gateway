@@ -38,7 +38,7 @@ flowchart TB
 | priority + LRU | Retry-After 冷却 | HALF_OPEN 单探测 | tier 硬优先级 |
 
 - 多协议：OpenAI Chat / Responses、Anthropic Messages / count_tokens
-- `limits.rpm` 默认 hard，绝不越配额
+- `limits.rpm` 默认 hard，单 Worker isolate 内不主动越配额
 - 整请求 failover budget，超时即停
 
 ## 快速开始

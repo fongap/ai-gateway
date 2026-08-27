@@ -38,7 +38,7 @@ flowchart LR
 | priority + LRU | Retry-After cooldown | HALF_OPEN single probe | hard-precedence tiers |
 
 - Multi-protocol: OpenAI Chat / Responses, Anthropic Messages / count_tokens
-- `limits.rpm` defaults hard — never exceeds the configured quota
+- `limits.rpm` defaults hard — never knowingly exceeds the configured quota within a single Worker isolate
 - Whole-request failover budget; stops rotating once spent
 
 ## Quick start

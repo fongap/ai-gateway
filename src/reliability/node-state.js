@@ -90,7 +90,7 @@ function createState() {
     lastUsedAt: 0,
     // Per-logical-model cooldown map: a 404 "model not found" cools only the
     // (node, model) pair, NOT the whole node. Other models on the same node
-    // stay fully schedulable. Node-level cooldownUntil above is for real node
+    // stay fully dispatchable. Node-level cooldownUntil above is for real node
     // health issues (429/auth/server/circuit); model_missing never touches it.
     modelCooldowns: new Map(),
   };
@@ -169,7 +169,7 @@ export function recordFailure(nodeId, { counted = false, cooldownMs = 0, reason 
     // Non-counted outcomes (429 / 401 / 403 / 404 / client 4xx). These never
     // open the circuit. If one concludes a half-open probe, the node proved it
     // was reachable (it gave an HTTP answer, even a reject), so it must leave
-    // half-open and become schedulable again once any node-local cooldown
+    // half-open and become dispatchable again once any node-local cooldown
     // expires. NEVER leave probeInFlight stuck true.
     recoverFromHalfOpen(s);
     return;
@@ -193,7 +193,7 @@ export function recordNeutralEnd(nodeId) {
 }
 
 // Record a model_missing (404) outcome. The node answered, so a half-open probe
-// resolves the same way a 429/401 would (recover, become schedulable), but the
+// resolves the same way a 429/401 would (recover, become dispatchable), but the
 // cooldown is applied to the (node, model) PAIR only — the node stays healthy
 // for every other model it serves. model_missing never counts toward the
 // circuit (a mapping mismatch is not a transient outage) and never penalizes
@@ -256,6 +256,7 @@ const PENALTY = {
   auth: 30,
   server: 20,
   network: 12,
+  stream: 12,
   client: 0,
 };
 

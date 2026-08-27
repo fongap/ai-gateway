@@ -11,7 +11,7 @@
 // the stream terminated properly. A clean close without the marker is an
 // upstream truncation and counts as a failure.
 
-export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFailure, onNeutral, completionMarker, rewriteModel }) {
+export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFailure, onNeutral, onStreamStart, onStreamEnd, completionMarker, rewriteModel }) {
   if (!response.body) {
     onSuccess();
     return response;
@@ -30,10 +30,17 @@ export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFail
   let errorEventSeen = false;
   let completionSeen = !completionMarker;
   let finished = false;
+  // Stream-end telemetry: chunk/byte volume plus the interruption reason,
+  // resolved at the failure branch that observed it.
+  const startMs = Date.now();
+  let chunkCount = 0;
+  let receivedBytes = 0;
+  let failureReason = null;
 
   const finalize = (result) => {
     if (finished) return;
     finished = true;
+    const failed = result === 'failure' || (result === 'success' && !completionSeen);
     if (result === 'success') {
       // Clean close but the upstream never sent its termination marker:
       // the output was truncated, so account it as a failure.
@@ -41,6 +48,16 @@ export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFail
       else onSuccess();
     } else if (result === 'failure') onFailure();
     else onNeutral();
+    onStreamEnd?.(
+      result === 'neutral' ? 'neutral' : failed ? 'interrupted' : 'completed',
+      {
+        reason: failed ? failureReason : null,
+        durationMs: Date.now() - startMs,
+        chunkCount,
+        receivedBytes,
+        completionMarkerSeen: completionSeen,
+      },
+    );
   };
 
   // Inline SSE model-field rewrite (same semantics as the former standalone
@@ -84,23 +101,28 @@ export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFail
         // Upstream died mid-stream. Close cleanly so chunks that were already
         // queued still reach the client; the missing completion marker makes
         // the truncation detectable, and the node records a failure.
+        failureReason = 'reader_error';
         finalize('failure');
         try { controller.close(); } catch { /* closed */ }
         return;
       }
       if (result.timeout) {
         reader.cancel().catch(() => {});
+        failureReason = 'idle_timeout';
         finalize('failure');
         controller.close();
         return;
       }
       const { done, value } = result.value;
       if (done) {
+        failureReason = 'missing_completion_marker';
         if (encoder && lineBuffer) { controller.enqueue(encoder.encode(lineBuffer)); lineBuffer = ''; }
         finalize(errorEventSeen ? 'failure' : 'success');
         controller.close();
         return;
       }
+      chunkCount++;
+      receivedBytes += value.byteLength;
       if (!errorEventSeen || !completionSeen) {
         diagnosticTail = (diagnosticTail + tailDecoder.decode(value, { stream: true })).slice(-256);
         if (!errorEventSeen) {
@@ -117,6 +139,8 @@ export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFail
       reader.cancel().catch(() => {});
     },
   });
+
+  onStreamStart?.();
 
   return new Response(body, {
     status: response.status,

@@ -9,7 +9,7 @@ import {
   loadModelRegistry, modelRegistryEntry, servesModel, isWildcardNode,
 } from '../src/config/registry.js';
 import { getModelsConfigDiagnostics } from '../src/config/models.js';
-import { getPoliciesConfigDiagnostics } from '../src/config/policies.js';
+import { getPoliciesConfigDiagnostics, loadPoliciesConfig } from '../src/config/policies.js';
 
 let passed = 0;
 function test(name, fn) {
@@ -205,17 +205,120 @@ test('malformed POLICIES_CONFIG is FATAL: invalid config refuses service', () =>
   assert.ok(cfg.diagnostics.some((d) => d.includes('POLICIES_CONFIG')), `expected POLICIES_CONFIG diagnostic, got ${cfg.diagnostics}`);
 });
 
-test('POLICIES_CONFIG rejects unknown fields, invalid max_attempts, invalid tier_attempts', () => {
-  const diags = getPoliciesConfigDiagnostics(makeEnv({ extraEnv: {
-    POLICIES_CONFIG: JSON.stringify({
-      'bad': { max_attempts: 'abc', tier_attempts: { tier1: -1, tier9: 2 }, unknown_field: 1 },
-      'ok': { max_attempts: 5 },
-    }),
+// ---- Single-error cases: each failure mode isolated with exclusive text ----
+// Every case feeds ONE bad value so `diags.length === 1` proves the diagnostic
+// is caused by exactly that field; assertions match the validator's own phrase
+// instead of a generic substring (which the `(allowed: ...)` hints also contain).
+
+const policyDiags = (policies) => getPoliciesConfigDiagnostics(makeEnv({
+  extraEnv: { POLICIES_CONFIG: JSON.stringify(policies) },
+}));
+
+const modelDiags = (models) => getModelsConfigDiagnostics(makeEnv({
+  extraEnv: { MODELS_CONFIG: JSON.stringify(models) },
+}));
+
+const MAX_ATTEMPTS_TEXT = /max_attempts must be an integer between 1 and 8/;
+const TIER_ATTEMPTS_TEXT = /tier_attempts\.tier1 must be an integer between 0 and 8/;
+
+test('POLICIES_CONFIG rejects a non-string max_attempts', () => {
+  const diags = policyDiags({ 'p-abc': { max_attempts: 'abc' } });
+  assert.equal(diags.length, 1, `one isolated diagnostic expected, got ${JSON.stringify(diags)}`);
+  assert.match(diags[0], /"p-abc": max_attempts must be an integer between 1 and 8/);
+});
+
+test('POLICIES_CONFIG rejects a below-range max_attempts', () => {
+  const diags = policyDiags({ 'p-low': { max_attempts: -1 } });
+  assert.equal(diags.length, 1, `one isolated diagnostic expected, got ${JSON.stringify(diags)}`);
+  assert.match(diags[0], MAX_ATTEMPTS_TEXT);
+});
+
+test('POLICIES_CONFIG rejects an above-range max_attempts', () => {
+  const diags = policyDiags({ 'p-high': { max_attempts: 9 } });
+  assert.equal(diags.length, 1, `one isolated diagnostic expected, got ${JSON.stringify(diags)}`);
+  assert.match(diags[0], MAX_ATTEMPTS_TEXT);
+});
+
+test('POLICIES_CONFIG rejects a non-integer max_attempts', () => {
+  const diags = policyDiags({ 'p-frac': { max_attempts: 1.5 } });
+  assert.equal(diags.length, 1, `one isolated diagnostic expected, got ${JSON.stringify(diags)}`);
+  assert.match(diags[0], MAX_ATTEMPTS_TEXT);
+});
+
+test('POLICIES_CONFIG rejects an explicit null max_attempts', () => {
+  const diags = policyDiags({ 'p-null': { max_attempts: null } });
+  assert.equal(diags.length, 1, `one isolated diagnostic expected, got ${JSON.stringify(diags)}`);
+  assert.match(diags[0], MAX_ATTEMPTS_TEXT);
+});
+
+test('POLICIES_CONFIG rejects a non-integer tier_attempts value', () => {
+  const diags = policyDiags({ 't-frac': { tier_attempts: { tier1: 1.5 } } });
+  assert.equal(diags.length, 1, `one isolated diagnostic expected, got ${JSON.stringify(diags)}`);
+  assert.match(diags[0], /"t-frac" tier_attempts\.tier1 must be an integer between 0 and 8/);
+});
+
+test('POLICIES_CONFIG rejects an above-range tier_attempts value', () => {
+  const diags = policyDiags({ 't-high': { tier_attempts: { tier1: 9 } } });
+  assert.equal(diags.length, 1, `one isolated diagnostic expected, got ${JSON.stringify(diags)}`);
+  assert.match(diags[0], TIER_ATTEMPTS_TEXT);
+});
+
+test('POLICIES_CONFIG rejects a negative tier_attempts value', () => {
+  const diags = policyDiags({ 't-neg': { tier_attempts: { tier1: -1 } } });
+  assert.equal(diags.length, 1, `one isolated diagnostic expected, got ${JSON.stringify(diags)}`);
+  assert.match(diags[0], TIER_ATTEMPTS_TEXT);
+});
+
+test('POLICIES_CONFIG rejects an unknown tier_attempts key', () => {
+  const diags = policyDiags({ 't-key': { tier_attempts: { tier9: 2 } } });
+  assert.equal(diags.length, 1, `one isolated diagnostic expected, got ${JSON.stringify(diags)}`);
+  assert.match(diags[0], /tier_attempts\.tier9 is not a valid tier/);
+});
+
+test('POLICIES_CONFIG rejects unknown policy fields', () => {
+  const diags = policyDiags({ 'p-unknown': { nope: 1 } });
+  assert.equal(diags.length, 1, `one isolated diagnostic expected, got ${JSON.stringify(diags)}`);
+  assert.match(diags[0], /has unknown field "nope"/);
+});
+
+test('MODELS_CONFIG rejects a non-string policy', () => {
+  const diags = modelDiags({ 'm-num': { policy: 123 } });
+  assert.equal(diags.length, 1, `one isolated diagnostic expected, got ${JSON.stringify(diags)}`);
+  assert.match(diags[0], /model "m-num": policy must be a non-empty string/);
+});
+
+test('MODELS_CONFIG rejects empty and whitespace-only policy', () => {
+  for (const bad of ['', '   ']) {
+    const diags = modelDiags({ 'm-empty': { policy: bad } });
+    assert.equal(diags.length, 1,
+      `policy=${JSON.stringify(bad)}: one isolated diagnostic expected, got ${JSON.stringify(diags)}`);
+    assert.match(diags[0], /model "m-empty": policy must be a non-empty string/);
+  }
+});
+
+test('valid boundary attempts survive strict validation and defaults stay intact', () => {
+  const diags = policyDiags({
+    lo: { max_attempts: 1, tier_attempts: { tier1: 0 } },
+    hi: { max_attempts: 8, tier_attempts: { tier3: 8 } },
+  });
+  assert.deepEqual(diags, [], 'boundary values 1/8 and disabling 0 must not error');
+  const pol = loadPoliciesConfig(makeEnv({ extraEnv: {
+    POLICIES_CONFIG: JSON.stringify({ loose: {} }),
   } }));
-  assert.ok(diags.some((d) => d.includes('unknown_field')), 'unknown policy field must be flagged');
-  assert.ok(diags.some((d) => d.includes('max_attempts')), 'invalid max_attempts must be flagged');
-  assert.ok(diags.some((d) => d.includes('tier_attempts.tier1')), 'out-of-range tier_attempts must be flagged');
-  assert.ok(diags.some((d) => d.includes('tier_attempts.tier9')), 'unknown tier key must be flagged');
+  assert.equal(pol.loose.maxAttempts, 5, 'an omitted max_attempts keeps the default of 5');
+  assert.equal(pol.loose.tierAttempts, null, 'an omitted tier_attempts stays null');
+});
+
+test('invalid max_attempts is FATAL end-to-end: status invalid, ready false', () => {
+  const cfg = loadGatewayConfig(makeEnv({
+    tier1: [node('f1')],
+    secrets: { f1: 'k' },
+    extraEnv: { POLICIES_CONFIG: JSON.stringify({ default: { max_attempts: 0 } }) },
+  }));
+  assert.equal(cfg.status, 'invalid', 'an invalid max_attempts must be fatal, not degraded');
+  assert.equal(cfg.ready, false, 'an invalid max_attempts must refuse service');
+  assert.ok(cfg.diagnostics.some((d) => d.includes('max_attempts must be an integer')),
+    `expected the named max_attempts diagnostic, got ${cfg.diagnostics}`);
 });
 
 test('a model referencing an undefined policy is a FATAL config diagnostic', () => {

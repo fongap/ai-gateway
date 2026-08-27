@@ -4,7 +4,7 @@
 // worker.fetch() against a mocked global fetch upstream.
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
-import { __resetAllStateForTests, getNodeState, rpmUsage } from '../src/reliability/node-state.js';
+import { __resetAllStateForTests, getNodeState, noteRpmRequest, rpmUsage } from '../src/reliability/node-state.js';
 
 const ACCESS_KEY = 'test-access-key';
 
@@ -329,6 +329,115 @@ await test('all nodes denied by distributed limiter returns 429 with a window-ba
   const retryAfter = Number(res.headers.get('retry-after'));
   assert.ok(retryAfter >= 1 && retryAfter <= 60, `retry-after must point at the fixed-window reset, got ${retryAfter}`);
   assert.deepEqual(upstreamCalls, [], 'no node may be contacted when the distributed limiter denies all');
+});
+
+await test('pre-dispatch denies charge no budget: Tier1 drain continues, Tier2 never entered', async () => {
+  resetMock();
+  // Four keys are denied by the distributed limiter BEFORE any dispatch;
+  // max_attempts=2 gives caps[tier1]=1 with both tiers schedulable. Charging
+  // usedInTier pre-dispatch (the old behavior) let one deny drain the tier
+  // budget and dropped the request into Tier2 without ever contacting a
+  // provider. Zero-charging keeps draining the Tier1 candidate set instead.
+  const deniedIds = ['db1', 'db2', 'db3', 'db4'];
+  routeHandlers['db-ok.example.com'] = () => jsonUpstream(okCompletion());
+  routeHandlers['t2.example.com'] = () => jsonUpstream(okCompletion());
+  const fakeBinding = {
+    limit: async ({ key }) => ({ success: !deniedIds.includes(key) }),
+  };
+  const env = makeEnv({
+    tier1: [
+      ...deniedIds.map((id) => basicNode(id, { limits: { concurrency: 5, rpm: 100 } })),
+      basicNode('db-ok'),
+    ],
+    tier2: [basicNode('t2')],
+    secrets: Object.fromEntries([...deniedIds, 'db-ok', 't2'].map((id) => [id, 'k'])),
+    extraEnv: {
+      QUOTA_RATE_LIMITER: fakeBinding,
+      MODELS_CONFIG: JSON.stringify({ 'general-air': { policy: 'fast' } }),
+      POLICIES_CONFIG: JSON.stringify({ fast: { max_attempts: 2 } }),
+    },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 200);
+  assert.deepEqual(upstreamCalls.map((c) => c.host), ['db-ok.example.com'],
+    'the dispatchable Tier1 node must be reached and lower Tier2 must never be entered');
+  assert.equal(getNodeState('db1').totalFailures, 0, 'global deny is not a node failure');
+  assert.equal(rpmUsage('db1'), 0, 'pre-dispatch deny rolls back the RPM reservation');
+});
+
+await test('hard-RPM-exhausted fallback tier reserves no budget: primary keeps full attempts', async () => {
+  resetMock();
+  // Tier2's single node is hard-RPM exhausted for this minute -> deferred
+  // capacity, not dispatchable. It must not reserve a budget slot that
+  // shortchanges Tier1: max_attempts=5 yields exactly five Tier1 attempts.
+  // Counting the exhausted tier as schedulable left Tier1 with four.
+  for (let i = 1; i <= 6; i++) routeHandlers[`rp${i}.example.com`] = () => jsonUpstream({}, 502);
+  routeHandlers['rpmex-t2.example.com'] = () => jsonUpstream(okCompletion());
+  noteRpmRequest('rpmex-t2', Date.now()); // burn its whole minute window (rpm=1)
+  const env = makeEnv({
+    tier1: Array.from({ length: 6 }, (_, i) => basicNode(`rp${i + 1}`)),
+    tier2: [basicNode('rpmex-t2', { limits: { concurrency: 5, rpm: 1 } })],
+    secrets: { rp1: 'k', rp2: 'k', rp3: 'k', rp4: 'k', rp5: 'k', rp6: 'k', 'rpmex-t2': 'k' },
+    extraEnv: {
+      MODELS_CONFIG: JSON.stringify({ 'general-air': { policy: 'fast' } }),
+      POLICIES_CONFIG: JSON.stringify({ fast: { max_attempts: 5 } }),
+    },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 502);
+  const body = await res.json();
+  assert.equal(body.error.details.attempts, 5, 'Tier1 spends the full max_attempts budget');
+  const hosts = upstreamCalls.map((c) => c.host);
+  assert.equal(hosts.length, 5);
+  assert.ok(hosts.every((h) => /^rp[1-6]\.example\.com$/.test(h)), 'every attempt stays in Tier1');
+  assert.ok(!hosts.includes('rpmex-t2.example.com'), 'the deferred tier is never dispatched');
+});
+
+await test('concurrency-saturated fallback tier reserves no budget', async () => {
+  resetMock();
+  // Tier2's lone node serves sat-model AND general-air at concurrency=1; the
+  // first request parks itself in that slot behind a gate. A second request
+  // sees Tier2 saturated (deferred capacity), so Tier1 keeps the whole
+  // attempt budget instead of surrendering one slot to the busy tier.
+  let releaseSat;
+  const gate = new Promise((r) => { releaseSat = r; });
+  routeHandlers['sat2.example.com'] = async () => {
+    await gate;
+    return jsonUpstream(okCompletion());
+  };
+  for (let i = 1; i <= 6; i++) routeHandlers[`cs${i}.example.com`] = () => jsonUpstream({}, 502);
+  const env = makeEnv({
+    tier1: Array.from({ length: 6 }, (_, i) => basicNode(`cs${i + 1}`)),
+    tier2: [basicNode('sat2', {
+      limits: { concurrency: 1 },
+      models: { 'general-air': 'm', 'sat-model': 'm' },
+    })],
+    secrets: { cs1: 'k', cs2: 'k', cs3: 'k', cs4: 'k', cs5: 'k', cs6: 'k', sat2: 'k' },
+    extraEnv: {
+      MODELS_CONFIG: JSON.stringify({ 'general-air': { policy: 'fast' }, 'sat-model': { policy: 'fast' } }),
+      POLICIES_CONFIG: JSON.stringify({ fast: { max_attempts: 5 } }),
+    },
+  });
+  const parked = worker.fetch(chatRequest({ model: 'sat-model', messages: [] }), env, {});
+  // Wait until the parked request has actually claimed the sat2 slot.
+  for (let i = 0; i < 100 && !upstreamCalls.some((c) => c.host === 'sat2.example.com'); i++) {
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  assert.ok(upstreamCalls.some((c) => c.host === 'sat2.example.com'), 'parked request must hold the sat2 slot');
+
+  const baseline = upstreamCalls.length;
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 502);
+  const body = await res.json();
+  assert.equal(body.error.details.attempts, 5, 'Tier1 spends the full budget while Tier2 is saturated');
+  const hosts = upstreamCalls.slice(baseline).map((c) => c.host);
+  assert.equal(hosts.length, 5);
+  assert.ok(hosts.every((h) => /^cs[1-6]\.example\.com$/.test(h)), 'every new attempt stays in Tier1');
+
+  releaseSat();
+  const parkedRes = await parked;
+  assert.equal(parkedRes.status, 200);
+  await parkedRes.text();
 });
 
 await test('saturation returns 503 with Retry-After instead of bare 429', async () => {
@@ -786,6 +895,162 @@ await test('clean close without [DONE] is accounted as node failure', async () =
   const s = getNodeState('trunc');
   assert.equal(s.totalFailures, 1, 'truncated stream must count as failure');
   assert.equal(s.totalSuccesses, 0);
+});
+
+// ---- Stream counters (/metrics) ---------------------------------------------
+// streamStats persists across tests, so every assertion is a BEFORE/AFTER delta.
+
+async function metricValue(env, name) {
+  const res = await worker.fetch(new Request('https://gateway.example.com/metrics', {
+    headers: { authorization: `Bearer ${ACCESS_KEY}` },
+  }), env, {});
+  // The gateway's counter() helper emits an empty label block: "name{} value".
+  const m = (await res.text()).match(new RegExp(`^${name}(?:\\{[^}]*\\})? (\\d+)$`, 'm'));
+  return m ? Number(m[1]) : 0;
+}
+
+async function streamCounterDeltas(env) {
+  const names = [
+    'gateway_stream_started_total',
+    'gateway_stream_completed_total',
+    'gateway_stream_interrupted_total',
+    'gateway_stream_missing_completion_marker_total',
+    'gateway_stream_idle_timeout_total',
+    'gateway_stream_reader_error_total',
+  ];
+  const before = {};
+  for (const n of names) before[n] = await metricValue(env, n);
+  return async () => {
+    const delta = {};
+    for (const n of names) delta[n] = (await metricValue(env, n)) - before[n];
+    return delta;
+  };
+}
+
+const eofUpstream = (id) => {
+  const encoder = new TextEncoder();
+  routeHandlers[`${id}.example.com`] = () => new Response(new ReadableStream({
+    pull(controller) {
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk('partial output'))}\n\n`));
+      controller.close(); // clean FIN, but no [DONE] -> truncated
+    },
+  }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+};
+
+await test('successful stream: node layer counts started+completed exactly once (no client-layer double count)', async () => {
+  resetMock();
+  routeHandlers['sc.example.com'] = () => sseResponse([chunk('hi'), finishChunk, doneEvent]);
+  const env = makeEnv({ tier1: [basicNode('sc')], secrets: { sc: 'k' } });
+  const deltaSince = await streamCounterDeltas(env);
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
+  assert.equal(res.status, 200);
+  await res.text();
+  const d = await deltaSince();
+  assert.equal(d.gateway_stream_started_total, 1, 'exactly one node-layer stream start');
+  assert.equal(d.gateway_stream_completed_total, 1, 'exactly one node-layer completion');
+  assert.equal(d.gateway_stream_interrupted_total, 0);
+});
+
+await test('mid-stream clean EOF is counted as missing_completion_marker', async () => {
+  resetMock();
+  eofUpstream('seof');
+  const env = makeEnv({ tier1: [basicNode('seof')], secrets: { seof: 'k' } });
+  const deltaSince = await streamCounterDeltas(env);
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
+  assert.equal(res.status, 200);
+  await res.text();
+  const d = await deltaSince();
+  assert.equal(d.gateway_stream_missing_completion_marker_total, 1);
+  assert.equal(d.gateway_stream_interrupted_total, 1);
+  assert.equal(d.gateway_stream_idle_timeout_total, 0);
+  assert.equal(d.gateway_stream_reader_error_total, 0);
+  assert.equal(getNodeState('seof').totalFailures, 1, 'truncated stream must count as node failure');
+});
+
+await test('mid-stream upstream crash counts as interrupted (guard collapses it to missing_completion_marker)', async () => {
+  resetMock();
+  const encoder = new TextEncoder();
+  // One chunk per pull, then error on a later pull: erroring in the same pull
+  // that enqueues would discard the queued chunks and fail the first-event
+  // guard before any output is relayed.
+  let pull = 0;
+  routeHandlers['rerr.example.com'] = () => new Response(new ReadableStream({
+    pull(controller) {
+      if (pull++ < 2) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk(pull === 1 ? 'a' : 'b'))}\n\n`));
+        return;
+      }
+      controller.error(new Error('upstream died mid-stream'));
+    },
+  }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  const env = makeEnv({ tier1: [basicNode('rerr')], secrets: { rerr: 'k' } });
+  const deltaSince = await streamCounterDeltas(env);
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
+  assert.equal(res.status, 200);
+  const reader = res.body.getReader();
+  for (;;) {
+    try {
+      const { done } = await reader.read();
+      if (done) break;
+    } catch { break; }
+  }
+  // The first-event guard's pump closes its reconstructed stream cleanly when
+  // the upstream reader throws, so the tracked layer classifies the crash via
+  // the missing completion marker; the reader_error branch is only reachable
+  // when trackStreamResponse reads a raw error-propagating body.
+  const d = await deltaSince();
+  assert.equal(d.gateway_stream_interrupted_total, 1);
+  assert.equal(d.gateway_stream_missing_completion_marker_total, 1);
+  assert.equal(d.gateway_stream_reader_error_total, 0);
+  assert.equal(d.gateway_stream_idle_timeout_total, 0);
+  assert.equal(getNodeState('rerr').totalFailures, 1, 'mid-stream crash must count as node failure');
+});
+
+await test('three consecutive mid-stream EOFs open the circuit', async () => {
+  resetMock();
+  eofUpstream('eof3');
+  const env = makeEnv({ tier1: [basicNode('eof3')], secrets: { eof3: 'k' } });
+  const deltaSince = await streamCounterDeltas(env);
+  for (let i = 0; i < 3; i++) {
+    const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
+    assert.equal(res.status, 200);
+    await res.text();
+    // Each stream failure sets a short node cooldown; clear it so the next
+    // request actually reaches upstream instead of short-circuiting with 429.
+    getNodeState('eof3').cooldownUntil = Date.now() - 1;
+  }
+  const s = getNodeState('eof3');
+  assert.equal(s.circuitState, 'open', 'three stream truncations must open the circuit');
+  assert.equal(s.totalFailures, 3);
+  const d = await deltaSince();
+  assert.equal(d.gateway_stream_interrupted_total, 3);
+  assert.equal(d.gateway_stream_missing_completion_marker_total, 3);
+});
+
+await test('client abort mid-stream counts started but neither completed nor interrupted', async () => {
+  resetMock();
+  const ac = new AbortController();
+  routeHandlers['cab.example.com'] = () => sseResponse([chunk('partial'), finishChunk, doneEvent]);
+  const env = makeEnv({ tier1: [basicNode('cab')], secrets: { cab: 'k' } });
+  const deltaSince = await streamCounterDeltas(env);
+  const req = chatRequest({ model: 'general-air', messages: [], stream: true }, ACCESS_KEY, { signal: ac.signal });
+  const res = await worker.fetch(req, env, {});
+  // Simulate a client hanging up mid-stream: read one partial chunk, then
+  // disconnect. Aborting the Request signal alone does not cancel the response
+  // body here, and aborting before the response exists kills the attempt
+  // before any stream starts — cancelling the body is the mid-stream abort.
+  const reader = res.body.getReader();
+  await reader.read();
+  ac.abort();
+  await reader.cancel().catch(() => {});
+  const d = await deltaSince();
+  assert.equal(d.gateway_stream_started_total, 1);
+  assert.equal(d.gateway_stream_completed_total, 0);
+  assert.equal(d.gateway_stream_interrupted_total, 0);
+  assert.equal(d.gateway_stream_missing_completion_marker_total, 0);
+  assert.equal(d.gateway_stream_idle_timeout_total, 0);
+  assert.equal(d.gateway_stream_reader_error_total, 0);
+  assert.equal(getNodeState('cab').totalFailures, 0, 'client abort stays neutral');
 });
 
 await test('public home is served but never leaks internal diagnostics when degraded', async () => {

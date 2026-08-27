@@ -19,7 +19,7 @@ import { loadGatewayConfig } from '../config/nodes.js';
 import { loadModelsConfig } from '../config/models.js';
 import { loadPoliciesConfig, getPolicy } from '../config/policies.js';
 import { getLimits } from '../config/timeouts.js';
-import { pickCandidate, supportsModel, tierHasSchedulableNode } from '../scheduler/scheduler.js';
+import { pickCandidate, supportsModel, tierHasDispatchableNode } from '../scheduler/scheduler.js';
 import {
   recordSuccess, recordFailure, recordNeutralEnd, rollbackRpmBucket, recordModelMissing,
   applyHealthPenalty,
@@ -52,6 +52,7 @@ import { collectOpenAIStreamObject } from '../stream/assemble.js';
 import { trackStreamResponse } from '../stream/track.js';
 import { getLogger } from '../observability/logger.js';
 import { healthResponse, metricsResponse, modelsListResponse, versionResponse } from '../observability/status.js';
+import { recordStreamStart, recordStreamCompleted, recordStreamInterrupted } from '../observability/stats.js';
 import { dashboardResponse } from '../dashboard/pages.js';
 import { isAuthorized } from './auth.js';
 import { gatewayError, buildBudgetExhaustedResponse, buildExhaustedResponse, buildClientErrorResponse } from './errors.js';
@@ -185,10 +186,12 @@ export async function handleRequest(request, env, ctx) {
 
   const state = { attempted: new Set(), attempts: [], totalAttempts: 0, failureKinds: {}, logger, maxAttempts: policy.maxAttempts, requestedModel };
 
-  // Per-tier attempt budgets, computed ONCE per request (availability-aware):
-  // a lower tier only receives budget when it actually holds a schedulable
-  // candidate for this model, so budget is never "reserved" for a cooling /
-  // circuit-open tier. The loop below is strict tier precedence: a tier is
+  // Per-tier attempt budgets, computed ONCE per request (dispatchability-aware):
+  // a lower tier only receives budget when it can DISPATCH this model right now
+  // (a ready candidate: not cooling, circuit-open, concurrency-saturated, or
+  // hard-RPM exhausted). Deferred capacity — busy or temporarily over-quota
+  // nodes that free up later — surfaces only in Retry-After / diagnostics and
+  // earns NO budget. The loop below is strict tier precedence: a tier is
   // drained (its budget spent) before the next tier is entered.
   const tierCaps = computeTierCaps(tiers, requestedModel, state.attempted, policy);
   for (const tierNumber of TIER_ORDER) {
@@ -204,12 +207,21 @@ export async function handleRequest(request, env, ctx) {
       }
       const node = pickCandidate(tiers[tierNumber], requestedModel, state.attempted);
       if (!node) break; // tier exhausted -> fallback to next tier
-      usedInTier++;
       const outcome = await attemptNode({
         request, env, ctx, logger, requestId, route, node, requestedModel,
         clientWantsStream, fakeStream, bodyJson, anthropicConversion, responsesConversion,
         limits, exposeUpstreamInfo, state, failoverBudgetMs, requestStartMs,
       });
+      // A pre-dispatch outcome that never reached an upstream (distributed
+      // rate-limiter deny, invalid base URL) carries budgetCharged:false and
+      // consumes NOTHING: neither totalAttempts nor this tier's attempt slot —
+      // charging the slot instead would let denied-but-untried keys starve
+      // same-tier healthy candidates and every fallback tier. budgetCharged is
+      // always defined on an outcome, so there is no implicit default being
+      // matched here. Termination is unaffected: such nodes land in
+      // state.attempted and pickCandidate skips them, so the candidate set
+      // itself bounds the loop rather than the budgets.
+      if (outcome.budgetCharged) usedInTier++;
       if (outcome.response) return outcome.response;
       if (outcome.stop) break;
     }
@@ -219,10 +231,19 @@ export async function handleRequest(request, env, ctx) {
 }
 
 // Per-tier attempt budget: { tier1, tier2, tier3 } -> max attempts each.
-//   * A tier with no schedulable candidate for `requestedModel` gets 0 budget.
-//   * By default `max_attempts` is split so every schedulable tier gets at least
-//     one attempt and the surplus goes to the highest (most-preferred)
-//     schedulable tier — maximizing free/priority resource use while keeping
+//   * Two capacity notions are kept strictly apart. DISPATCHABLE means a
+//     candidate this tier could truly launch right now (supports the model,
+//     circuit/model cooldown clear, under concurrency, not hard-RPM exhausted);
+//     DEFERRED means capacity exists but cannot serve yet (saturated /
+//     over-quota). Deferred capacity feeds only Retry-After and diagnostic
+//     classification (see tierHasDeferredCapacity in scheduler.js) — it earns
+//     NO budget, otherwise an attempt slot gets reserved for a tier that will
+//     refuse dispatch while the current tier may still have immediately usable
+//     candidates left to spend that slot on.
+//   * A tier with no dispatchable candidate for `requestedModel` gets 0 budget.
+//   * By default `max_attempts` is split so every dispatchable tier gets at
+//     least one attempt and the surplus goes to the highest (most-preferred)
+//     dispatchable tier — maximizing free/priority resource use while keeping
 //     the paid fallback reachable and never starving an intermediate tier.
 //   * `policy.tierAttempts` (POLICIES_CONFIG tier_attempts) overrides a tier's
 //     budget explicitly (0 disables it).
@@ -232,12 +253,12 @@ function computeTierCaps(tiers, requestedModel, attempted, policy) {
   const now = Date.now();
   const caps = {};
   for (const t of TIER_ORDER) caps[t] = 0;
-  const schedulable = TIER_ORDER.filter((t) =>
-    tierHasSchedulableNode(tiers[t], requestedModel, attempted, now));
-  if (schedulable.length === 0) return caps;
+  const dispatchable = TIER_ORDER.filter((t) =>
+    tierHasDispatchableNode(tiers[t], requestedModel, attempted, now));
+  if (dispatchable.length === 0) return caps;
   const max = policy.maxAttempts;
-  const surplus = Math.max(0, max - schedulable.length);
-  schedulable.forEach((t, i) => {
+  const surplus = Math.max(0, max - dispatchable.length);
+  dispatchable.forEach((t, i) => {
     // `t` is numeric (1/2/3); POLICIES_CONFIG tier_attempts uses string keys
     // ('tier1'/'tier2'/'tier3').
     caps[t] = policy.tierAttempts?.[`tier${t}`] ?? (i === 0 ? 1 + surplus : 1);
@@ -247,7 +268,18 @@ function computeTierCaps(tiers, requestedModel, attempted, policy) {
 
 // ---- One attempt against one node -----------------------------------------
 
+// Wrapper around dispatchAttempt. Every path inside either contacted (or tried
+// to contact) an upstream — charging failover budget by default — or opted out
+// explicitly on a pre-dispatch path. Normalizing here guarantees every outcome
+// carries a defined `budgetCharged`, so the main loop never has to infer
+// charging from a failure-kind string.
 async function attemptNode(c) {
+  const outcome = await dispatchAttempt(c);
+  if (outcome.budgetCharged === undefined) outcome.budgetCharged = true;
+  return outcome;
+}
+
+async function dispatchAttempt(c) {
   const {
     request, env, logger, requestId, route, node, requestedModel, clientWantsStream,
     fakeStream, bodyJson, anthropicConversion, responsesConversion, limits, exposeUpstreamInfo, state,
@@ -288,19 +320,21 @@ async function attemptNode(c) {
       const verdict = await env.QUOTA_RATE_LIMITER.limit({ key: node.id });
       if (verdict && verdict.success === false) {
         // Distributed-limit denied: the request never reached an upstream, so
-        // it must NOT consume the upstream attempt budget (maxAttempts) —
-        // otherwise a Tier 1 of CF-denied free keys could starve every fallback
-        // tier without ever contacting a provider. It also must not charge the
-        // node's local RPM: release the slot AND roll back the RPM reservation
-        // acquireSlot just made. Mark the node attempted so it is not re-picked
-        // this request; the tier drains via `attempted` rather than totalAttempts.
+        // it must NOT consume any failover budget — neither the shared attempt
+        // budget (maxAttempts) nor this tier's own attempt slot — otherwise a
+        // run of CF-denied keys starves same-tier healthy candidates and every
+        // fallback tier without ever contacting a provider. It also must not
+        // charge the node's local RPM: release the slot AND roll back the RPM
+        // reservation acquireSlot just made. Mark the node attempted so it is
+        // not re-picked this request; the tier drains via `attempted` rather
+        // than the budgets.
         state.attempted.add(node.id);
         recordNeutralEnd(node.id);
         rollbackRpmBucket(node.id);
         noteFailure(state, 'rate_limit_global');
-        state.logger.info(`attempt ${state.totalAttempts}/${state.maxAttempts} node=${node.id} kind=rate_limit_global status=429 (pre-dispatch, budget not charged)`);
+        state.logger.info(`attempt ${state.totalAttempts}/${state.maxAttempts} node=${node.id} kind=rate_limit_global status=429 (pre-dispatch, no budget charged)`);
         state.attempts.push({ attempt: state.totalAttempts, node_id: node.id, status: 429, kind: 'rate_limit_global' });
-        return { rotate: true };
+        return { rotate: true, budgetCharged: false };
       }
     } catch {
       // A broken coordinator must never take the gateway down: proceed and let
@@ -433,9 +467,7 @@ async function handleSuccess(s) {
         // Model rewrite happens INSIDE the tracked stream; wrapping yet another
         // pull-based stream layer here stalls final chunks (see track.js).
         ...(needsModelRewrite ? { rewriteModel: requestedModel } : {}),
-        onSuccess: () => recordSuccess(node.id, latencyMs),
-        onFailure: () => recordFailure(node.id, { counted: true, cooldownMs: 2_000, reason: 'stream_interrupted' }),
-        onNeutral: () => recordNeutralEnd(node.id),
+        ...makeNodeStreamTrack(c, node, latencyMs),
       });
       return { response: tracked };
     }
@@ -445,9 +477,7 @@ async function handleSuccess(s) {
       const tracked = trackStreamResponse(transformed, {
         idleTimeoutMs: limits.streamIdleTimeoutMs,
         completionMarker: /event:\s*response\.(?:completed|incomplete)\b/,
-        onSuccess: () => recordSuccess(node.id, latencyMs),
-        onFailure: () => recordFailure(node.id, { counted: true, cooldownMs: 2_000, reason: 'stream_interrupted' }),
-        onNeutral: () => recordNeutralEnd(node.id),
+        ...makeNodeStreamTrack(c, node, latencyMs),
       });
       return { response: new Response(tracked.body, { status: 200, headers }) };
     }
@@ -460,19 +490,11 @@ async function handleSuccess(s) {
       // A stream that never reaches message_stop (truncated / errored mid-way)
       // must NOT be recorded as a node success.
       completionMarker: /event:\s*message_stop\b/,
-      onSuccess: () => recordSuccess(node.id, latencyMs),
-      onFailure: () => recordFailure(node.id, { counted: true, cooldownMs: 2_000, reason: 'stream_interrupted' }),
-      onNeutral: () => recordNeutralEnd(node.id),
+      ...makeNodeStreamTrack(c, node, latencyMs),
     });
     return { response: new Response(tracked.body, { status: 200, headers }) };
   }
   detach();
-
-  const trackCallbacks = {
-    onSuccess: () => recordSuccess(node.id, latencyMs),
-    onFailure: () => recordFailure(node.id, { counted: true, cooldownMs: 2_000, reason: 'stream_interrupted' }),
-    onNeutral: () => recordNeutralEnd(node.id),
-  };
 
   // ---- OpenAI Responses (non-stream) ----
   if (route === 'openai_responses') {
@@ -540,7 +562,7 @@ async function handleSuccess(s) {
           // deliver what arrived, but account the node failure.
           completionMarker: /data:\s*\[DONE\]\s*(?:\r?\n|$)/,
           ...(needsModelRewrite ? { rewriteModel: requestedModel } : {}),
-          ...trackCallbacks,
+          ...makeNodeStreamTrack(c, node, latencyMs),
         },
       );
       return { response: tracked };
@@ -602,24 +624,51 @@ async function handleSuccess(s) {
   }
 }
 
+// Node-layer stream tracking: node outcome recording + stream-end telemetry.
+// The client-facing layer (stats.js trackClientResponse) never passes the
+// telemetry callbacks, so stream counters count each stream exactly once.
+function makeNodeStreamTrack(c, node, latencyMs) {
+  return {
+    onSuccess: () => recordSuccess(node.id, latencyMs),
+    onFailure: () => recordFailure(node.id, { counted: true, cooldownMs: 2_000, reason: 'stream_interrupted' }),
+    onNeutral: () => recordNeutralEnd(node.id),
+    onStreamStart: () => recordStreamStart(),
+    onStreamEnd: (outcome, d) => {
+      if (outcome === 'completed') { recordStreamCompleted(); return; }
+      if (outcome !== 'interrupted') return; // neutral (client abort) is not counted
+      recordStreamInterrupted(d.reason);
+      applyHealthPenalty(node.id, 'stream');
+      c.logger.info(
+        `[stream-interrupted] node=${node.id} provider=${node.provider}`
+        + ` model=${c.requestedModel}->${upstreamModelOf(node, c.requestedModel)}`
+        + ` reason=${d.reason} duration_ms=${d.durationMs} chunks=${d.chunkCount}`
+        + ` received_bytes=${d.receivedBytes} completion_marker=${d.completionMarkerSeen}`,
+      );
+    },
+  };
+}
+
 function upstreamModelOf(node, logicalModel) {
   return node.models[logicalModel] || logicalModel;
 }
 
 function rotateWithNeutralEnd(state, node, reason, { preDispatch = false } = {}) {
   state.attempted.add(node.id);
-  state.totalAttempts++;
+  // Pre-dispatch neutrals (invalid base URL) never reached an upstream, so they
+  // do not consume the shared attempt budget — no totalAttempts++, and the
+  // outcome reports budgetCharged:false exactly like the rate-limiter deny.
+  if (!preDispatch) state.totalAttempts++;
   recordNeutralEnd(node.id);
-  // Pre-dispatch neutrals (invalid base URL, etc.) never reached an upstream,
-  // so the RPM reservation acquireSlot made must be returned to the bucket —
-  // otherwise a structurally broken node silently burns its own per-minute RPM
-  // quota on traffic it never sent. Post-dispatch neutrals (200-with-non-json)
-  // keep the charge: the upstream WAS contacted.
+  // Pre-dispatch neutrals also never touched the network, so the RPM reservation
+  // acquireSlot made must be returned to the bucket — otherwise a structurally
+  // broken node silently burns its own per-minute RPM quota on traffic it never
+  // sent. Post-dispatch neutrals (200-with-non-json) keep the charge: the
+  // upstream WAS contacted.
   if (preDispatch) rollbackRpmBucket(node.id);
   noteFailure(state, reason);
   state.logger.info(`attempt ${state.totalAttempts}/${state.maxAttempts} node=${node.id} kind=${reason} status=0`);
   state.attempts.push({ attempt: state.totalAttempts, node_id: node.id, status: 0, kind: reason });
-  return { rotate: true };
+  return preDispatch ? { rotate: true, budgetCharged: false } : { rotate: true };
 }
 
 // Aggregate failure-kind counter for the exhausted response. Kinds alone (no

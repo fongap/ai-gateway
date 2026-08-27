@@ -57,7 +57,7 @@ Rules enforced at load time:
 - Unknown node fields (`prioirty`) and unknown `limits` fields (`concurency`) are rejected; invalid `priority` / `limits.concurrency` / `limits.rpm` are rejected with a named diagnostic.
 - `limits.concurrency`: integer ≥ 1, default `2`.
 - `limits.rpm`: optional per-minute request quota for the key (e.g. `25`). Semantics are controlled by `limits.rpm_mode`:
-  - **hard（默认，显式配置了 `rpm` 即生效）** — the quota is treated as a real upstream/account limit: an exhausted node is skipped this minute, the tier falls through, and if every candidate is exhausted the client receives `503` + `Retry-After` pointing at the RPM minute boundary. The gateway never knowingly exceeds the configured count.
+  - **hard（默认，显式配置了 `rpm` 即生效）** — an isolate-local cap rather than a verified upstream/account limit: within a single Worker isolate the gateway never knowingly exceeds the configured count, an exhausted node is skipped this minute, the tier falls through, and if every candidate is exhausted the client receives `503` + `Retry-After` pointing at the RPM minute boundary.
   - **soft** — the legacy best-effort behavior: exhausted nodes remain last-resort candidates so a lone capped node still serves instead of failing.
 - `limits.rpm_mode`: `"hard"`(default) | `"soft"`. Any other value is rejected.
 
@@ -65,7 +65,7 @@ Rules enforced at load time:
 
 ### Optional distributed rate shaping (per-location)
 
-For keys that are rate-limited at the account level you can add a Cloudflare Workers Rate Limiting binding named `QUOTA_RATE_LIMITER` (binding name is what matters; consult your wrangler version's docs for the exact config syntax). When present, every dispatch to a **hard-RPM** node first performs a distributed (per-Cloudflare-location) fixed-window check; a deny rotates to the next candidate without counting a node failure. Without the binding this is a no-op and only isolate-local shaping applies.
+For keys that are rate-limited at the account level you can add a Cloudflare Workers Rate Limiting binding named `QUOTA_RATE_LIMITER` (binding name is what matters; consult your wrangler version's docs for the exact config syntax). When present, every dispatch to a **hard-RPM** node first performs a distributed (per-Cloudflare-location) fixed-window check; a deny rotates to the next candidate without counting a node failure and without consuming any failover budget — it charges neither `max_attempts` nor the tier's attempt slot. Without the binding this is a no-op and only isolate-local shaping applies.
 
 > **Scope caveat**: Cloudflare Rate Limiting is counted per location, permissive and eventually consistent — it is **not** a strict global/account quota and should not be relied on for accurate accounting. Its threshold is fixed at the binding (`limit=N`, `period=60`), so it cannot express a different `limits.rpm` per node; the local hard/soft semantics remain the exact per-node source of truth. Treat it as approximate distributed shaping, and use `limits.rpm` (hard mode) for exact per-node counts.
 
@@ -88,7 +88,7 @@ Concurrency cannot be coordinated globally without Durable Objects, which this p
 
 The **Model Registry** is the single source of truth for a logical model's capability (`capabilities.tools/reasoning/vision/stream`) and reasoning efforts. Node mapping only says *whether a node can serve the model*; the Provider Profile only says *how to talk to the upstream*. `/v1/models` does not derive capability from the provider profile.
 
-Tier order is fixed: tier-1 → tier-2 → tier-3. A lower tier is used only when the current tier yields no eligible candidate for the request. `max_attempts` (default 5, clamp 1–8) bounds total attempts per request across all tiers. Each tier additionally has its own attempt budget: by default `max_attempts` is split so every tier that actually holds a schedulable candidate (model supported, not cooling / circuit-open) gets at least one attempt and the surplus goes to the highest (most-preferred) schedulable tier — maximizing free/priority resource use while always keeping the paid fallback reachable and never silently starving an intermediate tier. `tier_attempts` explicitly overrides a tier's budget (`0` disables it).
+Tier order is fixed: tier-1 → tier-2 → tier-3. A lower tier is used only when the current tier yields no eligible candidate for the request. `max_attempts` (default 5; explicitly configured values must be an integer between 1 and 8 — anything else is rejected at load, never clamped) bounds total attempts per request across all tiers. Each tier additionally has its own attempt budget: by default `max_attempts` is split over currently-dispatchable work — a tier whose candidates are merely deferred (concurrency-saturated or hard-RPM-exhausted) reserves no budget — so every tier that actually holds a dispatchable candidate (model supported, not cooling / circuit-open) gets at least one attempt and the surplus goes to the highest (most-preferred) dispatchable tier — maximizing free/priority resource use while always keeping the paid fallback reachable and never silently starving an intermediate tier. `tier_attempts` explicitly overrides a tier's budget (`0` disables it).
 
 ### Recommended multi-key / multi-account layout
 
@@ -149,6 +149,21 @@ Computed at config-load time and exposed on the auth-protected `/health`:
 | `ready` | All declared nodes usable |
 
 `ready` is `true` only for `ready`/`degraded`; `invalid`/`unconfigured` refuse service (`/health` returns 503, API requests return 500). `/health` also reports `nodes_total` (declared), `nodes_usable` and `nodes_active` separately.
+
+## /metrics
+
+Auth-protected like `/health`, rendered in Prometheus text format. Gateway-level stream counters:
+
+| Metric | Meaning |
+|----------|---------|
+| `gateway_stream_started_total` | Streams opened toward upstreams |
+| `gateway_stream_completed_total` | Streams that ended with the completion marker |
+| `gateway_stream_interrupted_total` | Streams that ended mid-stream; always equals the sum of the three reason counters below |
+| `gateway_stream_missing_completion_marker_total` | Clean EOF without the completion marker |
+| `gateway_stream_idle_timeout_total` | `STREAM_IDLE_TIMEOUT_MS` elapsed with no new chunk |
+| `gateway_stream_reader_error_total` | Upstream reader threw mid-stream |
+
+Client aborts (neutral ends) count only in `gateway_stream_started_total`. Node-level detail (node id, provider, model, duration, bytes) lives in the `/health` endpoints and server logs (`[stream-interrupted]` lines), not in `/metrics`.
 
 ## Local development
 

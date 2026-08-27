@@ -6,7 +6,7 @@
 
 import { loadGatewayConfig } from '../config/nodes.js';
 import { snapshotNode } from '../reliability/node-state.js';
-import { gatewayStats } from './stats.js';
+import { gatewayStats, streamStats } from './stats.js';
 import { corsHeaders, jsonError } from '../protocol/http.js';
 import { loadModelRegistry, modelRegistryEntry, servesModel } from '../config/registry.js';
 
@@ -158,6 +158,19 @@ export function metricsResponse(request, env) {
   counter('gateway_client_failures_total', gatewayStats.failures);
   emit('gateway_client_active_requests', 'gauge', 'Client requests currently active in this isolate.');
   counter('gateway_client_active_requests', gatewayStats.activeRequests);
+
+  emit('gateway_stream_started_total', 'counter', 'Streams relayed to clients from any node (wrapper creation).');
+  counter('gateway_stream_started_total', streamStats.started);
+  emit('gateway_stream_completed_total', 'counter', 'Streams that reached their completion marker.');
+  counter('gateway_stream_completed_total', streamStats.completed);
+  emit('gateway_stream_interrupted_total', 'counter', 'Streams interrupted after real output. Equals the sum of the three reason counters below.');
+  counter('gateway_stream_interrupted_total', streamStats.interrupted);
+  emit('gateway_stream_missing_completion_marker_total', 'counter', 'Interrupted: clean EOF without the completion marker.');
+  counter('gateway_stream_missing_completion_marker_total', streamStats.missingCompletion);
+  emit('gateway_stream_idle_timeout_total', 'counter', 'Interrupted: STREAM_IDLE_TIMEOUT_MS elapsed without a new chunk.');
+  counter('gateway_stream_idle_timeout_total', streamStats.idleTimeout);
+  emit('gateway_stream_reader_error_total', 'counter', 'Interrupted: upstream reader threw mid-stream.');
+  counter('gateway_stream_reader_error_total', streamStats.readerError);
 
   emit('gateway_node_health_score', 'gauge', 'Node health score (1-100).');
   emit('gateway_node_circuit_state', 'gauge', 'Circuit state per node (0 closed, 1 half-open, 2 open).');

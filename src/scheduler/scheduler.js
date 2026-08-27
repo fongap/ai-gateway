@@ -106,20 +106,23 @@ export function tierHasDeferredCapacity(tierNodes, requestedModel, attempted, no
   return false;
 }
 
-// Availability-aware capacity check used to decide whether a LOWER tier deserves
-// an attempt budget. A tier "has a schedulable node" only when it actually holds
-// a candidate the scheduler could dispatch for this model right now — not merely
-// because a node is *configured* to support the model. A node that is cooling,
-// circuit-open, or in a model-missing cooldown is NOT schedulable and must not
-// cause budget to be reserved (that budget is better spent on the current tier).
-// Concurrency/RPM saturation is still counted as schedulable: that capacity is
-// "deferred" and will free up within the request's failover budget.
-export function tierHasSchedulableNode(tierNodes, requestedModel, attempted, now = Date.now()) {
+// DISPATCHABLE capacity: a candidate this tier could truly launch THIS INSTANT.
+// Dispatchability-aware mirror of pickCandidate's gates, used to decide whether
+// a LOWER tier deserves an attempt budget: budget is handed out only when the
+// tier can spend it right now, never for merely-*configured* support that would
+// sit unused while the preferred tier still has usable candidates. Soft-RPM-
+// exhausted nodes DO count as dispatchable — pickCandidate keeps them
+// selectable as last resort, so budget must agree with selection. Deferred
+// capacity (concurrency-saturated / hard-RPM-exhausted) belongs to
+// tierHasDeferredCapacity instead: Retry-After and diagnostics, no budget.
+export function tierHasDispatchableNode(tierNodes, requestedModel, attempted, now = Date.now()) {
   for (const node of tierNodes) {
     if (attempted.has(node.id)) continue;
     if (!supportsModel(node, requestedModel)) continue;
     if (peekAvailability(node.id, now) === 'no') continue;
     if (isModelCooling(node.id, requestedModel, now)) continue;
+    if (getNodeState(node.id).activeRequests >= node.limits.concurrency) continue;
+    if (isHardRpmExhausted(node, now)) continue;
     return true;
   }
   return false;

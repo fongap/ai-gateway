@@ -3,7 +3,7 @@
 //
 // POLICIES_CONFIG: policy name -> { max_attempts, tier_attempts? }. Optional.
 // `max_attempts` bounds total upstream attempts per request across ALL tiers
-// (default 5, clamp 1-8). `tier_attempts` optionally overrides the per-tier
+// (default 5, valid range 1-8). `tier_attempts` optionally overrides the per-tier
 // attempt budget (see handler.js computeTierCaps for the default distribution).
 // Tier order is fixed (tier-1 -> tier-2 -> tier-3, hard precedence).
 //
@@ -59,12 +59,21 @@ function analyzePolicies(env) {
             errors.push(`POLICIES_CONFIG: "${name}" has unknown field "${field}" (allowed: ${[...ALLOWED_FIELDS].join(', ')})`);
           }
         }
-        const attempts = Number(config.max_attempts);
         const tierAttempts = parseTierAttempts(config.tier_attempts, name, errors);
+        // max_attempts only participates when explicitly configured; a present
+        // value (null included) must be an integer in [MIN_ATTEMPTS, MAX_ATTEMPTS].
+        let attempts = DEFAULT_POLICY.maxAttempts;
+        if (config.max_attempts !== undefined) {
+          if (!Number.isInteger(config.max_attempts)
+            || config.max_attempts < MIN_ATTEMPTS
+            || config.max_attempts > MAX_ATTEMPTS) {
+            errors.push(`POLICIES_CONFIG: "${name}": max_attempts must be an integer between ${MIN_ATTEMPTS} and ${MAX_ATTEMPTS}`);
+          } else {
+            attempts = config.max_attempts;
+          }
+        }
         policies[name.trim()] = {
-          maxAttempts: Number.isFinite(attempts)
-            ? Math.max(MIN_ATTEMPTS, Math.min(MAX_ATTEMPTS, Math.trunc(attempts)))
-            : DEFAULT_POLICY.maxAttempts,
+          maxAttempts: attempts,
           tierAttempts,
         };
       }
@@ -75,8 +84,9 @@ function analyzePolicies(env) {
 }
 
 // Parse an optional per-tier attempt budget object: { tier1, tier2, tier3 }.
-// Each value is clamped to [0, MAX_ATTEMPTS]; 0 explicitly disables a tier.
-// Invalid values (non-numeric, out of range, unknown key) produce diagnostics.
+// Each value must be an integer in [0, MAX_ATTEMPTS]; 0 explicitly disables a
+// tier. Non-integers (null included), out-of-range values and unknown keys
+// produce diagnostics instead of being clamped or truncated.
 function parseTierAttempts(value, policyName, errors) {
   if (value === undefined || value === null) return null;
   if (typeof value !== 'object' || Array.isArray(value)) {
@@ -90,12 +100,11 @@ function parseTierAttempts(value, policyName, errors) {
       errors.push(`POLICIES_CONFIG: "${policyName}" tier_attempts.${key} is not a valid tier (allowed: ${TIER_KEYS.join(', ')})`);
       continue;
     }
-    const n = Number(val);
-    if (!Number.isFinite(n) || n < 0) {
-      errors.push(`POLICIES_CONFIG: "${policyName}" tier_attempts.${key} must be a non-negative integer`);
+    if (!Number.isInteger(val) || val < 0 || val > MAX_ATTEMPTS) {
+      errors.push(`POLICIES_CONFIG: "${policyName}" tier_attempts.${key} must be an integer between 0 and ${MAX_ATTEMPTS}`);
       continue;
     }
-    out[key] = Math.min(MAX_ATTEMPTS, Math.trunc(n));
+    out[key] = val;
     any = true;
   }
   return any ? out : null;

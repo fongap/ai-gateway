@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+Pre-dispatch zero-charging, dispatchability-aware budgets and config fail-fast completion. No new protocols, providers or features.
+
+### Fixed
+
+- **P0 — Nothing that never reached an upstream consumes any failover budget.** Every attempt outcome now carries an explicit `budgetCharged` flag: a distributed rate-limiter deny (and a node with an invalid base URL) previously still consumed its per-tier attempt slot, and invalid base URLs even charged `totalAttempts` — so a run of CF-denied free keys could drain a tier's budget, starve same-tier healthy candidates or drop the request into lower tiers without ever contacting a provider. Only attempts that actually issue an upstream fetch consume `max_attempts` and the tier slot.
+- **P1 — Tier attempt budgets are dispatchable-aware.** Allocation previously counted concurrency-saturated / hard-RPM-exhausted tiers as schedulable (`tierHasSchedulableNode`), reserving a slot for a fallback tier that would refuse to dispatch while the preferred pool still had usable candidates — with `max_attempts=5`, a saturated or over-quota Tier 2 silently cost Tier 1 one attempt. `tierHasDispatchableNode` replaces it (soft-RPM-exhausted nodes stay dispatchable, matching candidate selection); deferred capacity keeps feeding Retry-After and saturation diagnostics via `tierHasDeferredCapacity` but earns no budget.
+- **P1 — POLICIES_CONFIG / MODELS_CONFIG truly fail fast.** Explicitly configured `max_attempts` must be an integer between 1 and 8 (`"abc"`, `-1`, `9`, `1.5` produce named diagnostics instead of silent clamp/default); `tier_attempts.*` must be an integer 0–8 (`1.5` / `9` are rejected instead of truncated/clamped); a model `policy` present but not a non-empty string is rejected instead of silently becoming `"default"`. Each of these makes the whole configuration invalid (`ready=false`) through the existing aggregation.
+
+### Added
+
+- **Mid-stream truncation diagnostics.** A streaming upstream that dies after real output (clean EOF without the completion marker, reader error, or stream idle timeout) is now observable per cause: the interrupted stream logs a `[stream-interrupted]` line to server logs (node id, provider, logical→upstream model, duration, chunk count, received bytes, whether the completion marker appeared) and `/metrics` gains six gateway-level counters — `gateway_stream_started_total`, `gateway_stream_completed_total`, `gateway_stream_interrupted_total`, `gateway_stream_missing_completion_marker_total`, `gateway_stream_idle_timeout_total`, `gateway_stream_reader_error_total` (interrupted equals the sum of the three reason counters). Node identity stays out of client-facing responses. Classification is unchanged: an interrupted stream remains a counted transient failure (3 consecutive still open the circuit), and it now also applies a health penalty (`stream`, same tier as network) so a truncating node degrades in candidate ordering before the circuit trips. Client aborts stay neutral and count only as started.
+
+### Changed
+
+- **Config tightening**: JSON `null` for `tier_attempts.*` (previously mapped to `0` = tier disabled) is now rejected — disable tiers with explicit `0`. Configs relying on the old mapping must be updated; explicit misconfiguration is never guessed away.
+- **Tests**: the config unit suite asserted invalid `max_attempts` via a substring that merely matched the allowed-fields hint text while no validator flagged it (false positive). Per-error cases with exclusive-text assertions now pin every rule above; integration tests gained three failover-budget regressions (denied-key chain that must stay in Tier1, hard-RPM-exhausted fallback tier, concurrency-saturated fallback tier).
+- Docs: README / ARCHITECTURE / CONFIGURATION synced — isolate-scoped `limits.rpm` wording, dual-protocol first-event guard commit semantics, dispatchable/deferred budget model, and the fact that a distributed deny charges no budget at all.
+
 ## 1.2.3 - 2026-08-27
 
 Scheduling, config-reliability and streaming hardening. No new protocols, providers or features. This release makes the per-tier failover budget explicit and availability-aware, makes `MODELS_CONFIG`/`POLICIES_CONFIG` as fail-fast as the node config, and closes a set of real-request edge cases. 1.2.3 supersedes the provisional 1.2.2 code (which never shipped a release); the reserve heuristic is replaced by the cleaner per-tier budget below.

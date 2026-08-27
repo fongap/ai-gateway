@@ -7,9 +7,10 @@
 // `reasoning_efforts` optionally override the registry defaults. Parsed once per
 // isolate; env vars are immutable at runtime.
 //
-// Like the node config, MODELS_CONFIG is strict: unknown fields, non-boolean
-// capabilities, unknown capability keys, and malformed reasoning_efforts are
-// surfaced as diagnostics (no silent guess at intent). The parse is done once
+// Like the node config, MODELS_CONFIG is strict: unknown fields, an invalid
+// `policy`, non-boolean capabilities, unknown capability keys, and malformed
+// reasoning_efforts are surfaced as diagnostics (no silent guess at intent).
+// The parse is done once
 // per isolate and both the loaded config and its diagnostics are cached.
 
 import { readEnv } from './env.js';
@@ -57,9 +58,17 @@ function analyzeModels(env) {
             errors.push(`MODELS_CONFIG: "${name}" has unknown field "${field}" (allowed: ${[...ALLOWED_ENTRY_FIELDS].join(', ')})`);
           }
         }
-        const entry = {
-          policy: typeof config.policy === 'string' && config.policy.trim() ? config.policy.trim() : 'default',
-        };
+        // `policy` participates only when explicitly configured; a present
+        // value (null included) must be a non-empty string. Unknown policy
+        // names are cross-checked against POLICIES_CONFIG by nodes.js.
+        const entry = { policy: 'default' };
+        if (config.policy !== undefined) {
+          if (typeof config.policy === 'string' && config.policy.trim()) {
+            entry.policy = config.policy.trim();
+          } else {
+            errors.push(`MODELS_CONFIG: model "${name}": policy must be a non-empty string`);
+          }
+        }
         const caps = config.capabilities;
         if (caps !== undefined) {
           if (!caps || typeof caps !== 'object' || Array.isArray(caps)) {

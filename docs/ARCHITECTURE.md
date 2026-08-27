@@ -54,9 +54,9 @@ current tier → valid config → model supported → circuit available
 
 then one O(n) pass picks the best candidate: `priority ASC → activeRequests ASC → health (band ≥10) DESC → lastUsedAt ASC (LRU) → avg latency ASC`. Health differences inside the band are treated as noise so the LRU tiebreak can rotate sequential traffic across equal-priority keys — spreading load prevents 429s instead of reacting to them. A failed node can never be retried within the same request, and a node that becomes eligible mid-request is never skipped.
 
-**Rotation vs fallback + per-tier budget**: staying in the same tier is *node rotation*; moving to tier N+1 happens only when tier N yields no candidate left OR spends its per-tier attempt budget. Tiers are hard precedence — the higher-preference pool is always exhausted first and is never skipped in favour of a lower tier that has no schedulable candidate. Each tier gets its own attempt budget: by default `max_attempts` is split so every tier with an actually-schedulable candidate (model supported, not cooling / circuit-open / model-cooling) receives at least one attempt, and the surplus goes to the highest schedulable tier. Budget is only ever given to a tier that can genuinely be dispatched — an unavailable tier (all candidates cooling / circuit-open) is not reserved an attempt, so a wide failing Tier 1 never eats the whole budget while a healthy Tier 1 is never held back for an unusable fallback. `tier_attempts` in `POLICIES_CONFIG` overrides a tier's budget explicitly (`0` disables it). The shared `max_attempts` still caps total upstream attempts, and `FAILOVER_BUDGET_MS` caps the wall clock.
+**Rotation vs fallback + per-tier budget**: staying in the same tier is *node rotation*; moving to tier N+1 happens only when tier N yields no candidate left OR spends its per-tier attempt budget. Tiers are hard precedence — the higher-preference pool is always exhausted first and is never skipped in favour of a lower tier that has no dispatchable candidate. Each tier gets its own attempt budget: by default `max_attempts` is split over **dispatchable** work only: every tier with a currently-dispatchable candidate (model supported, not cooling / circuit-open / model-cooling) receives at least one attempt, and the surplus goes to the highest-priority dispatchable tier; a tier whose candidates are merely **deferred** (concurrency-saturated or hard-RPM-exhausted this minute) reserves no budget by default — deferral feeds Retry-After / saturated diagnostics instead. Budget is only ever given to a tier that can genuinely be dispatched — an unavailable tier (all candidates cooling / circuit-open) is not reserved an attempt, so a wide failing Tier 1 never eats the whole budget while a healthy Tier 1 is never held back for an unusable fallback. `tier_attempts` in `POLICIES_CONFIG` overrides a tier's budget explicitly (`0` disables it). The shared `max_attempts` still caps total upstream attempts, and `FAILOVER_BUDGET_MS` caps the wall clock.
 
-**RPM semantics**: `limits.rpm` defaults to **hard** — an exhausted node is not a fallback candidate and the gateway never knowingly exceeds the configured quota; full exhaustion yields 503 + Retry-After at the RPM minute boundary. `"rpm_mode":"soft"` restores best-effort behavior. When a `QUOTA_RATE_LIMITER` Rate Limiting binding is bound, hard-RPM dispatches additionally pass a distributed (per-Cloudflare-location) fixed-window check (denied → rotate, no node penalty). That check is approximate and per-location, not a strict global/account quota. Concurrency remains isolate-local shaping.
+**RPM semantics**: `limits.rpm` defaults to **hard** — an exhausted node is not a fallback candidate and, within a single Worker isolate, the gateway never knowingly exceeds the configured quota; full exhaustion yields 503 + Retry-After at the RPM minute boundary. `"rpm_mode":"soft"` restores best-effort behavior. When a `QUOTA_RATE_LIMITER` Rate Limiting binding is bound, hard-RPM dispatches additionally pass a distributed (per-Cloudflare-location) fixed-window check (denied → rotate, no node penalty). That check is approximate and per-location, not a strict global/account quota. Concurrency remains isolate-local shaping.
 
 **Failover budget**: the whole request is bounded by `FAILOVER_BUDGET_MS` (default 180s). Time starts when the gateway receives the request; before each new attempt the remaining budget is checked and the attempt's own headers/first-event timeout is capped to `min(configured, remaining)`. When the budget is exhausted the gateway stops rotating and returns a terminal 504 with an attempt count instead of burning `headersTimeout × maxAttempts` (~600s worst case). Client abort is privileged, and streaming never fails over after the first client-visible event (first-event-before still rotes within budget).
 
@@ -75,7 +75,9 @@ Error classification (`classify.js`) maps every upstream outcome to exactly one 
 | 5xx, network, headers timeout | rotate | none | **yes** |
 | client abort | neutral | none | no |
 
-Circuit breaker: consecutive-failure state machine (CLOSED → OPEN after 3 counted failures → HALF_OPEN after the open period → single probe → CLOSED on success / OPEN on failure). Only transient failures count; any success resets the counter and closes the circuit. Probe completion is centralized: a half-open probe ending in 429/401/403/404, client abort, or any neutral end is *recovered* (never left `probeInFlight=true`), closing the circuit and preserving any node-local cooldown — the node becomes schedulable again. Counters are also time-bounded: a node idle for more than 5 minutes starts fresh, so incidents days apart cannot chain into a trip.
+Circuit breaker: consecutive-failure state machine (CLOSED → OPEN after 3 counted failures → HALF_OPEN after the open period → single probe → CLOSED on success / OPEN on failure). Only transient failures count; any success resets the counter and closes the circuit. Probe completion is centralized: a half-open probe ending in 429/401/403/404, client abort, or any neutral end is *recovered* (never left `probeInFlight=true`), closing the circuit and preserving any node-local cooldown — the node becomes dispatchable again. Counters are also time-bounded: a node idle for more than 5 minutes starts fresh, so incidents days apart cannot chain into a trip.
+
+Mid-stream truncation counts as a transient failure (it drives the 3-consecutive circuit counter) and additionally applies a health penalty under the `stream` key (same tier as a network failure), so a node that keeps truncating degrades in candidate ordering before the circuit opens.
 
 Concurrency slots are claimed in `acquireSlot` (atomic with eligibility checks) and released exactly once on every path via success/failure/neutral outcome recording.
 
@@ -87,7 +89,7 @@ Local Anthropic `count_tokens` is a script-aware conservative approximation (ASC
 
 ## Streaming boundary (src/stream)
 
-`guard.js` implements the single first-event guard: it consumes the upstream SSE stream until the first valid JSON event (or `[DONE]`, timeout, abort, malformed data, or a JSON **error envelope** — `{"error":{...}}` counts as a failure so a zero-output HTTP-200 stream still rotates) and returns a replayable response. The guard runs on **every** streaming path before any byte reaches the client. After the first event there is no transparent failover — a mid-stream death delivers already-buffered bytes and closes cleanly (the missing completion marker exposes the truncation).
+`guard.js` implements the single first-event guard: it consumes the upstream SSE stream until a committing event — OpenAI Chat / Responses commit on any valid non-error SSE event, while Anthropic Messages commits only on real output (`text` / `reasoning` / `tool_call`; role-only / usage-only / empty deltas never commit) — or `[DONE]`, timeout, abort, malformed data, or a JSON **error envelope** (`{"error":{...}}` counts as a failure, so a zero-output HTTP-200 stream still rotates) and returns a replayable response. The guard runs on **every** streaming path before any byte reaches the client. After the first event there is no transparent failover — a mid-stream death delivers already-buffered bytes and closes cleanly (the missing completion marker exposes the truncation). The tracked stream emits stream-end telemetry that distinguishes the three interruption reasons — `missing_completion_marker` (clean EOF without the marker), `idle_timeout`, `reader_error` — feeding the gateway stream counters in `/metrics`. Node identity (node, provider, model, duration, bytes, marker seen) is logged server-side only as a `[stream-interrupted]` line; client-facing responses are unchanged.
 
 A shared SSE scanner feeds both the guard and the OpenAI→Anthropic transformer so each upstream event is parsed exactly once. Model-name rewriting on passthrough streams skips lines that cannot contain `"model"` and is skipped entirely when logical == upstream model.
 
@@ -125,10 +127,10 @@ src/
 │  ├─ nodes.js               shard merge → Runtime Node + configuration status
 │  ├─ models.js              MODELS_CONFIG (cached): policy + optional capabilities
 │  ├─ registry.js            Model Registry: logical-model capability (defaults)
-│  ├─ policies.js            POLICIES_CONFIG: max_attempts (cached)
+│  ├─ policies.js            POLICIES_CONFIG: max_attempts + tier_attempts (cached)
 │  └─ profiles.js            Provider compatibility descriptors (static, honest)
 ├─ scheduler/
-│  └─ scheduler.js           dynamic candidate selection, tier grouping
+│  └─ scheduler.js           dispatchable/deferred candidate selection, tier grouping
 ├─ reliability/
 │  ├─ node-state.js          isolate-local state + circuit state machine
 │  └─ classify.js            error classification → action/cooldown/counted
@@ -143,14 +145,14 @@ src/
 │  ├─ guard.js               first-event guard + shared SSE scanner
 │  ├─ transform.js           OpenAI SSE → Anthropic SSE
 │  ├─ assemble.js            stream → full OpenAI object (fake-stream mode)
-│  └─ track.js               idle-timeout enforcement + node outcome tracking
+│  └─ track.js               stream-end telemetry + idle-timeout + node outcome tracking
 ├─ request/
 │  ├─ handler.js             orchestration, attempt loop, per-route success paths
 │  ├─ auth.js                access-key digest + constant-time comparison
 │  ├─ router.js              route allowlist / path normalization
 │  └─ errors.js              protocol-shaped errors, Retry-After, topology policy
 ├─ observability/
-│  ├─ logger.js, stats.js    counters, client stream accounting
+│  ├─ logger.js, stats.js    counters, client stream accounting, stream interruption counters
 │  └─ status.js              /health /metrics /version /v1/models
 └─ dashboard/pages.js        browser pages
 ```
