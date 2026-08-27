@@ -98,7 +98,14 @@ function isCompletePayload(data) {
 }
 
 // Wait for the first valid event and return { response } replaying consumed bytes.
-export async function ensureFirstSseEvent(upstreamResponse, timeoutMs, clientSignal) {
+// `isRealOutput` (optional): a per-route predicate that decides whether a
+// parseable, non-error SSE event counts as real model output. When supplied,
+// events that parse but carry no real output (role-only / empty delta /
+// usage-only / empty choices) do NOT commit the failover boundary — the guard
+// keeps consuming until real output appears (or the stream ends/times out).
+// Omitting it preserves the original "any parseable non-error event commits"
+// behavior used by the OpenAI Chat / Responses paths.
+export async function ensureFirstSseEvent(upstreamResponse, timeoutMs, clientSignal, isRealOutput) {
   if (!upstreamResponse.body) throw guardError(GUARD_ERROR.EMPTY);
   const reader = upstreamResponse.body.getReader();
   const consumed = [];
@@ -158,6 +165,12 @@ export async function ensureFirstSseEvent(upstreamResponse, timeoutMs, clientSig
         finishErr(GUARD_ERROR.ERROR_ENVELOPE);
         return;
       }
+      // A route may require real model output (text / reasoning / tool_call)
+      // before the failover boundary commits. Events that parse but carry no
+      // real output (role-only / empty delta / usage-only / empty choices) are
+      // skipped and the guard keeps consuming — they must NOT close the
+      // boundary on a node that has produced nothing yet.
+      if (isRealOutput && !isRealOutput(json)) return;
       finishOk();
     };
 

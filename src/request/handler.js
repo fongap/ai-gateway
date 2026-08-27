@@ -32,7 +32,7 @@ import {
   buildTargetUrl, buildUpstreamHeaders, corsHeaders,
   readBodyTextWithLimit, BodyTooLargeError, safeReadErrorBody, trimDiagnostic,
 } from '../protocol/http.js';
-import { validateOpenAIChatRequest, isOpenAIStreamingResponse, synthesizeSseFromCompletion } from '../protocol/openai.js';
+import { validateOpenAIChatRequest, isOpenAIStreamingResponse, synthesizeSseFromCompletion, extractOpenAITextContent } from '../protocol/openai.js';
 // Backward-compatible re-export: some tooling imports the synthesizer from here.
 export { synthesizeSseFromCompletion };
 import {
@@ -368,11 +368,27 @@ async function attemptNode(c) {
   });
 }
 
+// Anthropic first-event guard predicate: only text / reasoning / tool_call
+// count as real model output. A role-only, empty-delta, usage-only or
+// empty-choices chunk is NOT a commit point — the guard keeps consuming until
+// real output appears, so a node that streams a non-output event before dying
+// can still fail over. Mirrors the transform's own notion of a content event.
+function isAnthropicRealOutput(json) {
+  const choice = json?.choices?.[0];
+  if (!choice) return false;
+  const delta = choice.delta || {};
+  const reasoning = delta.reasoning_content ?? delta.reasoning;
+  if (typeof reasoning === 'string' && reasoning) return true;
+  if (extractOpenAITextContent(delta.content)) return true;
+  if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) return true;
+  if (delta.function_call) return true;
+  return false;
+}
+
 async function handleSuccess(s) {
   const { upstream, c, latencyMs, detach, upstreamWasStreaming } = s;
   const { request, env, logger, requestId, route, node, requestedModel, bodyJson, clientWantsStream, fakeStream, limits, exposeUpstreamInfo, state } = c;
   const elapsedSinceStart = () => Date.now() - s.attemptStartMs;
-
   // Topology-leak policy (P1): by default a successful client response carries
   // only x-request-id. Node id / tier are operational details exposed only when
   // EXPOSE_UPSTREAM_INFO=true (debugging) or via the auth-protected /health.
@@ -390,7 +406,12 @@ async function handleSuccess(s) {
     try {
       const remainingBudgetMs = (c.failoverBudgetMs ?? limits.failoverBudgetMs) - (Date.now() - (c.requestStartMs || s.attemptStartMs));
       const firstEventTimeout = Math.min(limits.firstEventTimeoutMs, Math.max(1, remainingBudgetMs));
-      guarded = await ensureFirstSseEvent(upstream, firstEventTimeout, request.signal);
+      // Anthropic requires real model output (text / reasoning / tool_call)
+      // before the failover boundary commits: a role-only, empty-delta,
+      // usage-only or empty-choices event is NOT a commit point. OpenAI Chat /
+      // Responses keep the original "any parseable non-error event commits".
+      const isRealOutput = route === 'anthropic_messages' ? isAnthropicRealOutput : undefined;
+      guarded = await ensureFirstSseEvent(upstream, firstEventTimeout, request.signal, isRealOutput);
     } catch (e) {
       detach();
       const code = e?.code || GUARD_ERROR.EMPTY;
@@ -436,6 +457,9 @@ async function handleSuccess(s) {
     const transformed = transformOpenAIStreamToAnthropic(guarded, requestedModel, requestId, request.signal);
     const tracked = trackStreamResponse(transformed, {
       idleTimeoutMs: limits.streamIdleTimeoutMs,
+      // A stream that never reaches message_stop (truncated / errored mid-way)
+      // must NOT be recorded as a node success.
+      completionMarker: /event:\s*message_stop\b/,
       onSuccess: () => recordSuccess(node.id, latencyMs),
       onFailure: () => recordFailure(node.id, { counted: true, cooldownMs: 2_000, reason: 'stream_interrupted' }),
       onNeutral: () => recordNeutralEnd(node.id),

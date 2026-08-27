@@ -295,5 +295,71 @@ await test('claude stream interruption accounts a node failure and delivers part
   assert.equal(getNodeState('ceint').totalFailures, 1);
 });
 
+// A role-only / empty-delta / usage-only / empty-choices event is NOT real model
+// output for the Anthropic path: a node that streams such an event before dying
+// has committed nothing, so the request must fail over to a healthy node.
+const roleOnlyChunk = () => chunk({ role: 'assistant' });
+
+await test('claude: role-only first event then EOF must fail over to a healthy node', async () => {
+  resetMock();
+  const encoder = new TextEncoder();
+  routeHandlers['roa.example.com'] = () => new Response(new ReadableStream({
+    pull(controller) {
+      // role-only event, then clean EOF (no real output, no [DONE]).
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify(roleOnlyChunk())}\n\n`));
+      controller.close();
+    },
+  }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  routeHandlers['rob.example.com'] = () => sseResponse([textChunk('served by B'), finish(), doneEvent]);
+  const env = makeEnv({ tier1: [node('roa'), node('rob')], secrets: { roa: 'k', rob: 'k' } });
+  const res = await worker.fetch(messagesRequest({ model: 'claude-x', max_tokens: 64, stream: true, messages: [{ role: 'user', content: 'hi' }] }), env, {});
+  assert.equal(res.status, 200, 'must fail over to B and serve');
+  const text = await res.text();
+  assert.match(text, /served by B/, 'B must serve');
+  assert.ok(upstreamCalls.some((c) => c.host === 'roa.example.com'), 'A was contacted');
+  assert.ok(upstreamCalls.some((c) => c.host === 'rob.example.com'), 'B was reached via failover');
+});
+
+// Once real output (text) has been committed, transparent failover is forbidden
+// — the client already saw node A's model output.
+await test('claude: text first event then EOF must NOT fail over to another node', async () => {
+  resetMock();
+  const encoder = new TextEncoder();
+  routeHandlers['toa.example.com'] = () => new Response(new ReadableStream({
+    pull(controller) {
+      // real text output, then clean EOF (committed — no failover allowed).
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify(textChunk('committed output'))}\n\n`));
+      controller.close();
+    },
+  }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  routeHandlers['tob.example.com'] = () => sseResponse([textChunk('should not serve'), finish(), doneEvent]);
+  const env = makeEnv({ tier1: [node('toa'), node('tob')], secrets: { toa: 'k', tob: 'k' } });
+  const res = await worker.fetch(messagesRequest({ model: 'claude-x', max_tokens: 64, stream: true, messages: [{ role: 'user', content: 'hi' }] }), env, {});
+  assert.equal(res.status, 200);
+  const text = await res.text();
+  assert.match(text, /committed output/, 'A served its committed output');
+  assert.ok(!upstreamCalls.some((c) => c.host === 'tob.example.com'), 'B must never be contacted once A committed');
+});
+
+// A successful Anthropic stream MUST reach message_stop; the completionMarker
+// guard means a stream that ends without it is accounted as a node failure.
+await test('claude: a stream ending without message_stop is a node failure, not success', async () => {
+  resetMock();
+  const encoder = new TextEncoder();
+  // Real text output, then clean EOF — committed, but no message_stop marker.
+  routeHandlers['nms.example.com'] = () => new Response(new ReadableStream({
+    pull(controller) {
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify(textChunk('partial'))}\n\n`));
+      controller.close();
+    },
+  }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  const env = makeEnv({ tier1: [node('nms')], secrets: { nms: 'k' } });
+  const res = await worker.fetch(messagesRequest({ model: 'claude-x', max_tokens: 64, stream: true, messages: [{ role: 'user', content: 'hi' }] }), env, {});
+  assert.equal(res.status, 200);
+  const text = await res.text();
+  assert.ok(!text.includes('event: message_stop'), 'stream must be missing message_stop');
+  assert.equal(getNodeState('nms').totalFailures, 1, 'a missing message_stop must count as a failure, not success');
+});
+
 if (!process.exitCode) console.log(`\nclaude (messages) contract tests passed (${passed}).`);
 else process.exit(1);
