@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // Unit tests for isolate-local token usage observability: the
 // reported-vs-missing normalization gate, dimension sanitization, aggregation
-// + coverage, the transform-level onUsage contract (once per stream; client
-// abort reports nothing), and the authenticated dashboard token panel
-// (compaction formatting, Top-N ordering, zero-data state, public-page
-// absence). Run directly; resetTokenStats keeps every test hermetic.
+// + coverage, the rolling 24h/7d time windows (sum + prune), the
+// transform-level onUsage contract (once per stream; client abort reports
+// nothing), and the public dashboard token panel (4 aggregate cards,
+// compaction formatting, zero-data state, no internal-dimension leak). Run
+// directly; resetTokenStats keeps every test hermetic.
 import assert from 'node:assert/strict';
 import {
   normalizeTokenUsage, recordTokenUsage, summarizeTokenStats,
@@ -175,78 +176,114 @@ await test('missing records land in their dimension bucket for accurate per-node
   assert.equal(bSeries.input, 0);
 });
 
-// ---- Dashboard token panel (authenticated) -----------------------------------
+// ---- Public dashboard token panel (always shown, aggregates only) -----------
 
-await test('empty data renders the panel with zeros, an em-dash coverage and no NaN', async () => {
+await test('empty data renders the panel with zeros and no NaN', async () => {
   const html = await pageText(authedRequest());
   assert.ok(html.includes('Token 使用量'));
-  assert.ok(html.includes('Isolate-local · Observability only · 非计费口径'));
-  assert.ok(html.includes('>0<'), 'zero cards must render as 0');
-  assert.ok(html.includes('—'), 'empty coverage must render as —');
+  assert.ok(html.includes('本会话累计 · Isolate-local · 重启后重置'));
+  assert.ok(html.includes('累计 Token'));
+  assert.ok(html.includes('近 24 小时'));
+  assert.ok(html.includes('近 7 天'));
+  assert.ok(html.includes('累计请求'));
+  assert.ok(html.includes('>0<'), 'zero counters must render as 0');
   assert.ok(!html.includes('NaN'));
   assert.ok(!html.includes('undefined'));
-  assert.ok(html.includes('暂无数据。'));
+  assert.ok(!html.includes('暂无数据。'), 'no per-dimension tables on the panel');
 });
 
-await test('the anonymous page contains no token panel at all', async () => {
-  record({ prompt_tokens: 10, completion_tokens: 20 }, { model: 'secret-model', provider: 'secret-provider', nodeId: 'secret-node' });
+await test('the public panel shows aggregate usage but leaks no internal dimensions', async () => {
+  record({ prompt_tokens: 10, completion_tokens: 20 }, {
+    model: 'secret-model', provider: 'secret-provider', nodeId: 'secret-node', tier: 'secret-tier',
+  });
   const html = await pageText(anonRequest());
-  assert.ok(!html.includes('Token 使用量'));
-  assert.ok(!html.includes('Isolate-local'));
+  // The panel is always shown now — no auth gate, no secrecy around usage.
+  assert.ok(html.includes('Token 使用量'));
+  assert.ok(html.includes('tokens-block'));
+  assert.ok(html.includes('tcard'));
+  assert.ok(html.includes('>30<'), 'cumulative total 10+20 must render');
+  // Public-safety contract: only aggregates render; the node id, provider
+  // and tier used as storage dimensions never reach the HTML.
+  assert.ok(!html.includes('secret-node'));
+  assert.ok(!html.includes('secret-provider'));
+  assert.ok(!html.includes('secret-tier'));
   assert.ok(!html.includes('secret-model'));
-  // The token CSS lives in a separate TOKEN_STYLES block injected only for
-  // authenticated requests, so the public page carries no token markup —
-  // not even a `.tcard` style rule.
-  assert.ok(!html.includes('tcard'));
-  assert.ok(!html.includes('tokens-block'));
 });
 
-await test('authenticated cards render the totals and coverage', async () => {
+await test('the four cards render cumulative token totals', async () => {
   record({ prompt_tokens: 3, completion_tokens: 1 });
   record({ prompt_tokens: 3, completion_tokens: 1 });
   record({ prompt_tokens: 3, completion_tokens: 1 });
-  record(null);
+  record(null); // missing usage adds no tokens and advances no window
   const html = await pageText(authedRequest());
-  // Three reported responses of 4 tokens each → total 12; input 9, output 3.
-  assert.ok(html.includes('>12<'), 'total tokens 3*(3+1) must render as 12');
-  assert.ok(html.includes('>9<'), 'input tokens 3*3 must render as 9');
-  assert.ok(html.includes('75.0%'), 'coverage 3/4 must render');
+  // Three reported responses of 4 tokens each → cumulative 12. The 24h and
+  // 7d windows cover the same instant, so they also read 12. The request
+  // counter is owned by stats.js and is not driven by the dashboard render.
+  assert.ok(html.includes('>12<'), 'cumulative total 3*(3+1) must render as 12');
+  assert.ok(!html.includes('75.0%'), 'coverage is no longer a card');
 });
 
-await test('K/M/B compaction renders through the dashboard tables', async () => {
-  record({ prompt_tokens: 0, completion_tokens: 0 }, { model: 'k-zero' });
-  record({ prompt_tokens: 999, completion_tokens: 0 }, { model: 'k-999' });
-  record({ prompt_tokens: 1000, completion_tokens: 0 }, { model: 'k-1k' });
-  record({ prompt_tokens: 1500, completion_tokens: 0 }, { model: 'k-15k' });
-  record({ prompt_tokens: 1234567, completion_tokens: 0 }, { model: 'k-1m' });
-  record({ prompt_tokens: 2500000000, completion_tokens: 0 }, { model: 'k-2b' });
-  const html = await pageText(authedRequest());
-  assert.ok(html.includes('>0<'));
-  assert.ok(html.includes('>999<'));
-  assert.ok(html.includes('>1.0K<'));
-  assert.ok(html.includes('>1.5K<'));
-  assert.ok(html.includes('>1.2M<'));
-  assert.ok(html.includes('>2.5B<'));
-  assert.ok(!html.includes('NaN'));
+await test('K/M/B compaction renders on the cumulative-token card', async () => {
+  // Each check resets state and records a single report, so the cumulative
+  // total equals that report's total and exercises one compaction tier.
+  const card = async (usage) => {
+    __resetTokenStatsForTests();
+    record(usage);
+    return (await pageText(authedRequest()));
+  };
+  assert.ok((await card({ prompt_tokens: 0, completion_tokens: 0 })).includes('>0<'));
+  assert.ok((await card({ prompt_tokens: 999, completion_tokens: 0 })).includes('>999<'));
+  assert.ok((await card({ prompt_tokens: 1000, completion_tokens: 0 })).includes('>1.0K<'));
+  assert.ok((await card({ prompt_tokens: 1500, completion_tokens: 0 })).includes('>1.5K<'));
+  assert.ok((await card({ prompt_tokens: 1234567, completion_tokens: 0 })).includes('>1.2M<'));
+  assert.ok((await card({ prompt_tokens: 2500000000, completion_tokens: 0 })).includes('>2.5B<'));
+  const one = await card({ prompt_tokens: 1, completion_tokens: 0 });
+  assert.ok(!one.includes('NaN'));
 });
 
-await test('By Node table is capped at Top 5 rows', async () => {
+await test('many recorded nodes/providers/tiers never leak through the public panel', async () => {
   for (let i = 1; i <= 7; i++) {
-    record({ prompt_tokens: i, completion_tokens: 0 }, { nodeId: `node-${i}` });
+    record({ prompt_tokens: i, completion_tokens: 0 }, {
+      nodeId: `node-${i}`, provider: `prov-${i}`, tier: `tier-${i}`,
+    });
   }
-  const html = await pageText(authedRequest());
-  for (let i = 7; i >= 3; i--) assert.ok(html.includes(`node-${i}`), `node-${i} must be in top 5`);
-  assert.ok(!html.includes('node-2'), 'node-2 must be cut by the Top-5 cap');
-  assert.ok(!html.includes('node-1<'), 'node-1 must be cut by the Top-5 cap');
+  const html = await pageText(anonRequest());
+  assert.ok(html.includes('Token 使用量'), 'panel is shown');
+  for (let i = 1; i <= 7; i++) {
+    assert.ok(!html.includes(`node-${i}`), `node-${i} must not leak`);
+    assert.ok(!html.includes(`prov-${i}`), `prov-${i} must not leak`);
+    assert.ok(!html.includes(`tier-${i}`), `tier-${i} must not leak`);
+  }
 });
 
-await test('dashboard table Top-N follows the tokens-module sort, not insertion', async () => {
-  record({ prompt_tokens: 100, completion_tokens: 50 }, { model: 'small' });
-  record({ prompt_tokens: 900, completion_tokens: 600 }, { model: 'big' });
-  const html = await pageText(authedRequest());
-  assert.ok(html.indexOf('big') < html.indexOf('small'), 'largest total must render first');
-  const s = summarizeTokenStats();
-  assert.equal(s.byModel[0].name, 'big');
+// ---- Rolling 24h / 7d time windows ------------------------------------------
+
+await test('rolling 24h/7d windows sum recent totals and prune expired buckets', async () => {
+  // Anchor to an hour boundary so hour/day alignment is deterministic.
+  const h0 = Math.floor(Date.now() / 3600_000) * 3600_000;
+  const HOUR = 3600_000, DAY = 86400_000;
+  // Three reports, 100 tokens each, across three consecutive hours.
+  record({ prompt_tokens: 50, completion_tokens: 50 }, { now: h0 });
+  record({ prompt_tokens: 50, completion_tokens: 50 }, { now: h0 + HOUR });
+  record({ prompt_tokens: 50, completion_tokens: 50 }, { now: h0 + 2 * HOUR });
+  let s = summarizeTokenStats();
+  assert.equal(s.windows.h24.total, 300, '24h window sums the three reports');
+  assert.equal(s.windows.d7.total, 300, '7d window sums the three reports');
+  assert.equal(s.windows.h24.reports, 3);
+
+  // Advance 27h: the three hourly buckets fall outside the 24-bucket window.
+  record({ prompt_tokens: 10, completion_tokens: 0 }, { now: h0 + 27 * HOUR });
+  s = summarizeTokenStats();
+  assert.equal(s.windows.h24.total, 10, 'old hourly buckets pruned from 24h');
+  assert.equal(s.windows.h24.reports, 1);
+  assert.equal(s.windows.d7.total, 310, '27h is still inside the 7d window');
+
+  // Advance 8 more days: the 7-bucket daily window prunes everything older.
+  record({ prompt_tokens: 5, completion_tokens: 0 }, { now: h0 + 27 * HOUR + 8 * DAY });
+  s = summarizeTokenStats();
+  assert.equal(s.windows.d7.total, 5, 'old daily buckets pruned from 7d');
+  assert.equal(s.windows.h24.total, 5);
+  assert.equal(s.totals.total, 315, 'cumulative total is never pruned');
 });
 
 // ---- Transform-level onUsage contract ----------------------------------------

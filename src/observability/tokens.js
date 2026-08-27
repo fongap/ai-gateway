@@ -8,7 +8,12 @@
 //     NEVER estimated — tokens are never fabricated from characters/bytes.
 //   - State lives in module-level memory and dies with the isolate. It is
 //     best-effort, resets on isolate restart, and must not be relied on for
-//     billing or per-key accounting.
+//     billing or per-key accounting. This keeps the gateway on the free
+//     Cloudflare tier: no KV/D1/Durable-Object bindings on the hot path.
+//   - Two rolling time windows — hourly buckets over the last 24h and daily
+//     buckets over the last 7d — are the same isolate-local best-effort
+//     contract. They reset with the isolate and are never persisted; the
+//     dashboard labels them as "重启后重置" so the limit is honest.
 //   - Zero imports: a leaf module so the stream layer (track.js) and the
 //     dashboard (pages.js) can use it without cycles.
 
@@ -19,10 +24,21 @@
 const MAX_BUCKETS = 512;
 const MAX_DIMENSION_LENGTH = 80;
 
+// Rolling time windows — isolate-local, so they reset with the isolate and
+// need no bindings. Hour buckets keep the last 24 (≈近 24 小时); day buckets
+// keep the last 7 (≈近 7 天). Pruning on every successful record keeps the
+// two Maps bounded to at most 24 + 7 entries, well inside free-tier memory.
+const HOUR_MS = 3600_000;
+const DAY_MS = 86400_000;
+const HOURS_24 = 24;
+const DAYS_7 = 7;
+
 export const tokenStats = {
   startedAt: Date.now(),
   totals: { input: 0, output: 0, total: 0, reports: 0, missing: 0 },
   buckets: new Map(), // "<model>|<tier>|<provider>|<nodeId>" -> { model, tier, provider, nodeId, input, output, total, reports, missing }
+  hourBuckets: new Map(), // hourStartMs -> { total, reports }  (rolling 24h)
+  dayBuckets: new Map(), // dayStartMs  -> { total, reports }  (rolling 7d)
 };
 
 function validTokenCount(value) {
@@ -76,13 +92,46 @@ function sanitizeDimension(value) {
   return cleaned || 'unknown';
 }
 
+// Bump one rolling time window: align `now` down to the unit boundary, prune
+// every bucket older than the window (current + keep-1 prior stay), then add
+// the report. The Maps stay bounded to `keep` entries. Deleting the current
+// entry mid-iteration of a Map is spec-safe.
+function bumpWindow(map, now, unitMs, keep, total) {
+  const start = Math.floor(now / unitMs) * unitMs;
+  const cutoff = start - (keep - 1) * unitMs;
+  for (const ts of map.keys()) {
+    if (ts < cutoff) map.delete(ts);
+  }
+  let b = map.get(start);
+  if (!b) {
+    b = { total: 0, reports: 0 };
+    map.set(start, b);
+  }
+  b.total += total;
+  b.reports += 1;
+}
+
+// Sum every surviving bucket in a rolling window. The dashboard shows the
+// rolling total; reports are exposed too so the window can be audited.
+function sumWindow(map) {
+  let total = 0;
+  let reports = 0;
+  for (const b of map.values()) {
+    total += b.total;
+    reports += b.reports;
+  }
+  return { total, reports };
+}
+
 // Record one delivered response's usage. Exactly one of two outcomes per
 // call: reports++ (plus token totals) or missing++. Never both, never
 // neither. Callers pass the raw usage object (or null/undefined) — the
 // reported-vs-missing decision lives here, not at the capture points.
 // Missing records still land in their dimension bucket so per-dimension
 // missing and coverage stay accurate, not just the isolate-wide totals.
-export function recordTokenUsage({ model, tier, provider, nodeId, usage }) {
+// The rolling time windows only advance on a real report — a missing-usage
+// response carries no tokens to attribute to any hour/day.
+export function recordTokenUsage({ model, tier, provider, nodeId, usage, now = Date.now() }) {
   const dims = {
     model: sanitizeDimension(model),
     tier: sanitizeDimension(tier),
@@ -110,6 +159,8 @@ export function recordTokenUsage({ model, tier, provider, nodeId, usage }) {
   tokenStats.totals.input += normalized.input;
   tokenStats.totals.output += normalized.output;
   tokenStats.totals.total += normalized.total;
+  bumpWindow(tokenStats.hourBuckets, now, HOUR_MS, HOURS_24, normalized.total);
+  bumpWindow(tokenStats.dayBuckets, now, DAY_MS, DAYS_7, normalized.total);
   const b = bucket();
   if (!b) return;
   b.reports += 1;
@@ -149,6 +200,10 @@ export function summarizeTokenStats() {
     startedAt: tokenStats.startedAt,
     totals: { ...tokenStats.totals },
     usageCoverage: usageCoverage(),
+    windows: {
+      h24: sumWindow(tokenStats.hourBuckets),
+      d7: sumWindow(tokenStats.dayBuckets),
+    },
     byModel: aggregateBy('model'),
     byProvider: aggregateBy('provider'),
     byTier: aggregateBy('tier'),
@@ -166,4 +221,6 @@ export function __resetTokenStatsForTests() {
   tokenStats.startedAt = Date.now();
   tokenStats.totals = { input: 0, output: 0, total: 0, reports: 0, missing: 0 };
   tokenStats.buckets = new Map();
+  tokenStats.hourBuckets = new Map();
+  tokenStats.dayBuckets = new Map();
 }
