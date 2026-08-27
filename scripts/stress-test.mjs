@@ -453,5 +453,58 @@ await test('S14 availability-aware: a cooling Tier 2 node does not consume Tier 
   assertNoLeaks(['a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'cool2']);
 });
 
+// ---- S15/S16: max_attempts < schedulable tier count ------------------------
+// When every tier holds an eligible node but the budget is smaller than the
+// number of schedulable tiers, the per-tier budget caps at 1 each and the
+// global `max_attempts` ceiling is the binding constraint. Total attempts must
+// strictly stay <= max_attempts and be spent in Tier precedence (Tier 1 before
+// Tier 2 before Tier 3) — never skipping Tier 2 to reach Tier 3.
+
+// S15: max_attempts=2, three tiers (Tier 2 succeeds) -> Tier 2 reached in order,
+// Tier 3 never touched, total == 2.
+await test('S15 max_attempts=2: Tier precedence order, Tier 2 reached before Tier 3', async () => {
+  resetMock();
+  routeHandlers['b1.example.com'] = () => jsonUpstream({}, 503);
+  routeHandlers['b2.example.com'] = () => jsonUpstream(okCompletion);
+  routeHandlers['b3.example.com'] = () => jsonUpstream({}, 503);
+  const env = makeEnv({
+    tier1: [basicNode('b1', { limits: { concurrency: 20 } })],
+    tier2: [basicNode('b2', { limits: { concurrency: 20 } })],
+    tier3: [basicNode('b3', { limits: { concurrency: 20 } })],
+    secrets: { b1: 'k', b2: 'k', b3: 'k' },
+    extraEnv: { POLICIES_CONFIG: '{"default":{"max_attempts":2}}' },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 200, 'Tier 2 must serve');
+  assert.deepEqual(upstreamCalls.map((c) => c.host),
+    ['b1.example.com', 'b2.example.com'], 'Tier 1 then Tier 2, in precedence order');
+  assert.equal(upstreamCalls.length, 2, 'total attempts must be exactly 2 (<= max_attempts)');
+  assert.equal(upstreamCalls.filter((c) => c.host === 'b3.example.com').length, 0,
+    'Tier 3 must not be reached when Tier 2 already serves');
+  assertNoLeaks(['b1', 'b2', 'b3']);
+});
+
+// S16: max_attempts=1, three tiers -> only Tier 1 (highest precedence) gets the
+// single attempt; Tier 2/3 are not reached. Total == 1 == max_attempts.
+await test('S16 max_attempts=1: only the highest-precedence tier is attempted', async () => {
+  resetMock();
+  routeHandlers['c1.example.com'] = () => jsonUpstream({}, 503);
+  routeHandlers['c2.example.com'] = () => jsonUpstream(okCompletion);
+  routeHandlers['c3.example.com'] = () => jsonUpstream({}, 503);
+  const env = makeEnv({
+    tier1: [basicNode('c1', { limits: { concurrency: 20 } })],
+    tier2: [basicNode('c2', { limits: { concurrency: 20 } })],
+    tier3: [basicNode('c3', { limits: { concurrency: 20 } })],
+    secrets: { c1: 'k', c2: 'k', c3: 'k' },
+    extraEnv: { POLICIES_CONFIG: '{"default":{"max_attempts":1}}' },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  // max_attempts=1 = "try once": Tier 1 fails, budget is spent, no fallback.
+  assert.equal(res.status, 502, 'a single attempt is not enough to fall through to a serving tier');
+  assert.deepEqual(upstreamCalls.map((c) => c.host), ['c1.example.com'], 'only Tier 1 is attempted');
+  assert.equal(upstreamCalls.length, 1, 'total attempts must be exactly 1 (<= max_attempts)');
+  assertNoLeaks(['c1', 'c2', 'c3']);
+});
+
 if (!process.exitCode) console.log(`\nstress tests passed (${passed}).`);
 else process.exit(1);

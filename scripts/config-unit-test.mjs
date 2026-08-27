@@ -173,13 +173,14 @@ test('servesModel treats empty models as wildcard, mapped as explicit', () => {
 // field-level errors surface as diagnostics (visible via /health) + degraded
 // status instead of silently falling back to defaults.
 
-test('malformed MODELS_CONFIG is surfaced as a degraded-config diagnostic', () => {
+test('malformed MODELS_CONFIG is FATAL: invalid config refuses service', () => {
   const cfg = loadGatewayConfig(makeEnv({
     tier1: [node('m1', { models: { 'general-air': 'up' } })],
     secrets: { m1: 'k' },
     extraEnv: { MODELS_CONFIG: '{not json' },
   }));
-  assert.equal(cfg.status, 'degraded', 'a malformed MODELS_CONFIG must not stay ready');
+  assert.equal(cfg.status, 'invalid', 'a malformed MODELS_CONFIG must be fatal, not degraded');
+  assert.equal(cfg.ready, false, 'a malformed MODELS_CONFIG must refuse service');
   assert.ok(cfg.diagnostics.some((d) => d.includes('MODELS_CONFIG')), `expected MODELS_CONFIG diagnostic, got ${cfg.diagnostics}`);
 });
 
@@ -193,13 +194,14 @@ test('MODELS_CONFIG rejects unknown capabilities and non-boolean values', () => 
   assert.ok(diags.some((d) => d.includes('capabilities.reasoning')), 'non-boolean capability must be flagged');
 });
 
-test('malformed POLICIES_CONFIG is surfaced as a degraded-config diagnostic', () => {
+test('malformed POLICIES_CONFIG is FATAL: invalid config refuses service', () => {
   const cfg = loadGatewayConfig(makeEnv({
     tier1: [node('p1')],
     secrets: { p1: 'k' },
     extraEnv: { POLICIES_CONFIG: '{bad' },
   }));
-  assert.equal(cfg.status, 'degraded', 'a malformed POLICIES_CONFIG must not stay ready');
+  assert.equal(cfg.status, 'invalid', 'a malformed POLICIES_CONFIG must be fatal, not degraded');
+  assert.equal(cfg.ready, false, 'a malformed POLICIES_CONFIG must refuse service');
   assert.ok(cfg.diagnostics.some((d) => d.includes('POLICIES_CONFIG')), `expected POLICIES_CONFIG diagnostic, got ${cfg.diagnostics}`);
 });
 
@@ -216,7 +218,7 @@ test('POLICIES_CONFIG rejects unknown fields, invalid max_attempts, invalid tier
   assert.ok(diags.some((d) => d.includes('tier_attempts.tier9')), 'unknown tier key must be flagged');
 });
 
-test('a model referencing an undefined policy is a config diagnostic', () => {
+test('a model referencing an undefined policy is a FATAL config diagnostic', () => {
   const env = makeEnv({
     tier1: [node('x1')],
     secrets: { x1: 'k' },
@@ -226,6 +228,8 @@ test('a model referencing an undefined policy is a config diagnostic', () => {
     },
   });
   const cfg = loadGatewayConfig(env);
+  assert.equal(cfg.status, 'invalid', 'an undefined policy reference must be fatal');
+  assert.equal(cfg.ready, false, 'an undefined policy reference must refuse service');
   assert.ok(cfg.diagnostics.some((d) => d.includes('missing-policy')),
     `unknown policy reference must be flagged, got ${cfg.diagnostics}`);
 });

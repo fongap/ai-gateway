@@ -56,8 +56,32 @@ export function loadGatewayConfig(env) {
   return cachedResult;
 }
 
+// Strict diagnostics for MODELS_CONFIG / POLICIES_CONFIG plus the cross-reference
+// check that every model's declared policy actually exists. These are FATAL.
+function collectAuxConfigDiagnostics(env) {
+  const diags = [
+    ...getModelsConfigDiagnostics(env),
+    ...getPoliciesConfigDiagnostics(env),
+  ];
+  const models = loadModelsConfig(env);
+  const policies = loadPoliciesConfig(env);
+  for (const [model, mcfg] of Object.entries(models)) {
+    const pname = mcfg?.policy || 'default';
+    if (!policies[pname]) {
+      diags.push(`MODELS_CONFIG: model "${model}" references unknown policy "${pname}"`);
+    }
+  }
+  return diags;
+}
+
 function buildConfig(env) {
   const diagnostics = [];
+  // Strict aux configs (MODELS_CONFIG / POLICIES_CONFIG). Any structural error
+  // here is FATAL: these configs are all-or-nothing, unlike node entries that
+  // can be excluded. A malformed / unknown-field / invalid-value aux config
+  // makes the gateway 'invalid' (ready=false) instead of guessing at intent.
+  const auxDiagnostics = collectAuxConfigDiagnostics(env);
+  diagnostics.push(...auxDiagnostics);
   const accessKeyBound = Boolean(readEnv(env, 'GATEWAY_ACCESS_KEY'));
 
   const tierShards = collectShards(env, TIER_SHARD_PATTERN, 'TIER1_NODES_CONFIG_', 'TIER1_NODES_CONFIG_01', 2, diagnostics);
@@ -139,31 +163,18 @@ function buildConfig(env) {
     if (!seenIds.has(nodeId)) diagnostics.push(`credential "${nodeId}" has no matching node config`);
   }
 
-  // Auxiliary configs (MODELS_CONFIG / POLICIES_CONFIG) must be as strict as
-  // the node config: malformed JSON, unknown fields, invalid capability types,
-  // invalid max_attempts / tier_attempts all surface as diagnostics rather than
-  // silently falling back to defaults.
-  const auxDiagnostics = [
-    ...getModelsConfigDiagnostics(env),
-    ...getPoliciesConfigDiagnostics(env),
-  ];
-  // A model that references a policy which is not defined is a real misconfig.
-  const models = loadModelsConfig(env);
-  for (const [model, mcfg] of Object.entries(models)) {
-    const pname = mcfg?.policy || 'default';
-    if (!loadPoliciesConfig(env)[pname]) {
-      auxDiagnostics.push(`MODELS_CONFIG: model "${model}" references unknown policy "${pname}"`);
-    }
-  }
-  diagnostics.push(...auxDiagnostics);
-
   // Status semantics (strict, no contradictions):
   //   unconfigured  key config missing entirely            -> ready=false
-  //   invalid       structural conflict OR zero usable     -> ready=false, never serve
-  //   degraded      some nodes unusable OR an aux config is bad, >=1 usable -> ready=true
+  //   invalid       structural conflict / zero usable / FATAL aux config error -> ready=false, never serve
+  //   degraded      some nodes unusable, >=1 usable, aux configs clean -> ready=true
   //   ready         all declared nodes usable & aux configs clean -> ready=true
-  if (conflict || nodes.length === 0) status = 'invalid';
-  else if (nodes.length < nodesDeclared || auxDiagnostics.length > 0) status = 'degraded';
+  // A FATAL aux config error (malformed JSON, unknown field, invalid
+  // max_attempts / tier_attempts, undefined policy reference) is treated like a
+  // structural conflict: it refuses service so the operator must fix it, rather
+  // than silently serving traffic on guessed defaults.
+  if (auxDiagnostics.length > 0) status = 'invalid';
+  else if (conflict || nodes.length === 0) status = 'invalid';
+  else if (nodes.length < nodesDeclared) status = 'degraded';
   else status = 'ready';
   const ready = status === 'ready' || status === 'degraded';
 
