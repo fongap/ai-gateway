@@ -90,7 +90,11 @@ export function tokenUsagePayload(usage) {
 // agree on the single contract point.
 export function tokenStatsD1(env) {
   const d1 = env?.TOKEN_STATS_DB;
-  return d1 && typeof d1.prepare === 'function' ? d1 : null;
+  if (!d1 || typeof d1.prepare !== 'function') {
+    console.error('tokenStatsD1: TOKEN_STATS_DB binding missing or invalid');
+    return null;
+  }
+  return d1;
 }
 
 // Atomic per-hour UPSERT. One call = one response; the hour bucket is
@@ -170,7 +174,8 @@ export async function queryTokenSummary(env, now = Date.now()) {
   let row;
   try {
     row = await stmt.bind(todayStart, todayStart, h24Start, h24Start, d7Start, d7Start).first();
-  } catch {
+  } catch (e) {
+    console.error('queryTokenSummary failed:', e?.message || e);
     return null; // fail-open: page degrades, never 500s
   }
   if (!row || typeof row !== 'object') return null;
@@ -242,7 +247,8 @@ export async function queryTokenDailySeries(env, startDayIso, now = Date.now()) 
       });
     }
     return map;
-  } catch {
+  } catch (e) {
+    console.error('queryTokenDailySeries failed:', e?.message || e);
     return null; // fail-open: page degrades, never 500s
   }
 }
