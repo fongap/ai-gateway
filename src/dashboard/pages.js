@@ -432,10 +432,12 @@ function kpiCell(value, label) {
 }
 
 // Fail-open: a missing D1 binding or a failed query renders em dashes and an
-// "统计暂不可用" note — never a fake 0 and never a fabricated heatmap.
+// error note — never a fake 0 and never a fabricated heatmap.
 async function usageSection(env, now = Date.now()) {
   const { summary, daily } = await usageCard(env, now);
-  const available = summary && daily;
+  const summaryOk = summary && summary.available !== false;
+  const dailyOk = daily && daily.available !== false;
+  const available = summaryOk && dailyOk;
   const kpis = available
     ? [
         kpiCell(fmtTokens(summary.today.total), '今日'),
@@ -454,6 +456,16 @@ async function usageSection(env, now = Date.now()) {
   if (available && daily) {
     for (const v of daily.values()) totalRequests += v.requests;
   }
+  // Collect error messages for debugging
+  const errors = [];
+  if (summary && summary.error) errors.push(summary.error);
+  if (daily && daily.error) errors.push(daily.error);
+  if (!summary) errors.push('TOKEN_STATS_DB binding missing');
+  if (summary && !summary.available && !summary.error) errors.push('summary unavailable');
+  if (daily && !daily.available && !daily.error) errors.push('daily unavailable');
+  const errorHtml = errors.length
+    ? `<div class="heat-empty">统计暂不可用<br><small style="font-size:10px;color:var(--faint)">${escapeHtml(errors.join('; '))}</small></div>`
+    : '';
   const activity = available
     ? (() => {
         const { cells, labels } = buildHeatmap(daily, now);
@@ -462,7 +474,7 @@ async function usageSection(env, now = Date.now()) {
           `<div class="heatmap" aria-hidden="true">${cells.join('')}</div>` +
           `<div class="months" aria-hidden="true">${labels.join('')}</div></div>`;
       })()
-    : `<div class="heat-empty">统计暂不可用</div>`;
+    : errorHtml || `<div class="heat-empty">统计暂不可用</div>`;
   return `<section class="section">
   <div class="section-title">使用情况<span class="utc8">UTC+8</span></div>
   <div class="card">

@@ -91,7 +91,6 @@ export function tokenUsagePayload(usage) {
 export function tokenStatsD1(env) {
   const d1 = env?.TOKEN_STATS_DB;
   if (!d1 || typeof d1.prepare !== 'function') {
-    console.error('tokenStatsD1: TOKEN_STATS_DB binding missing or invalid');
     return null;
   }
   return d1;
@@ -175,8 +174,7 @@ export async function queryTokenSummary(env, now = Date.now()) {
   try {
     row = await stmt.bind(todayStart, todayStart, h24Start, h24Start, d7Start, d7Start).first();
   } catch (e) {
-    console.error('queryTokenSummary failed:', e?.message || e);
-    return null; // fail-open: page degrades, never 500s
+    return { available: false, error: `queryTokenSummary: ${e?.message || e}` };
   }
   if (!row || typeof row !== 'object') return null;
   const reports = Number(row.cum_reports) || 0;
@@ -248,7 +246,6 @@ export async function queryTokenDailySeries(env, startDayIso, now = Date.now()) 
     }
     return map;
   } catch (e) {
-    console.error('queryTokenDailySeries failed:', e?.message || e);
-    return null; // fail-open: page degrades, never 500s
+    return { available: false, error: `queryTokenDailySeries: ${e?.message || e}` };
   }
 }

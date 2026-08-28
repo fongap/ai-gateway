@@ -2,6 +2,12 @@ name: Deploy
 
 # Push-to-main auto deploy. Deployment material (real D1 database id, API
 # token) lives only in encrypted repo secrets — never in the repo itself.
+# Pipeline: verify → D1 migrations apply → Worker deploy.
+# Migrations run BEFORE deploy so the DB schema is ready when new code goes
+# live. Wrangler tracks applied migrations via the d1_migrations table, so
+# already-applied migrations are never re-run.
+#
+# Rule: never modify an already-applied migration — only add the next number.
 
 on:
   push:
@@ -40,7 +46,8 @@ jobs:
               {
                 "binding": "TOKEN_STATS_DB",
                 "database_name": "ai-gateway-stats",
-                "database_id": "${{ secrets.TOKEN_STATS_D1_ID }}"
+                "database_id": "${{ secrets.TOKEN_STATS_D1_ID }}",
+                "migrations_dir": "migrations"
               }
             ]
           }
@@ -51,16 +58,11 @@ jobs:
       - name: Syntax check
         run: node scripts/check-syntax.mjs
 
-      - name: Run D1 migrations
+      - name: Apply D1 migrations
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          for f in migrations/*.sql; do
-            echo ":: Running $f"
-            npx --yes wrangler@4.114.0 d1 execute ai-gateway-stats \
-              --remote --file "$f" -c wrangler.user.jsonc
-          done
+        run: npx --yes wrangler@4.114.0 d1 migrations apply ai-gateway-stats --remote -c wrangler.user.jsonc
 
       - name: Deploy Worker
         env:

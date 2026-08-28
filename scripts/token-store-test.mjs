@@ -208,7 +208,9 @@ await test('daily series groups hourly buckets by UTC+8 day', async () => {
 await test('daily series fails open on missing binding or read errors', async () => {
   assert.equal(await queryTokenDailySeries({}, '2026-08-28'), null);
   const d1 = createMockD1({ failReads: true });
-  assert.equal(await queryTokenDailySeries({ TOKEN_STATS_DB: d1 }, '2026-08-28'), null);
+  const result = await queryTokenDailySeries({ TOKEN_STATS_DB: d1 }, '2026-08-28');
+  assert.ok(result && result.available === false, 'returns error object on failure');
+  assert.ok(result.error, 'error message present');
 });
 
 // ---- Fail-open contract -----------------------------------------------------
@@ -230,10 +232,11 @@ await test('a D1 write rejection rejects the returned promise (caller swallows i
   );
 });
 
-await test('a D1 read failure makes queryTokenSummary return null, never throw', async () => {
+await test('a D1 read failure makes queryTokenSummary return error object, never throw', async () => {
   const d1 = createMockD1({ failReads: true });
   const s = await queryTokenSummary({ TOKEN_STATS_DB: d1 }, H0);
-  assert.equal(s, null);
+  assert.ok(s && s.available === false, 'returns error object on failure');
+  assert.ok(s.error, 'error message present');
 });
 
 if (!process.exitCode) console.log(`\ntoken-store tests passed (${passed}).`);
