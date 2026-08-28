@@ -205,24 +205,41 @@ export async function queryTokenSummary(env, now = Date.now()) {
 // [startDayIso, now], rolled up from the hourly buckets. `startDayIso` is a
 // plain "YYYY-MM-DD" date in UTC+8. Returns a Map day -> { total, requests },
 // or null when the binding is missing or the query fails (fail-open).
+//
+// The SQL groups by UTC hour (the storage granularity) using a simple
+// substr() that is guaranteed to work on D1. The UTC+8 date conversion is
+// done in the application layer — for each hourly bucket we compute the
+// UTC+8 calendar date and aggregate. This avoids relying on D1's date()
+// function which may not support column references with modifiers.
 export async function queryTokenDailySeries(env, startDayIso, now = Date.now()) {
   const d1 = tokenStatsD1(env);
   if (!d1) return null;
+  // Convert the UTC+8 start date to the UTC hour key at Beijing 00:00.
+  // e.g. "2026-08-28" (UTC+8) -> "2026-08-27T16:00:00Z" (UTC)
+  const startUtcMs = Date.parse(`${startDayIso}T00:00:00Z`) - DISPLAY_TIMEZONE_OFFSET_MS;
+  const startHour = normalizeHour(startUtcMs);
   try {
     const res = await d1.prepare(
-      `SELECT
-          date(hour, '+8 hours') AS day,
-          COALESCE(SUM(total_tokens), 0) AS total,
-          COALESCE(SUM(requests), 0) AS requests
+      `SELECT hour,
+              COALESCE(SUM(total_tokens), 0) AS total,
+              COALESCE(SUM(requests), 0) AS requests
        FROM ${TABLE}
-       WHERE date(hour, '+8 hours') >= ?
-       GROUP BY day`,
-    ).bind(startDayIso).all();
+       WHERE hour >= ?
+       GROUP BY hour`,
+    ).bind(startHour).all();
     const rows = Array.isArray(res?.results) ? res.results : [];
     const map = new Map();
     for (const r of rows) {
-      if (!r || typeof r.day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(r.day)) continue;
-      map.set(r.day, { total: Number(r.total) || 0, requests: Number(r.requests) || 0 });
+      if (!r || typeof r.hour !== 'string') continue;
+      // Convert the UTC hour key to its UTC+8 calendar date
+      const ms = Date.parse(r.hour);
+      if (!Number.isFinite(ms)) continue;
+      const day = new Date(ms + DISPLAY_TIMEZONE_OFFSET_MS).toISOString().slice(0, 10);
+      const cur = map.get(day) || { total: 0, requests: 0 };
+      map.set(day, {
+        total: cur.total + (Number(r.total) || 0),
+        requests: cur.requests + (Number(r.requests) || 0),
+      });
     }
     return map;
   } catch {

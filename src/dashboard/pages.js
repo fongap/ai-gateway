@@ -170,8 +170,10 @@ button.copy:hover{background:#edf7fc}
 button.copy:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
 
 /* Footer */
-.site-footer{height:50px;margin-top:20px;display:flex;align-items:center;
-  justify-content:center;color:var(--faint);font-size:11px}
+.site-footer{margin-top:20px;display:flex;align-items:center;justify-content:space-between;
+  gap:12px;color:var(--faint);font-size:11px;border-top:1px solid rgba(0,0,0,.04);padding-top:14px}
+.site-footer a{color:var(--faint);text-decoration:none}
+.site-footer a:hover{color:var(--muted)}
 
 @media(max-width:860px){
   .wrap{width:calc(100% - 28px)}
@@ -192,6 +194,7 @@ button.copy:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
   .months{font-size:9px;letter-spacing:-.02em}
   .snippet pre{white-space:pre-wrap;word-break:break-all;padding-right:17px}
   .snippet .copy{position:static;margin:8px 12px 0}
+  .site-footer{flex-direction:column;align-items:flex-start;gap:4px}
 }
 @media (prefers-reduced-motion:reduce){.tab,button.copy{transition:none}}
 @media (forced-colors:active){.dot,.hd,.model-item .dot{border:1px solid CanvasText}}
@@ -535,6 +538,7 @@ function shell({ title, body }) {
 <main class="wrap">${body}</main>
 <footer class="wrap site-footer">
   <span>© 2026 Fongap Studio</span>
+  <a href="https://www.fongap.com" target="_blank" rel="noopener noreferrer">Fongap Studio Blog</a>
 </footer>
 ${PAGE_SCRIPT}
 </body></html>`;

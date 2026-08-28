@@ -2,23 +2,15 @@
 // Copyright (c) 2026 Fongap Studio
 //
 // Minimal Cloudflare D1 mock for the token-stats store tests. It simulates the
-// two statements the real store issues:
+// statements the real store issues:
 //   * persistTokenUsage   -> prepare(INSERT ... ON CONFLICT ... ).bind(...).run()
 //   * queryTokenSummary   -> prepare(SELECT SUM(...) ... ).bind(...).first()
-//   * queryTokenDailySeries -> prepare(SELECT date(hour,'+8 hours')... ).bind(...).all()
+//   * queryTokenDailySeries -> prepare(SELECT hour, SUM(...) GROUP BY hour).bind(...).all()
 // It is NOT a SQL parser: it recognises the statements by shape and applies the
 // same atomic UPSERT / window aggregation semantics the real D1 performs, so
 // the test asserts the STORE's algorithm (not SQL string matching) while still
 // verifying correctness. `failWrites` / `failReads` simulate a broken binding
 // to prove the fail-open contract.
-
-const DISPLAY_TIMEZONE_OFFSET_MS = 8 * 60 * 60 * 1000;
-
-function utc8DayFromHour(hour) {
-  // hour is "YYYY-MM-DDTHH:00:00Z"
-  const ms = Date.parse(hour);
-  return new Date(ms + DISPLAY_TIMEZONE_OFFSET_MS).toISOString().slice(0, 10);
-}
 
 export function createMockD1({ failWrites = false, failReads = false } = {}) {
   const rows = new Map(); // hour -> { input, output, total, requests, reports, missing }
@@ -72,18 +64,18 @@ export function createMockD1({ failWrites = false, failReads = false } = {}) {
       },
       async all() {
         if (failReads) throw new Error('mock D1 read failure');
-        // queryTokenDailySeries: GROUP BY date(hour, '+8 hours') with date >= start.
-        const start = this._params[0]; // UTC+8 date string "YYYY-MM-DD"
-        const byDay = new Map();
+        // queryTokenDailySeries: SELECT hour, SUM(...) GROUP BY hour WHERE hour >= start.
+        // The UTC+8 date conversion is done in the application layer.
+        const startHour = this._params[0]; // UTC hour key "YYYY-MM-DDTHH:00:00Z"
+        const byHour = new Map();
         for (const [hour, r] of rows) {
-          const day = utc8DayFromHour(hour);
-          if (day < start) continue;
-          const cur = byDay.get(day) || { total: 0, requests: 0 };
-          byDay.set(day, { total: cur.total + r.total, requests: cur.requests + r.requests });
+          if (hour < startHour) continue;
+          const cur = byHour.get(hour) || { total: 0, requests: 0 };
+          byHour.set(hour, { total: cur.total + r.total, requests: cur.requests + r.requests });
         }
-        const results = [...byDay.entries()]
+        const results = [...byHour.entries()]
           .sort(([a], [b]) => (a < b ? -1 : 1))
-          .map(([day, r]) => ({ day, total: r.total, requests: r.requests }));
+          .map(([hour, r]) => ({ hour, total: r.total, requests: r.requests }));
         return { results };
       },
     };
