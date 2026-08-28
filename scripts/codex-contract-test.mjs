@@ -166,6 +166,9 @@ await test('responses stream emits response.created -> output -> response.comple
   assert.equal(events.indexOf('response.created'), 0);
   assert.ok(!text.includes('up-model'), 'upstream model must never leak');
   assert.match(text, /"model":"code-max"/);
+  const state = getNodeState('rss');
+  assert.equal(state.totalFailures, 0, 'a large response.completed event must not be misclassified as truncation');
+  assert.equal(state.totalSuccesses, 1);
 });
 
 await test('responses reasoning is preserved as a reasoning item, not text', async () => {
@@ -290,6 +293,14 @@ await test('responses mid-stream failure never fails over after first event', as
     catch { break; }
   }
   assert.match(text, /partial output/);
+  assert.equal((text.match(/event: response\.failed\b/g) || []).length, 1,
+    'the Responses transformer owns the single terminal failure event');
+  assert.equal((text.match(/event: error\b/g) || []).length, 0,
+    'the outer tracker must not append a second terminal error event');
+  const failedData = text.match(/event: response\.failed\r?\ndata: ([^\r\n]+)/);
+  assert.ok(failedData, 'response.failed must include a data payload');
+  assert.ok(Number.isInteger(JSON.parse(failedData[1]).sequence_number),
+    'the terminal failure event keeps the ordered Responses sequence');
   assert.ok(!upstreamCalls.some((c) => c.host === 'mid-b.example.com'), 'must not fail over after first event');
 });
 

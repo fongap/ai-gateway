@@ -89,6 +89,25 @@ await test('text → [DONE] is completed with the marker seen', async () => {
   assert.ok(r.calls.ends[0].receivedBytes > 0);
 });
 
+await test('large terminal event is detected before the diagnostic tail is truncated', async () => {
+  const r = recorder();
+  const terminalMarker = /event:\s*response\.completed\b/;
+  const largeTerminal = `event: response.completed\ndata: ${JSON.stringify({
+    type: 'response.completed',
+    response: { output: [{ type: 'message', content: 'x'.repeat(2048) }] },
+  })}\n\n`;
+  assert.ok(largeTerminal.length > 256, 'fixture must exceed the retained diagnostic tail');
+  const res = trackStreamResponse(upstreamStream((c) => {
+    c.enqueue(encoder.encode(largeTerminal));
+    c.close();
+  }), { ...r.opts, completionMarker: terminalMarker });
+  await drain(res);
+  assert.equal(r.calls.success, 1);
+  assert.equal(r.calls.failure, 0);
+  assertCommonShape(r.calls.ends[0], 'completed', null);
+  assert.equal(r.calls.ends[0].completionMarkerSeen, true);
+});
+
 await test('text → raw EOF is interrupted with missing_completion_marker', async () => {
   const r = recorder();
   const res = trackStreamResponse(upstreamStream((c) => {
@@ -101,6 +120,72 @@ await test('text → raw EOF is interrupted with missing_completion_marker', asy
   assert.equal(r.calls.ends.length, 1);
   assertCommonShape(r.calls.ends[0], 'interrupted', 'missing_completion_marker');
   assert.equal(r.calls.ends[0].completionMarkerSeen, false);
+});
+
+await test('an interruption chunk is delivered before a truncated stream closes', async () => {
+  const r = recorder();
+  const diagnostic = encoder.encode('event: error\ndata: {"type":"error"}\n\n');
+  const res = trackStreamResponse(upstreamStream((c) => {
+    c.enqueue(encoder.encode(sseChunk('partial output')));
+    c.close();
+  }), { ...r.opts, interruptionChunk: () => diagnostic });
+  const text = await res.text();
+  assert.match(text, /partial output/);
+  assert.match(text, /event: error/);
+  assert.equal(r.calls.failure, 1);
+  assertCommonShape(r.calls.ends[0], 'interrupted', 'missing_completion_marker');
+});
+
+await test('an existing Responses failure is not followed by a duplicate error event', async () => {
+  const r = recorder();
+  let interruptionCalls = 0;
+  const failed = 'event: response.failed\ndata: {"type":"response.failed","sequence_number":3}\n\n';
+  const res = trackStreamResponse(upstreamStream((c) => {
+    c.enqueue(encoder.encode(failed));
+    c.close();
+  }), {
+    ...r.opts,
+    completionMarker: /event:\s*response\.(?:completed|incomplete)\b/,
+    failureMarker: /event:\s*response\.failed\b/,
+    interruptionChunk: () => { interruptionCalls++; return encoder.encode('event: error\n\n'); },
+  });
+  const text = await res.text();
+  assert.equal((text.match(/event: response\.failed\b/g) || []).length, 1);
+  assert.equal((text.match(/event: error\b/g) || []).length, 0);
+  assert.equal(interruptionCalls, 0);
+  assert.equal(r.calls.failure, 1);
+  assertCommonShape(r.calls.ends[0], 'interrupted', 'missing_completion_marker');
+});
+
+await test('an injected Responses error continues the observed sequence number', async () => {
+  const r = recorder();
+  let observedNext = null;
+  const created = 'event: response.created\ndata: {"type":"response.created","sequence_number":7}\n\n';
+  const res = trackStreamResponse(upstreamStream((c) => {
+    c.enqueue(encoder.encode(created));
+    c.close();
+  }), {
+    ...r.opts,
+    completionMarker: /event:\s*response\.(?:completed|incomplete)\b/,
+    interruptionChunk: (_reason, details) => {
+      observedNext = details.nextSequenceNumber;
+      return encoder.encode(`event: error\ndata: {"type":"error","sequence_number":${observedNext}}\n\n`);
+    },
+  });
+  const text = await res.text();
+  assert.equal(observedNext, 8);
+  assert.match(text, /"sequence_number":8/);
+});
+
+await test('a replay guard can expose a hidden upstream reader failure', async () => {
+  const r = recorder();
+  const res = trackStreamResponse(upstreamStream((c) => {
+    c.enqueue(encoder.encode(sseChunk('buffered output')));
+    c.close();
+  }), { ...r.opts, upstreamFailureReason: () => 'reader_error' });
+  await drain(res);
+  assert.equal(r.calls.failure, 1);
+  assertCommonShape(r.calls.ends[0], 'interrupted', 'reader_error');
 });
 
 await test('text → reader throw is interrupted with reader_error', async () => {

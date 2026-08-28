@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -22,36 +23,57 @@ const patterns = [
 const sensitiveNames = [/^\.dev\.vars$/, /^\.env(?:\..+)?$/, /^secrets.*\.json$/i, /^wrangler\.user\.jsonc$/, /^gateway-.*-secrets.*\.json$/i];
 const findings = [];
 
-function walk(dir) {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (entry.isDirectory() && excludedDirs.has(entry.name)) continue;
-    const full = path.join(dir, entry.name);
-    const rel = path.relative(root, full).replaceAll(path.sep, '/');
-    if (entry.isDirectory()) {
-      walk(full);
-      continue;
-    }
-    if (excludedFiles.has(entry.name) || entry.name.startsWith('.wrangler-local-')) continue;
-    if (sensitiveNames.some((pattern) => pattern.test(entry.name)) && !entry.name.endsWith('.example')) {
-      findings.push(`${rel}: sensitive file must not be committed`);
-      continue;
-    }
-    const ext = path.extname(entry.name);
-    if (!textExtensions.has(ext) && !entry.name.startsWith('.')) continue;
-    let content;
-    try { content = fs.readFileSync(full, 'utf8'); } catch { continue; }
-    for (const [label, pattern] of patterns) {
-      pattern.lastIndex = 0;
-      if (pattern.test(content)) findings.push(`${rel}: possible ${label}`);
-    }
+function scanFile(rel) {
+  const normalized = rel.replaceAll('\\', '/');
+  const parts = normalized.split('/');
+  if (parts.slice(0, -1).some((part) => excludedDirs.has(part))) return;
+  const name = parts.at(-1);
+  if (!name || excludedFiles.has(name) || name.startsWith('.wrangler-local-')) return;
+  if (sensitiveNames.some((pattern) => pattern.test(name)) && !name.endsWith('.example')) {
+    findings.push(`${normalized}: sensitive file must not be committed`);
+    return;
+  }
+  const ext = path.extname(name);
+  if (!textExtensions.has(ext) && !name.startsWith('.')) return;
+  let content;
+  try { content = fs.readFileSync(path.join(root, normalized), 'utf8'); } catch { return; }
+  for (const [label, pattern] of patterns) {
+    pattern.lastIndex = 0;
+    if (pattern.test(content)) findings.push(`${normalized}: possible ${label}`);
   }
 }
 
-walk(root);
+// In a working tree, scan exactly what could enter a commit: tracked files plus
+// untracked files not excluded by .gitignore. Local deployment material such
+// as wrangler.user.jsonc remains on disk by design and must not make every
+// post-configuration `npm run verify` fail. A forcibly tracked sensitive file
+// is still returned by `git ls-files --cached` and is therefore rejected.
+// Source archives may not contain .git; fall back to the conservative walk in
+// that case so release artifacts still receive a useful scan.
+let gitCandidates = null;
+try {
+  gitCandidates = execFileSync(
+    'git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'],
+    { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+  ).split('\0').filter(Boolean);
+} catch { /* archive / environment without git */ }
+
+if (gitCandidates) {
+  for (const rel of gitCandidates) scanFile(rel);
+} else {
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory() && excludedDirs.has(entry.name)) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else scanFile(path.relative(root, full));
+    }
+  };
+  walk(root);
+}
 if (findings.length) {
   console.error('Potential secrets detected:');
   for (const finding of findings) console.error(`- ${finding}`);
   process.exit(1);
 }
 console.log('Secret scan passed.');
-

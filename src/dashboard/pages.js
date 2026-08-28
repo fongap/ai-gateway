@@ -41,8 +41,8 @@ const HEATMAP_DAYS = HEATMAP_WEEKS * 7; // 364 cells, exactly
 
 const STYLES = `
 :root{
-  --bg:#f5f6f7; --surface:#fff; --text:#30343a; --muted:#8f969f; --faint:#b7bdc5;
-  --line:#e6e9ed; --blue:#32a5e7; --green:#36b37e; --radius:16px; --content:1180px;
+  --bg:#f5f6f7; --surface:#fff; --text:#30343a; --muted:#68717c; --faint:#6b7480;
+  --line:#e6e9ed; --blue:#087bbd; --green:#26855f; --radius:16px; --content:1180px;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
@@ -52,6 +52,9 @@ body{background:var(--bg);color:var(--text);
   letter-spacing:-.005em;min-height:100vh;display:flex;flex-direction:column}
 .wrap{width:min(var(--content),calc(100% - 48px));margin:0 auto}
 a{color:var(--blue);text-decoration:none}
+.sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;
+  margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;
+  white-space:nowrap!important;border:0!important}
 
 /* Header */
 .site-header{height:56px;display:flex;align-items:center;justify-content:space-between;
@@ -63,6 +66,7 @@ a{color:var(--blue);text-decoration:none}
 .github{display:inline-flex;align-items:center;gap:6px;color:var(--muted);
   font-size:13px;transition:color .15s}
 .github:hover{color:var(--text)}
+.github:focus-visible{outline:2px solid var(--blue);outline-offset:4px;border-radius:4px}
 .github svg{width:17px;height:17px;display:block}
 
 /* Hero (compact — the page targets ~1.5 viewports total) */
@@ -107,6 +111,8 @@ a{color:var(--blue);text-decoration:none}
   gap:12px}
 .activity-head b{font-size:13px;font-weight:600;color:#606872}
 .activity-head span{font-size:12px;color:var(--faint)}
+.activity-scroll{overflow-x:auto;overscroll-behavior-inline:contain;scrollbar-width:thin}
+.activity-scroll:focus-visible{outline:2px solid var(--blue);outline-offset:3px;border-radius:4px}
 .heatmap{display:grid;grid-template-columns:repeat(52,minmax(0,1fr));
   grid-template-rows:repeat(7,auto);grid-auto-flow:column;gap:3px;margin-top:9px}
 .hd{display:block;width:100%;height:auto;aspect-ratio:1;border-radius:3px;
@@ -155,16 +161,19 @@ button.copy:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
   .kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
   .kpi{height:72px}
   .kpi::after{display:none}
-  .kpi:nth-child(odd)::before{content:"";position:absolute;left:0;top:18px;height:36px;
+  .kpi:nth-child(even)::before{content:"";position:absolute;left:0;top:18px;height:36px;
     width:1px;background:var(--line)}
-  .kpi:first-child::before,.kpi:nth-child(n+5)::before{display:none}
+  .kpi:nth-child(n+3){border-top:1px solid var(--line)}
+  .kpi:nth-child(n+5)::before{display:none}
   .kpi:nth-child(n+5){grid-column:1/-1;border-top:1px solid var(--line)}
+  .heatmap,.months{min-width:520px}
   .heatmap{gap:2px}
   .months{font-size:9px;letter-spacing:-.02em}
   .snippet pre{white-space:pre-wrap;word-break:break-all;padding-right:17px}
   .snippet .copy{position:static;margin:8px 12px 0}
 }
 @media (prefers-reduced-motion:reduce){.tab,button.copy{transition:none}}
+@media (forced-colors:active){.dot,.hd{border:1px solid CanvasText}}
 `;
 
 const GH_ICON = `<a class="github" href="${GITHUB_URL}" target="_blank" rel="noopener noreferrer" aria-label="GitHub 仓库">
@@ -174,27 +183,41 @@ const GH_ICON = `<a class="github" href="${GITHUB_URL}" target="_blank" rel="noo
 // switches the visible quick-start pane. No libraries.
 const PAGE_SCRIPT = `<script>(function(){
 var root=document.body;
+function activateTab(tab,moveFocus){
+  var group=tab.closest('.tabs');var scope=group.parentElement;
+  var id=tab.getAttribute('data-tab');
+  for(var i=0;i<group.children.length;i++){
+    var item=group.children[i];var active=item===tab;
+    item.classList.toggle('active',active);item.setAttribute('aria-selected',active?'true':'false');
+    item.tabIndex=active?0:-1;
+  }
+  var panes=scope.querySelectorAll(':scope > .pane');
+  for(var j=0;j<panes.length;j++){var shown=panes[j].id==='pane-'+id;
+    panes[j].classList.toggle('active',shown);panes[j].hidden=!shown;}
+  if(moveFocus)tab.focus();
+}
 root.addEventListener('click',function(e){
   var tab=e.target.closest&&e.target.closest('.tab');
-  if(tab){
-    var group=tab.closest('.tabs');
-    var scope=group.parentElement;
-    var id=tab.getAttribute('data-tab');
-    for(var i=0;i<group.children.length;i++)group.children[i].classList.toggle('active',group.children[i]===tab);
-    var panes=scope.querySelectorAll(':scope > .pane');
-    for(var j=0;j<panes.length;j++)panes[j].classList.toggle('active',panes[j].id==='pane-'+id);
-    return;
-  }
+  if(tab){activateTab(tab,false);return;}
   var b=e.target.closest&&e.target.closest('[data-copy]');if(!b)return;
   var label=b.textContent;var t=document.querySelector(b.getAttribute('data-copy'));
   var text=t?t.textContent:'';
-  function done(){b.textContent='已复制';setTimeout(function(){b.textContent=label;},1400);}
+  function done(ok){b.textContent=ok?'已复制':'复制失败';setTimeout(function(){b.textContent=label;},1400);}
   function fallback(text){var ta=document.createElement('textarea');ta.value=text;
     ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();
-    try{document.execCommand('copy');}catch(e){}document.body.removeChild(ta);}
+    var ok=false;try{ok=document.execCommand('copy');}catch(e){}document.body.removeChild(ta);return ok;}
   if(navigator.clipboard&&navigator.clipboard.writeText){
-    navigator.clipboard.writeText(text).then(done,function(){fallback(text);done();});}
-  else{fallback(text);done();}
+    navigator.clipboard.writeText(text).then(function(){done(true);},function(){done(fallback(text));});}
+  else{done(fallback(text));}
+});
+root.addEventListener('keydown',function(e){
+  var tab=e.target.closest&&e.target.closest('.tab');if(!tab)return;
+  var keys=['ArrowLeft','ArrowRight','Home','End'];if(keys.indexOf(e.key)<0)return;
+  e.preventDefault();var items=Array.prototype.slice.call(tab.closest('.tabs').children);
+  var index=items.indexOf(tab);
+  if(e.key==='Home')index=0;else if(e.key==='End')index=items.length-1;
+  else index=(index+(e.key==='ArrowRight'?1:-1)+items.length)%items.length;
+  activateTab(items[index],true);
 });
 })();</script>`;
 
@@ -242,8 +265,8 @@ function groupModels(models) {
 
 function modelChip(m) {
   const label = STATE_LABEL[m.status] || '不可用';
-  return `<div class="chip"><span class="name">${escapeHtml(m.id)}</span>` +
-    `<i class="dot ${m.status}" title="${label}"></i></div>`;
+  return `<div class="chip" title="状态：${label}"><span class="name">${escapeHtml(m.id)}</span>` +
+    `<span class="sr-only">状态：${label}</span><i class="dot ${m.status}" aria-hidden="true"></i></div>`;
 }
 
 function modelRow(kind, list) {
@@ -379,8 +402,10 @@ async function usageSection(env, now = Date.now()) {
   const activity = available
     ? (() => {
         const { cells, labels } = buildHeatmap(daily, now);
-        return `<div class="heatmap">${cells.join('')}</div>` +
-          `<div class="months">${labels.join('')}</div>`;
+        return `<div class="activity-scroll" tabindex="0" role="img" ` +
+          `aria-label="近12个月 Token 活动热力图，颜色越深表示当日 Token 使用量越高">` +
+          `<div class="heatmap" aria-hidden="true">${cells.join('')}</div>` +
+          `<div class="months" aria-hidden="true">${labels.join('')}</div></div>`;
       })()
     : `<div class="heat-empty">统计暂不可用</div>`;
   return `<section class="section">
@@ -399,9 +424,10 @@ async function usageSection(env, now = Date.now()) {
 
 function snippetPane({ id, label, active, code }) {
   const target = `#code-${id}`;
-  return `<div class="pane${active ? ' active' : ''}" id="pane-${id}">
+  return `<div class="pane${active ? ' active' : ''}" id="pane-${id}" role="tabpanel" ` +
+    `aria-labelledby="tab-${id}"${active ? '' : ' hidden'}>
     <div class="snippet">
-      <button class="copy" type="button" data-copy="${target}" aria-label="复制${escapeHtml(label)}配置">复制</button>
+      <button class="copy" type="button" data-copy="${target}" aria-label="复制${escapeHtml(label)}配置" aria-live="polite">复制</button>
       <pre id="code-${id}">${code}</pre>
     </div>
   </div>`;
@@ -426,7 +452,9 @@ env_key = "GATEWAY_API_KEY"`;
     { id: 'openai', label: 'OpenAI' },
     { id: 'claude', label: 'Claude Code' },
     { id: 'codex', label: 'Codex' },
-  ].map((t, i) => `<button class="tab${i === 0 ? ' active' : ''}" type="button" role="tab" data-tab="${t.id}">${t.label}</button>`).join('');
+  ].map((t, i) => `<button class="tab${i === 0 ? ' active' : ''}" id="tab-${t.id}" ` +
+    `type="button" role="tab" aria-controls="pane-${t.id}" aria-selected="${i === 0}" ` +
+    `tabindex="${i === 0 ? 0 : -1}" data-tab="${t.id}">${t.label}</button>`).join('');
   const panes = [
     snippetPane({ id: 'openai', label: 'OpenAI', active: true, code: openai }),
     snippetPane({ id: 'claude', label: 'Claude Code', active: false, code: claude }),

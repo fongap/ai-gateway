@@ -116,6 +116,15 @@ export function tierHasDeferredCapacity(tierNodes, requestedModel, attempted, no
 // capacity (concurrency-saturated / hard-RPM-exhausted) belongs to
 // tierHasDeferredCapacity instead: Retry-After and diagnostics, no budget.
 export function tierHasDispatchableNode(tierNodes, requestedModel, attempted, now = Date.now()) {
+  return countDispatchableNodes(tierNodes, requestedModel, attempted, now) > 0;
+}
+
+// Count candidates that pickCandidate could dispatch right now without
+// claiming their slots.  The request pipeline uses this to divide its
+// remaining wall-clock budget across attempts that can actually happen,
+// rather than across a policy maximum that may be larger than the live pool.
+export function countDispatchableNodes(tierNodes, requestedModel, attempted, now = Date.now()) {
+  let count = 0;
   for (const node of tierNodes) {
     if (attempted.has(node.id)) continue;
     if (!supportsModel(node, requestedModel)) continue;
@@ -123,9 +132,9 @@ export function tierHasDispatchableNode(tierNodes, requestedModel, attempted, no
     if (isModelCooling(node.id, requestedModel, now)) continue;
     if (getNodeState(node.id).activeRequests >= node.limits.concurrency) continue;
     if (isHardRpmExhausted(node, now)) continue;
-    return true;
+    count++;
   }
-  return false;
+  return count;
 }
 
 // Health differences below this band are noise (one success = +3); treat them

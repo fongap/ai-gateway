@@ -27,6 +27,16 @@ export const GUARD_ERROR = {
   ERROR_ENVELOPE: 'first_event_error_envelope',
 };
 
+const guardedStreamState = new WeakMap();
+
+// A post-commit reader exception is intentionally relayed as a clean EOF so
+// already-buffered model output is not discarded. Expose the hidden cause to
+// the outer tracker, which can then classify/log it as reader_error instead of
+// collapsing every clean close into missing_completion_marker.
+export function guardedStreamFailureReason(response) {
+  return guardedStreamState.get(response)?.failureReason || null;
+}
+
 // Incremental SSE line scanner shared by every streaming path so each SSE
 // event is parsed exactly once no matter which consumer processes it.
 // Usage: const s = createSseScanner(onData); s.push(chunkText)...; s.flush();
@@ -120,18 +130,21 @@ export async function ensureFirstSseEvent(upstreamResponse, timeoutMs, clientSig
       settled = true;
       clearTimeout(timerId);
       clientSignal?.removeEventListener('abort', abort);
+      const state = { failureReason: null };
       const stream = new ReadableStream({
         start(controller) {
           for (const chunk of consumed) controller.enqueue(chunk);
-          void pump(reader, controller);
+          void pump(reader, controller, state);
         },
         cancel() { reader.cancel().catch(() => {}); },
       });
-      resolve(new Response(stream, {
+      const replay = new Response(stream, {
         status: upstreamResponse.status,
         statusText: upstreamResponse.statusText,
         headers: upstreamResponse.headers,
-      }));
+      });
+      guardedStreamState.set(replay, state);
+      resolve(replay);
     };
 
     const finishErr = (code) => {
@@ -200,7 +213,7 @@ async function consumeSseEventsWithReader(reader, onData, consumed, isSettled) {
   if (!isSettled()) scanner.flush();
 }
 
-async function pump(reader, controller) {
+async function pump(reader, controller, state) {
   try {
     for (;;) {
       const { done, value } = await reader.read();
@@ -212,6 +225,7 @@ async function pump(reader, controller) {
     // Upstream died mid-stream after the first event: close cleanly so
     // already-buffered bytes still reach the client; the missing completion
     // marker exposes the truncation.
+    state.failureReason = 'reader_error';
     try { controller.close(); } catch { /* already closed */ }
   }
 }

@@ -8,8 +8,12 @@ import {
   rollbackRpmBucket, rpmUsage,
   CIRCUIT_FAILURE_THRESHOLD, CIRCUIT_OPEN_MS,
 } from '../src/reliability/node-state.js';
-import { parseRetryAfterMs } from '../src/config/timeouts.js';
+import {
+  parseRetryAfterMs, attemptBudgetSliceMs, attemptHeadersTimeoutMs, attemptFirstEventTimeoutMs,
+  MIN_ATTEMPT_HEADERS_MS, MIN_ATTEMPT_FIRST_EVENT_MS,
+} from '../src/config/timeouts.js';
 import { classifyUpstreamStatus } from '../src/reliability/classify.js';
+import { countDispatchableNodes } from '../src/scheduler/scheduler.js';
 
 const ENV = {};
 let now = 1_000_000;
@@ -271,6 +275,72 @@ await test('rollbackRpmBucket never fabricates a bucket for a node that never ac
   assert.equal(rpmUsage(id, now), 0, 'rollback must not create a bucket from nothing');
   assert.ok(acquireSlot(id, now));
   assert.equal(rpmUsage(id, now), 1, 'first real acquire starts the counter at 1, not 0 or negative');
+});
+
+// ---- Per-attempt header-wait budget split -----------------------------------
+
+await test('one absolute attempt slice is shared by headers and first event', async () => {
+  assert.equal(attemptBudgetSliceMs(240_000, 1), 240_000);
+  assert.equal(attemptBudgetSliceMs(240_000, 2), 120_000);
+  assert.equal(attemptBudgetSliceMs(240_000, 5), 48_000);
+  assert.equal(attemptBudgetSliceMs(0, 5), 1, 'a timer never receives a zero delay');
+  assert.equal(attemptBudgetSliceMs(60_000, 0), 60_000, 'degenerate attempt counts are clamped');
+  // Headers and first-event are serial phases. After headers consume 18s of a
+  // 48s attempt slice, the first-event guard can use only the 30s remainder.
+  const attemptDeadline = 48_000;
+  const afterHeaders = attemptDeadline - 18_000;
+  assert.equal(attemptFirstEventTimeoutMs(120_000, afterHeaders, 1), 30_000);
+});
+
+await test('a single remaining attempt keeps the whole remaining budget (old behavior)', async () => {
+  assert.equal(attemptHeadersTimeoutMs(120_000, 200_000, 1), 120_000);
+  assert.equal(attemptHeadersTimeoutMs(120_000, 60_000, 1), 60_000, 'capped by remaining budget');
+  assert.equal(attemptHeadersTimeoutMs(120_000, 500_000, 1), 120_000, 'capped by headers timeout');
+});
+
+await test('the budget is split evenly across remaining attempts', async () => {
+  // Production-shaped case: 240s budget, 60s headers, 5 attempts -> 48s each;
+  // a timing-out first node can no longer starve the rest.
+  assert.equal(attemptHeadersTimeoutMs(60_000, 240_000, 5), 48_000);
+  assert.equal(attemptHeadersTimeoutMs(120_000, 180_000, 2), 90_000, 'the old 120s+60s starvation pair becomes 90s+90s');
+  // After an attempt is charged the share grows for the rest.
+  assert.equal(attemptHeadersTimeoutMs(60_000, 192_000, 4), 48_000);
+});
+
+await test('the per-attempt floor protects viable slow upstreams, the budget caps extremes', async () => {
+  // share (10s) below the floor -> floor wins, but never beyond the budget.
+  assert.equal(attemptHeadersTimeoutMs(120_000, 50_000, 5), MIN_ATTEMPT_HEADERS_MS);
+  // Remaining budget below the floor -> budget wins (no overshoot).
+  assert.equal(attemptHeadersTimeoutMs(120_000, 8_000, 5), 8_000);
+  assert.equal(attemptHeadersTimeoutMs(60_000, 0, 3), 1, 'degenerate remaining never schedules a 0ms timer');
+  // A tight headers timeout dominates everything.
+  assert.equal(attemptHeadersTimeoutMs(8_000, 240_000, 5), 8_000);
+});
+
+await test('degenerate attempt counts are clamped', async () => {
+  assert.equal(attemptHeadersTimeoutMs(60_000, 240_000, 0), 60_000);
+  assert.equal(attemptHeadersTimeoutMs(60_000, 240_000, -3), 60_000);
+});
+
+await test('first-event timeout is fairly shared across live attempts', async () => {
+  assert.equal(attemptFirstEventTimeoutMs(120_000, 240_000, 1), 120_000);
+  assert.equal(attemptFirstEventTimeoutMs(120_000, 240_000, 2), 120_000);
+  assert.equal(attemptFirstEventTimeoutMs(120_000, 240_000, 5), 48_000);
+  assert.equal(attemptFirstEventTimeoutMs(120_000, 10_000, 5), MIN_ATTEMPT_FIRST_EVENT_MS);
+  assert.equal(attemptFirstEventTimeoutMs(120_000, 3_000, 5), 3_000, 'remaining budget caps the floor');
+});
+
+await test('dispatchable count reflects the live pool, not the policy maximum', async () => {
+  const makeNode = (id) => ({
+    id, models: { m: 'upstream' }, priority: 10,
+    limits: { concurrency: 1, rpm: 0, rpmMode: 'hard' },
+  });
+  const nodes = [makeNode('live-count-a'), makeNode('live-count-b')];
+  assert.equal(countDispatchableNodes(nodes, 'm', new Set(), now), 2);
+  assert.equal(countDispatchableNodes(nodes, 'm', new Set(['live-count-a']), now), 1);
+  acquireSlot('live-count-b', now);
+  assert.equal(countDispatchableNodes(nodes, 'm', new Set(), now), 1, 'a saturated node is not live capacity');
+  recordNeutralEnd('live-count-b');
 });
 
 if (!process.exitCode) console.log(`reliability unit tests passed (${passed}).`);

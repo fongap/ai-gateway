@@ -18,7 +18,7 @@
 
 import { normalizeTokenUsage } from '../observability/tokens.js';
 
-export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFailure, onNeutral, onStreamStart, onStreamEnd, completionMarker, rewriteModel, onUsage }) {
+export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFailure, onNeutral, onStreamStart, onStreamEnd, completionMarker, failureMarker, rewriteModel, onUsage, interruptionChunk, upstreamFailureReason }) {
   if (!response.body) {
     onSuccess();
     return response;
@@ -37,7 +37,9 @@ export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFail
   let lineBuffer = '';
   let diagnosticTail = '';
   let errorEventSeen = false;
+  let terminalFailureSeen = false;
   let completionSeen = !completionMarker;
+  let nextSequenceNumber = 0;
   let finished = false;
   // Passive usage scan state: lines that may still be split across chunks,
   // the last usable reported usage object, and a once-only fire guard.
@@ -51,6 +53,14 @@ export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFail
   let chunkCount = 0;
   let receivedBytes = 0;
   let failureReason = null;
+
+  const emitInterruption = (controller) => {
+    if (errorEventSeen || typeof interruptionChunk !== 'function') return;
+    try {
+      const chunk = interruptionChunk(failureReason, { nextSequenceNumber });
+      if (chunk instanceof Uint8Array && chunk.byteLength > 0) controller.enqueue(chunk);
+    } catch { /* diagnostics must never break stream shutdown */ }
+  };
 
   // Incremental SSE line scan for `data: {... "usage": ...}` events. Only the
   // LAST usable report wins, so an early empty `usage:{}` cannot clobber a
@@ -149,6 +159,7 @@ export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFail
         // queued still reach the client; the missing completion marker makes
         // the truncation detectable, and the node records a failure.
         failureReason = 'reader_error';
+        emitInterruption(controller);
         finalize('failure');
         try { controller.close(); } catch { /* closed */ }
         return;
@@ -156,15 +167,19 @@ export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFail
       if (result.timeout) {
         reader.cancel().catch(() => {});
         failureReason = 'idle_timeout';
+        emitInterruption(controller);
         finalize('failure');
         controller.close();
         return;
       }
       const { done, value } = result.value;
       if (done) {
-        failureReason = 'missing_completion_marker';
+        let hiddenReason = null;
+        try { hiddenReason = upstreamFailureReason?.() || null; } catch { /* diagnostic only */ }
+        failureReason = hiddenReason || 'missing_completion_marker';
         if (encoder && lineBuffer) { controller.enqueue(encoder.encode(lineBuffer)); lineBuffer = ''; }
-        finalize(errorEventSeen ? 'failure' : 'success');
+        if (!completionSeen && !terminalFailureSeen) emitInterruption(controller);
+        finalize(errorEventSeen || terminalFailureSeen ? 'failure' : 'success');
         controller.close();
         return;
       }
@@ -175,13 +190,30 @@ export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFail
         // Scan BEFORE the completion-marker test: a single chunk carrying the
         // usage event and [DONE] together must still be seen.
         if (usageScan && !completionSeen) scanUsageLine(decoded);
-        diagnosticTail = (diagnosticTail + decoded).slice(-256);
-        if (!errorEventSeen) {
-          errorEventSeen = /(?:^|\r?\n)event:\s*error\s*(?:\r?\n|$)/.test(diagnosticTail);
+        // Test the full current chunk plus the previous boundary tail BEFORE
+        // retaining only a small suffix.  Large terminal events (notably
+        // response.completed, whose data contains the whole response) put the
+        // event header more than 256 characters before the chunk end; slicing
+        // first used to discard that header and mark successful streams as
+        // missing_completion_marker.
+        const scanWindow = diagnosticTail + decoded;
+        if (interruptionChunk) {
+          const sequencePattern = /"sequence_number"\s*:\s*(\d+)/g;
+          let match;
+          while ((match = sequencePattern.exec(scanWindow))) {
+            nextSequenceNumber = Math.max(nextSequenceNumber, Number(match[1]) + 1);
+          }
         }
-        if (!completionSeen && completionMarker.test(diagnosticTail)) {
+        if (!errorEventSeen) {
+          errorEventSeen = /(?:^|\r?\n)event:\s*error\s*(?:\r?\n|$)/.test(scanWindow);
+        }
+        if (!terminalFailureSeen && failureMarker?.test(scanWindow)) {
+          terminalFailureSeen = true;
+        }
+        if (!completionSeen && completionMarker.test(scanWindow)) {
           completionSeen = true;
         }
+        diagnosticTail = scanWindow.slice(-256);
       }
       controller.enqueue(forwardBytes(value));
     },

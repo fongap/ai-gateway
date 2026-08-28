@@ -18,8 +18,8 @@
 import { loadGatewayConfig } from '../config/nodes.js';
 import { loadModelsConfig } from '../config/models.js';
 import { loadPoliciesConfig, getPolicy } from '../config/policies.js';
-import { getLimits } from '../config/timeouts.js';
-import { pickCandidate, supportsModel, tierHasDispatchableNode } from '../scheduler/scheduler.js';
+import { getLimits, attemptHeadersTimeoutMs, attemptFirstEventTimeoutMs, attemptBudgetSliceMs } from '../config/timeouts.js';
+import { pickCandidate, supportsModel, tierHasDispatchableNode, countDispatchableNodes } from '../scheduler/scheduler.js';
 import {
   recordSuccess, recordFailure, recordNeutralEnd, rollbackRpmBucket, recordModelMissing,
   applyHealthPenalty,
@@ -46,7 +46,7 @@ import {
   openAICompletionToResponses, transformOpenAIStreamToResponses,
   synthesizeResponsesFromCompletion,
 } from '../protocol/responses/index.js';
-import { ensureFirstSseEvent, GUARD_ERROR } from '../stream/guard.js';
+import { ensureFirstSseEvent, GUARD_ERROR, guardedStreamFailureReason } from '../stream/guard.js';
 import { transformOpenAIStreamToAnthropic } from '../stream/transform.js';
 import { collectOpenAIStreamObject } from '../stream/assemble.js';
 import { trackStreamResponse } from '../stream/track.js';
@@ -208,12 +208,17 @@ export async function handleRequest(request, env, ctx) {
       if (remainingBudgetMs <= 0) {
         return buildBudgetExhaustedResponse(request, env, route, requestId, requestedModel, state, exposeUpstreamInfo);
       }
+      const remainingDispatchableAttempts = countRemainingDispatchableAttempts(
+        tiers, requestedModel, state.attempted, tierCaps,
+        tierNumber, usedInTier, policy.maxAttempts - state.totalAttempts,
+      );
       const node = pickCandidate(tiers[tierNumber], requestedModel, state.attempted);
       if (!node) break; // tier exhausted -> fallback to next tier
       const outcome = await attemptNode({
         request, env, ctx, logger, requestId, route, node, requestedModel,
         clientWantsStream, fakeStream, bodyJson, anthropicConversion, responsesConversion,
         limits, exposeUpstreamInfo, state, failoverBudgetMs, requestStartMs,
+        remainingDispatchableAttempts,
       });
       // A pre-dispatch outcome that never reached an upstream (distributed
       // rate-limiter deny, invalid base URL) carries budgetCharged:false and
@@ -269,6 +274,26 @@ function computeTierCaps(tiers, requestedModel, attempted, policy) {
   return caps;
 }
 
+// Number of upstream dispatches that can still happen in this request after
+// applying live availability, per-tier caps, strict tier order, and the shared
+// policy cap.  This is deliberately recomputed before every attempt because a
+// pre-dispatch deny or a concurrent request can change the live candidate set.
+function countRemainingDispatchableAttempts(tiers, requestedModel, attempted, tierCaps, currentTier, usedInTier, sharedRemaining) {
+  const now = Date.now();
+  let total = 0;
+  let currentReached = false;
+  for (const tierNumber of TIER_ORDER) {
+    if (tierNumber === currentTier) currentReached = true;
+    if (!currentReached) continue;
+    const capRemaining = Math.max(0,
+      (tierCaps[tierNumber] ?? 0) - (tierNumber === currentTier ? usedInTier : 0));
+    if (capRemaining === 0) continue;
+    const live = countDispatchableNodes(tiers[tierNumber], requestedModel, attempted, now);
+    total += Math.min(capRemaining, live);
+  }
+  return Math.max(1, Math.min(Math.max(1, sharedRemaining), total || 1));
+}
+
 // ---- One attempt against one node -----------------------------------------
 
 // Wrapper around dispatchAttempt. Every path inside either contacted (or tried
@@ -286,7 +311,7 @@ async function dispatchAttempt(c) {
   const {
     request, env, logger, requestId, route, node, requestedModel, clientWantsStream,
     fakeStream, bodyJson, anthropicConversion, responsesConversion, limits, exposeUpstreamInfo, state,
-    failoverBudgetMs, requestStartMs,
+    failoverBudgetMs, requestStartMs, remainingDispatchableAttempts,
   } = c;
   const attemptStartMs = Date.now();
   c.attemptStartMs = attemptStartMs;
@@ -357,11 +382,20 @@ async function dispatchAttempt(c) {
   const headers = buildUpstreamHeaders(request, node.credential, requestId);
   const controller = new AbortController();
   let headersTimeoutHit = false;
-  // Cap this attempt's own wait by the remaining whole-request budget so the
-  // worst case is bounded: a single attempt never burns the entire budget AND
-  // never lets the total exceed FAILOVER_BUDGET_MS by more than one attempt.
+  // Cap this attempt's own wait by a FAIR SHARE of the remaining whole-request
+  // budget instead of letting one node consume UPSTREAM_HEADERS_TIMEOUT_MS in
+  // full: the budget is split across the attempts that may still be needed, so
+  // a slow first candidate no longer starves every later one. The last
+  // remaining attempt keeps the entire remaining budget (share = remaining),
+  // and the wait never exceeds UPSTREAM_HEADERS_TIMEOUT_MS.
   const remainingBudgetMs = failoverBudgetMs - (Date.now() - requestStartMs);
-  const attemptHeadersTimeout = Math.min(limits.headersTimeoutMs, Math.max(1, remainingBudgetMs));
+  const attemptBudgetMs = attemptBudgetSliceMs(remainingBudgetMs, remainingDispatchableAttempts);
+  c.attemptDeadlineMs = Date.now() + attemptBudgetMs;
+  const attemptHeadersTimeout = attemptHeadersTimeoutMs(
+    limits.headersTimeoutMs,
+    attemptBudgetMs,
+    1,
+  );
   const timeoutId = setTimeout(() => {
     headersTimeoutHit = true;
     controller.abort();
@@ -450,8 +484,13 @@ async function handleSuccess(s) {
   if (clientWantsStream && upstreamWasStreaming) {
     let guarded;
     try {
-      const remainingBudgetMs = (c.failoverBudgetMs ?? limits.failoverBudgetMs) - (Date.now() - (c.requestStartMs || s.attemptStartMs));
-      const firstEventTimeout = Math.min(limits.firstEventTimeoutMs, Math.max(1, remainingBudgetMs));
+      const remainingRequestBudgetMs = (c.failoverBudgetMs ?? limits.failoverBudgetMs) - (Date.now() - (c.requestStartMs || s.attemptStartMs));
+      const remainingAttemptBudgetMs = (c.attemptDeadlineMs ?? Date.now()) - Date.now();
+      const firstEventTimeout = attemptFirstEventTimeoutMs(
+        limits.firstEventTimeoutMs,
+        Math.min(remainingRequestBudgetMs, remainingAttemptBudgetMs),
+        1,
+      );
       // Anthropic requires real model output (text / reasoning / tool_call)
       // before the failover boundary commits: a role-only, empty-delta,
       // usage-only or empty-choices event is NOT a commit point. OpenAI Chat /
@@ -469,6 +508,7 @@ async function handleSuccess(s) {
       return { rotate: true };
     }
     detach();
+    const hiddenStreamFailure = () => guardedStreamFailureReason(guarded);
 
     const headers = finalHeaders(env, request, guarded.headers, extraHeaders);
 
@@ -485,6 +525,8 @@ async function handleSuccess(s) {
         // transform's parse point instead (onUsage NOT passed here), keeping
         // exactly one capture per stream.
         onUsage: (u) => recordTokens(c, node, u),
+        interruptionChunk: (reason) => streamInterruptionChunk(route, requestId, reason),
+        upstreamFailureReason: hiddenStreamFailure,
         ...makeNodeStreamTrack(c, node, latencyMs),
       });
       return { response: tracked };
@@ -495,6 +537,9 @@ async function handleSuccess(s) {
       const tracked = trackStreamResponse(transformed, {
         idleTimeoutMs: limits.streamIdleTimeoutMs,
         completionMarker: /event:\s*response\.(?:completed|incomplete)\b/,
+        failureMarker: /event:\s*response\.failed\b/,
+        interruptionChunk: (reason, details) => streamInterruptionChunk(route, requestId, reason, details),
+        upstreamFailureReason: hiddenStreamFailure,
         ...makeNodeStreamTrack(c, node, latencyMs),
       });
       return { response: new Response(tracked.body, { status: 200, headers }) };
@@ -508,6 +553,8 @@ async function handleSuccess(s) {
       // A stream that never reaches message_stop (truncated / errored mid-way)
       // must NOT be recorded as a node success.
       completionMarker: /event:\s*message_stop\b/,
+      interruptionChunk: (reason) => streamInterruptionChunk(route, requestId, reason),
+      upstreamFailureReason: hiddenStreamFailure,
       ...makeNodeStreamTrack(c, node, latencyMs),
     });
     return { response: new Response(tracked.body, { status: 200, headers }) };
@@ -592,6 +639,7 @@ async function handleSuccess(s) {
           // branch is mutually exclusive with the assemble path below, so the
           // scan can never double-count against a recordTokens call).
           onUsage: (u) => recordTokens(c, node, u),
+          interruptionChunk: (reason) => streamInterruptionChunk(route, requestId, reason),
           ...makeNodeStreamTrack(c, node, latencyMs),
         },
       );
@@ -723,6 +771,25 @@ function makeNodeStreamTrack(c, node, latencyMs) {
       );
     },
   };
+}
+
+const streamErrorEncoder = new TextEncoder();
+
+// Once bytes have reached the client, transparent failover is unsafe.  Still
+// emit a protocol-shaped error event before closing so SDKs see the real
+// gateway interruption instead of only a generic "missing completion marker".
+// Deliberately do not emit a success completion marker after the error.
+function streamInterruptionChunk(route, requestId, reason, { nextSequenceNumber = 0 } = {}) {
+  const message = `Gateway upstream stream interrupted (${reason || 'unknown'}).`;
+  let event;
+  if (route === 'openai_responses') {
+    event = `event: error\ndata: ${JSON.stringify({ type: 'error', code: 'stream_interrupted', message, param: null, sequence_number: nextSequenceNumber })}\n\n`;
+  } else if (route === 'anthropic_messages') {
+    event = `event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'api_error', message } })}\n\n`;
+  } else {
+    event = `data: ${JSON.stringify({ error: { message, type: 'api_error', code: 'stream_interrupted' } })}\n\n`;
+  }
+  return streamErrorEncoder.encode(event);
 }
 
 function upstreamModelOf(node, logicalModel) {

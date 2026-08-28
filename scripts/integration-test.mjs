@@ -892,7 +892,9 @@ await test('clean close without [DONE] is accounted as node failure', async () =
   const env = makeEnv({ tier1: [basicNode('trunc')], secrets: { trunc: 'k' } });
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
   assert.equal(res.status, 200);
-  await res.text();
+  const delivered = await res.text();
+  assert.match(delivered, /"code":"stream_interrupted"/,
+    'client receives an explicit protocol-shaped interruption before close');
   const s = getNodeState('trunc');
   assert.equal(s.totalFailures, 1, 'truncated stream must count as failure');
   assert.equal(s.totalSuccesses, 0);
@@ -968,7 +970,7 @@ await test('mid-stream clean EOF is counted as missing_completion_marker', async
   assert.equal(getNodeState('seof').totalFailures, 1, 'truncated stream must count as node failure');
 });
 
-await test('mid-stream upstream crash counts as interrupted (guard collapses it to missing_completion_marker)', async () => {
+await test('mid-stream upstream crash preserves reader_error through the replay guard', async () => {
   resetMock();
   const encoder = new TextEncoder();
   // One chunk per pull, then error on a later pull: erroring in the same pull
@@ -995,14 +997,12 @@ await test('mid-stream upstream crash counts as interrupted (guard collapses it 
       if (done) break;
     } catch { break; }
   }
-  // The first-event guard's pump closes its reconstructed stream cleanly when
-  // the upstream reader throws, so the tracked layer classifies the crash via
-  // the missing completion marker; the reader_error branch is only reachable
-  // when trackStreamResponse reads a raw error-propagating body.
+  // The replay guard still closes cleanly so buffered bytes reach the client,
+  // but its hidden state preserves the upstream reader exception for metrics.
   const d = await deltaSince();
   assert.equal(d.gateway_stream_interrupted_total, 1);
-  assert.equal(d.gateway_stream_missing_completion_marker_total, 1);
-  assert.equal(d.gateway_stream_reader_error_total, 0);
+  assert.equal(d.gateway_stream_missing_completion_marker_total, 0);
+  assert.equal(d.gateway_stream_reader_error_total, 1);
   assert.equal(d.gateway_stream_idle_timeout_total, 0);
   assert.equal(getNodeState('rerr').totalFailures, 1, 'mid-stream crash must count as node failure');
 });
@@ -1504,6 +1504,14 @@ await test('public home: brand & GitHub once, 通用/编程 grouped, no protocol
   assert.ok(!html.includes('OpenAI 兼容协议'), 'must not show protocol note');
   assert.ok(!html.includes('v1.2.0'), 'must not show the version');
   assert.ok(!html.includes('智能边缘网关'), 'must not carry the old brand');
+  // Accessibility and responsive structure: status is not color-only, tabs
+  // expose their selected panel, and the dense heatmap has one concise label.
+  assert.match(html, /class="sr-only">状态：可用/);
+  assert.match(html, /role="tab" aria-controls="pane-openai" aria-selected="true"/);
+  assert.match(html, /id="pane-claude" role="tabpanel" aria-labelledby="tab-claude" hidden/);
+  assert.match(html, /ArrowLeft/);
+  assert.match(html, /ArrowRight/);
+  assert.match(html, /复制失败/);
 });
 
 await test('streaming relay delivers every chunk and terminates cleanly (torn [DONE], model rewrite)', async () => {

@@ -284,6 +284,9 @@ await test('Token 活动 renders a full 52×7 = 364-cell heatmap with month labe
   assert.ok(html.includes('class="hd lv4"'), 'active cells use the blue scale');
   assert.ok(html.includes('class="hd lv0"'), 'inactive cells use the light gray');
   assert.ok(html.includes(' Token · 1 请求'), 'hover title carries date, tokens and requests');
+  assert.match(html, /class="activity-scroll" tabindex="0" role="img"/,
+    'dense heatmap is a labelled, keyboard-scrollable figure');
+  assert.match(html, /aria-label="近12个月 Token 活动热力图/);
 });
 
 await test('the heatmap colors derive from daily totals, not per-hour noise', async () => {

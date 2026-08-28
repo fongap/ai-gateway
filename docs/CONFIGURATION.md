@@ -1,4 +1,4 @@
-# Configuration
+﻿# Configuration
 
 > This document describes the current 1.x configuration schema (Node pools as plain variables + `NODE_SECRETS_*` secrets).
 
@@ -73,7 +73,7 @@ Concurrency cannot be coordinated globally without Durable Objects, which this p
 
 ### Optional token-usage persistence (Cloudflare D1)
 
-The public homepage's Token 使用量 panel is the only place that needs *durable, cross-isolate* numbers. It is backed by an **optional** Cloudflare D1 binding named `TOKEN_STATS_DB`. This is a **fail-open, non-billing observability** component:
+The public homepage's 使用情况 card is the only place that needs *durable, cross-isolate* numbers. It is backed by an **optional** Cloudflare D1 binding named `TOKEN_STATS_DB`. This is a **fail-open, non-billing observability** component:
 
 - The gateway runs correctly with **no D1 binding at all** — the binding is not a startup requirement. AI requests, fallback, rate limiting, circuit breaker and streaming are unaffected whether or not D1 is present or healthy.
 - Only **hourly UTC aggregates** are stored (one row per `YYYY-MM-DDTHH:00:00Z`), updated by a single atomic `INSERT ... ON CONFLICT(hour) DO UPDATE` UPSERT. No per-request rows, no node/provider/tier/api-key/user/ip dimensions.
@@ -157,12 +157,12 @@ Tier order is fixed: tier-1 → tier-2 → tier-3. A lower tier is used only whe
 | Variable | Default | Range | Meaning |
 |----------|---------|-------|---------|
 | `MAX_BODY_BYTES` | 20971520 | 1KB–100MB | Request body limit |
-| `UPSTREAM_HEADERS_TIMEOUT_MS` | 120000 | 5s–600s | Time to upstream response headers |
-| `FIRST_EVENT_TIMEOUT_MS` | 60000 | 5s–600s | Streaming first-event guard timeout |
-| `STREAM_IDLE_TIMEOUT_MS` | 90000 | 10s–600s | Max gap between stream chunks |
+| `UPSTREAM_HEADERS_TIMEOUT_MS` | 60000 | 5s–600s | Time to upstream response headers |
+| `FIRST_EVENT_TIMEOUT_MS` | 120000 | 5s–600s | Streaming first-event guard timeout |
+| `STREAM_IDLE_TIMEOUT_MS` | 240000 | 10s–600s | Max gap between stream chunks |
 | `RATE_LIMIT_COOLDOWN_MS` | 60000 | 1s–600s | 429 cooldown without Retry-After |
 | `AUTH_FAIL_COOLDOWN_MS` | 3600000 | 1min–7d | 401/403 credential cooldown |
-| `FAILOVER_BUDGET_MS` | 180000 | 5s–900s | Whole-request failover budget: total wall-clock time spent rotating across nodes for one request |
+| `FAILOVER_BUDGET_MS` | 240000 | 5s–900s | Whole-request failover budget: total wall-clock time spent rotating across nodes for one request |
 | `ALLOWED_ORIGIN` | *(unset)* | origin or `*` | CORS is OFF unless set |
 | `EXPOSE_UPSTREAM_INFO` | false | | Expose upstream node/provider/tier + per-attempt detail in responses; `false` keeps client responses topology-safe |
 | `FAKE_STREAM_PROTECTION` | false | | Convert non-stream requests to streaming upstream + reassemble |
