@@ -23,13 +23,36 @@
 //
 // The hot path (src/request/handler.js) only calls persistTokenUsage() inside
 // ctx.waitUntil(); the dashboard (src/dashboard/pages.js) calls
-// queryTokenSummary() and degrades to "统计暂不可用" on any failure.
+// queryTokenSummary() and degrades to "统计暂不可用" when the binding is absent or the query fails — never a fake 0.
+//
+// No external fonts, no framework, no chart library, no runtime dependency:
+// plain HTML + inline CSS + one tiny inline script (copy + tabs). Heatmap is
+// 364 server-rendered <i> cells; hover uses native title attributes.
+//
+// Timezone: D1 stores UTC hourly buckets. UTC+8 is used ONLY for natural-day
+// boundaries (今日, 热力图日期, 星期, 月份). Rolling windows (24h, 7d, cumulative)
+// remain UTC-based sliding windows.
 
 import { normalizeTokenUsage } from './tokens.js';
 
 const TABLE = 'token_usage_hourly';
 const HOUR_MS = 3600_000;
 const DAY_MS = 86400_000;
+
+// Centralized display timezone offset (UTC+8) for natural-day boundaries.
+// All UTC+8 day calculations MUST use this constant to avoid scattered "+8h" logic.
+export const DISPLAY_TIMEZONE_OFFSET_MS = 8 * 60 * 60 * 1000;
+
+// Return the UTC millisecond timestamp of the Beijing (UTC+8) midnight for the
+// given UTC timestamp. The result is always hour-aligned (Beijing 00:00 = 16:00Z).
+export function utc8DayStartUtcMs(now = Date.now()) {
+  return Math.floor((now + DISPLAY_TIMEZONE_OFFSET_MS) / DAY_MS) * DAY_MS - DISPLAY_TIMEZONE_OFFSET_MS;
+}
+
+// Return the UTC+8 date string (YYYY-MM-DD) for the given UTC timestamp.
+export function isoDayUtc8(ms) {
+  return new Date(ms + DISPLAY_TIMEZONE_OFFSET_MS).toISOString().slice(0, 10);
+}
 
 // UTC hour key, e.g. "2026-08-28T08:00:00Z". All buckets are aligned to the
 // hour in UTC so isolates in different PoPs write the SAME key for the same
@@ -114,19 +137,20 @@ export function persistTokenUsage(env, usage, now = Date.now()) {
 // Aggregate summary for the public dashboard in ONE query. Returns:
 //   {
 //     available: true,
-//     today:      { total, requests },   // UTC calendar day of `now`
+//     today:      { total, requests },   // UTC+8 calendar day of `now`
 //     cumulative: { total, requests, reports, missing },
 //     h24: { total, requests },
 //     d7:  { total, requests },
 //     coverage: <number|null>,   // reports / (reports + missing), null when 0/0
 //   }
 // or null when the binding is missing or the query fails — the dashboard then
-// renders "统计暂不可用" instead of a misleading 0. "今日" follows the store's
-// UTC day boundary (the hourly buckets themselves are UTC).
+// renders "统计暂不可用" instead of a misleading 0. "今日" follows the UTC+8 day
+// boundary (Beijing 00:00 = previous day 16:00Z), while h24/d7/cumulative are
+// rolling UTC windows.
 export async function queryTokenSummary(env, now = Date.now()) {
   const d1 = tokenStatsD1(env);
   if (!d1) return null;
-  const todayStart = normalizeHour(Math.floor(now / DAY_MS) * DAY_MS);
+  const todayStart = normalizeHour(utc8DayStartUtcMs(now));
   const h24Start = normalizeHour(now - 24 * HOUR_MS);
   const d7Start = normalizeHour(now - 7 * DAY_MS);
   const stmt = d1.prepare(
@@ -177,23 +201,23 @@ export async function queryTokenSummary(env, now = Date.now()) {
   };
 }
 
-// Daily totals for the homepage activity heatmap: one row per UTC day in
+// Daily totals for the homepage activity heatmap: one row per UTC+8 day in
 // [startDayIso, now], rolled up from the hourly buckets. `startDayIso` is a
-// plain "YYYY-MM-DD" UTC date. Returns a Map day -> { total, requests }, or
-// null when the binding is missing or the query fails (fail-open).
+// plain "YYYY-MM-DD" date in UTC+8. Returns a Map day -> { total, requests },
+// or null when the binding is missing or the query fails (fail-open).
 export async function queryTokenDailySeries(env, startDayIso, now = Date.now()) {
   const d1 = tokenStatsD1(env);
   if (!d1) return null;
-  const startHour = `${startDayIso}T00:00:00Z`;
   try {
     const res = await d1.prepare(
-      `SELECT substr(hour, 1, 10) AS day,
-              COALESCE(SUM(total_tokens), 0) AS total,
-              COALESCE(SUM(requests), 0) AS requests
+      `SELECT
+          date(hour, '+8 hours') AS day,
+          COALESCE(SUM(total_tokens), 0) AS total,
+          COALESCE(SUM(requests), 0) AS requests
        FROM ${TABLE}
-       WHERE hour >= ?
+       WHERE date(hour, '+8 hours') >= ?
        GROUP BY day`,
-    ).bind(startHour).all();
+    ).bind(startDayIso).all();
     const rows = Array.isArray(res?.results) ? res.results : [];
     const map = new Map();
     for (const r of rows) {

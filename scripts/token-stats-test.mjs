@@ -206,7 +206,7 @@ await test('missing records land in their dimension bucket for accurate per-node
   assert.equal(bSeries.input, 0);
 });
 
-// ---- 使用情况 section (D1-backed: 5-KPI strip + 52×7 activity heatmap) ------
+// ---- 使用情况 section (D1-backed: 4-KPI strip + 52×7 activity heatmap) ------
 
 const cellCount = (html) => (html.match(/class="hd /g) || []).length;
 const monthLabels = (html) => [...html.matchAll(/<span style="grid-column:\d+">(\d{1,2})月<\/span>/g)].map((m) => m[1]);
@@ -225,14 +225,17 @@ function seededEnv(writes) {
 await test('no D1 binding degrades to 统计暂不可用 with em dashes, never a fake 0', async () => {
   const html = await pageText(authedRequest(), ENV);
   assert.ok(html.includes('使用情况'), 'section title');
-  assert.ok(html.includes('今日 Token'), 'five KPI labels');
-  assert.ok(html.includes('累计 Token'));
+  assert.ok(html.includes('UTC+8'), 'UTC+8 label shown');
+  assert.ok(html.includes('今日'), 'four KPI labels');
+  assert.ok(html.includes('累计'));
   assert.ok(html.includes('近 24 小时'));
   assert.ok(html.includes('近 7 天'));
-  assert.ok(html.includes('累计请求'));
+  assert.ok(!html.includes('累计请求'), '累计请求 KPI was removed');
+  assert.ok(!html.includes('今日 Token'), 'old label format removed');
+  assert.ok(!html.includes('累计 Token'), 'old label format removed');
   // Em dash = "cannot obtain this number right now", NOT a confirmed zero.
   assert.ok(html.includes('>—<'));
-  assert.equal((html.match(/>—</g) || []).length, 5, 'all five KPIs degrade');
+  assert.equal((html.match(/>—</g) || []).length, 4, 'all four KPIs degrade');
   assert.ok(!html.includes('>0<'), 'a degraded panel must not claim 0 usage');
   assert.ok(!html.includes('class="hd '), 'no fabricated heatmap cells');
   assert.ok(!html.includes('NaN'));
@@ -257,7 +260,7 @@ await test('a failing D1 query also degrades instead of 500 / fake zero', async 
   assert.ok(!html.includes('class="hd '));
 });
 
-await test('the D1-backed card renders the five KPIs from real aggregates', async () => {
+await test('the D1-backed card renders the four KPIs from real aggregates', async () => {
   const env = seededEnv([
     [{ prompt_tokens: 10, completion_tokens: 20 }], // 30 tokens, 1 request
     [{ prompt_tokens: 3, completion_tokens: 2 }],
@@ -266,16 +269,16 @@ await test('the D1-backed card renders the five KPIs from real aggregates', asyn
   const html = await pageText(anonRequest(), env);
   assert.ok(html.includes('使用情况'));
   assert.ok(html.includes('>35<'), 'cumulative total (10+20)+(3+2) must render');
-  assert.ok(html.includes('>3<'), 'three requests = 2 reports + 1 missing');
-  assert.ok(html.includes('>35<'), 'today/24h/7d all cover the current hour');
+  assert.ok(html.includes('UTC+8'), 'UTC+8 timezone label shown');
+  assert.ok(!html.includes('累计请求'), '累计请求 KPI removed');
   assert.ok(!html.includes('Usage 覆盖率'), 'coverage is not part of the new card');
 });
 
-await test('Token 活动 renders a full 52×7 = 364-cell heatmap with month labels', async () => {
+await test('Token 活动 · 52 周 renders a full 364-cell heatmap with month labels', async () => {
   const env = seededEnv([[{ prompt_tokens: 7, completion_tokens: 7 }]]);
   const html = await pageText(anonRequest(), env);
-  assert.ok(html.includes('Token 活动'));
-  assert.ok(html.includes('近12个月'));
+  assert.ok(html.includes('Token 活动 · 52 周'), 'heatmap title updated');
+  assert.ok(html.includes('次请求'), 'request count shown on right');
   assert.equal(cellCount(html), 364, 'exactly 52 weeks × 7 days of square cells');
   const labels = monthLabels(html);
   assert.ok(labels.length >= 11 && labels.length <= 13, `12 months covered (got ${labels.length})`);
@@ -286,7 +289,7 @@ await test('Token 活动 renders a full 52×7 = 364-cell heatmap with month labe
   assert.ok(html.includes(' Token · 1 请求'), 'hover title carries date, tokens and requests');
   assert.match(html, /class="activity-scroll" tabindex="0" role="img"/,
     'dense heatmap is a labelled, keyboard-scrollable figure');
-  assert.match(html, /aria-label="近12个月 Token 活动热力图/);
+  assert.match(html, /aria-label="近52周 Token 活动热力图/);
 });
 
 await test('the heatmap colors derive from daily totals, not per-hour noise', async () => {
@@ -314,16 +317,22 @@ await test('the usage card leaks no internal dimensions', async () => {
   assert.ok(!html.includes('secret-model'));
 });
 
-await test('K/M/B compaction renders on the cumulative-token KPI', async () => {
+await test('Chinese unit (万/亿) compaction renders on KPI values, never K/M/B', async () => {
   const card = async (usage) => pageText(authedRequest(), seededEnv([[usage]]));
   assert.ok((await card({ prompt_tokens: 0, completion_tokens: 0 })).includes('>0<'));
   assert.ok((await card({ prompt_tokens: 999, completion_tokens: 0 })).includes('>999<'));
-  assert.ok((await card({ prompt_tokens: 1000, completion_tokens: 0 })).includes('>1.0K<'));
-  assert.ok((await card({ prompt_tokens: 1500, completion_tokens: 0 })).includes('>1.5K<'));
-  assert.ok((await card({ prompt_tokens: 1234567, completion_tokens: 0 })).includes('>1.2M<'));
-  assert.ok((await card({ prompt_tokens: 2500000000, completion_tokens: 0 })).includes('>2.5B<'));
+  assert.ok((await card({ prompt_tokens: 9820, completion_tokens: 0 })).includes('>9820<'));
+  assert.ok((await card({ prompt_tokens: 10000, completion_tokens: 0 })).includes('>1万<'));
+  assert.ok((await card({ prompt_tokens: 128000, completion_tokens: 0 })).includes('>12.8万<'));
+  assert.ok((await card({ prompt_tokens: 1280000, completion_tokens: 0 })).includes('>128万<'));
+  assert.ok((await card({ prompt_tokens: 48600000, completion_tokens: 0 })).includes('>4860万<'));
+  assert.ok((await card({ prompt_tokens: 128000000, completion_tokens: 0 })).includes('>1.28亿<'));
+  assert.ok((await card({ prompt_tokens: 2500000000, completion_tokens: 0 })).includes('>25亿<'));
   const one = await card({ prompt_tokens: 1, completion_tokens: 0 });
   assert.ok(!one.includes('NaN'));
+  // K/M/B must never appear
+  const cardHtml = await card({ prompt_tokens: 1234567, completion_tokens: 0 });
+  assert.ok(!cardHtml.includes('K<') && !cardHtml.includes('M<') && !cardHtml.includes('B<'), 'K/M/B must not appear');
 });
 
 // ---- Rolling 24h / 7d time windows ------------------------------------------

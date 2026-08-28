@@ -1070,10 +1070,11 @@ await test('public home is served but never leaks internal diagnostics when degr
   }), env, {});
   assert.equal(res.status, 200);
   const html = await res.text();
-  // Public homepage content only: brand once, topic, model chip with public status.
+  // Public homepage content only: brand once, topic, no general-* models shown.
   assert.match(html, /Smart AI Gateway/);
   assert.match(html, /一个入口，多个模型/);
-  assert.match(html, /general-air/);
+  // general-air is filtered from display per UTC+8 revamp
+  assert.ok(!html.includes('general-air'), 'general-* models must not appear on the homepage');
   assert.match(html, /可用/);
   // Must NOT leak internal diagnostics, node counts, providers or credentials.
   assert.ok(!html.includes('no credential found in NODE_SECRETS_'), 'must not leak credential diagnostics');
@@ -1233,7 +1234,11 @@ await test('public home renders on malformed config without leaking diagnostics'
 
 await test('public home shows degraded status when all serving nodes are cooling', async () => {
   resetMock();
-  const env = makeEnv({ tier1: [basicNode('de-a')], secrets: { 'de-a': 'k' } });
+  const env = makeEnv({
+    tier1: [basicNode('de-a', { models: { air: 'up-air' } })],
+    secrets: { 'de-a': 'k' },
+    extraEnv: { MODELS_CONFIG: JSON.stringify({ air: { policy: 'fast' } }) },
+  });
   // Force the serving node into cooldown so availability is 'no'.
   const state = getNodeState('de-a');
   state.cooldownUntil = Date.now() + 60_000;
@@ -1242,12 +1247,13 @@ await test('public home shows degraded status when all serving nodes are cooling
   }), env, {});
   assert.equal(res.status, 200);
   const html = await res.text();
-  assert.match(html, /general-air/);
+  // general-* models are filtered from display.
+  assert.ok(!html.includes('general-air'), 'general-* models must not appear');
   assert.match(html, /波动/);
-  // No model chip may render the "available" dot. (The panel's own
+  // No model item may render the "available" state. (The panel's own
   // "统计暂不可用" scope label legitimately contains the substring 可用, so the
   // assertion targets the availability dot marker, not any occurrence of 可用.)
-  assert.ok(!html.includes('class="dot available"'), 'must not claim a model available when cooling');
+  assert.ok(!html.includes('dot available'), 'must not claim a model available when cooling');
 });
 
 await test('public home model hint uses a registry model, never a hardcoded model', async () => {
@@ -1485,6 +1491,9 @@ await test('public home: brand & GitHub once, 通用/编程 grouped, no protocol
   assert.equal(html.split('Smart AI Gateway').length - 1, 1, 'Smart AI Gateway must appear exactly once');
   // GitHub only in the header (footer clone removed).
   assert.equal(html.split('github.com').length - 1, 1, 'GitHub must appear exactly once');
+  // GitHub icon is SVG-only, no "GitHub" text label.
+  assert.match(html, /aria-label="GitHub · ai-gateway 仓库"/);
+  assert.match(html, /title="GitHub · ai-gateway"/);
   // Structure: hero -> 模型状态 (通用 then 编程) -> 使用情况 -> 快速开始.
   assert.ok(html.indexOf('一个入口，多个模型') < html.indexOf('模型状态'));
   assert.ok(html.indexOf('模型状态') < html.indexOf('使用情况'));
@@ -1512,6 +1521,15 @@ await test('public home: brand & GitHub once, 通用/编程 grouped, no protocol
   assert.match(html, /ArrowLeft/);
   assert.match(html, /ArrowRight/);
   assert.match(html, /复制失败/);
+  // UTC+8 label shown in usage section.
+  assert.ok(html.includes('UTC+8'), 'UTC+8 timezone label shown');
+  // Heatmap title updated.
+  assert.ok(html.includes('Token 活动 · 52 周'), 'heatmap title updated');
+  assert.ok(html.includes('次请求'), 'request count in heatmap header');
+  // Model status shows overall availability count.
+  assert.match(html, /\d+ \/ \d+ 正常/, 'overall model status shown');
+  // No general-* models in display.
+  assert.ok(!html.includes('general-air'), 'general-* models filtered from display');
 });
 
 await test('streaming relay delivers every chunk and terminates cleanly (torn [DONE], model rewrite)', async () => {

@@ -5,11 +5,20 @@
 // two statements the real store issues:
 //   * persistTokenUsage   -> prepare(INSERT ... ON CONFLICT ... ).bind(...).run()
 //   * queryTokenSummary   -> prepare(SELECT SUM(...) ... ).bind(...).first()
+//   * queryTokenDailySeries -> prepare(SELECT date(hour,'+8 hours')... ).bind(...).all()
 // It is NOT a SQL parser: it recognises the statements by shape and applies the
 // same atomic UPSERT / window aggregation semantics the real D1 performs, so
 // the test asserts the STORE's algorithm (not SQL string matching) while still
 // verifying correctness. `failWrites` / `failReads` simulate a broken binding
 // to prove the fail-open contract.
+
+const DISPLAY_TIMEZONE_OFFSET_MS = 8 * 60 * 60 * 1000;
+
+function utc8DayFromHour(hour) {
+  // hour is "YYYY-MM-DDTHH:00:00Z"
+  const ms = Date.parse(hour);
+  return new Date(ms + DISPLAY_TIMEZONE_OFFSET_MS).toISOString().slice(0, 10);
+}
 
 export function createMockD1({ failWrites = false, failReads = false } = {}) {
   const rows = new Map(); // hour -> { input, output, total, requests, reports, missing }
@@ -63,12 +72,12 @@ export function createMockD1({ failWrites = false, failReads = false } = {}) {
       },
       async all() {
         if (failReads) throw new Error('mock D1 read failure');
-        // queryTokenDailySeries: GROUP BY substr(hour,1,10) with hour >= start.
-        const start = this._params[0];
+        // queryTokenDailySeries: GROUP BY date(hour, '+8 hours') with date >= start.
+        const start = this._params[0]; // UTC+8 date string "YYYY-MM-DD"
         const byDay = new Map();
         for (const [hour, r] of rows) {
-          if (hour < start) continue;
-          const day = hour.slice(0, 10);
+          const day = utc8DayFromHour(hour);
+          if (day < start) continue;
           const cur = byDay.get(day) || { total: 0, requests: 0 };
           byDay.set(day, { total: cur.total + r.total, requests: cur.requests + r.requests });
         }
