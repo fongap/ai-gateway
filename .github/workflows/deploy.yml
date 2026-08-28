@@ -28,9 +28,25 @@ jobs:
 
       - name: Restore operator config
         run: |
-          printf '%s' "${{ secrets.WRANGLER_USER_CONFIG }}" | tr -d '\r\000' > wrangler.user.jsonc
+          cat > wrangler.user.jsonc <<'EOF'
+          {
+            "name": "ai-gateway",
+            "main": "src/index.js",
+            "compatibility_date": "2026-08-06",
+            "workers_dev": true,
+            "keep_vars": true,
+            "observability": { "enabled": true },
+            "d1_databases": [
+              {
+                "binding": "TOKEN_STATS_DB",
+                "database_name": "ai-gateway-stats",
+                "database_id": "${{ secrets.TOKEN_STATS_D1_ID }}"
+              }
+            ]
+          }
+          EOF
           node -e "JSON.parse(require('fs').readFileSync('wrangler.user.jsonc','utf8'))" \
-            || { echo '::error::restored wrangler.user.jsonc is not valid JSON'; exit 1; }
+            || { echo '::error::generated wrangler.user.jsonc is not valid JSON'; exit 1; }
 
       - name: Syntax check
         run: node scripts/check-syntax.mjs
