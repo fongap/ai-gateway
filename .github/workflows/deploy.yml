@@ -27,7 +27,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Restore operator config
-        run: printf '%s' "${{ secrets.WRANGLER_USER_CONFIG }}" | tr -d '\r' > wrangler.user.jsonc
+        run: |
+          printf '%s' "${{ secrets.WRANGLER_USER_CONFIG }}" | tr -d '\r\000' > wrangler.user.jsonc
+          node -e "JSON.parse(require('fs').readFileSync('wrangler.user.jsonc','utf8'))" \
+            || { echo '::error::restored wrangler.user.jsonc is not valid JSON'; exit 1; }
 
       - name: Syntax check
         run: node scripts/check-syntax.mjs
