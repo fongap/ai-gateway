@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+﻿// SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
 //
 // Public entry page served on GET /.
@@ -111,7 +111,11 @@ a{color:var(--blue);text-decoration:none}
   gap:12px}
 .activity-head b{font-size:13px;font-weight:600;color:#606872}
 .activity-head span{font-size:12px;color:var(--faint)}
-.activity-scroll{overflow-x:auto;overscroll-behavior-inline:contain;scrollbar-width:thin}
+.activity-scroll{overflow-x:auto;overflow-y:hidden;overscroll-behavior-inline:contain;
+  scrollbar-width:thin;scrollbar-color:var(--faint) transparent;padding-bottom:2px}
+.activity-scroll::-webkit-scrollbar{height:6px}
+.activity-scroll::-webkit-scrollbar-thumb{background:var(--faint);border-radius:3px}
+.activity-scroll::-webkit-scrollbar-track{background:transparent}
 .activity-scroll:focus-visible{outline:2px solid var(--blue);outline-offset:3px;border-radius:4px}
 .heatmap{display:grid;grid-template-columns:repeat(52,minmax(0,1fr));
   grid-template-rows:repeat(7,auto);grid-auto-flow:column;gap:3px;margin-top:9px}
@@ -243,11 +247,12 @@ function publicModelStatus(nodes, env) {
 }
 
 const STATE_LABEL = { available: '可用', degraded: '波动', unavailable: '不可用' };
-const MODEL_RANK = { air: 1, max: 2, pro: 3, ultra: 4 };
+// Tier hierarchy: Ultra > Max > Pro > Air — display order follows it.
+const MODEL_RANK = { ultra: 1, max: 2, pro: 3, air: 4 };
 const CODE_PREFIX = 'code-';
 
-// Split flat model statuses into 通用 / 编程 with a fixed Air → Max → Pro →
-// Ultra order inside each group. Air and code-air never mix: a `code-` prefix
+// Split flat model statuses into 通用 / 编程 with a fixed Ultra → Max → Pro →
+// Air order inside each group (top tier first). Air and code-air never mix: a `code-` prefix
 // places a model in 编程, everything else in 通用. Unknown suffixes sort last.
 function groupModels(models) {
   const groups = { general: [], program: [] };
@@ -287,7 +292,11 @@ function renderModels(models) {
 // recommended, currently-available logical model; else any available model;
 // else show a placeholder the operator must fill in (never a hardcoded model
 // that may not exist). Never take the first string-sorted model.
-const RECOMMENDED_ORDER = ['air', 'code-air', 'code-pro', 'code-max', 'general-air'];
+const RECOMMENDED_ORDER = [
+  'ultra', 'max', 'pro', 'air',
+  'code-ultra', 'code-max', 'code-pro', 'code-air',
+  'general-air',
+];
 const MODEL_PLACEHOLDER = '<model>';
 function recommendedExampleModel(models) {
   for (const name of RECOMMENDED_ORDER) {
