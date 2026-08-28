@@ -206,22 +206,44 @@ await test('missing records land in their dimension bucket for accurate per-node
   assert.equal(bSeries.input, 0);
 });
 
-// ---- Public dashboard token panel (D1-backed, always shown, aggregates) -----
+// ---- 使用情况 section (D1-backed: 5-KPI strip + 52×7 activity heatmap) ------
+
+const cellCount = (html) => (html.match(/class="hd /g) || []).length;
+const monthLabels = (html) => [...html.matchAll(/<span style="grid-column:\d+">(\d{1,2})月<\/span>/g)].map((m) => m[1]);
+
+function seededEnv(writes) {
+  const d1 = createMockD1();
+  const env = deepClone(ENV);
+  env.TOKEN_STATS_DB = d1;
+  const h0 = Math.floor(Date.now() / 3_600_000) * 3_600_000;
+  for (const [usage, offsetHours = 0] of writes) {
+    persistTokenUsage(env, usage, h0 - offsetHours * 3_600_000);
+  }
+  return env;
+}
 
 await test('no D1 binding degrades to 统计暂不可用 with em dashes, never a fake 0', async () => {
   const html = await pageText(authedRequest(), ENV);
-  assert.ok(html.includes('Token 使用量'));
-  assert.ok(html.includes('统计暂不可用'));
+  assert.ok(html.includes('使用情况'), 'section title');
+  assert.ok(html.includes('今日 Token'), 'five KPI labels');
   assert.ok(html.includes('累计 Token'));
   assert.ok(html.includes('近 24 小时'));
   assert.ok(html.includes('近 7 天'));
   assert.ok(html.includes('累计请求'));
   // Em dash = "cannot obtain this number right now", NOT a confirmed zero.
   assert.ok(html.includes('>—<'));
+  assert.equal((html.match(/>—</g) || []).length, 5, 'all five KPIs degrade');
   assert.ok(!html.includes('>0<'), 'a degraded panel must not claim 0 usage');
+  assert.ok(!html.includes('class="hd '), 'no fabricated heatmap cells');
   assert.ok(!html.includes('NaN'));
   assert.ok(!html.includes('undefined'));
-  assert.ok(!html.includes('暂无数据。'), 'no per-dimension tables on the panel');
+  // The API-address block was removed; quick start stays.
+  assert.ok(!html.includes('API 地址'));
+  assert.ok(!html.includes('api-url'));
+  assert.ok(html.includes('快速开始'));
+  assert.ok(html.includes('data-tab="openai"'));
+  assert.ok(html.includes('data-tab="claude"'));
+  assert.ok(html.includes('data-tab="codex"'));
 });
 
 await test('a failing D1 query also degrades instead of 500 / fake zero', async () => {
@@ -232,67 +254,65 @@ await test('a failing D1 query also degrades instead of 500 / fake zero', async 
   const html = await res.text();
   assert.ok(html.includes('统计暂不可用'));
   assert.ok(!html.includes('>0<'));
+  assert.ok(!html.includes('class="hd '));
 });
 
-await test('the D1-backed panel renders real aggregate numbers and leaks no dimensions', async () => {
-  // Seed an isolate-independent D1: 10+20 in the current hour, 5 in the prior.
-  const d1 = createMockD1();
-  const env = deepClone(ENV);
-  env.TOKEN_STATS_DB = d1;
-  const HOUR = 3600_000;
-  const h0 = Math.floor(Date.now() / HOUR) * HOUR;
-  await persistTokenUsage(env, { prompt_tokens: 10, completion_tokens: 20 }, h0);
-  await persistTokenUsage(env, { prompt_tokens: 3, completion_tokens: 2 }, h0 - HOUR);
+await test('the D1-backed card renders the five KPIs from real aggregates', async () => {
+  const env = seededEnv([
+    [{ prompt_tokens: 10, completion_tokens: 20 }], // 30 tokens, 1 request
+    [{ prompt_tokens: 3, completion_tokens: 2 }],
+    [null], // missing usage: request counted, tokens untouched
+  ]);
   const html = await pageText(anonRequest(), env);
-  assert.ok(html.includes('Token 使用量'));
-  assert.ok(html.includes('tokens-block'));
-  assert.ok(html.includes('tcard'));
-  assert.ok(html.includes('>35<'), 'cumulative total 30+5 must render');
-  assert.ok(html.includes('跨 Isolate'), 'scope label reflects durable D1 data');
+  assert.ok(html.includes('使用情况'));
+  assert.ok(html.includes('>35<'), 'cumulative total (10+20)+(3+2) must render');
+  assert.ok(html.includes('>3<'), 'three requests = 2 reports + 1 missing');
+  assert.ok(html.includes('>35<'), 'today/24h/7d all cover the current hour');
+  assert.ok(!html.includes('Usage 覆盖率'), 'coverage is not part of the new card');
+});
+
+await test('Token 活动 renders a full 52×7 = 364-cell heatmap with month labels', async () => {
+  const env = seededEnv([[{ prompt_tokens: 7, completion_tokens: 7 }]]);
+  const html = await pageText(anonRequest(), env);
+  assert.ok(html.includes('Token 活动'));
+  assert.ok(html.includes('近12个月'));
+  assert.equal(cellCount(html), 364, 'exactly 52 weeks × 7 days of square cells');
+  const labels = monthLabels(html);
+  assert.ok(labels.length >= 11 && labels.length <= 13, `12 months covered (got ${labels.length})`);
+  for (const label of labels) assert.match(label, /^\d{1,2}$/);
+  // Levels: the active day is lv4 (it is the max), most days stay lv0.
+  assert.ok(html.includes('class="hd lv4"'), 'active cells use the blue scale');
+  assert.ok(html.includes('class="hd lv0"'), 'inactive cells use the light gray');
+  assert.ok(html.includes(' Token · 1 请求'), 'hover title carries date, tokens and requests');
+});
+
+await test('the heatmap colors derive from daily totals, not per-hour noise', async () => {
+  // Two days of activity: 4000 tokens vs 1000 tokens -> 4:1 ratio -> the big
+  // day is lv4, the small day is lv1 (25% of max).
+  const env = seededEnv([
+    [{ prompt_tokens: 4000, completion_tokens: 0 }],
+    [{ prompt_tokens: 1000, completion_tokens: 0 }, 24],
+  ]);
+  const html = await pageText(authedRequest(), env);
+  assert.ok(html.includes('class="hd lv4"'));
+  assert.ok(html.includes('class="hd lv1"'));
+  assert.ok(html.includes('4,000 Token'), 'titles show the raw daily total');
+});
+
+await test('the usage card leaks no internal dimensions', async () => {
+  record({ prompt_tokens: 10, completion_tokens: 20 }, {
+    model: 'secret-model', provider: 'secret-provider', nodeId: 'secret-node', tier: 'secret-tier',
+  });
+  const env = seededEnv([[{ prompt_tokens: 1, completion_tokens: 1 }]]);
+  const html = await pageText(anonRequest(), env);
   assert.ok(!html.includes('secret-node'));
   assert.ok(!html.includes('secret-provider'));
   assert.ok(!html.includes('secret-tier'));
   assert.ok(!html.includes('secret-model'));
 });
 
-await test('the four cards render cumulative token totals from the D1 store', async () => {
-  const d1 = createMockD1();
-  const env = deepClone(ENV);
-  env.TOKEN_STATS_DB = d1;
-  const h0 = Math.floor(Date.now() / 3600_000) * 3600_000;
-  await persistTokenUsage(env, { prompt_tokens: 3, completion_tokens: 1 }, h0);
-  await persistTokenUsage(env, { prompt_tokens: 3, completion_tokens: 1 }, h0);
-  await persistTokenUsage(env, { prompt_tokens: 3, completion_tokens: 1 }, h0);
-  await persistTokenUsage(env, null, h0); // missing adds no tokens, counts a request
-  const html = await pageText(authedRequest(), env);
-  assert.ok(html.includes('>12<'), 'cumulative total 3*(3+1) must render as 12');
-  assert.ok(html.includes('>4<'), 'cumulative requests = 3 reports + 1 missing');
-});
-
-await test('usage coverage renders as a lightweight footnote, not a card', async () => {
-  const d1 = createMockD1();
-  const env = deepClone(ENV);
-  env.TOKEN_STATS_DB = d1;
-  const h0 = Math.floor(Date.now() / 3600_000) * 3600_000;
-  await persistTokenUsage(env, { prompt_tokens: 1, completion_tokens: 1 }, h0);
-  await persistTokenUsage(env, { prompt_tokens: 1, completion_tokens: 1 }, h0);
-  await persistTokenUsage(env, { prompt_tokens: 1, completion_tokens: 1 }, h0);
-  await persistTokenUsage(env, null, h0);
-  const html = await pageText(authedRequest(), env);
-  assert.ok(html.includes('Usage 覆盖率'), 'coverage label shown');
-  assert.ok(html.includes('75.0%'), '3/4 coverage renders');
-  assert.ok(!html.includes('>75.0%<'), 'coverage is a footnote, not a 4th card');
-});
-
-await test('K/M/B compaction renders on the cumulative-token card', async () => {
-  const card = async (usage) => {
-    const d1 = createMockD1();
-    const env = deepClone(ENV);
-    env.TOKEN_STATS_DB = d1;
-    const h0 = Math.floor(Date.now() / 3600_000) * 3600_000;
-    await persistTokenUsage(env, usage, h0);
-    return (await pageText(authedRequest(), env));
-  };
+await test('K/M/B compaction renders on the cumulative-token KPI', async () => {
+  const card = async (usage) => pageText(authedRequest(), seededEnv([[usage]]));
   assert.ok((await card({ prompt_tokens: 0, completion_tokens: 0 })).includes('>0<'));
   assert.ok((await card({ prompt_tokens: 999, completion_tokens: 0 })).includes('>999<'));
   assert.ok((await card({ prompt_tokens: 1000, completion_tokens: 0 })).includes('>1.0K<'));

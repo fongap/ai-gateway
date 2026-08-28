@@ -114,16 +114,19 @@ export function persistTokenUsage(env, usage, now = Date.now()) {
 // Aggregate summary for the public dashboard in ONE query. Returns:
 //   {
 //     available: true,
+//     today:      { total, requests },   // UTC calendar day of `now`
 //     cumulative: { total, requests, reports, missing },
 //     h24: { total, requests },
 //     d7:  { total, requests },
 //     coverage: <number|null>,   // reports / (reports + missing), null when 0/0
 //   }
 // or null when the binding is missing or the query fails — the dashboard then
-// renders "统计暂不可用" instead of a misleading 0.
+// renders "统计暂不可用" instead of a misleading 0. "今日" follows the store's
+// UTC day boundary (the hourly buckets themselves are UTC).
 export async function queryTokenSummary(env, now = Date.now()) {
   const d1 = tokenStatsD1(env);
   if (!d1) return null;
+  const todayStart = normalizeHour(Math.floor(now / DAY_MS) * DAY_MS);
   const h24Start = normalizeHour(now - 24 * HOUR_MS);
   const d7Start = normalizeHour(now - 7 * DAY_MS);
   const stmt = d1.prepare(
@@ -132,6 +135,8 @@ export async function queryTokenSummary(env, now = Date.now()) {
       COALESCE(SUM(requests), 0) AS cum_requests,
       COALESCE(SUM(usage_reports), 0) AS cum_reports,
       COALESCE(SUM(usage_missing), 0) AS cum_missing,
+      COALESCE(SUM(CASE WHEN hour >= ? THEN total_tokens END), 0) AS today_total,
+      COALESCE(SUM(CASE WHEN hour >= ? THEN requests END), 0) AS today_requests,
       COALESCE(SUM(CASE WHEN hour >= ? THEN total_tokens END), 0) AS h24_total,
       COALESCE(SUM(CASE WHEN hour >= ? THEN requests END), 0) AS h24_requests,
       COALESCE(SUM(CASE WHEN hour >= ? THEN total_tokens END), 0) AS d7_total,
@@ -140,7 +145,7 @@ export async function queryTokenSummary(env, now = Date.now()) {
   );
   let row;
   try {
-    row = await stmt.bind(h24Start, h24Start, d7Start, d7Start).first();
+    row = await stmt.bind(todayStart, todayStart, h24Start, h24Start, d7Start, d7Start).first();
   } catch {
     return null; // fail-open: page degrades, never 500s
   }
@@ -150,6 +155,10 @@ export async function queryTokenSummary(env, now = Date.now()) {
   const denominator = reports + missing;
   return {
     available: true,
+    today: {
+      total: Number(row.today_total) || 0,
+      requests: Number(row.today_requests) || 0,
+    },
     cumulative: {
       total: Number(row.cum_total) || 0,
       requests: Number(row.cum_requests) || 0,
@@ -166,4 +175,33 @@ export async function queryTokenSummary(env, now = Date.now()) {
     },
     coverage: denominator === 0 ? null : reports / denominator,
   };
+}
+
+// Daily totals for the homepage activity heatmap: one row per UTC day in
+// [startDayIso, now], rolled up from the hourly buckets. `startDayIso` is a
+// plain "YYYY-MM-DD" UTC date. Returns a Map day -> { total, requests }, or
+// null when the binding is missing or the query fails (fail-open).
+export async function queryTokenDailySeries(env, startDayIso, now = Date.now()) {
+  const d1 = tokenStatsD1(env);
+  if (!d1) return null;
+  const startHour = `${startDayIso}T00:00:00Z`;
+  try {
+    const res = await d1.prepare(
+      `SELECT substr(hour, 1, 10) AS day,
+              COALESCE(SUM(total_tokens), 0) AS total,
+              COALESCE(SUM(requests), 0) AS requests
+       FROM ${TABLE}
+       WHERE hour >= ?
+       GROUP BY day`,
+    ).bind(startHour).all();
+    const rows = Array.isArray(res?.results) ? res.results : [];
+    const map = new Map();
+    for (const r of rows) {
+      if (!r || typeof r.day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(r.day)) continue;
+      map.set(r.day, { total: Number(r.total) || 0, requests: Number(r.requests) || 0 });
+    }
+    return map;
+  } catch {
+    return null; // fail-open: page degrades, never 500s
+  }
 }

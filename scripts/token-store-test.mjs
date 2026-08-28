@@ -15,6 +15,7 @@ import {
   tokenUsagePayload,
   persistTokenUsage,
   queryTokenSummary,
+  queryTokenDailySeries,
   tokenStatsD1,
 } from '../src/observability/token-store.js';
 import { createMockD1 } from './d1-mock.mjs';
@@ -157,6 +158,45 @@ await test('coverage is reports/(reports+missing), null at 0/0', async () => {
   assert.equal(s.coverage, 0.75);
   assert.equal(s.h24.requests, 4);
   assert.equal(s.d7.requests, 4);
+});
+
+await test('today follows the UTC day boundary', async () => {
+  const d1 = createMockD1();
+  const env = { TOKEN_STATS_DB: d1 };
+  // H0 is the current hour (always "today" in UTC); H0 - 24h is always
+  // yesterday's same hour, so the two buckets never share a UTC day.
+  await persistTokenUsage(env, { prompt_tokens: 5, completion_tokens: 0 }, H0);
+  await persistTokenUsage(env, { prompt_tokens: 7, completion_tokens: 0 }, H0 - 24 * HOUR);
+  const s = await queryTokenSummary(env, H0 + HOUR / 2);
+  assert.equal(s.today.total, 5, 'only the current UTC day counts as today');
+  assert.equal(s.today.requests, 1);
+  assert.equal(s.cumulative.total, 12, 'cumulative still counts both days');
+});
+
+// ---- queryTokenDailySeries: daily rollup for the activity heatmap -----------
+
+await test('daily series groups hourly buckets by UTC day', async () => {
+  const d1 = createMockD1();
+  const env = { TOKEN_STATS_DB: d1 };
+  await persistTokenUsage(env, { prompt_tokens: 1, completion_tokens: 2 }, H0);
+  await persistTokenUsage(env, { prompt_tokens: 3, completion_tokens: 4 }, H0 + HOUR);
+  await persistTokenUsage(env, { prompt_tokens: 10, completion_tokens: 0 }, H0 - 24 * HOUR);
+  const day = normalizeHour(H0).slice(0, 10);
+  const prevDay = normalizeHour(H0 - 24 * HOUR).slice(0, 10);
+  const series = await queryTokenDailySeries(env, prevDay, H0 + HOUR);
+  assert.equal(series.get(day).total, 10, 'two same-day buckets roll up');
+  assert.equal(series.get(day).requests, 2);
+  assert.equal(series.get(prevDay).total, 10);
+  // Days before the requested start are excluded.
+  const strict = await queryTokenDailySeries(env, day, H0 + HOUR);
+  assert.equal(strict.size, 1);
+  assert.ok(strict.has(day));
+});
+
+await test('daily series fails open on missing binding or read errors', async () => {
+  assert.equal(await queryTokenDailySeries({}, normalizeHour(H0).slice(0, 10)), null);
+  const d1 = createMockD1({ failReads: true });
+  assert.equal(await queryTokenDailySeries({ TOKEN_STATS_DB: d1 }, normalizeHour(H0).slice(0, 10)), null);
 });
 
 // ---- Fail-open contract -----------------------------------------------------

@@ -1485,13 +1485,15 @@ await test('public home: brand & GitHub once, 通用/编程 grouped, no protocol
   assert.equal(html.split('Smart AI Gateway').length - 1, 1, 'Smart AI Gateway must appear exactly once');
   // GitHub only in the header (footer clone removed).
   assert.equal(html.split('github.com').length - 1, 1, 'GitHub must appear exactly once');
-  // Structure: hero -> API -> grouped models (通用 then 编程) -> 快速接入.
-  assert.ok(html.indexOf('一个入口，多个模型') < html.indexOf('API 地址'));
+  // Structure: hero -> 模型状态 (通用 then 编程) -> 使用情况 -> 快速开始.
+  assert.ok(html.indexOf('一个入口，多个模型') < html.indexOf('模型状态'));
+  assert.ok(html.indexOf('模型状态') < html.indexOf('使用情况'));
   assert.ok(html.indexOf('通用') < html.indexOf('编程'), '通用 group must precede 编程');
-  assert.ok(html.indexOf('编程') < html.indexOf('快速接入'));
+  assert.ok(html.indexOf('编程') < html.indexOf('快速开始'));
+  assert.ok(!html.includes('API 地址'), 'the API-address block was removed');
   // Group placement: air/max under 通用, code-air/code-max under 编程, never mixed.
   const generalBlock = html.slice(html.indexOf('通用'), html.indexOf('编程'));
-  const programBlock = html.slice(html.indexOf('编程'), html.indexOf('快速接入'));
+  const programBlock = html.slice(html.indexOf('编程'), html.indexOf('快速开始'));
   assert.match(generalBlock, /air/);
   assert.match(generalBlock, /max/);
   assert.ok(!generalBlock.includes('code-air'), 'code- models must not leak into 通用');
@@ -1709,9 +1711,10 @@ await test('homepage with no D1 binding still serves and degrades the token pane
   }), env, {});
   assert.equal(res.status, 200);
   const html = await res.text();
-  assert.ok(html.includes('Token 使用量'));
+  assert.ok(html.includes('使用情况'));
   assert.ok(html.includes('统计暂不可用'), 'no D1 -> panel degrades, never a fake 0');
   assert.ok(!html.includes('>0<'));
+  assert.ok(!html.includes('class="hd '), 'no fabricated heatmap cells');
 });
 
 if (!process.exitCode) console.log(`\nintegration tests passed (${passed}).`);
