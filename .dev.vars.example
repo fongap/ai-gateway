@@ -39,5 +39,15 @@ ALLOW_INSECURE_HTTP_UPSTREAM="false"
 ANTHROPIC_COUNT_TOKENS_MODE="approximate"
 ANTHROPIC_REASONING_REQUEST_MODE="none"
 
+# ============ Token-usage stream hint (all optional, fail-open) ============
+# Ask OpenAI-compatible streaming upstreams to report usage in the final chunk
+# via stream_options.include_usage. "auto" (default) uses each node's provider
+# profile capability; "on" forces it; "off" disables it everywhere. Off never
+# breaks any request — an upstream that rejects the field just means that
+# provider's streaming usage counts as missing (never estimated).
+# STREAM_INCLUDE_USAGE="auto"
+# Comma-separated provider labels to disable the streaming usage hint for:
+# STREAM_USAGE_INCLUDE_OFF_PROVIDERS="my-llm-provider"
+
 # CORS is DISABLED by default. Set an explicit origin to enable browser access:
 # ALLOWED_ORIGIN="https://your-app.example.com"

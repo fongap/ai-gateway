@@ -114,7 +114,9 @@ The registry is the single source of truth for a logical model's policy and capa
 
 ## State boundaries
 
-Health, cooldowns, circuits, concurrency and RPM counters are isolate-local best-effort. No KV/D1/Durable Objects are used. This means scheduling decisions are per-isolate; that is accepted in exchange for zero-latency, zero-cost state. `limits.concurrency`/`limits.rpm` are isolate-local shaping, not global hard limits or provider-wide accurate quotas.
+Health, cooldowns, circuits, concurrency and RPM counters are isolate-local best-effort. No KV/Durable Objects are used, and there is **no D1 on the AI request hot path**. This means scheduling decisions are per-isolate; that is accepted in exchange for zero-latency, zero-cost state. `limits.concurrency`/`limits.rpm` are isolate-local shaping, not global hard limits or provider-wide accurate quotas.
+
+The only durable, cross-isolate state is the **optional** token-usage hourly aggregate: a single Cloudflare D1 binding (`TOKEN_STATS_DB`) written off-path via `ctx.waitUntil()` and read only by the public homepage. It is fail-open — a missing or failing binding never affects request handling, fallback, node health, circuit breaker, scheduler, concurrency counting or stream completion, and it is never a startup requirement. Token counts are upstream-reported usage only; missing usage is never estimated.
 
 ## Module map
 
@@ -153,6 +155,8 @@ src/
 │  └─ errors.js              protocol-shaped errors, Retry-After, topology policy
 ├─ observability/
 │  ├─ logger.js, stats.js    counters, client stream accounting, stream interruption counters
+│  ├─ tokens.js              isolate-local token observability (normalize/record/summarize)
+│  ├─ token-store.js         optional D1 hourly aggregation (persist/query/normalizeHour) — fail-open
 │  └─ status.js              /health /metrics /version /v1/models
 └─ dashboard/pages.js        browser pages
 ```

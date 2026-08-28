@@ -71,6 +71,44 @@ For keys that are rate-limited at the account level you can add a Cloudflare Wor
 
 Concurrency cannot be coordinated globally without Durable Objects, which this project deliberately does not use: `limits.concurrency` stays isolate-local by design.
 
+### Optional token-usage persistence (Cloudflare D1)
+
+The public homepage's Token 使用量 panel is the only place that needs *durable, cross-isolate* numbers. It is backed by an **optional** Cloudflare D1 binding named `TOKEN_STATS_DB`. This is a **fail-open, non-billing observability** component:
+
+- The gateway runs correctly with **no D1 binding at all** — the binding is not a startup requirement. AI requests, fallback, rate limiting, circuit breaker and streaming are unaffected whether or not D1 is present or healthy.
+- Only **hourly UTC aggregates** are stored (one row per `YYYY-MM-DDTHH:00:00Z`), updated by a single atomic `INSERT ... ON CONFLICT(hour) DO UPDATE` UPSERT. No per-request rows, no node/provider/tier/api-key/user/ip dimensions.
+- Token counts are only ever the **upstream-reported** usage. Missing usage is recorded as `usage_missing` and is **never estimated** from characters/bytes.
+
+To enable it, add a D1 binding to the operator config (the shared `wrangler.jsonc` stays minimal — like `QUOTA_RATE_LIMITER`, the binding is added by the operator, not baked into the public template):
+
+```jsonc
+"d1_databases": [
+  { "binding": "TOKEN_STATS_DB",
+    "database_name": "ai-gateway-token-stats",
+    "database_id": "<your-d1-database-id>" }
+]
+```
+
+Create the database and apply the migration (both use the free tier):
+
+```bash
+npx wrangler d1 create ai-gateway-token-stats
+npx wrangler d1 migrations apply ai-gateway-token-stats --remote
+# local (optional, uses a local SQLite file):
+npx wrangler d1 migrations apply ai-gateway-token-stats --local
+```
+
+Migration file: [`migrations/0001_token_usage_hourly.sql`](../migrations/0001_token_usage_hourly.sql).
+
+#### Streaming usage hint
+
+To capture usage on OpenAI-compatible **streaming** responses (which otherwise only report usage when asked), the gateway adds `stream_options: { include_usage: true }` to the outbound request whenever the request streams and the node's Provider Profile allows it. This never changes what the client receives. It preserves an existing `stream_options` the client sent (spread first, and `include_usage` is only added when absent). Two knobs give fail-safe control without editing any node id:
+
+- `STREAM_INCLUDE_USAGE`: `"auto"` (default, uses each provider profile capability) | `"on"` (force) | `"off"` (never add).
+- `STREAM_USAGE_INCLUDE_OFF_PROVIDERS`: a comma-separated list of `provider` labels to opt out of the hint (for an upstream that rejects the field). Non-streaming requests and responses/messages conversions are covered too — the hint is applied to the converted OpenAI-chat outbound body.
+
+> **Scope caveat**: the hourly aggregate and the streaming-usage hint are observability only. They are not billing, not per-key accounting, not quota enforcement. Token persistence is best-effort: high throughput near the free D1 write budget simply stops persisting (the gateway keeps serving); the homepage then shows the numbers that did land.
+
 ### Optional
 
 ```jsonc

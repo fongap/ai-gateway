@@ -5,6 +5,7 @@
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
 import { __resetAllStateForTests, getNodeState, noteRpmRequest, rpmUsage } from '../src/reliability/node-state.js';
+import { createMockD1 } from './d1-mock.mjs';
 
 const ACCESS_KEY = 'test-access-key';
 
@@ -1243,7 +1244,10 @@ await test('public home shows degraded status when all serving nodes are cooling
   const html = await res.text();
   assert.match(html, /general-air/);
   assert.match(html, /波动/);
-  assert.ok(!html.includes('可用'), 'must not claim available when cooling');
+  // No model chip may render the "available" dot. (The panel's own
+  // "统计暂不可用" scope label legitimately contains the substring 可用, so the
+  // assertion targets the availability dot marker, not any occurrence of 可用.)
+  assert.ok(!html.includes('class="dot available"'), 'must not claim a model available when cooling');
 });
 
 await test('public home model hint uses a registry model, never a hardcoded model', async () => {
@@ -1550,6 +1554,164 @@ await test('streaming relay delivers every chunk and terminates cleanly (torn [D
   assert.match(text, /\[DONE\]/);
   assert.ok(!text.includes('up-air'), 'upstream model must be rewritten to the logical name');
   assert.equal(getNodeState('sr').totalSuccesses, 1, 'clean completion must record node success');
+});
+
+// ---- Token usage: streaming include_usage hint + D1 fail-open ---------------
+
+const usageChunk = (usage) => ({ id: 'chatcmpl-1', object: 'chat.completion.chunk', choices: [], usage });
+
+await test('streaming chat asks the upstream to include usage and preserves existing stream_options', async () => {
+  resetMock();
+  routeHandlers['uh.example.com'] = () =>
+    sseResponse([chunk('hi'), usageChunk({ prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }), finishChunk, doneEvent]);
+  const env = makeEnv({ tier1: [basicNode('uh')], secrets: { uh: 'k' } });
+  const res = await worker.fetch(chatRequest({
+    model: 'general-air', messages: [], stream: true,
+    stream_options: { other: 'kept' },
+  }), env, {});
+  assert.equal(res.status, 200);
+  const sent = upstreamCalls[0].body;
+  assert.equal(sent.stream_options.include_usage, true);
+  assert.equal(sent.stream_options.other, 'kept', 'client stream_options fields must be preserved');
+  await res.text();
+});
+
+await test('a client-provided include_usage value is never overwritten', async () => {
+  resetMock();
+  routeHandlers['ui.example.com'] = () => sseResponse([chunk('hi'), finishChunk, doneEvent]);
+  const env = makeEnv({ tier1: [basicNode('ui')], secrets: { ui: 'k' } });
+  await worker.fetch(chatRequest({
+    model: 'general-air', messages: [], stream: true,
+    stream_options: { include_usage: false },
+  }), env, {});
+  assert.equal(upstreamCalls[0].body.stream_options.include_usage, false);
+});
+
+await test('non-stream chat does not add a usage-only stream hint', async () => {
+  resetMock();
+  routeHandlers['ns.example.com'] = () => jsonUpstream(okCompletion());
+  const env = makeEnv({ tier1: [basicNode('ns')], secrets: { ns: 'k' } });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 200);
+  const sent = upstreamCalls[0].body;
+  assert.equal(sent.stream, undefined);
+  assert.equal(sent.stream_options, undefined);
+});
+
+await test('STREAM_INCLUDE_USAGE=off disables the streaming usage hint', async () => {
+  resetMock();
+  routeHandlers['off.example.com'] = () => sseResponse([chunk('hi'), finishChunk, doneEvent]);
+  const env = makeEnv({
+    tier1: [basicNode('off')], secrets: { off: 'k' },
+    extraEnv: { STREAM_INCLUDE_USAGE: 'off' },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
+  assert.equal(res.status, 200);
+  assert.equal(upstreamCalls[0].body.stream_options, undefined);
+  await res.text();
+});
+
+await test('STREAM_USAGE_INCLUDE_OFF_PROVIDERS opts a provider out of the hint', async () => {
+  resetMock();
+  routeHandlers['po.example.com'] = () => sseResponse([chunk('hi'), finishChunk, doneEvent]);
+  const env = makeEnv({
+    tier1: [{ ...basicNode('po'), provider: 'rejecting-provider' }],
+    secrets: { po: 'k' },
+    extraEnv: { STREAM_USAGE_INCLUDE_OFF_PROVIDERS: 'rejecting-provider' },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
+  assert.equal(res.status, 200);
+  assert.equal(upstreamCalls[0].body.stream_options, undefined);
+  await res.text();
+});
+
+await test('a D1 write failure never breaks a successful AI response (fail-open)', async () => {
+  resetMock();
+  routeHandlers['d1ok.example.com'] = () => jsonUpstream(okCompletion('up-model'));
+  const failingD1 = {
+    prepare: () => ({
+      bind: () => ({ run: async () => { throw new Error('D1 write exploded'); } }),
+      first: async () => ({}),
+    }),
+  };
+  const env = makeEnv({
+    tier1: [basicNode('d1ok')], secrets: { 'd1ok': 'k' },
+    extraEnv: { TOKEN_STATS_DB: failingD1 },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 200);
+  const body = JSON.parse(await res.text());
+  assert.equal(body.choices[0].message.content, 'hello');
+  assert.equal(getNodeState('d1ok').totalSuccesses, 1, 'node success unaffected by D1');
+});
+
+await test('with no D1 binding the gateway serves an AI response normally', async () => {
+  resetMock();
+  routeHandlers['nod1.example.com'] = () => jsonUpstream(okCompletion('up-model'));
+  const env = makeEnv({ tier1: [basicNode('nod1')], secrets: { 'nod1': 'k' } });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 200);
+});
+
+await test('a real AI request lands the correct token aggregates in D1 (non-stream)', async () => {
+  resetMock();
+  routeHandlers['reald.example.com'] = () => jsonUpstream({
+    id: 'chatcmpl-1', object: 'chat.completion', model: 'up-model',
+    choices: [{ index: 0, message: { role: 'assistant', content: 'hi' }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 5, completion_tokens: 7, total_tokens: 12 },
+  });
+  const d1 = createMockD1();
+  const env = makeEnv({
+    tier1: [basicNode('reald')], secrets: { 'reald': 'k' },
+    extraEnv: { TOKEN_STATS_DB: d1 },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 200);
+  await res.text();
+  const [row] = [...d1._rows.values()];
+  assert.equal(row.total, 12);
+  assert.equal(row.input, 5);
+  assert.equal(row.output, 7);
+  assert.equal(row.requests, 1);
+  assert.equal(row.reports, 1);
+  assert.equal(row.missing, 0);
+});
+
+await test('a missing-usage request bumps requests + usage_missing in D1 (never estimated)', async () => {
+  resetMock();
+  routeHandlers['realm.example.com'] = () => jsonUpstream({
+    id: 'chatcmpl-1', object: 'chat.completion', model: 'up-model',
+    choices: [{ index: 0, message: { role: 'assistant', content: 'hi' }, finish_reason: 'stop' }],
+  }); // no usage
+  const d1 = createMockD1();
+  const env = makeEnv({
+    tier1: [basicNode('realm')], secrets: { 'realm': 'k' },
+    extraEnv: { TOKEN_STATS_DB: d1 },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 200);
+  await res.text();
+  const [row] = [...d1._rows.values()];
+  assert.equal(row.total, 0, 'no fabricated tokens');
+  assert.equal(row.requests, 1);
+  assert.equal(row.reports, 0);
+  assert.equal(row.missing, 1);
+});
+
+await test('homepage with no D1 binding still serves and degrades the token panel', async () => {
+  resetMock();
+  const env = makeEnv({
+    tier1: [basicNode('h1'), basicNode('h2')],
+    secrets: { h1: 'k', h2: 'k' },
+  });
+  const res = await worker.fetch(new Request('https://gateway.example.com/', {
+    headers: { accept: 'text/html' },
+  }), env, {});
+  assert.equal(res.status, 200);
+  const html = await res.text();
+  assert.ok(html.includes('Token 使用量'));
+  assert.ok(html.includes('统计暂不可用'), 'no D1 -> panel degrades, never a fake 0');
+  assert.ok(!html.includes('>0<'));
 });
 
 if (!process.exitCode) console.log(`\nintegration tests passed (${passed}).`);

@@ -28,6 +28,25 @@ export function isOpenAIStreamingResponse(response) {
   return (response.headers.get('content-type') || '').toLowerCase().includes('text/event-stream');
 }
 
+// Add `stream_options.include_usage` to a chat-completions request body so the
+// upstream emits a terminal usage chunk on streaming responses. This mutates
+// NONE of the client's fields:
+//   * existing stream_options are preserved (spread first);
+//   * `include_usage` is only written when it was absent, so a client-provided
+//     value is never overwritten;
+//   * if the client already included stream_options with other keys, they stay.
+// A non-object stream_options (or a JSON-serializable primitive) is normalized
+// into a fresh object so the request stays valid.
+export function withUsageStreamOptions(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return body;
+  const existing = body.stream_options && typeof body.stream_options === 'object' && !Array.isArray(body.stream_options)
+    ? body.stream_options
+    : {};
+  const streamOptions = { ...existing };
+  if (streamOptions.include_usage === undefined) streamOptions.include_usage = true;
+  return { ...body, stream_options: streamOptions };
+}
+
 // Convert a full OpenAI completion object into a well-formed SSE stream
 // (delta chunks + finish chunk + [DONE]) for clients that requested streaming
 // but received JSON from the upstream. Pure synthesis: it does not wrap an

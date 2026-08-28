@@ -32,7 +32,7 @@ import {
   buildTargetUrl, buildUpstreamHeaders, corsHeaders,
   readBodyTextWithLimit, BodyTooLargeError, safeReadErrorBody, trimDiagnostic,
 } from '../protocol/http.js';
-import { validateOpenAIChatRequest, isOpenAIStreamingResponse, synthesizeSseFromCompletion, extractOpenAITextContent } from '../protocol/openai.js';
+import { validateOpenAIChatRequest, isOpenAIStreamingResponse, synthesizeSseFromCompletion, extractOpenAITextContent, withUsageStreamOptions } from '../protocol/openai.js';
 // Backward-compatible re-export: some tooling imports the synthesizer from here.
 export { synthesizeSseFromCompletion };
 import {
@@ -54,6 +54,8 @@ import { getLogger } from '../observability/logger.js';
 import { healthResponse, metricsResponse, modelsListResponse, versionResponse } from '../observability/status.js';
 import { recordStreamStart, recordStreamCompleted, recordStreamInterrupted } from '../observability/stats.js';
 import { recordTokenUsage } from '../observability/tokens.js';
+import { persistTokenUsage } from '../observability/token-store.js';
+import { streamUsageSupported } from '../config/profiles.js';
 import { dashboardResponse } from '../dashboard/pages.js';
 import { isAuthorized } from './auth.js';
 import { gatewayError, buildBudgetExhaustedResponse, buildExhaustedResponse, buildClientErrorResponse } from './errors.js';
@@ -290,14 +292,23 @@ async function dispatchAttempt(c) {
   c.attemptStartMs = attemptStartMs;
 
   const upstreamModel = node.models[requestedModel] || requestedModel;
-  let outboundBody;
+  let outboundObject;
   if (route === 'openai_chat') {
-    outboundBody = JSON.stringify({ ...bodyJson, model: upstreamModel, ...(fakeStream ? { stream: true } : {}) });
+    outboundObject = { ...bodyJson, model: upstreamModel, ...(fakeStream ? { stream: true } : {}) };
   } else if (route === 'openai_responses') {
-    outboundBody = JSON.stringify({ ...responsesConversion, model: upstreamModel });
+    outboundObject = { ...responsesConversion, model: upstreamModel };
   } else {
-    outboundBody = JSON.stringify({ ...anthropicConversion, model: upstreamModel });
+    outboundObject = { ...anthropicConversion, model: upstreamModel };
   }
+  // Ask the upstream to report usage in the final streaming chunk. This is a
+  // passive protocol hint (include_usage) that changes nothing the client sees
+  // and is gated by the node's profile capability + operator switches, so an
+  // upstream that rejects the field can be opted out per provider. Non-stream
+  // requests already carry usage in the body and are never touched here.
+  if (outboundObject.stream === true && streamUsageSupported(node, env)) {
+    outboundObject = withUsageStreamOptions(outboundObject);
+  }
+  const outboundBody = JSON.stringify(outboundObject);
 
   let targetUrl;
   try {
@@ -650,12 +661,40 @@ async function handleSuccess(s) {
   }
 }
 
-// Isolate-local token observability: called EXACTLY ONCE per delivered
-// response — from the non-stream parse points, or via the onUsage callback of
-// the one stream wrapper / transform that actually parsed the body. Rotating
-// attempts never reach here, so failover still yields a single record.
+// Token observability: called EXACTLY ONCE per delivered response — from the
+// non-stream parse points, or via the onUsage callback of the one stream
+// wrapper / transform that actually parsed the body. Rotating attempts never
+// reach here, so failover still yields a single record.
+//
+// It does TWO independent things:
+//   1. recordTokenUsage()     — isolate-local, best-effort (resets on restart).
+//   2. persistTokenUsage()    — cross-isolate D1 hour-bucket UPSERT, fired
+//      inside ctx.waitUntil() so it is OFF the request hot path. It is fully
+//      fail-open: D1 absence, errors, timeouts and rejects are swallowed here
+//      and never change the HTTP response, fallback, node health, circuit
+//      breaker, scheduler, concurrency count or stream completion.
 function recordTokens(c, node, usage) {
   recordTokenUsage({ model: c.requestedModel, tier: node.tier, provider: node.provider, nodeId: node.id, usage });
+  scheduleD1TokenPersist(c, usage);
+}
+
+// Fire the D1 persistence WITHOUT touching the request path. Wrapped so that:
+//   * no binding  -> no-op (the primary "delete TOKEN_STATS_DB and it still
+//     serves every model" invariant);
+//   * ctx.waitUntil is the ONLY mechanism used — never `await` before a
+//     response, never a synchronous D1 call;
+//   * every rejection is caught and logged at most once.
+function scheduleD1TokenPersist(c, usage) {
+  const task = persistTokenUsage(c.env, usage).catch((err) => {
+    try { c.logger?.error?.(`token-stats D1 persist failed: ${err?.message || err}`); } catch { /* never throw */ }
+  });
+  const ctx = c.ctx;
+  if (ctx && typeof ctx.waitUntil === 'function') {
+    try { ctx.waitUntil(task); } catch { task.catch(() => {}); }
+  } else {
+    // No ExecutionContext (unit tests): fire-and-forget with a swallow.
+    task.catch(() => {});
+  }
 }
 
 // Node-layer stream tracking: node outcome recording + stream-end telemetry.

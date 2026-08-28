@@ -31,8 +31,7 @@ import { loadGatewayConfig } from '../config/nodes.js';
 import { loadModelRegistry, servesModel } from '../config/registry.js';
 import { peekAvailability } from '../reliability/node-state.js';
 import { htmlResponse } from '../protocol/http.js';
-import { summarizeTokenStats } from '../observability/tokens.js';
-import { gatewayStats } from '../observability/stats.js';
+import { queryTokenSummary } from '../observability/token-store.js';
 
 export const GITHUB_URL = 'https://github.com/fongap/ai-gateway';
 
@@ -143,6 +142,9 @@ pre{margin:0;padding:0 24px 24px;font-family:ui-monospace,SFMono-Regular,Consola
 .tcard-k{font-size:12.5px;color:var(--muted)}
 .tcard-v{font-size:22px;font-weight:640;letter-spacing:-.02em;margin-top:4px;
   font-variant-numeric:tabular-nums}
+.tcoverage{margin-top:12px;font-size:12.5px;color:var(--faint);
+  display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.tcoverage .dot{width:6px;height:6px;border-radius:50%;flex:none}
 @media(max-width:560px){
   .tcards{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 }
@@ -257,26 +259,54 @@ function fmtCount(n) {
   return `${v >= 100 ? Math.round(v) : v.toFixed(1)}${suffix}`;
 }
 
-// Server-rendered from summarizeTokenStats() + gatewayStats directly — no
-// browser fetch, no second stats store, no Prometheus parsing. Exactly four
-// AGGREGATE cards, no per-dimension breakdown, so node ids / providers /
-// tiers never reach the HTML. All counters are isolate-local and reset on
-// restart; the scope label states that honestly.
-function tokenPanel() {
-  const s = summarizeTokenStats();
+// Server-rendered from the D1 aggregate (queryTokenSummary) — no browser
+// fetch, no second stats store, no Prometheus parsing. Exactly four AGGREGATE
+// cards plus one very light usage-coverage footnote, no per-dimension
+// breakdown, so node ids / providers / tiers / api-keys never reach the HTML.
+// The data is cross-isolate / cross-PoP / cross-restart; only UTCHour buckets
+// are stored, so the numbers are genuinely persistent.
+function panelShell(scopeLabel, cards, extra) {
   return `
 <section class="tokens-block">
   <div class="tokens-head">
     <div class="sec">Token 使用量</div>
-    <span class="scope">本会话累计 · Isolate-local · 重启后重置</span>
+    <span class="scope">${scopeLabel}</span>
   </div>
   <div class="tcards">
-    <div class="tcard"><div class="tcard-k">累计 Token</div><div class="tcard-v">${fmtCount(s.totals.total)}</div></div>
-    <div class="tcard"><div class="tcard-k">近 24 小时</div><div class="tcard-v">${fmtCount(s.windows.h24.total)}</div></div>
-    <div class="tcard"><div class="tcard-k">近 7 天</div><div class="tcard-v">${fmtCount(s.windows.d7.total)}</div></div>
-    <div class="tcard"><div class="tcard-k">累计请求</div><div class="tcard-v">${fmtCount(gatewayStats.requests)}</div></div>
+    ${cards.map(([k, v]) => `<div class="tcard"><div class="tcard-k">${k}</div><div class="tcard-v">${v}</div></div>`).join('\n    ')}
   </div>
+  ${extra || ''}
 </section>`;
+}
+
+// Fail-open: when the D1 binding is absent or the aggregate query fails, the
+// four cards render an em dash and the scope reads "统计暂不可用". An em dash
+// means "we cannot currently obtain this number" — deliberately distinct from a
+// real `0`, which would claim "confirmed no usage".
+function unavailableTokenPanel() {
+  return panelShell(
+    '统计暂不可用',
+    [['累计 Token', '—'], ['近 24 小时', '—'], ['近 7 天', '—'], ['累计请求', '—']],
+  );
+}
+
+async function tokenPanel(env) {
+  const s = await queryTokenSummary(env);
+  if (!s) return unavailableTokenPanel();
+  const coverage = s.coverage === null ? null : s.coverage;
+  const coverageHtml = coverage === null
+    ? ''
+    : `<div class="tcoverage"><span class="dot ${coverage >= 0.9 ? 'available' : coverage >= 0.5 ? 'degraded' : 'unavailable'}"></span>Usage 覆盖率 ${(coverage * 100).toFixed(1)}%</div>`;
+  return panelShell(
+    '跨 Isolate · Cloudflare D1 · 小时聚合',
+    [
+      ['累计 Token', fmtCount(s.cumulative.total)],
+      ['近 24 小时', fmtCount(s.h24.total)],
+      ['近 7 天', fmtCount(s.d7.total)],
+      ['累计请求', fmtCount(s.cumulative.requests)],
+    ],
+    coverageHtml,
+  );
 }
 
 function shell({ title, body }) {
@@ -302,6 +332,7 @@ export async function dashboardResponse(request, env) {
   const models = publicModelStatus(config.nodes || [], env);
   const apiBase = `${new URL(request.url).origin}/v1`;
   const defaultModel = recommendedExampleModel(models);
+  const tokenHtml = await tokenPanel(env);
 
   const body = `
 <section class="hero">
@@ -332,7 +363,7 @@ OPENAI_MODEL=${escapeHtml(defaultModel)}</pre>
   </div>
 </section>
 
-${tokenPanel()}`;
+${tokenHtml}`;
 
   return htmlResponse(shell({ title: 'AI Gateway · API 服务入口', body }));
 }

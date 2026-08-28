@@ -20,6 +20,13 @@
 // A future Provider-specific TransportAdapter (openai-chat / anthropic /
 // openai-responses / gemini) is deliberately NOT built in this release.
 
+// `supportsStreamUsage` is a compatibility CAPABILITY, not a node id: it says
+// whether a streaming request may have `stream_options: { include_usage: true }`
+// added without breaking the (OpenAI-chat-wire) upstream. It defaults to true
+// because the gateway talks the OpenAI Chat Completions wire format upstream,
+// and mainstream OpenAI-compatible providers accept the field. An operator can
+// still turn it OFF per provider via STREAM_USAGE_INCLUDE_OFF_PROVIDERS (or
+// globally via STREAM_INCLUDE_USAGE=off) without editing any node id.
 export const OPENAI_COMPATIBLE_PROFILE = Object.freeze({
   id: 'openai-compatible',
   transport: Object.freeze({ kind: 'openai-chat', upstream_path: '/v1/chat/completions' }),
@@ -28,6 +35,7 @@ export const OPENAI_COMPATIBLE_PROFILE = Object.freeze({
     responses: 'convert',
     messages: 'convert',
   }),
+  supportsStreamUsage: true,
 });
 
 export const ANTHROPIC_COMPATIBLE_PROFILE = Object.freeze({
@@ -38,6 +46,7 @@ export const ANTHROPIC_COMPATIBLE_PROFILE = Object.freeze({
     responses: 'convert',
     messages: 'convert',
   }),
+  supportsStreamUsage: true,
 });
 
 export const OPENAI_RESPONSES_COMPATIBLE_PROFILE = Object.freeze({
@@ -48,6 +57,7 @@ export const OPENAI_RESPONSES_COMPATIBLE_PROFILE = Object.freeze({
     responses: 'convert',
     messages: 'convert',
   }),
+  supportsStreamUsage: true,
 });
 
 export const GEMINI_COMPATIBLE_PROFILE = Object.freeze({
@@ -58,6 +68,7 @@ export const GEMINI_COMPATIBLE_PROFILE = Object.freeze({
     responses: 'convert',
     messages: 'convert',
   }),
+  supportsStreamUsage: true,
 });
 
 export const PROFILE_IDS = new Set([
@@ -93,4 +104,23 @@ export function exposeSurfaces(profile) {
     responses: profile.protocols.responses,
     messages: profile.protocols.messages,
   };
+}
+
+// Decide whether a streaming outbound request should carry
+// `stream_options.include_usage` for a given node. Order of precedence:
+//   1. global kill switch  STREAM_INCLUDE_USAGE=off            -> never
+//   2. global force switch STREAM_INCLUDE_USAGE=on             -> always
+//   3. auto (default): the profile capability, minus the operator's explicit
+//      per-provider off-list STREAM_USAGE_INCLUDE_OFF_PROVIDERS.
+// No node id is ever consulted; this is pure capability + operator policy, so
+// a provider that rejects `include_usage` can be opted out without code edits.
+export function streamUsageSupported(node, env = {}) {
+  const mode = String(env?.STREAM_INCLUDE_USAGE ?? '').trim().toLowerCase();
+  if (mode === 'off') return false;
+  if (mode === 'on') return true;
+  if (node?.profile?.supportsStreamUsage === false) return false;
+  const offList = String(env?.STREAM_USAGE_INCLUDE_OFF_PROVIDERS ?? '')
+    .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  const provider = String(node?.provider ?? '').trim().toLowerCase();
+  return !(provider && offList.includes(provider));
 }

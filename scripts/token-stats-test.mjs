@@ -13,8 +13,11 @@ import {
 } from '../src/observability/tokens.js';
 import { dashboardResponse } from '../src/dashboard/pages.js';
 import { metricsResponse } from '../src/observability/status.js';
+import { persistTokenUsage } from '../src/observability/token-store.js';
+import { withUsageStreamOptions } from '../src/protocol/openai.js';
 import { transformOpenAIStreamToAnthropic } from '../src/stream/transform.js';
 import { transformOpenAIStreamToResponses } from '../src/protocol/responses/stream.js';
+import { createMockD1 } from './d1-mock.mjs';
 
 let passed = 0;
 async function test(name, fn) {
@@ -40,7 +43,8 @@ const anonRequest = () => new Request('https://gateway.example.com/', {
 const record = (usage, dims = {}) => recordTokenUsage({
   model: 'm', tier: 'tier-1', provider: 'p', nodeId: 'n', ...dims, usage,
 });
-const pageText = async (request) => (await dashboardResponse(request, ENV)).text();
+const pageText = async (request, env = ENV) => (await dashboardResponse(request, env)).text();
+const deepClone = (o) => JSON.parse(JSON.stringify(o));
 
 // ---- normalizeTokenUsage: the single reported-vs-missing gate ---------------
 
@@ -79,6 +83,32 @@ await test('a reported total_tokens wins verbatim over input+output', async () =
     { input: 2, output: 3, total: 10 },
   );
 });
+
+// ---- withUsageStreamOptions: streaming usage-hint injection is non-invasive ----
+
+await test('withUsageStreamOptions adds include_usage while preserving existing stream_options', async () => {
+  assert.deepEqual(
+    withUsageStreamOptions({ model: 'm', stream: true, stream_options: { other: 'kept' } }),
+    { model: 'm', stream: true, stream_options: { other: 'kept', include_usage: true } },
+  );
+  // A client-provided include_usage is never overwritten.
+  assert.deepEqual(
+    withUsageStreamOptions({ stream: true, stream_options: { include_usage: false } }),
+    { stream: true, stream_options: { include_usage: false } },
+  );
+  // No existing stream_options -> a fresh object is added.
+  assert.deepEqual(
+    withUsageStreamOptions({ model: 'm', stream: true }),
+    { model: 'm', stream: true, stream_options: { include_usage: true } },
+  );
+  // A non-object stream_options (primitive) is normalized without throwing.
+  assert.deepEqual(
+    withUsageStreamOptions({ stream: true, stream_options: 'bogus' }),
+    { stream: true, stream_options: { include_usage: true } },
+  );
+});
+
+// ---- recordTokenUsage: empty usage counts missing, real usage reports -----
 
 await test('recordTokenUsage: empty usage counts missing, real usage reports — never both', async () => {
   record({ prompt_tokens: 5, completion_tokens: 7 });
@@ -176,60 +206,92 @@ await test('missing records land in their dimension bucket for accurate per-node
   assert.equal(bSeries.input, 0);
 });
 
-// ---- Public dashboard token panel (always shown, aggregates only) -----------
+// ---- Public dashboard token panel (D1-backed, always shown, aggregates) -----
 
-await test('empty data renders the panel with zeros and no NaN', async () => {
-  const html = await pageText(authedRequest());
+await test('no D1 binding degrades to 统计暂不可用 with em dashes, never a fake 0', async () => {
+  const html = await pageText(authedRequest(), ENV);
   assert.ok(html.includes('Token 使用量'));
-  assert.ok(html.includes('本会话累计 · Isolate-local · 重启后重置'));
+  assert.ok(html.includes('统计暂不可用'));
   assert.ok(html.includes('累计 Token'));
   assert.ok(html.includes('近 24 小时'));
   assert.ok(html.includes('近 7 天'));
   assert.ok(html.includes('累计请求'));
-  assert.ok(html.includes('>0<'), 'zero counters must render as 0');
+  // Em dash = "cannot obtain this number right now", NOT a confirmed zero.
+  assert.ok(html.includes('>—<'));
+  assert.ok(!html.includes('>0<'), 'a degraded panel must not claim 0 usage');
   assert.ok(!html.includes('NaN'));
   assert.ok(!html.includes('undefined'));
   assert.ok(!html.includes('暂无数据。'), 'no per-dimension tables on the panel');
 });
 
-await test('the public panel shows aggregate usage but leaks no internal dimensions', async () => {
-  record({ prompt_tokens: 10, completion_tokens: 20 }, {
-    model: 'secret-model', provider: 'secret-provider', nodeId: 'secret-node', tier: 'secret-tier',
-  });
-  const html = await pageText(anonRequest());
-  // The panel is always shown now — no auth gate, no secrecy around usage.
+await test('a failing D1 query also degrades instead of 500 / fake zero', async () => {
+  const env = deepClone(ENV);
+  env.TOKEN_STATS_DB = createMockD1({ failReads: true });
+  const res = await dashboardResponse(authedRequest(), env);
+  assert.equal(res.status, 200, 'homepage must still be served');
+  const html = await res.text();
+  assert.ok(html.includes('统计暂不可用'));
+  assert.ok(!html.includes('>0<'));
+});
+
+await test('the D1-backed panel renders real aggregate numbers and leaks no dimensions', async () => {
+  // Seed an isolate-independent D1: 10+20 in the current hour, 5 in the prior.
+  const d1 = createMockD1();
+  const env = deepClone(ENV);
+  env.TOKEN_STATS_DB = d1;
+  const HOUR = 3600_000;
+  const h0 = Math.floor(Date.now() / HOUR) * HOUR;
+  await persistTokenUsage(env, { prompt_tokens: 10, completion_tokens: 20 }, h0);
+  await persistTokenUsage(env, { prompt_tokens: 3, completion_tokens: 2 }, h0 - HOUR);
+  const html = await pageText(anonRequest(), env);
   assert.ok(html.includes('Token 使用量'));
   assert.ok(html.includes('tokens-block'));
   assert.ok(html.includes('tcard'));
-  assert.ok(html.includes('>30<'), 'cumulative total 10+20 must render');
-  // Public-safety contract: only aggregates render; the node id, provider
-  // and tier used as storage dimensions never reach the HTML.
+  assert.ok(html.includes('>35<'), 'cumulative total 30+5 must render');
+  assert.ok(html.includes('跨 Isolate'), 'scope label reflects durable D1 data');
   assert.ok(!html.includes('secret-node'));
   assert.ok(!html.includes('secret-provider'));
   assert.ok(!html.includes('secret-tier'));
   assert.ok(!html.includes('secret-model'));
 });
 
-await test('the four cards render cumulative token totals', async () => {
-  record({ prompt_tokens: 3, completion_tokens: 1 });
-  record({ prompt_tokens: 3, completion_tokens: 1 });
-  record({ prompt_tokens: 3, completion_tokens: 1 });
-  record(null); // missing usage adds no tokens and advances no window
-  const html = await pageText(authedRequest());
-  // Three reported responses of 4 tokens each → cumulative 12. The 24h and
-  // 7d windows cover the same instant, so they also read 12. The request
-  // counter is owned by stats.js and is not driven by the dashboard render.
+await test('the four cards render cumulative token totals from the D1 store', async () => {
+  const d1 = createMockD1();
+  const env = deepClone(ENV);
+  env.TOKEN_STATS_DB = d1;
+  const h0 = Math.floor(Date.now() / 3600_000) * 3600_000;
+  await persistTokenUsage(env, { prompt_tokens: 3, completion_tokens: 1 }, h0);
+  await persistTokenUsage(env, { prompt_tokens: 3, completion_tokens: 1 }, h0);
+  await persistTokenUsage(env, { prompt_tokens: 3, completion_tokens: 1 }, h0);
+  await persistTokenUsage(env, null, h0); // missing adds no tokens, counts a request
+  const html = await pageText(authedRequest(), env);
   assert.ok(html.includes('>12<'), 'cumulative total 3*(3+1) must render as 12');
-  assert.ok(!html.includes('75.0%'), 'coverage is no longer a card');
+  assert.ok(html.includes('>4<'), 'cumulative requests = 3 reports + 1 missing');
+});
+
+await test('usage coverage renders as a lightweight footnote, not a card', async () => {
+  const d1 = createMockD1();
+  const env = deepClone(ENV);
+  env.TOKEN_STATS_DB = d1;
+  const h0 = Math.floor(Date.now() / 3600_000) * 3600_000;
+  await persistTokenUsage(env, { prompt_tokens: 1, completion_tokens: 1 }, h0);
+  await persistTokenUsage(env, { prompt_tokens: 1, completion_tokens: 1 }, h0);
+  await persistTokenUsage(env, { prompt_tokens: 1, completion_tokens: 1 }, h0);
+  await persistTokenUsage(env, null, h0);
+  const html = await pageText(authedRequest(), env);
+  assert.ok(html.includes('Usage 覆盖率'), 'coverage label shown');
+  assert.ok(html.includes('75.0%'), '3/4 coverage renders');
+  assert.ok(!html.includes('>75.0%<'), 'coverage is a footnote, not a 4th card');
 });
 
 await test('K/M/B compaction renders on the cumulative-token card', async () => {
-  // Each check resets state and records a single report, so the cumulative
-  // total equals that report's total and exercises one compaction tier.
   const card = async (usage) => {
-    __resetTokenStatsForTests();
-    record(usage);
-    return (await pageText(authedRequest()));
+    const d1 = createMockD1();
+    const env = deepClone(ENV);
+    env.TOKEN_STATS_DB = d1;
+    const h0 = Math.floor(Date.now() / 3600_000) * 3600_000;
+    await persistTokenUsage(env, usage, h0);
+    return (await pageText(authedRequest(), env));
   };
   assert.ok((await card({ prompt_tokens: 0, completion_tokens: 0 })).includes('>0<'));
   assert.ok((await card({ prompt_tokens: 999, completion_tokens: 0 })).includes('>999<'));
@@ -239,21 +301,6 @@ await test('K/M/B compaction renders on the cumulative-token card', async () => 
   assert.ok((await card({ prompt_tokens: 2500000000, completion_tokens: 0 })).includes('>2.5B<'));
   const one = await card({ prompt_tokens: 1, completion_tokens: 0 });
   assert.ok(!one.includes('NaN'));
-});
-
-await test('many recorded nodes/providers/tiers never leak through the public panel', async () => {
-  for (let i = 1; i <= 7; i++) {
-    record({ prompt_tokens: i, completion_tokens: 0 }, {
-      nodeId: `node-${i}`, provider: `prov-${i}`, tier: `tier-${i}`,
-    });
-  }
-  const html = await pageText(anonRequest());
-  assert.ok(html.includes('Token 使用量'), 'panel is shown');
-  for (let i = 1; i <= 7; i++) {
-    assert.ok(!html.includes(`node-${i}`), `node-${i} must not leak`);
-    assert.ok(!html.includes(`prov-${i}`), `prov-${i} must not leak`);
-    assert.ok(!html.includes(`tier-${i}`), `tier-${i} must not leak`);
-  }
 });
 
 // ---- Rolling 24h / 7d time windows ------------------------------------------

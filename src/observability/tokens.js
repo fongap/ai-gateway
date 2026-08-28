@@ -12,8 +12,10 @@
 //     Cloudflare tier: no KV/D1/Durable-Object bindings on the hot path.
 //   - Two rolling time windows — hourly buckets over the last 24h and daily
 //     buckets over the last 7d — are the same isolate-local best-effort
-//     contract. They reset with the isolate and are never persisted; the
-//     dashboard labels them as "重启后重置" so the limit is honest.
+//     contract. They reset with the isolate and are never persisted. This
+//     module feeds /metrics and /health; the PUBLIC homepage reads the durable
+//     D1 aggregate (token-store.js) instead, so the panel is no longer
+//     isolate-scoped.
 //   - Zero imports: a leaf module so the stream layer (track.js) and the
 //     dashboard (pages.js) can use it without cycles.
 
@@ -194,7 +196,7 @@ function usageCoverage() {
   return denominator === 0 ? null : tokenStats.totals.reports / denominator;
 }
 
-// Isolate-global summary for /health and the dashboard's token panel.
+// Isolate-global summary for /health, /metrics and diagnostics.
 export function summarizeTokenStats() {
   return {
     startedAt: tokenStats.startedAt,
