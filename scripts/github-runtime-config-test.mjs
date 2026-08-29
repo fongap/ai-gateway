@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {
-  parseRuntimeConfig, normalizeRuntimeConfig, validateGatewayRuntime, buildWranglerConfig, withStaleNodeSecretsRemoved,
+  loadRuntimeConfig, normalizeRuntimeConfig, validateGatewayRuntime, buildWranglerConfig, withStaleNodeSecretsRemoved,
 } from './github-runtime-config.mjs';
 
 function fixture() {
@@ -17,7 +17,7 @@ function fixture() {
   };
 }
 
-const runtime = normalizeRuntimeConfig(parseRuntimeConfig(JSON.stringify(fixture())));
+const runtime = loadRuntimeConfig(JSON.stringify(fixture().vars), JSON.stringify(fixture().secrets));
 const cfg = validateGatewayRuntime(runtime);
 assert.equal(cfg.ready, true);
 assert.equal(cfg.nodesUsable, 1);
@@ -25,17 +25,18 @@ assert.equal(JSON.parse(runtime.vars.TIER1_NODES_CONFIG_01)[0].id, 'node-a');
 assert.equal(JSON.parse(runtime.secrets.NODE_SECRETS_01)['node-a'], 'upstream-key');
 
 assert.throws(
-  () => normalizeRuntimeConfig(parseRuntimeConfig(JSON.stringify({ ...fixture(), vars: { ...fixture().vars, GATEWAY_ACCESS_KEY: 'nope' } }))),
+  () => normalizeRuntimeConfig({ vars: { ...fixture().vars, GATEWAY_ACCESS_KEY: 'nope' }, secrets: fixture().secrets }),
   /credentials belong in secrets/,
 );
 assert.throws(
-  () => normalizeRuntimeConfig(parseRuntimeConfig(JSON.stringify({ ...fixture(), secrets: { GATEWAY_ACCESS_KEY: 'x' } }))),
+  () => normalizeRuntimeConfig({ vars: fixture().vars, secrets: { GATEWAY_ACCESS_KEY: 'x' } }),
   /NODE_SECRETS/,
 );
 assert.throws(
-  () => validateGatewayRuntime(normalizeRuntimeConfig(parseRuntimeConfig(JSON.stringify({
-    ...fixture(), vars: { ...fixture().vars, MODELS_CONFIG: { 'code-pro': { policy: 'missing' } }, POLICIES_CONFIG: {}, },
-  })))),
+  () => validateGatewayRuntime(normalizeRuntimeConfig({
+    vars: { ...fixture().vars, MODELS_CONFIG: { 'code-pro': { policy: 'missing' } }, POLICIES_CONFIG: {} },
+    secrets: fixture().secrets,
+  })),
   /references unknown policy/,
 );
 

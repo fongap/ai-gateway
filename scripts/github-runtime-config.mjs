@@ -1,16 +1,13 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MIT
 //
-// GitHub Actions runtime-configuration-package bridge.
+// GitHub Actions deployment-config bridge.
 //
-// The encrypted GitHub repository Secret GATEWAY_RUNTIME_CONFIG contains one JSON document:
-// {
-//   "vars": { "TIER1_NODES_CONFIG_01": [...], "MODELS_CONFIG": {...} },
-//   "secrets": { "GATEWAY_ACCESS_KEY": "...", "NODE_SECRETS_01": {...} }
-// }
-//
-// It is deliberately the one source of truth for a CI deployment. Values are
-// never printed; stdout contains safe counts only.
+// Non-sensitive Worker text variables are supplied by the fork-specific GitHub
+// repository Variable GATEWAY_CONFIG (config/worker-vars.example.json is a template).
+// The encrypted GitHub repository Secret GATEWAY_SECRETS_CONFIG contains only:
+// { "GATEWAY_ACCESS_KEY": "...", "NODE_SECRETS_01": { "node-id": "..." } }
+// Values are never printed; stdout contains safe counts only.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -24,7 +21,7 @@ const NODE_SECRET = /^NODE_SECRETS_\d{2}$/;
 const SECRET_NAME = /^(GATEWAY_ACCESS_KEY|NODE_SECRETS_\d{2})$/;
 const MAX_VALUE_BYTES = 4500;
 
-export function parseRuntimeConfig(text, label = 'runtime config') {
+export function parseConfigObject(text, label = 'configuration') {
   let parsed;
   try {
     parsed = JSON.parse(String(text || ''));
@@ -32,16 +29,7 @@ export function parseRuntimeConfig(text, label = 'runtime config') {
     throw new Error(`${label} is not valid JSON (${error.message})`);
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error(`${label} must be an object with "vars" and "secrets" objects`);
-  }
-  for (const key of Object.keys(parsed)) {
-    if (key !== 'vars' && key !== 'secrets') throw new Error(`${label} has unsupported field "${key}"`);
-  }
-  if (!parsed.vars || typeof parsed.vars !== 'object' || Array.isArray(parsed.vars)) {
-    throw new Error(`${label}.vars must be an object`);
-  }
-  if (!parsed.secrets || typeof parsed.secrets !== 'object' || Array.isArray(parsed.secrets)) {
-    throw new Error(`${label}.secrets must be an object`);
+    throw new Error(`${label} must be a JSON object`);
   }
   return parsed;
 }
@@ -89,6 +77,13 @@ export function normalizeRuntimeConfig(raw) {
     throw new Error('secrets must contain at least one NODE_SECRETS_XX value');
   }
   return { vars, secrets };
+}
+
+export function loadRuntimeConfig(varsText, secretsText, varsLabel = 'Worker variables', secretsLabel = 'Gateway secrets') {
+  return normalizeRuntimeConfig({
+    vars: parseConfigObject(varsText, varsLabel),
+    secrets: parseConfigObject(secretsText, secretsLabel),
+  });
 }
 
 // Wrangler secret bulk preserves undeclared secrets by default. Explicit null
@@ -173,11 +168,14 @@ async function verifyRemote(baseUrl, accessKey) {
 async function main() {
   const [command, ...argv] = process.argv.slice(2);
   if (command === 'prepare') {
-    const input = argValue(argv, '--input');
+    const varsInput = argValue(argv, '--vars');
+    const secretsInput = argValue(argv, '--secrets-input');
     const wrangler = argValue(argv, '--wrangler');
     const secretsOut = argValue(argv, '--secrets');
-    if (!input || !wrangler || !secretsOut) throw new Error('usage: prepare --input FILE --wrangler FILE --secrets FILE');
-    const runtime = normalizeRuntimeConfig(parseRuntimeConfig(readFile(input), input));
+    if (!varsInput || !secretsInput || !wrangler || !secretsOut) {
+      throw new Error('usage: prepare --vars FILE --secrets-input FILE --wrangler FILE --secrets FILE');
+    }
+    const runtime = loadRuntimeConfig(readFile(varsInput), readFile(secretsInput), varsInput, secretsInput);
     const config = validateGatewayRuntime(runtime);
     const existingSecretsFile = argValue(argv, '--existing-secrets');
     const bulkSecrets = existingSecretsFile
@@ -190,9 +188,12 @@ async function main() {
     return;
   }
   if (command === 'health-check') {
-    const input = argValue(argv, '--input');
-    if (!input) throw new Error('usage: health-check --input FILE (requires GATEWAY_PUBLIC_BASE_URL)');
-    const runtime = normalizeRuntimeConfig(parseRuntimeConfig(readFile(input), input));
+    const varsInput = argValue(argv, '--vars');
+    const secretsInput = argValue(argv, '--secrets-input');
+    if (!varsInput || !secretsInput) {
+      throw new Error('usage: health-check --vars FILE --secrets-input FILE (requires GATEWAY_PUBLIC_BASE_URL)');
+    }
+    const runtime = loadRuntimeConfig(readFile(varsInput), readFile(secretsInput), varsInput, secretsInput);
     await verifyRemote(process.env.GATEWAY_PUBLIC_BASE_URL, runtime.secrets.GATEWAY_ACCESS_KEY);
     console.log('Remote health checks passed.');
     return;

@@ -69,12 +69,17 @@ for (const token of ['migrations', 'apply', 'TOKEN_STATS_DB', '--remote', '--dry
 }
 
 const workflowSource = read('.github/workflows/deploy.yml');
-assert.match(workflowSource, /github-runtime-config\.mjs prepare/, 'deploy workflow must build its Worker config from the GitHub runtime package');
-assert.match(workflowSource, /secret bulk/, 'deploy workflow must sync Worker secrets from the GitHub runtime package');
+assert.match(workflowSource, /GATEWAY_CONFIG/, 'deploy workflow must read fork-specific non-sensitive Worker text variables from a GitHub Variable');
+assert.match(workflowSource, /GATEWAY_SECRETS_CONFIG/, 'deploy workflow must read credentials from the dedicated GitHub Secret');
+assert.doesNotMatch(workflowSource, /GATEWAY_RUNTIME_CONFIG/, 'deploy workflow must not put non-sensitive Worker variables in a Secret');
+assert.match(workflowSource, /Missing GitHub repository variable GATEWAY_CONFIG/, 'deploy workflow must name a missing non-sensitive Worker configuration variable directly');
+assert.match(workflowSource, /Missing GitHub repository Secret GATEWAY_SECRETS_CONFIG/, 'deploy workflow must name a missing credentials Secret directly');
+assert.match(workflowSource, /secret bulk/, 'deploy workflow must synchronize Worker Secrets from the dedicated GitHub Secret');
 assert.match(workflowSource, /github-runtime-config\.mjs health-check/, 'deploy workflow must verify the deployed gateway over its public API');
 assert.doesNotMatch(workflowSource, /deploy[^\n]*--keep-vars/, 'CI deployment must not preserve Dashboard runtime-variable drift');
 assert.ok(fs.existsSync(path.join(root, 'scripts/github-runtime-config.mjs')), 'GitHub runtime config bridge is required');
-assert.ok(fs.existsSync(path.join(root, 'config/github-runtime.example.json')), 'GitHub runtime config example is required');
+assert.ok(fs.existsSync(path.join(root, 'config/worker-vars.example.json')), 'Worker text-variable example is required');
+assert.ok(fs.existsSync(path.join(root, 'config/gateway-secrets.example.json')), 'Worker Secret example is required');
 
 // The new schema forbids legacy artifacts anywhere in deploy tooling.
 for (const file of ['scripts/install.sh', 'scripts/install.ps1', 'scripts/reconfigure.sh', 'scripts/reconfigure.ps1']) {

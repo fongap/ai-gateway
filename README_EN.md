@@ -51,13 +51,13 @@ sh scripts/install.sh     # Windows: powershell scripts/install.ps1
 
 ## Auto deploy
 
-Production uses one encrypted GitHub repository Secret containing the runtime configuration package as its sole configuration source. After one-time setup, a push to `main` is all that is needed:
+Production stores fork-specific non-sensitive Worker configuration in a GitHub repository Variable and gateway and upstream credentials in a GitHub repository Secret. After one-time setup, a push to `main` is all that is needed:
 
 ```bash
 git push origin main
 ```
 
-The workflow validates the runtime configuration package, synchronizes Worker text variables and Worker Secrets, applies D1 migrations, deploys the Worker, then performs live health checks on `/health`, `/v1/models`, and Claude `count_tokens`. It does not retain stale Cloudflare Dashboard text variables. See **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** for the one-time setup.
+The workflow validates the configuration, synchronizes Worker text variables and Worker Secrets, applies D1 migrations, deploys the Worker, then performs live health checks on `/health`, `/v1/models`, and Claude `count_tokens`. It does not retain stale Cloudflare Dashboard text variables. See **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** for the one-time setup.
 
 ## Config
 
@@ -76,7 +76,7 @@ Node definitions are Worker text variables; upstream credentials and the gateway
 | `NODE_SECRETS_01..` | `{ node-id: credential }` |
 | `GATEWAY_ACCESS_KEY` | gateway access key |
 
-> Full fields, runtime knobs, Model Registry, and the GitHub runtime configuration package example → **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)**.
+> Full fields, runtime knobs, Model Registry, and deployment configuration examples → **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)**.
 
 ## Endpoints
 

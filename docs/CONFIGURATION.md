@@ -1,15 +1,15 @@
 ﻿# Configuration
 
-> This document describes the current 1.x configuration schema. In production, deliver Worker text variables and Worker Secrets through the encrypted GitHub runtime configuration package; Cloudflare Dashboard editing is a local/manual recovery path only.
+> This document describes the current 1.x configuration schema. In production, deliver non-sensitive Worker text variables through the fork-specific GitHub Variable `GATEWAY_CONFIG` and Worker Secrets through the encrypted GitHub Secret `GATEWAY_SECRETS_CONFIG`; Cloudflare Dashboard editing is a local/manual recovery path only.
 
-## Production configuration source: GitHub runtime configuration package
+## Production configuration sources
 
-The production deployment workflow reads one encrypted GitHub repository secret named `GATEWAY_RUNTIME_CONFIG`. Its schema is shown in [`config/github-runtime.example.json`](../config/github-runtime.example.json):
+The production deployment workflow reads two intentionally separate sources:
 
-- `vars` — Worker text variables, including `TIER*_NODES_CONFIG_XX`, `MODELS_CONFIG`, `POLICIES_CONFIG`, and optional runtime parameters.
-- `secrets` — Worker Secrets: only `GATEWAY_ACCESS_KEY` and `NODE_SECRETS_01..99`.
+- GitHub repository Variable `GATEWAY_CONFIG` — non-sensitive Worker text variables: `TIER*_NODES_CONFIG_XX`, `MODELS_CONFIG`, `POLICIES_CONFIG`, and optional runtime parameters. Copy [`config/worker-vars.example.json`](../config/worker-vars.example.json), replace the example values, and paste it into the Variable. It is Fork-specific and is not committed.
+- GitHub repository Secret `GATEWAY_SECRETS_CONFIG` — credentials only: `GATEWAY_ACCESS_KEY` and `NODE_SECRETS_01..99`. Its shape is shown in [`config/gateway-secrets.example.json`](../config/gateway-secrets.example.json).
 
-Structured values may be written naturally as JSON arrays/objects in the package; the deployment workflow serializes them to Worker environment strings. The deployment bridge enforces the 4.5 KB per-value shard limit and calls the runtime configuration loader before it synchronizes anything to Cloudflare. See [Deployment](DEPLOYMENT.md) for one-time GitHub setup and push-to-`main` deployment.
+Structured values may be written naturally as JSON arrays/objects in `GATEWAY_CONFIG`; the deployment workflow serializes them to Worker environment strings. The deployment bridge enforces the 4.5 KB per-value shard limit and calls the runtime configuration loader before it synchronizes anything to Cloudflare. See [Deployment](DEPLOYMENT.md) for one-time GitHub setup and push-to-`main` deployment.
 
 ## Worker Secrets (Wrangler / Cloudflare Dashboard “Secret”)
 

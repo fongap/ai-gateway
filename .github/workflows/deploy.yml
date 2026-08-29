@@ -1,9 +1,10 @@
 name: Deploy
 
-# Push-to-main auto deploy. GitHub encrypted secrets are the source of truth
-# for the runtime configuration package; the Cloudflare Dashboard is never a second configuration
-# source. Pipeline: verify → validate runtime configuration package → synchronize
-# Worker text variables and Worker Secrets → D1 migrations → Worker deployment → authenticated health checks.
+# Push-to-main auto deploy. Fork-specific GitHub Variables plus GitHub Secrets
+# containing only credentials are the deployment source; the Cloudflare
+# Dashboard is never a second configuration source. Pipeline: verify →
+# validate configuration → synchronize Worker text variables and Worker Secrets
+# → D1 migrations → Worker deployment → authenticated health checks.
 #
 # The full verification (npm ci → npm run verify → generated-config dry run)
 # runs INSIDE this workflow before any migration or deploy step. This guarantees
@@ -51,14 +52,30 @@ jobs:
 
       - name: Prepare deployment configuration
         run: |
-          printf '%s' "$GATEWAY_RUNTIME_CONFIG" > "$RUNNER_TEMP/gateway-runtime.json"
+          if [ -z "$GATEWAY_CONFIG" ]; then
+            echo "::error::Missing GitHub repository variable GATEWAY_CONFIG. Copy config/worker-vars.example.json into it and replace the example values."
+            exit 1
+          fi
+          if [ -z "$GATEWAY_SECRETS_CONFIG" ]; then
+            echo "::error::Missing GitHub repository Secret GATEWAY_SECRETS_CONFIG."
+            exit 1
+          fi
+          if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::Missing GitHub repository variable CLOUDFLARE_ACCOUNT_ID."
+            exit 1
+          fi
+          printf '%s' "$GATEWAY_CONFIG" > "$RUNNER_TEMP/gateway-vars-input.json"
+          printf '%s' "$GATEWAY_SECRETS_CONFIG" > "$RUNNER_TEMP/gateway-secrets-input.json"
           node scripts/github-runtime-config.mjs prepare \
-            --input "$RUNNER_TEMP/gateway-runtime.json" \
+            --vars "$RUNNER_TEMP/gateway-vars-input.json" \
+            --secrets-input "$RUNNER_TEMP/gateway-secrets-input.json" \
             --wrangler "$RUNNER_TEMP/wrangler.github.json" \
             --secrets "$RUNNER_TEMP/gateway-secrets.json"
         env:
-          GATEWAY_RUNTIME_CONFIG: ${{ secrets.GATEWAY_RUNTIME_CONFIG }}
-          TOKEN_STATS_D1_ID: ${{ secrets.TOKEN_STATS_D1_ID }}
+          GATEWAY_CONFIG: ${{ vars.GATEWAY_CONFIG }}
+          GATEWAY_SECRETS_CONFIG: ${{ secrets.GATEWAY_SECRETS_CONFIG }}
+          TOKEN_STATS_D1_ID: ${{ vars.TOKEN_STATS_D1_ID }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Verify project
         run: npm run verify
@@ -69,32 +86,40 @@ jobs:
       - name: Synchronize Worker Secrets
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           npx --yes wrangler@4.114.0 secret list --format json -c "$RUNNER_TEMP/wrangler.github.json" > "$RUNNER_TEMP/current-secrets.json" \
             || printf '[]' > "$RUNNER_TEMP/current-secrets.json"
           node scripts/github-runtime-config.mjs prepare \
-            --input "$RUNNER_TEMP/gateway-runtime.json" \
+            --vars "$RUNNER_TEMP/gateway-vars-input.json" \
+            --secrets-input "$RUNNER_TEMP/gateway-secrets-input.json" \
             --wrangler "$RUNNER_TEMP/wrangler.github.json" \
             --secrets "$RUNNER_TEMP/gateway-secrets.json" \
             --existing-secrets "$RUNNER_TEMP/current-secrets.json"
           npx --yes wrangler@4.114.0 secret bulk "$RUNNER_TEMP/gateway-secrets.json" -c "$RUNNER_TEMP/wrangler.github.json"
 
       - name: Apply D1 migrations
-        if: env.TOKEN_STATS_D1_ID != ''
+        if: vars.TOKEN_STATS_D1_ID != ''
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          TOKEN_STATS_D1_ID: ${{ secrets.TOKEN_STATS_D1_ID }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          TOKEN_STATS_D1_ID: ${{ vars.TOKEN_STATS_D1_ID }}
         run: npx --yes wrangler@4.114.0 d1 migrations apply ai-gateway-stats --remote -c "$RUNNER_TEMP/wrangler.github.json"
 
       - name: Deploy Worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: npx --yes wrangler@4.114.0 deploy -c "$RUNNER_TEMP/wrangler.github.json"
 
       - name: Verify deployed gateway
         env:
           GATEWAY_PUBLIC_BASE_URL: ${{ vars.GATEWAY_PUBLIC_BASE_URL }}
-        run: node scripts/github-runtime-config.mjs health-check --input "$RUNNER_TEMP/gateway-runtime.json"
+          GATEWAY_CONFIG: ${{ vars.GATEWAY_CONFIG }}
+          GATEWAY_SECRETS_CONFIG: ${{ secrets.GATEWAY_SECRETS_CONFIG }}
+        run: |
+          printf '%s' "$GATEWAY_CONFIG" > "$RUNNER_TEMP/gateway-vars-input.json"
+          printf '%s' "$GATEWAY_SECRETS_CONFIG" > "$RUNNER_TEMP/gateway-secrets-input.json"
+          node scripts/github-runtime-config.mjs health-check \
+            --vars "$RUNNER_TEMP/gateway-vars-input.json" \
+            --secrets-input "$RUNNER_TEMP/gateway-secrets-input.json"
