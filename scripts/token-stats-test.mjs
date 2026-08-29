@@ -286,7 +286,8 @@ await test('Token 活动 · 52 周 renders a full 364-cell heatmap with month la
   // Levels: the active day is lv4 (it is the max), most days stay lv0.
   assert.ok(html.includes('class="hd lv4"'), 'active cells use the blue scale');
   assert.ok(html.includes('class="hd lv0"'), 'inactive cells use the light gray');
-  assert.ok(html.includes(' Token · 1 请求'), 'hover title carries date, tokens and requests');
+  assert.ok(html.includes('data-tooltip="'), 'cells carry data-tooltip instead of native title');
+  assert.ok(html.includes('· 1 次请求'), 'tooltip carries date, tokens and requests');
   assert.match(html, /class="activity-scroll" tabindex="0" role="img"/,
     'dense heatmap is a labelled, keyboard-scrollable figure');
   assert.match(html, /aria-label="近52周 Token 活动热力图/);
@@ -302,7 +303,8 @@ await test('the heatmap colors derive from daily totals, not per-hour noise', as
   const html = await pageText(authedRequest(), env);
   assert.ok(html.includes('class="hd lv4"'));
   assert.ok(html.includes('class="hd lv1"'));
-  assert.ok(html.includes('4,000 Token'), 'titles show the raw daily total');
+  assert.ok(html.includes('4000') && html.includes('Token'), 'tooltips show daily token totals');
+  assert.ok(!html.includes('4,000 Token'), 'tooltips no longer use comma-formatted numbers');
 });
 
 await test('the usage card leaks no internal dimensions', async () => {
