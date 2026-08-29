@@ -8,7 +8,7 @@
 //   Hero       — 一个入口，多个模型 (compact)
 //   模型状态   — 通用 / 编程 rows inside ONE card, light chips + status dot
 //   使用情况   — ONE card: 5-column KPI strip + 52×7 Token 活动 heatmap
-//   快速开始   — OpenAI / Claude Code / Codex tabs (no stacked code blocks)
+//   客户端配置 — OpenAI-compatible / Claude Code / Codex tabs (no stacked code blocks)
 //   Footer     — © 2026 Fongap Studio
 //
 // Public-safety rules:
@@ -147,7 +147,7 @@ body{background:var(--bg);color:var(--text);
   font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",
     "Hiragino Sans GB","Microsoft YaHei",sans-serif;
   letter-spacing:-.005em;min-height:100vh;display:flex;flex-direction:column}
-.wrap{width:min(var(--content),calc(100% - 48px));margin:0 auto}
+.wrap{width:min(var(--content),calc(100% - 64px));margin:0 auto}
 a{color:var(--blue);text-decoration:none}
 .sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;
   margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;
@@ -166,15 +166,15 @@ a{color:var(--blue);text-decoration:none}
 .github:focus-visible{outline:2px solid var(--blue);outline-offset:4px;border-radius:8px}
 .github svg{width:18px;height:18px;display:block}
 
-/* Hero (compact — the page targets ~1.5 viewports total) */
-.hero{text-align:center;padding:24px 0 18px}
+/* Hero: enough vertical breathing room without delaying the main content */
+.hero{text-align:center;padding:28px 0 24px}
 .hero h1{font-size:32px;line-height:1.2;font-weight:500;letter-spacing:-.035em}
 .hero .desc{margin:7px 0 0;color:var(--muted);font-size:14px}
 
 /* Sections: unified title + card rhythm */
-.section{margin-top:16px}
+.section{margin-top:20px}
 .section-title{display:flex;align-items:center;justify-content:space-between;gap:12px;
-  font-size:13px;font-weight:600;color:#666e78;margin:0 0 8px 2px}
+  font-size:13px;font-weight:600;color:#666e78;margin:0 0 10px 2px}
 .section-title .utc8{font-size:11px;color:var(--faint);font-weight:400}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
   box-shadow:0 1px 2px rgba(27,31,36,.025)}
@@ -249,26 +249,26 @@ a{color:var(--blue);text-decoration:none}
 .months span{grid-row:1;text-align:left;white-space:nowrap}
 .heat-empty{padding:26px 0 20px;text-align:center;font-size:12.5px;color:var(--faint)}
 
-/* Model usage · 近 7 天: third section inside the same usage card */
-.model-usage{border-top:1px solid var(--line);padding:15px 17px 17px}
-.model-usage-head{min-height:22px;display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:10px}
+/* Model usage · 近 7 天: compact ranked list, not a full-width chart */
+.model-usage{border-top:1px solid var(--line);padding:22px 24px}
+.model-usage-head{min-height:22px;display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:12px}
 .model-usage-head b{font-size:13px;font-weight:600;color:#606872}
 .model-usage-empty{padding:14px 0 10px;text-align:center;font-size:12.5px;color:var(--faint)}
-.model-usage-list{list-style:none;display:grid;grid-template-columns:1fr;gap:6px;margin:0;padding:0}
-.model-usage-row{display:grid;grid-template-columns:max-content 1fr max-content;align-items:center;
-  gap:10px;padding:4px 8px;border-radius:6px;font-size:12px;
+.model-usage-list{list-style:none;display:grid;grid-template-columns:1fr;gap:10px;margin:0;padding:0}
+.model-usage-row{display:grid;grid-template-columns:minmax(108px,1fr) minmax(72px,112px) max-content;align-items:center;
+  gap:10px;padding:5px 6px;border-radius:6px;font-size:12px;
   font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;
   transition:background 120ms ease,outline-color 120ms ease;
   outline:1px solid transparent;outline-offset:0}
 .model-usage-row:hover,.model-usage-row:focus-visible{background:rgba(0,0,0,.025);outline-color:rgba(0,0,0,.06)}
 .model-usage-row:focus-visible{outline:2px solid var(--blue);outline-offset:0}
 .model-usage-name{color:#4a525d;word-break:break-all}
-.model-usage-bar{height:6px;background:#eef1f3;border-radius:3px;overflow:hidden}
-.model-usage-bar i{display:block;height:100%;background:var(--blue);border-radius:3px;
+.model-usage-bar{height:6px;background:#eef1f3;border-radius:999px;overflow:hidden}
+.model-usage-bar i{display:block;height:100%;background:var(--blue);border-radius:999px;
   transition:width 120ms ease}
-.model-usage-value{color:var(--text);text-align:right;font-variant-numeric:tabular-nums}
+.model-usage-value{color:var(--text);text-align:right;font-size:12px;font-variant-numeric:tabular-nums}
 
-/* Quick start — tabs so the three snippets never stack vertically */
+/* Client configuration — tabs so the three snippets never stack vertically */
 .tabs{height:42px;border-bottom:1px solid var(--line);display:flex;align-items:center;
   gap:4px;padding:0 12px}
 .tab{height:27px;display:flex;align-items:center;padding:0 11px;border:0;background:none;
@@ -298,8 +298,8 @@ button.copy:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
 .site-footer a:hover{color:var(--muted)}
 
 @media(max-width:860px){
-  .wrap{width:calc(100% - 28px)}
-  .hero{padding:20px 0 14px}
+   .wrap{width:calc(100% - 32px)}
+   .hero{padding:24px 0 20px}
   .hero h1{font-size:28px}
   .model-kind{width:72px}
   .model-list{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -311,9 +311,11 @@ button.copy:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
   .kpi:nth-child(n+3){border-top:1px solid var(--line)}
   .kpi:nth-child(n+5)::before{display:none}
   .kpi:nth-child(n+5){grid-column:1/-1;border-top:1px solid var(--line)}
-  .heatmap,.months{min-width:520px}
-  .heatmap{gap:2px}
-  .months{font-size:9px;letter-spacing:-.02em}
+   .heatmap,.months{min-width:520px}
+   .heatmap{gap:2px}
+   .months{font-size:9px;letter-spacing:-.02em}
+    .model-usage{padding:18px 16px}
+   .model-usage-row{grid-template-columns:minmax(84px,1fr) 76px max-content;gap:8px}
   .snippet pre{white-space:pre-wrap;word-break:break-all;padding-right:17px}
   .snippet .copy{position:static;margin:8px 12px 0}
   .site-footer{flex-direction:column;align-items:flex-start;gap:4px}
@@ -626,7 +628,7 @@ async function usageSection(env, now = Date.now()) {
           `<div class="months" aria-hidden="true">${labels.join('')}</div></div>`;
       })()
     : `<div class="heat-empty">统计暂不可用</div>`;
-  // Model usage for the last 7 days: one lightweight horizontal bar per model,
+  // Model usage for the last 7 days: one compact comparison bar per model,
   // ordered by total tokens desc. Degrades independently of the heatmap/KPIs
   // so a per-model query failure never blanks the whole card.
   const modelSection = renderModelUsage(modelUsage);
@@ -656,8 +658,8 @@ function renderModelUsage(modelUsage) {
     return `<div class="model-usage"><div class="model-usage-head"><b>模型使用 · 近 7 天</b></div>` +
       `<div class="model-usage-empty">近 7 天暂无数据</div></div>`;
   }
-  // Build a bar row per model: name on the left, bar + Token count on the right.
-  // Bar width is relative to the max in this window so differences are visible.
+  // Build a compact ranked row: name, short comparison bar, then Token count.
+  // Bar width is relative to the max in this window, not a percentage share.
   const max = rows.reduce((m, r) => (r.total > m ? r.total : m), 0);
   const items = rows.map((r) => {
     const pct = max > 0 ? Math.max(2, Math.round((r.total / max) * 100)) : 0;
@@ -671,14 +673,14 @@ function renderModelUsage(modelUsage) {
   return `<div class="model-usage">${head}<ul class="model-usage-list">${items}</ul></div>`;
 }
 
-// ---- 快速开始 (tabbed, no stacked code blocks) -------------------------------
+// ---- 客户端配置 (tabbed, no stacked code blocks) -------------------------------
 
-function snippetPane({ id, label, active, code }) {
+function snippetPane({ id, copyLabel, active, code }) {
   const target = `#code-${id}`;
   return `<div class="pane${active ? ' active' : ''}" id="pane-${id}" role="tabpanel" ` +
     `aria-labelledby="tab-${id}"${active ? '' : ' hidden'}>
     <div class="snippet">
-      <button class="copy" type="button" data-copy="${target}" aria-label="复制${escapeHtml(label)}配置" aria-live="polite">复制</button>
+      <button class="copy" type="button" data-copy="${target}" aria-label="复制${escapeHtml(copyLabel)}" aria-live="polite">复制</button>
       <pre id="code-${id}">${code}</pre>
     </div>
   </div>`;
@@ -686,11 +688,11 @@ function snippetPane({ id, label, active, code }) {
 
 function quickStartSection(apiBase, model) {
   const openai = `OPENAI_BASE_URL=${escapeHtml(apiBase)}
-OPENAI_API_KEY=your-api-key
+OPENAI_API_KEY=$GATEWAY_ACCESS_KEY
 OPENAI_MODEL=${escapeHtml(model)}`;
   const origin = new URL(apiBase).origin;
   const claude = `ANTHROPIC_BASE_URL=${escapeHtml(origin)}
-ANTHROPIC_AUTH_TOKEN=your-api-key
+ANTHROPIC_AUTH_TOKEN=$GATEWAY_ACCESS_KEY
 ANTHROPIC_MODEL=${escapeHtml(model)}`;
   const codex = `# ~/.codex/config.toml
 model = "${escapeHtml(model)}"
@@ -698,21 +700,21 @@ model_provider = "gateway"
 
 [model_providers.gateway]
 base_url = "${escapeHtml(apiBase)}"
-env_key = "GATEWAY_API_KEY"`;
+env_key = "GATEWAY_ACCESS_KEY"`;
   const tabs = [
-    { id: 'openai', label: 'OpenAI' },
+    { id: 'openai', label: 'OpenAI 兼容' },
     { id: 'claude', label: 'Claude Code' },
     { id: 'codex', label: 'Codex' },
   ].map((t, i) => `<button class="tab${i === 0 ? ' active' : ''}" id="tab-${t.id}" ` +
     `type="button" role="tab" aria-controls="pane-${t.id}" aria-selected="${i === 0}" ` +
     `tabindex="${i === 0 ? 0 : -1}" data-tab="${t.id}">${t.label}</button>`).join('');
   const panes = [
-    snippetPane({ id: 'openai', label: 'OpenAI', active: true, code: openai }),
-    snippetPane({ id: 'claude', label: 'Claude Code', active: false, code: claude }),
-    snippetPane({ id: 'codex', label: 'Codex', active: false, code: codex }),
+    snippetPane({ id: 'openai', copyLabel: 'OpenAI 兼容客户端环境变量', active: true, code: openai }),
+    snippetPane({ id: 'claude', copyLabel: 'Claude Code 环境变量', active: false, code: claude }),
+    snippetPane({ id: 'codex', copyLabel: 'Codex 配置文件', active: false, code: codex }),
   ].join('\n');
   return `<section class="section">
-  <div class="section-title">快速开始</div>
+  <div class="section-title">客户端配置</div>
   <div class="card">
     <div class="tabs" role="tablist">${tabs}</div>
     ${panes}

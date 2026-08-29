@@ -1,10 +1,19 @@
 ﻿# Configuration
 
-> This document describes the current 1.x configuration schema (Node pools as plain variables + `NODE_SECRETS_*` secrets).
+> This document describes the current 1.x configuration schema. In production, deliver Worker text variables and Worker Secrets through the encrypted GitHub runtime configuration package; Cloudflare Dashboard editing is a local/manual recovery path only.
 
-## Secrets (wrangler secret / dashboard "Secret")
+## Production configuration source: GitHub runtime configuration package
 
-| Variable | Required | Content |
+The production deployment workflow reads one encrypted GitHub repository secret named `GATEWAY_RUNTIME_CONFIG`. Its schema is shown in [`config/github-runtime.example.json`](../config/github-runtime.example.json):
+
+- `vars` — Worker text variables, including `TIER*_NODES_CONFIG_XX`, `MODELS_CONFIG`, `POLICIES_CONFIG`, and optional runtime parameters.
+- `secrets` — Worker Secrets: only `GATEWAY_ACCESS_KEY` and `NODE_SECRETS_01..99`.
+
+Structured values may be written naturally as JSON arrays/objects in the package; the deployment workflow serializes them to Worker environment strings. The deployment bridge enforces the 4.5 KB per-value shard limit and calls the runtime configuration loader before it synchronizes anything to Cloudflare. See [Deployment](DEPLOYMENT.md) for one-time GitHub setup and push-to-`main` deployment.
+
+## Worker Secrets (Wrangler / Cloudflare Dashboard “Secret”)
+
+| Configuration item | Required | Content |
 |----------|----------|---------|
 | `GATEWAY_ACCESS_KEY` | yes | Client access key for the gateway |
 | `NODE_SECRETS_01..99` | yes | JSON object `{ "node-id": "credential" }`, sharded at entry boundaries |
@@ -20,7 +29,7 @@ Example `NODE_SECRETS_01`:
 
 Credentials are looked up by node `id`. A node without a credential is excluded from scheduling; a credential without a node is reported in `/health` diagnostics.
 
-## Plain variables (dashboard "Text"/JSON variables)
+## Worker text variables (Cloudflare Dashboard “Text” / JSON variables)
 
 ### Node pools
 
@@ -78,6 +87,7 @@ The public homepage's 使用情况 card is the only place that needs *durable, c
 - The gateway runs correctly with **no D1 binding at all** — the binding is not a startup requirement. AI requests, fallback, rate limiting, circuit breaker and streaming are unaffected whether or not D1 is present or healthy.
 - Only **hourly UTC aggregates** are stored (one row per `YYYY-MM-DDTHH:00:00Z`), updated by a single atomic `INSERT ... ON CONFLICT(hour) DO UPDATE` UPSERT. No per-request rows, no node/provider/tier/api-key/user/ip dimensions.
 - Token counts are only ever the **upstream-reported** usage. Missing usage is recorded as `usage_missing` and is **never estimated** from characters/bytes.
+- The homepage’s **模型使用 · 近 7 天** panel renders a compact ranked list with short horizontal comparison bars, each scaled relative to the leading model. It deliberately does not use a donut/ring chart: each row retains its exact Token and request counts, and small differences remain readable.
 
 To enable it, add a D1 binding to the operator config (the shared `wrangler.jsonc` stays minimal — like `QUOTA_RATE_LIMITER`, the binding is added by the operator, not baked into the public template):
 

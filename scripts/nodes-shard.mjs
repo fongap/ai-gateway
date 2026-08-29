@@ -23,7 +23,7 @@ export const MANAGED_SECRET_PATTERN = /^(GATEWAY_ACCESS_KEY|NODE_SECRETS_\d{2})$
 
 const FORBIDDEN_NODE_FIELDS = ['token', 'credential', 'api_key', 'apikey', 'authorization', 'password', 'secret'];
 const ALLOWED_NODE_FIELDS = new Set(['id', 'provider', 'base_url', 'priority', 'models', 'limits']);
-const ALLOWED_LIMITS_FIELDS = new Set(['concurrency', 'rpm']);
+const ALLOWED_LIMITS_FIELDS = new Set(['concurrency', 'rpm', 'rpm_mode']);
 const VALID_TIER_PATTERN = /^[123]$/;
 
 function byteLength(str) {
@@ -134,10 +134,14 @@ export function assertNodesArray(nodes, label = 'nodes config') {
       if (c !== undefined && (!Number.isFinite(c) || c < 1)) {
         throw new Error(`${label}: node "${id}" limits.concurrency must be >= 1`);
       }
-      const rpm = node.limits?.rpm;
-      if (rpm !== undefined && (!Number.isFinite(rpm) || rpm < 1)) {
-        throw new Error(`${label}: node "${id}" limits.rpm must be >= 1`);
-      }
+    const rpm = node.limits?.rpm;
+    if (rpm !== undefined && (!Number.isFinite(rpm) || rpm < 1)) {
+      throw new Error(`${label}: node "${id}" limits.rpm must be >= 1`);
+    }
+    const rpmMode = node.limits?.rpm_mode;
+    if (rpmMode !== undefined && !['hard', 'soft'].includes(String(rpmMode).toLowerCase())) {
+      throw new Error(`${label}: node "${id}" limits.rpm_mode must be "hard" or "soft"`);
+    }
     }
   }
 }

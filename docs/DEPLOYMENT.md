@@ -1,71 +1,98 @@
 # Deployment
 
-> The deployment scripts target the current 1.x configuration schema (plain node config variables + `NODE_SECRETS_*` secrets). Re-run install/reconfigure after upgrading; no migration is provided across major schema lines.
+## Production deployment: push to `main`
 
-## Prerequisites
+Production is designed so routine code delivery needs only:
 
-- Node.js ≥ 20
-- A Cloudflare account (Workers Free plan is sufficient)
-- Node config JSON files — start from the ready-to-edit examples in [`config/`](../config/) (`tier1-nodes.example.json`, `tier2-nodes.example.json`, `node-secrets.example.json`, `models.example.json`, `policies.example.json`)
+```bash
+git push origin main
+```
 
-## First deploy
+The `Deploy` workflow validates the project and the encrypted runtime configuration package, synchronizes Worker text variables and Worker Secrets, applies D1 migrations when configured, deploys the Worker, then performs live health checks on `/health`, `/v1/models`, and Anthropic `/v1/messages/count_tokens`. Any failed check fails the workflow.
+
+Cloudflare Dashboard configuration is **not** a deployment source. The workflow deploys with `keep_vars: false`, so a stale Dashboard text variable cannot survive a successful push and turn a healthy release into `configuration_status: invalid`.
+
+### One-time GitHub setup
+
+Create these GitHub repository secrets:
+
+| Secret | Required | Purpose |
+|---|---:|---|
+| `CLOUDFLARE_API_TOKEN` | yes | Permission to deploy the Worker, update Worker Secrets, and run D1 migrations |
+| `CLOUDFLARE_ACCOUNT_ID` | yes | Cloudflare account selected by Wrangler |
+| `GATEWAY_RUNTIME_CONFIG` | yes | Encrypted runtime configuration package: Worker text variables plus gateway/upstream credentials |
+| `TOKEN_STATS_D1_ID` | no | D1 database id; enables migrations and homepage usage persistence |
+
+Create the non-secret GitHub repository variable `GATEWAY_PUBLIC_BASE_URL`, for example `https://ai-gateway.example.workers.dev`. Its value must be the origin only — do **not** append `/v1`.
+
+Start from [`config/github-runtime.example.json`](../config/github-runtime.example.json), replace every placeholder, and store the resulting JSON in the encrypted GitHub repository Secret `GATEWAY_RUNTIME_CONFIG`. For example, with the GitHub CLI:
+
+```bash
+cp config/github-runtime.example.json gateway-runtime.json
+# edit gateway-runtime.json locally; do not commit it
+gh secret set GATEWAY_RUNTIME_CONFIG < gateway-runtime.json
+```
+
+The package has exactly two top-level objects:
+
+```json
+{
+  "vars": {
+    "TIER1_NODES_CONFIG_01": [{ "id": "primary-01", "base_url": "https://provider.example.com/v1" }],
+    "MODELS_CONFIG": { "code-pro": { "policy": "default" } },
+    "POLICIES_CONFIG": { "default": { "max_attempts": 5 } }
+  },
+  "secrets": {
+    "GATEWAY_ACCESS_KEY": "client-access-key",
+    "NODE_SECRETS_01": { "primary-01": "upstream-credential" }
+  }
+}
+```
+
+`vars` contains Worker text variables and accepts JSON arrays/objects, strings, numbers, or booleans; the workflow serializes each value to a Worker environment string. `secrets` contains Worker Secrets and accepts only `GATEWAY_ACCESS_KEY` and `NODE_SECRETS_01..99`. Every Worker configuration value is validated against the 4.5 KB shard limit, and the same configuration loader used at runtime must report `ready` before the workflow changes Cloudflare.
+
+After this one-time setup, push normally. The repository has no credential file to commit, and no Cloudflare Dashboard reconfiguration is needed after a code push.
+
+### Changing runtime configuration
+
+The runtime configuration package is intentionally separate from source code because it contains upstream credentials. Update the encrypted GitHub repository Secret, review the change through your secret-management process, then push the related code or configuration change. The next `main` deployment replaces Worker text variables and updates managed Worker Secrets automatically; obsolete `NODE_SECRETS_XX` shards are deleted in the same bulk operation. Do not edit these managed values in the Cloudflare Dashboard.
+
+## Local development and manual recovery
+
+For local development or an emergency/manual install, use the existing operator scripts:
 
 ```bash
 npm ci
 sh scripts/install.sh        # Windows: powershell scripts/install.ps1
 ```
 
-The script walks through:
-
-1. Worker naming (written to `wrangler.jsonc`)
-2. `npm ci` + full project verification (`npm run verify`) and a dry-run bundle (`npm run check:deploy`)
-3. Cloudflare login check
-4. Node config JSON files per tier (tier-1 required, tier-2/3 optional)
-5. The credentials file: `{ "node-id": "credential" }`
-6. Validation + sharding via the shared planner (`scripts/manage-nodes-config.mjs`)
-7. Deploy with plain vars (generated local `wrangler.user.jsonc`, gitignored) then `wrangler secret bulk` for `GATEWAY_ACCESS_KEY` + `NODE_SECRETS_*`
-8. Optional online verification of `/version`, `/health`, `/v1/models`
-
-Validation fails early on duplicate IDs, missing/orphan credentials, invalid URLs, forbidden credential fields in node configs, or shard overflow.
-
-## Update code
-
-```bash
-sh scripts/update.sh         # git pull + verify + redeploy; remote vars/secrets untouched
-```
-
-Every supported deploy entry (`npm run deploy`, `scripts/deploy.sh`, and
-`scripts/deploy.ps1`) applies **all** D1 migrations in order when the selected
-Wrangler config has a `TOKEN_STATS_DB` binding. Wrangler tracks applied migrations in the `d1_migrations` table, so
-already-applied migrations are never re-run. If the binding is absent the
-deploy proceeds normally — D1 is optional and never a startup dependency.
-A migration failure aborts before the Worker is published.
-
-## Reconfigure nodes
+They generate a gitignored `wrangler.user.jsonc`, shard node configuration, and upload Worker Secrets. This path is useful for bootstrapping, but it is not the production configuration source once GitHub Actions deployment is enabled.
 
 ```bash
 sh scripts/reconfigure.sh    # Windows: powershell scripts/reconfigure.ps1
 ```
 
-Re-shards configs into new variable values, writes secrets, deletes stale shards beyond the new plan. Optionally rotates `GATEWAY_ACCESS_KEY`.
+Use reconfigure only to recover or bootstrap a local/operator deployment. A subsequent GitHub deployment replaces its Worker text variables from `GATEWAY_RUNTIME_CONFIG`.
 
-## Verify / operate
+## Verification and operations
 
 ```bash
 npm run verify               # syntax + version + config checks + tests + secret scan
-npm run check:deploy         # wrangler dry-run bundle
+npm run check:deploy         # local Wrangler dry-run using local operator config
 npm run bench                # gateway overhead benchmark smoke
 npx wrangler tail            # live logs
 ```
 
+The authenticated `/health` response contains `diagnostics` when configuration is invalid. In production, the workflow validates that same configuration before deployment and checks the live endpoint afterward, so a generic Claude 500 response should be treated as a failed workflow/configuration incident, not as a Claude protocol problem.
+
 ## Platform-level protection
 
-The Worker intentionally does not implement its own global rate limiting. For abuse protection use Cloudflare's platform features (current capabilities and free-tier allowances are documented at developers.cloudflare.com):
+The Worker intentionally does not implement its own global rate limiting. For abuse protection use Cloudflare's platform features:
 
-- **WAF custom rules** — block unwanted origins/paths before they reach the Worker
-- **Rate limiting rules** — per-IP or per-header limits on `/v1/*`; also add a rule for the unauthenticated public entry page `GET /` (e.g., 10 req/min per IP) to complement the in-memory D1 query cache (45s TTL with concurrent request coalescing)
-- **Security headers / Bot Fight Mode** as appropriate
+- **WAF custom rules** — block unwanted origins/paths before they reach the Worker.
+- **Rate limiting rules** — per-IP or per-header limits on `/v1/*`; also protect unauthenticated `GET /`.
+- **Security headers / Bot Fight Mode** as appropriate.
 
-## CI
+## CI behaviour
 
-`.github/workflows/ci.yml` runs `npm ci`, `npm run verify` and `npm run check:deploy` on push/PR. The `deploy.yml` workflow also runs the full verification (`npm ci` → `npm run verify` → `npm run check:deploy`) **before** applying D1 migrations or publishing the Worker, so a deploy can never bypass CI. Tag pushes (`v*.*.*`) build release archives via `.github/workflows/release.yml`.
+`.github/workflows/ci.yml` verifies every push and pull request. `.github/workflows/deploy.yml` runs independently on non-documentation pushes to `main`; it repeats the full verification before it changes D1, Worker Secrets, or the Worker. Tag pushes (`v*.*.*`) build release archives through `.github/workflows/release.yml`.

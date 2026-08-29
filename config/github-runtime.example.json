@@ -1,0 +1,26 @@
+{
+  "vars": {
+    "TIER1_NODES_CONFIG_01": [
+      {
+        "id": "primary-01",
+        "provider": "openai-compatible",
+        "base_url": "https://provider.example.com/v1",
+        "priority": 10,
+        "models": { "code-pro": "provider-coding-model" },
+        "limits": { "concurrency": 2, "rpm": 30, "rpm_mode": "hard" }
+      }
+    ],
+    "MODELS_CONFIG": {
+      "code-pro": {
+        "policy": "default",
+        "capabilities": { "tools": true, "reasoning": true, "vision": false, "stream": true }
+      }
+    },
+    "POLICIES_CONFIG": { "default": { "max_attempts": 5 } },
+    "PROJECT_REPOSITORY_URL": "https://github.com/your-org/ai-gateway"
+  },
+  "secrets": {
+    "GATEWAY_ACCESS_KEY": "replace-with-a-long-random-access-key",
+    "NODE_SECRETS_01": { "primary-01": "replace-with-upstream-credential" }
+  }
+}

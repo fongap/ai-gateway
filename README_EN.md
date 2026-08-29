@@ -10,7 +10,7 @@ Aggregate upstream APIs and keys — free or paid, prone to rate limits and outa
 ![Node](https://img.shields.io/badge/Node.js-%3E%3D20-43853d?logo=node.js&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-2ea44f)
 
-[Quick start](#quick-start) · [Config](#config) · [Endpoints](#endpoints) · [Security](#security)
+[Local setup](#local-setup) · [Auto deploy](#auto-deploy) · [Config](#config) · [Endpoints](#endpoints) · [Security](#security)
 
 </div>
 
@@ -41,7 +41,7 @@ flowchart LR
 - `limits.rpm` defaults hard — never knowingly exceeds the configured quota within a single Worker isolate
 - Whole-request failover budget; stops rotating once spent
 
-## Quick start
+## Local setup
 
 ```bash
 git clone https://github.com/fongap/ai-gateway.git && cd ai-gateway
@@ -49,9 +49,19 @@ npm ci
 sh scripts/install.sh     # Windows: powershell scripts/install.ps1
 ```
 
+## Auto deploy
+
+Production uses one encrypted GitHub repository Secret containing the runtime configuration package as its sole configuration source. After one-time setup, a push to `main` is all that is needed:
+
+```bash
+git push origin main
+```
+
+The workflow validates the runtime configuration package, synchronizes Worker text variables and Worker Secrets, applies D1 migrations, deploys the Worker, then performs live health checks on `/health`, `/v1/models`, and Claude `count_tokens`. It does not retain stale Cloudflare Dashboard text variables. See **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** for the one-time setup.
+
 ## Config
 
-Nodes are plain variables; credentials are separate secrets:
+Node definitions are Worker text variables; upstream credentials and the gateway access key are Worker Secrets:
 
 ```json
 { "id": "nvidia-01", "provider": "nvidia", "priority": 10,
@@ -60,13 +70,13 @@ Nodes are plain variables; credentials are separate secrets:
   "limits": { "concurrency": 3, "rpm": 40 } }
 ```
 
-| Variable | Purpose |
+| Configuration item | Purpose |
 |---|---|
 | `TIER{1,2,3}_NODES_CONFIG_01..` | node pools per tier |
 | `NODE_SECRETS_01..` | `{ node-id: credential }` |
-| `GATEWAY_ACCESS_KEY` | client key |
+| `GATEWAY_ACCESS_KEY` | gateway access key |
 
-> Full fields, runtime knobs, Model Registry, examples → **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)**.
+> Full fields, runtime knobs, Model Registry, and the GitHub runtime configuration package example → **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)**.
 
 ## Endpoints
 

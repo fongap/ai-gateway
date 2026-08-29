@@ -35,7 +35,7 @@ Reliability (src/reliability)             →  whether a node is currently usabl
 
 ## Config Layer → Runtime Node
 
-`src/config/nodes.js` merges `TIER{1,2,3}_NODES_CONFIG_01..99` plain variables with `NODE_SECRETS_01..99` secrets and produces Runtime Nodes:
+`src/config/nodes.js` merges `TIER{1,2,3}_NODES_CONFIG_01..99` Worker text variables with `NODE_SECRETS_01..99` Worker Secrets and produces Runtime Nodes:
 
 - Tier is derived only from the variable prefix; the node JSON cannot declare it.
 - Credential lookup happens here and nowhere else. Downstream modules only ever see `runtimeNode.credential`.

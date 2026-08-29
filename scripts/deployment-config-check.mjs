@@ -69,7 +69,12 @@ for (const token of ['migrations', 'apply', 'TOKEN_STATS_DB', '--remote', '--dry
 }
 
 const workflowSource = read('.github/workflows/deploy.yml');
-assert.match(workflowSource, /"triggers"\s*:\s*\{\s*"crons"\s*:\s*\[\s*"0 3 \* \* \*"\s*\]/, 'CI operator config must include the cleanup cron');
+assert.match(workflowSource, /github-runtime-config\.mjs prepare/, 'deploy workflow must build its Worker config from the GitHub runtime package');
+assert.match(workflowSource, /secret bulk/, 'deploy workflow must sync Worker secrets from the GitHub runtime package');
+assert.match(workflowSource, /github-runtime-config\.mjs health-check/, 'deploy workflow must verify the deployed gateway over its public API');
+assert.doesNotMatch(workflowSource, /deploy[^\n]*--keep-vars/, 'CI deployment must not preserve Dashboard runtime-variable drift');
+assert.ok(fs.existsSync(path.join(root, 'scripts/github-runtime-config.mjs')), 'GitHub runtime config bridge is required');
+assert.ok(fs.existsSync(path.join(root, 'config/github-runtime.example.json')), 'GitHub runtime config example is required');
 
 // The new schema forbids legacy artifacts anywhere in deploy tooling.
 for (const file of ['scripts/install.sh', 'scripts/install.ps1', 'scripts/reconfigure.sh', 'scripts/reconfigure.ps1']) {

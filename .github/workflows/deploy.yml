@@ -1,14 +1,15 @@
 name: Deploy
 
-# Push-to-main auto deploy. Deployment material (real D1 database id, API
-# token) lives only in encrypted repo secrets — never in the repo itself.
-# Pipeline: full verify → D1 migrations apply → Worker deploy.
+# Push-to-main auto deploy. GitHub encrypted secrets are the source of truth
+# for the runtime configuration package; the Cloudflare Dashboard is never a second configuration
+# source. Pipeline: verify → validate runtime configuration package → synchronize
+# Worker text variables and Worker Secrets → D1 migrations → Worker deployment → authenticated health checks.
 #
-# The full verification (npm ci → npm run verify → npm run check:deploy) runs
-# INSIDE this workflow before any migration or deploy step. This guarantees
+# The full verification (npm ci → npm run verify → generated-config dry run)
+# runs INSIDE this workflow before any migration or deploy step. This guarantees
 # migrations and the Worker publish can NEVER execute before syntax checks,
-# tests, config checks, secret scan and a dry-run bundle all pass — even if the
-# CI workflow (which triggers separately on push) has not finished yet.
+# tests, runtime-config checks, secret scan and a dry-run bundle all pass — even
+# if the CI workflow (which triggers separately on push) has not finished yet.
 #
 # Migrations run BEFORE deploy so the DB schema is ready when new code goes
 # live. Wrangler tracks applied migrations via the d1_migrations table, so
@@ -48,44 +49,52 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Restore operator config
+      - name: Prepare deployment configuration
         run: |
-          cat > wrangler.user.jsonc <<'EOF'
-          {
-            "name": "ai-gateway",
-            "main": "src/index.js",
-            "compatibility_date": "2026-08-06",
-            "workers_dev": true,
-            "keep_vars": true,
-            "observability": { "enabled": true },
-            "triggers": { "crons": ["0 3 * * *"] },
-            "d1_databases": [
-              {
-                "binding": "TOKEN_STATS_DB",
-                "database_name": "ai-gateway-stats",
-                "database_id": "${{ secrets.TOKEN_STATS_D1_ID }}",
-                "migrations_dir": "migrations"
-              }
-            ]
-          }
-          EOF
-          node -e "JSON.parse(require('fs').readFileSync('wrangler.user.jsonc','utf8'))" \
-            || { echo '::error::generated wrangler.user.jsonc is not valid JSON'; exit 1; }
+          printf '%s' "$GATEWAY_RUNTIME_CONFIG" > "$RUNNER_TEMP/gateway-runtime.json"
+          node scripts/github-runtime-config.mjs prepare \
+            --input "$RUNNER_TEMP/gateway-runtime.json" \
+            --wrangler "$RUNNER_TEMP/wrangler.github.json" \
+            --secrets "$RUNNER_TEMP/gateway-secrets.json"
+        env:
+          GATEWAY_RUNTIME_CONFIG: ${{ secrets.GATEWAY_RUNTIME_CONFIG }}
+          TOKEN_STATS_D1_ID: ${{ secrets.TOKEN_STATS_D1_ID }}
 
       - name: Verify project
         run: npm run verify
 
       - name: Dry-run Worker bundle
-        run: npm run check:deploy
+        run: npx --yes wrangler@4.114.0 deploy --dry-run -c "$RUNNER_TEMP/wrangler.github.json"
 
-      - name: Apply D1 migrations
+      - name: Synchronize Worker Secrets
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx --yes wrangler@4.114.0 d1 migrations apply ai-gateway-stats --remote -c wrangler.user.jsonc
+        run: |
+          npx --yes wrangler@4.114.0 secret list --format json -c "$RUNNER_TEMP/wrangler.github.json" > "$RUNNER_TEMP/current-secrets.json" \
+            || printf '[]' > "$RUNNER_TEMP/current-secrets.json"
+          node scripts/github-runtime-config.mjs prepare \
+            --input "$RUNNER_TEMP/gateway-runtime.json" \
+            --wrangler "$RUNNER_TEMP/wrangler.github.json" \
+            --secrets "$RUNNER_TEMP/gateway-secrets.json" \
+            --existing-secrets "$RUNNER_TEMP/current-secrets.json"
+          npx --yes wrangler@4.114.0 secret bulk "$RUNNER_TEMP/gateway-secrets.json" -c "$RUNNER_TEMP/wrangler.github.json"
+
+      - name: Apply D1 migrations
+        if: env.TOKEN_STATS_D1_ID != ''
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          TOKEN_STATS_D1_ID: ${{ secrets.TOKEN_STATS_D1_ID }}
+        run: npx --yes wrangler@4.114.0 d1 migrations apply ai-gateway-stats --remote -c "$RUNNER_TEMP/wrangler.github.json"
 
       - name: Deploy Worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx --yes wrangler@4.114.0 deploy -c wrangler.user.jsonc --keep-vars
+        run: npx --yes wrangler@4.114.0 deploy -c "$RUNNER_TEMP/wrangler.github.json"
+
+      - name: Verify deployed gateway
+        env:
+          GATEWAY_PUBLIC_BASE_URL: ${{ vars.GATEWAY_PUBLIC_BASE_URL }}
+        run: node scripts/github-runtime-config.mjs health-check --input "$RUNNER_TEMP/gateway-runtime.json"

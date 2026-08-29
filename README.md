@@ -10,7 +10,7 @@
 ![Node](https://img.shields.io/badge/Node.js-%3E%3D20-43853d?logo=node.js&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-2ea44f)
 
-[快速开始](#快速开始) · [配置](#配置) · [端点](#端点) · [安全](#安全)
+[本地安装](#本地安装) · [自动部署](#自动部署) · [配置](#配置) · [端点](#端点) · [安全](#安全)
 
 </div>
 
@@ -41,7 +41,7 @@ flowchart TB
 - `limits.rpm` 默认 hard，单 Worker isolate 内不主动越配额
 - 整请求 failover budget，超时即停
 
-## 快速开始
+## 本地安装
 
 ```bash
 git clone https://github.com/fongap/ai-gateway.git && cd ai-gateway
@@ -49,9 +49,19 @@ npm ci
 sh scripts/install.sh     # Windows: powershell scripts/install.ps1
 ```
 
+## 自动部署
+
+生产环境以 GitHub 仓库 Secret 中的加密**运行时配置包**为唯一配置来源。完成一次性初始化后，只需要推送 `main`：
+
+```bash
+git push origin main
+```
+
+工作流会自动校验运行时配置包、同步 Worker 文本变量和 Worker 密钥、执行 D1 数据库迁移、部署 Worker，并对 `/health`、`/v1/models` 和 Claude `count_tokens` 执行线上健康检查。部署不会保留 Cloudflare 控制台中的旧文本变量。一次性初始化步骤见 **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**。
+
 ## 配置
 
-节点是普通变量，凭据是独立 Secret：
+节点定义存入 Worker 文本变量；上游凭据和网关访问密钥存入 Worker 密钥：
 
 ```json
 { "id": "nvidia-01", "provider": "nvidia", "priority": 10,
@@ -60,13 +70,13 @@ sh scripts/install.sh     # Windows: powershell scripts/install.ps1
   "limits": { "concurrency": 3, "rpm": 40 } }
 ```
 
-| 变量 | 作用 |
+| 配置项 | 作用 |
 |---|---|
 | `TIER{1,2,3}_NODES_CONFIG_01..` | 各层节点池 |
 | `NODE_SECRETS_01..` | `{ node-id: credential }` |
-| `GATEWAY_ACCESS_KEY` | 客户端密钥 |
+| `GATEWAY_ACCESS_KEY` | 网关访问密钥 |
 
-> 完整字段、运行参数、Model Registry、示例见 **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)**。
+> 完整字段、运行参数、Model Registry 和 GitHub 运行时配置包示例见 **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)**。
 
 ## 端点
 

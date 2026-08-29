@@ -247,7 +247,7 @@ await test('no D1 binding degrades to 统计暂不可用 with em dashes, never a
   // The API-address block was removed; quick start stays.
   assert.ok(!html.includes('API 地址'));
   assert.ok(!html.includes('api-url'));
-  assert.ok(html.includes('快速开始'));
+  assert.ok(html.includes('客户端配置'));
   assert.ok(html.includes('data-tab="openai"'));
   assert.ok(html.includes('data-tab="claude"'));
   assert.ok(html.includes('data-tab="codex"'));
@@ -296,6 +296,7 @@ await test('模型使用 · 近 7 天 renders one row per model with bars', asyn
   assert.match(html, /<i style="width:\d+%"><\/i>/, 'bar width set');
   assert.ok(html.includes('data-tooltip='), 'rows expose a tooltip');
   assert.ok(html.includes('model-usage-value'), 'each row shows its token total');
+  assert.ok(!html.includes('donut'), 'model usage intentionally uses horizontal bars, never a donut chart');
 });
 
 await test('Token 活动 · 52 周 renders a full 364-cell heatmap with month labels', async () => {
