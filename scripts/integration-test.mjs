@@ -1076,12 +1076,14 @@ await test('public home is served but never leaks internal diagnostics when degr
   // general-air is filtered from display per UTC+8 revamp
   assert.ok(!html.includes('general-air'), 'general-* models must not appear on the homepage');
   assert.match(html, /可用/);
-  // Must NOT leak internal diagnostics, node counts, providers or credentials.
+  // Must NOT leak internal diagnostics, node counts, providers, or credential values.
+  // The public client-configuration snippet intentionally names GATEWAY_ACCESS_KEY;
+  // an environment-variable name is not a credential and helps users configure clients.
   assert.ok(!html.includes('no credential found in NODE_SECRETS_'), 'must not leak credential diagnostics');
   assert.ok(!html.includes('ghost'), 'must not leak node id');
   assert.ok(!html.includes('2/3'), 'must not leak node counts');
   assert.ok(!html.includes('/health'), 'must not link protected endpoints');
-  assert.ok(!html.includes('GATEWAY_ACCESS_KEY'), 'must not expose gateway key name');
+  assert.ok(!html.includes(ACCESS_KEY), 'must not expose gateway access-key value');
 });
 
 await test('upstream 200 + JSON error body rotates to a healthy node', async () => {
