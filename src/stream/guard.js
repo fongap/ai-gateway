@@ -25,9 +25,20 @@ export const GUARD_ERROR = {
   // ({"error":{...}}). The node produced no model output, so the caller must
   // still be allowed to rotate instead of committing the stream.
   ERROR_ENVELOPE: 'first_event_error_envelope',
+  // Hard limits to prevent unbounded memory consumption before the first
+  // valid event commits the failover boundary. When exceeded the reader is
+  // cancelled, the error is surfaced with a distinct code, and the caller
+  // records a node failure and rotates to a healthy node.
+  PRE_EVENT_BYTES_EXCEEDED: 'first_event_pre_bytes_exceeded',
+  SSE_LINE_EXCEEDED: 'first_event_sse_line_exceeded',
 };
 
 const guardedStreamState = new WeakMap();
+
+// Hard limits for the pre-first-event guard (shared with track.js for
+// consistency with the 2 MiB assembled-body limit).
+export const FIRST_EVENT_MAX_PRE_BYTES = 2 * 1024 * 1024; // 2 MiB
+export const FIRST_EVENT_MAX_SSE_LINE = 1024 * 1024; // 1 MiB per SSE line/event
 
 // A post-commit reader exception is intentionally relayed as a clean EOF so
 // already-buffered model output is not discarded. Expose the hidden cause to
@@ -42,19 +53,25 @@ export function guardedStreamFailureReason(response) {
 // Usage: const s = createSseScanner(onData); s.push(chunkText)...; s.flush();
 export function createSseScanner(onEvent) {
   let buffer = '';
-  const dataLines = [];
+  const eventState = { dataLines: [], dataLength: 0 };
   return {
     push(chunkText) {
       buffer += chunkText;
-      buffer = drainLines(buffer, dataLines, onEvent);
+      buffer = drainLines(buffer, eventState, onEvent);
+      // Check the unfinished remainder AFTER draining complete lines. A large
+      // network chunk may legitimately contain many small events; its total
+      // chunk size is not the same thing as one oversized SSE line.
+      if (buffer.length > FIRST_EVENT_MAX_SSE_LINE) {
+        throw guardError(GUARD_ERROR.SSE_LINE_EXCEEDED);
+      }
     },
     flush() {
-      buffer = drainLines(buffer + '', dataLines, onEvent, true);
+      buffer = drainLines(buffer + '', eventState, onEvent, true);
     },
   };
 }
 
-function drainLines(buffer, dataLines, onEvent, flush = false) {
+function drainLines(buffer, eventState, onEvent, flush = false) {
   let rest = buffer;
   for (;;) {
     const newline = rest.indexOf('\n');
@@ -62,21 +79,27 @@ function drainLines(buffer, dataLines, onEvent, flush = false) {
     let line = rest.slice(0, newline);
     rest = rest.slice(newline + 1);
     if (line.endsWith('\r')) line = line.slice(0, -1);
-    handleSseLine(line, dataLines, onEvent);
+    if (line.length > FIRST_EVENT_MAX_SSE_LINE) {
+      throw guardError(GUARD_ERROR.SSE_LINE_EXCEEDED);
+    }
+    handleSseLine(line, eventState, onEvent);
   }
   if (flush) {
     let tail = rest;
     if (tail.endsWith('\r')) tail = tail.slice(0, -1);
-    if (tail) handleSseLine(tail, dataLines, onEvent);
-    dispatchData(dataLines, onEvent);
+    if (tail.length > FIRST_EVENT_MAX_SSE_LINE) {
+      throw guardError(GUARD_ERROR.SSE_LINE_EXCEEDED);
+    }
+    if (tail) handleSseLine(tail, eventState, onEvent);
+    dispatchData(eventState, onEvent);
     return '';
   }
   return rest;
 }
 
-function handleSseLine(line, dataLines, onEvent) {
+function handleSseLine(line, eventState, onEvent) {
   if (line === '') {
-    dispatchData(dataLines, onEvent);
+    dispatchData(eventState, onEvent);
     return;
   }
   if (line.charCodeAt(0) === 58 /* ':' */) return; // SSE comment / keep-alive
@@ -84,16 +107,23 @@ function handleSseLine(line, dataLines, onEvent) {
   const value = line.slice(5).trimStart();
   // Some providers omit the blank line between events. If the accumulated
   // payload is already valid JSON (or [DONE]), dispatch before accumulating.
-  if (dataLines.length > 0 && isCompletePayload(dataLines.join('\n'))) {
-    dispatchData(dataLines, onEvent);
+  if (eventState.dataLines.length > 0 && isCompletePayload(eventState.dataLines.join('\n'))) {
+    dispatchData(eventState, onEvent);
   }
-  dataLines.push(value);
+  const separatorLength = eventState.dataLines.length > 0 ? 1 : 0;
+  if (eventState.dataLength + separatorLength + value.length > FIRST_EVENT_MAX_SSE_LINE) {
+    throw guardError(GUARD_ERROR.SSE_LINE_EXCEEDED);
+  }
+  eventState.dataLines.push(value);
+  eventState.dataLength += separatorLength + value.length;
 }
 
-function dispatchData(dataLines, onEvent) {
+function dispatchData(eventState, onEvent) {
+  const { dataLines } = eventState;
   if (dataLines.length === 0) return;
   const data = dataLines.join('\n');
   dataLines.length = 0;
+  eventState.dataLength = 0;
   onEvent(data);
 }
 
@@ -196,17 +226,25 @@ export async function ensureFirstSseEvent(upstreamResponse, timeoutMs, clientSig
 
     void consumeSseEventsWithReader(reader, check, consumed, () => settled)
       .then(() => { if (!settled) finishErr(GUARD_ERROR.EMPTY); })
-      .catch(() => { if (!settled) finishErr(GUARD_ERROR.EMPTY); });
+      .catch((error) => {
+        if (!settled) finishErr(error?.code || GUARD_ERROR.EMPTY);
+      });
   });
 }
 
 async function consumeSseEventsWithReader(reader, onData, consumed, isSettled) {
   const decoder = new TextDecoder();
   const scanner = createSseScanner(onData);
+  let preBytes = 0;
   for (;;) {
     const { done, value } = await reader.read();
     if (done || isSettled()) break;
     if (consumed) consumed.push(value);
+    preBytes += value.byteLength;
+    if (preBytes > FIRST_EVENT_MAX_PRE_BYTES) {
+      reader.cancel().catch(() => {});
+      throw guardError(GUARD_ERROR.PRE_EVENT_BYTES_EXCEEDED);
+    }
     scanner.push(decoder.decode(value, { stream: true }));
     if (isSettled()) break; // guard settled mid-chunk; replay pump owns the reader now
   }

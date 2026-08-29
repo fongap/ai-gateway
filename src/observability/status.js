@@ -14,7 +14,7 @@ import { loadModelRegistry, modelRegistryEntry, servesModel } from '../config/re
 export const APP_META = Object.freeze({
   name: 'ai-gateway',
   displayName: 'Smart AI Gateway',
-  version: '1.2.3',
+  version: '1.2.4',
 });
 
 function sanitizePrometheusLabel(value) {

@@ -690,7 +690,10 @@ async function handleSuccess(s) {
     if (upstreamWasStreaming) {
       data = await collectOpenAIStreamObject(upstream, request.signal);
     } else {
-      data = JSON.parse(await upstream.text());
+      // Use bounded read (2 MiB, consistent with assemble.js MAX_ASSEMBLED_BYTES
+      // and the first-event guard pre-byte limit) instead of unbounded text().
+      const text = await safeReadErrorBody(upstream, 2 * 1024 * 1024);
+      data = JSON.parse(text);
     }
     const message = openAIToAnthropicMessage(data, requestedModel);
     recordSuccess(node.id, latencyMs);
@@ -733,8 +736,9 @@ function recordTokens(c, node, usage) {
 //     response, never a synchronous D1 call;
 //   * every rejection is caught and logged at most once.
 function scheduleD1TokenPersist(c, usage) {
-  const task = persistTokenUsage(c.env, usage).catch((err) => {
-    try { c.logger?.error?.(`token-stats D1 persist failed: ${err?.message || err}`); } catch { /* never throw */ }
+  const task = persistTokenUsage(c.env, usage, Date.now(), c.requestedModel).catch((err) => {
+    const scope = err?.scope === 'per-model' ? 'per-model' : 'global';
+    try { c.logger?.error?.(`token-stats D1 ${scope} persist failed: ${err?.message || err}`); } catch { /* never throw */ }
   });
   const ctx = c.ctx;
   if (ctx && typeof ctx.waitUntil === 'function') {

@@ -16,6 +16,8 @@ import {
   persistTokenUsage,
   queryTokenSummary,
   queryTokenDailySeries,
+  queryTokenModelUsage,
+  cleanupModelStats,
   tokenStatsD1,
   utc8DayStartUtcMs,
   isoDayUtc8,
@@ -232,11 +234,134 @@ await test('a D1 write rejection rejects the returned promise (caller swallows i
   );
 });
 
+await test('a synchronous D1 prepare failure is converted to a classified promise rejection', async () => {
+  const d1 = { prepare() { throw new Error('mock synchronous prepare failure'); } };
+  let failure;
+  try {
+    await persistTokenUsage({ TOKEN_STATS_DB: d1 }, { prompt_tokens: 1 }, H0, 'test-model');
+  } catch (error) {
+    failure = error;
+  }
+  assert.equal(failure?.scope, 'global');
+  assert.match(failure?.message || '', /mock synchronous prepare failure/);
+});
+
 await test('a D1 read failure makes queryTokenSummary return error object, never throw', async () => {
   const d1 = createMockD1({ failReads: true });
   const s = await queryTokenSummary({ TOKEN_STATS_DB: d1 }, H0);
   assert.ok(s && s.available === false, 'returns error object on failure');
   assert.ok(s.error, 'error message present');
+});
+
+// ---- queryTokenModelUsage: per-model 7-day rollup for the homepage panel ----
+
+await test('queryTokenModelUsage fails open on missing binding', async () => {
+  const r = await queryTokenModelUsage({}, 7, H0);
+  assert.ok(r && r.available === false, 'returns error object on missing binding');
+  assert.ok(r.error, 'error message present');
+});
+
+await test('queryTokenModelUsage aggregates per model and orders by total desc', async () => {
+  const d1 = createMockD1();
+  const env = { TOKEN_STATS_DB: d1 };
+  // two writes for ultra (same hour), one for code-max, one for air (missing only)
+  await persistTokenUsage(env, { prompt_tokens: 10, completion_tokens: 20 }, H0, 'ultra');
+  await persistTokenUsage(env, { prompt_tokens: 5, completion_tokens: 5 }, H0, 'ultra');
+  await persistTokenUsage(env, { prompt_tokens: 100, completion_tokens: 0 }, H0, 'code-max');
+  await persistTokenUsage(env, null, H0, 'air');
+  const r = await queryTokenModelUsage(env, 7, H0 + HOUR);
+  assert.equal(r.available, true);
+  assert.equal(r.rows.length, 3, 'three distinct models');
+  // code-max (100) > ultra (40) > air (0) — sorted desc
+  assert.equal(r.rows[0].model, 'code-max');
+  assert.equal(r.rows[0].total, 100);
+  assert.equal(r.rows[0].requests, 1);
+  assert.equal(r.rows[1].model, 'ultra');
+  assert.equal(r.rows[1].total, 40);
+  assert.equal(r.rows[1].requests, 2);
+  assert.equal(r.rows[2].model, 'air');
+  assert.equal(r.rows[2].total, 0);
+  assert.equal(r.rows[2].requests, 1);
+});
+
+await test('queryTokenModelUsage excludes rows outside the requested window', async () => {
+  const d1 = createMockD1();
+  const env = { TOKEN_STATS_DB: d1 };
+  await persistTokenUsage(env, { prompt_tokens: 10, completion_tokens: 0 }, H0, 'ultra');
+  await persistTokenUsage(env, { prompt_tokens: 999, completion_tokens: 0 }, H0 - 8 * DAY, 'old-model');
+  const r = await queryTokenModelUsage(env, 7, H0 + HOUR);
+  assert.equal(r.rows.length, 1, 'only in-window model');
+  assert.equal(r.rows[0].model, 'ultra');
+});
+
+await test('persistTokenUsage without model skips the per-model table write', async () => {
+  const d1 = createMockD1();
+  const env = { TOKEN_STATS_DB: d1 };
+  await persistTokenUsage(env, { prompt_tokens: 1, completion_tokens: 1 }, H0);
+  assert.equal(d1._modelRows.size, 0, 'no per-model rows when model is omitted');
+  assert.equal(d1._rows.size, 1, 'global aggregate still written');
+});
+
+await test('per-model write failure is classified once and does not roll back global write', async () => {
+  const d1 = createMockD1();
+  const origPrepare = d1.prepare.bind(d1);
+  d1.prepare = (sql) => {
+    const stmt = origPrepare(sql);
+    const origRun = stmt.run.bind(stmt);
+    stmt.run = async (...args) => {
+      if (/token_usage_model_hourly/i.test(sql)) throw new Error('mock per-model write failure');
+      return origRun(...args);
+    };
+    return stmt;
+  };
+  let failure;
+  try {
+    await persistTokenUsage({ TOKEN_STATS_DB: d1 }, { prompt_tokens: 10, completion_tokens: 20 }, H0, 'test-model');
+  } catch (error) {
+    failure = error;
+  }
+  assert.equal(failure?.scope, 'per-model');
+  assert.equal(failure?.model, 'test-model');
+  assert.match(failure?.message || '', /mock per-model write failure/);
+  assert.equal(d1._rows.size, 1, 'global aggregate still written despite per-model failure');
+  assert.equal(d1._modelRows.size, 0, 'no per-model rows due to write failure');
+});
+
+await test('global write failure is the single classified rejection when both writes fail', async () => {
+  const d1 = createMockD1({ failWrites: true });
+  const env = { TOKEN_STATS_DB: d1 };
+  // Global write fails -> promise rejects (caller catches and logs)
+  await assert.rejects(
+    persistTokenUsage(env, { prompt_tokens: 1 }, H0, 'test-model'),
+    /mock D1 write failure/,
+  );
+  // Since global write failed, no rows should be written
+  assert.equal(d1._rows.size, 0, 'no global rows when write fails');
+  assert.equal(d1._modelRows.size, 0, 'no model rows when global write fails');
+});
+
+await test('cleanupModelStats deletes only per-model rows older than seven days', async () => {
+  const d1 = createMockD1();
+  const env = { TOKEN_STATS_DB: d1 };
+  await persistTokenUsage(env, { prompt_tokens: 5 }, H0 - 8 * DAY, 'old-model');
+  await persistTokenUsage(env, { prompt_tokens: 7 }, H0 - 6 * DAY, 'current-model');
+  const originalNow = Date.now;
+  Date.now = () => H0;
+  try {
+    const result = await cleanupModelStats(env);
+    assert.equal(result.deleted, 1);
+  } finally {
+    Date.now = originalNow;
+  }
+  assert.equal(d1._modelRows.size, 1, 'only the retained model row remains');
+  assert.equal(d1._rows.size, 2, 'global history is never pruned');
+});
+
+await test('cleanupModelStats skips cleanly without a D1 binding', async () => {
+  assert.deepEqual(await cleanupModelStats({}), {
+    skipped: true,
+    reason: 'TOKEN_STATS_DB binding missing',
+  });
 });
 
 if (!process.exitCode) console.log(`\ntoken-store tests passed (${passed}).`);

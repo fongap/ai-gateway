@@ -8,6 +8,12 @@
 // black-box worker suite.
 import assert from 'node:assert/strict';
 import { trackStreamResponse } from '../src/stream/track.js';
+import {
+  ensureFirstSseEvent,
+  FIRST_EVENT_MAX_PRE_BYTES,
+  FIRST_EVENT_MAX_SSE_LINE,
+  GUARD_ERROR,
+} from '../src/stream/guard.js';
 
 let passed = 0;
 async function test(name, fn) {
@@ -383,6 +389,61 @@ await test('data lines arriving AFTER the completion marker are not scanned', as
   }), r.withUsage());
   await drain(res);
   assert.deepEqual(r.calls.usage, [null]);
+});
+
+await test('first-event guard preserves the oversized-line failure code', async () => {
+  const oversized = `data: ${'x'.repeat(FIRST_EVENT_MAX_SSE_LINE + 1)}`;
+  const upstream = upstreamStream((controller) => {
+    controller.enqueue(encoder.encode(oversized));
+    controller.close();
+  });
+  await assert.rejects(
+    ensureFirstSseEvent(upstream, 5_000),
+    (error) => error?.code === GUARD_ERROR.SSE_LINE_EXCEEDED,
+  );
+});
+
+await test('first-event guard preserves the total pre-event byte-limit code', async () => {
+  const keepAlive = encoder.encode(`:${'x'.repeat(64 * 1024 - 2)}\n`);
+  const chunks = Math.ceil(FIRST_EVENT_MAX_PRE_BYTES / keepAlive.byteLength) + 1;
+  const upstream = new Response(new ReadableStream({
+    start(controller) {
+      for (let i = 0; i < chunks; i++) controller.enqueue(keepAlive);
+      controller.close();
+    },
+  }), { headers: { 'content-type': 'text/event-stream' } });
+  await assert.rejects(
+    ensureFirstSseEvent(upstream, 5_000),
+    (error) => error?.code === GUARD_ERROR.PRE_EVENT_BYTES_EXCEEDED,
+  );
+});
+
+await test('a large chunk containing many small SSE events is not mistaken for one large line', async () => {
+  const event = 'data: {"choices":[{"delta":{"content":"x"}}]}\n\n';
+  const payload = event.repeat(Math.ceil((FIRST_EVENT_MAX_SSE_LINE + 1) / event.length));
+  assert.ok(payload.length > FIRST_EVENT_MAX_SSE_LINE);
+  assert.ok(encoder.encode(payload).byteLength < FIRST_EVENT_MAX_PRE_BYTES);
+  const guarded = await ensureFirstSseEvent(upstreamStream((controller) => {
+    controller.enqueue(encoder.encode(payload));
+    controller.close();
+  }), 5_000);
+  assert.equal((await guarded.text()).length, payload.length);
+});
+
+await test('post-commit oversized rewrite line terminates instead of fabricating a newline', async () => {
+  const r = recorder();
+  let cancelled = false;
+  const upstream = new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode(`data: ${'x'.repeat(FIRST_EVENT_MAX_SSE_LINE + 1)}`));
+    },
+    cancel() { cancelled = true; },
+  }), { headers: { 'content-type': 'text/event-stream' } });
+  const res = trackStreamResponse(upstream, { ...r.opts, rewriteModel: 'public-model' });
+  assert.equal(await res.text(), '', 'oversized partial event must not be forwarded');
+  assert.equal(cancelled, true, 'upstream reader is cancelled');
+  assert.equal(r.calls.failure, 1);
+  assertCommonShape(r.calls.ends[0], 'interrupted', 'reader_error');
 });
 
 if (!process.exitCode) console.log(`\nstream-track tests passed (${passed}).`);

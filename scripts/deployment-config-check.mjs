@@ -17,6 +17,10 @@ assert.equal(
 );
 assert.equal(config.env, undefined, 'no per-Worker environments');
 assert.equal(config.vars, undefined, 'wrangler.jsonc must not carry node config vars; they belong in wrangler.user.jsonc (generated)');
+assert.ok(
+  Array.isArray(config.triggers?.crons) && config.triggers.crons.includes('0 3 * * *'),
+  'wrangler.jsonc must schedule the daily per-model statistics cleanup',
+);
 assert.ok(fs.existsSync(path.join(root, 'package-lock.json')), 'package-lock.json is required for npm ci');
 
 // New-schema deployment files must exist.
@@ -44,6 +48,28 @@ for (const file of ['scripts/update.sh', 'scripts/update.ps1', 'scripts/deploy.s
   const source = read(file);
   assert.match(source, /keep-vars|scripts\/deploy\.sh|deploy\.ps1/, `${file} must preserve remote vars (directly or via deploy script)`);
 }
+
+// Deploy scripts must apply D1 migrations when the operator config has a
+// TOKEN_STATS_DB binding, so migrations are never skipped locally even when
+// the GitHub Actions deploy workflow is the only path that applies them.
+for (const file of ['scripts/deploy.sh', 'scripts/deploy.ps1']) {
+  const source = read(file);
+  assert.match(source, /migrations apply|migrations.*apply/i, `${file} must apply D1 migrations`);
+  assert.match(source, /TOKEN_STATS_DB/i, `${file} must check for TOKEN_STATS_DB binding before migrating`);
+}
+
+// The package.json deploy entry goes through run-wrangler.mjs. That wrapper
+// must also migrate before a real deploy, otherwise the most obvious local
+// deployment command can publish code before its schema exists.
+const packageJson = JSON.parse(read('package.json'));
+assert.match(packageJson.scripts?.deploy || '', /run-wrangler\.mjs\s+deploy/, 'npm run deploy must use run-wrangler.mjs');
+const runWranglerSource = read('scripts/run-wrangler.mjs');
+for (const token of ['migrations', 'apply', 'TOKEN_STATS_DB', '--remote', '--dry-run']) {
+  assert.ok(runWranglerSource.includes(token), `run-wrangler.mjs must include ${token} migration/deploy handling`);
+}
+
+const workflowSource = read('.github/workflows/deploy.yml');
+assert.match(workflowSource, /"triggers"\s*:\s*\{\s*"crons"\s*:\s*\[\s*"0 3 \* \* \*"\s*\]/, 'CI operator config must include the cleanup cron');
 
 // The new schema forbids legacy artifacts anywhere in deploy tooling.
 for (const file of ['scripts/install.sh', 'scripts/install.ps1', 'scripts/reconfigure.sh', 'scripts/reconfigure.ps1']) {

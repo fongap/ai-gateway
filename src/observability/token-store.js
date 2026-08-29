@@ -36,6 +36,7 @@
 import { normalizeTokenUsage } from './tokens.js';
 
 const TABLE = 'token_usage_hourly';
+const TABLE_MODEL = 'token_usage_model_hourly';
 const HOUR_MS = 3600_000;
 const DAY_MS = 86400_000;
 
@@ -100,41 +101,98 @@ export function tokenStatsD1(env) {
 // incremented by a single SQL statement so two isolates updating the same hour
 // never lose a count (no SELECT-then-UPDATE race). `usage` is the RAW upstream
 // usage (or null/undefined); it is normalized here, so a report and a missing
-// response each produce exactly one payload. Returns the D1 run promise, which
-// may reject — the caller is responsible for fail-open handling.
-export function persistTokenUsage(env, usage, now = Date.now()) {
+// response each produce exactly one payload. When `model` is a non-empty
+// string, a parallel per-model UPSERT is fired (used by the homepage's
+// "模型使用 · 近 7 天" panel). The per-model write is independent: its
+// failure does not roll back the global aggregate. Returns a Promise that
+// settles once BOTH writes complete (or both are skipped due to missing
+// binding); a single classified rejection surfaces through the catch in the
+// caller, which guarantees at most one log entry per delivered response.
+// May reject — the caller is responsible for fail-open handling.
+export function persistTokenUsage(env, usage, now = Date.now(), model = null) {
   const d1 = tokenStatsD1(env);
   if (!d1) return Promise.resolve();
   const hour = normalizeHour(now);
   const p = tokenUsagePayload(usage);
-  const stmt = d1.prepare(
-    `INSERT INTO ${TABLE} (
+  let globalTask;
+  try {
+    const globalStmt = d1.prepare(
+      `INSERT INTO ${TABLE} (
+        hour,
+        input_tokens,
+        output_tokens,
+        total_tokens,
+        requests,
+        usage_reports,
+        usage_missing
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(hour) DO UPDATE SET
+        input_tokens = ${TABLE}.input_tokens + excluded.input_tokens,
+        output_tokens = ${TABLE}.output_tokens + excluded.output_tokens,
+        total_tokens = ${TABLE}.total_tokens + excluded.total_tokens,
+        requests = ${TABLE}.requests + excluded.requests,
+        usage_reports = ${TABLE}.usage_reports + excluded.usage_reports,
+        usage_missing = ${TABLE}.usage_missing + excluded.usage_missing`,
+    );
+    globalTask = Promise.resolve(globalStmt.bind(
       hour,
-      input_tokens,
-      output_tokens,
-      total_tokens,
-      requests,
-      usage_reports,
-      usage_missing
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(hour) DO UPDATE SET
-      input_tokens = ${TABLE}.input_tokens + excluded.input_tokens,
-      output_tokens = ${TABLE}.output_tokens + excluded.output_tokens,
-      total_tokens = ${TABLE}.total_tokens + excluded.total_tokens,
-      requests = ${TABLE}.requests + excluded.requests,
-      usage_reports = ${TABLE}.usage_reports + excluded.usage_reports,
-      usage_missing = ${TABLE}.usage_missing + excluded.usage_missing`,
-  );
-  return stmt.bind(
-    hour,
-    p.input,
-    p.output,
-    p.total,
-    p.requests,
-    p.reports,
-    p.missing,
-  ).run();
+      p.input,
+      p.output,
+      p.total,
+      p.requests,
+      p.reports,
+      p.missing,
+    ).run());
+  } catch (cause) {
+    // A malformed/stub binding may throw synchronously from prepare/bind/run.
+    // Convert that into the same asynchronous fail-open contract as a D1
+    // promise rejection so it can never escape into the HTTP response path.
+    return Promise.reject(persistFailure('global', cause));
+  }
+  if (typeof model !== 'string' || model.length === 0) {
+    return globalTask.catch((cause) => { throw persistFailure('global', cause); });
+  }
+  let modelTask;
+  try {
+    modelTask = Promise.resolve(d1.prepare(
+      `INSERT INTO ${TABLE_MODEL} (
+        hour, model,
+        input_tokens, output_tokens, total_tokens,
+        requests, usage_reports, usage_missing
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(hour, model) DO UPDATE SET
+        input_tokens = ${TABLE_MODEL}.input_tokens + excluded.input_tokens,
+        output_tokens = ${TABLE_MODEL}.output_tokens + excluded.output_tokens,
+        total_tokens = ${TABLE_MODEL}.total_tokens + excluded.total_tokens,
+        requests = ${TABLE_MODEL}.requests + excluded.requests,
+        usage_reports = ${TABLE_MODEL}.usage_reports + excluded.usage_reports,
+        usage_missing = ${TABLE_MODEL}.usage_missing + excluded.usage_missing`,
+    ).bind(
+      hour, model,
+      p.input, p.output, p.total,
+      p.requests, p.reports, p.missing,
+    ).run());
+  } catch (cause) {
+    modelTask = Promise.reject(cause);
+  }
+  return Promise.allSettled([globalTask, modelTask]).then(([globalResult, modelResult]) => {
+    // Prefer the global aggregate failure when both writes fail: it is the
+    // more important loss, and the request-level caller still emits exactly
+    // one diagnostic. Promise.allSettled also observes both rejections, so no
+    // secondary unhandled rejection can escape.
+    if (globalResult.status === 'rejected') throw persistFailure('global', globalResult.reason);
+    if (modelResult.status === 'rejected') throw persistFailure('per-model', modelResult.reason, model);
+  });
+}
+
+function persistFailure(scope, cause, model = null) {
+  const error = new Error(cause?.message || String(cause || 'D1 persistence failure'), { cause });
+  error.name = 'TokenStatsPersistError';
+  error.scope = scope;
+  if (model) error.model = model;
+  return error;
 }
 
 // Aggregate summary for the public dashboard in ONE query. Returns:
@@ -247,5 +305,67 @@ export async function queryTokenDailySeries(env, startDayIso, now = Date.now()) 
     return map;
   } catch (e) {
     return { available: false, error: `queryTokenDailySeries: ${e?.message || e}` };
+  }
+}
+
+// Per-model totals for the homepage's "模型使用 · 近 7 天" panel.
+// Rolls up the last `days` × 24 hours from token_usage_model_hourly, grouped
+// by model. Sorted by total tokens desc. Returns an array of
+// { model, total, requests } rows, or an error object { available: false,
+// error } when the binding is missing or the query fails (fail-open).
+export async function queryTokenModelUsage(env, days = 7, now = Date.now()) {
+  const d1 = tokenStatsD1(env);
+  if (!d1) return { available: false, error: 'TOKEN_STATS_DB binding missing' };
+  const startHour = normalizeHour(now - days * DAY_MS);
+  try {
+    const res = await d1.prepare(
+      `SELECT model,
+              COALESCE(SUM(total_tokens), 0) AS total,
+              COALESCE(SUM(requests), 0) AS requests
+       FROM ${TABLE_MODEL}
+       WHERE hour >= ?
+       GROUP BY model
+       ORDER BY total DESC`,
+    ).bind(startHour).all();
+    const rows = Array.isArray(res?.results) ? res.results : [];
+    return {
+      available: true,
+      rows: rows
+        .filter((r) => r && typeof r.model === 'string' && r.model.length > 0)
+        .map((r) => ({
+          model: r.model,
+          total: Number(r.total) || 0,
+          requests: Number(r.requests) || 0,
+        })),
+    };
+  } catch (e) {
+    return { available: false, error: `queryTokenModelUsage: ${e?.message || e}` };
+  }
+}
+
+// Retention period for per-model stats (matches the dashboard's 7-day query window).
+// The global token_usage_hourly table is NEVER pruned — it powers the cumulative
+// KPIs on the public homepage and must retain all historical data.
+const MODEL_STATS_RETENTION_DAYS = 7;
+
+// Scheduled cleanup for the per-model hourly aggregate table.
+// Runs via a cron trigger (configured by the operator in wrangler.jsonc).
+// Deletes rows from token_usage_model_hourly older than MODEL_STATS_RETENTION_DAYS.
+// Idempotent and safe to run multiple times — only touches the model table,
+// never the global token_usage_hourly table.
+export async function cleanupModelStats(env) {
+  const d1 = tokenStatsD1(env);
+  if (!d1) return { skipped: true, reason: 'TOKEN_STATS_DB binding missing' };
+  const cutoffHour = normalizeHour(Date.now() - MODEL_STATS_RETENTION_DAYS * DAY_MS);
+  try {
+    const res = await d1.prepare(
+      `DELETE FROM ${TABLE_MODEL} WHERE hour < ?`,
+    ).bind(cutoffHour).run();
+    const deleted = res?.meta?.changes ?? 0;
+    console.log(`token-stats cleanup: deleted ${deleted} model-usage rows older than ${cutoffHour}`);
+    return { deleted, cutoffHour };
+  } catch (e) {
+    console.error('token-stats cleanup failed:', e?.message || e);
+    throw e;
   }
 }

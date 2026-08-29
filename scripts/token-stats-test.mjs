@@ -11,7 +11,7 @@ import {
   normalizeTokenUsage, recordTokenUsage, summarizeTokenStats,
   tokenMetricSeries, __resetTokenStatsForTests,
 } from '../src/observability/tokens.js';
-import { dashboardResponse } from '../src/dashboard/pages.js';
+import { dashboardResponse, __resetDashboardCacheForTests } from '../src/dashboard/pages.js';
 import { metricsResponse } from '../src/observability/status.js';
 import { persistTokenUsage } from '../src/observability/token-store.js';
 import { withUsageStreamOptions } from '../src/protocol/openai.js';
@@ -23,6 +23,7 @@ let passed = 0;
 async function test(name, fn) {
   try {
     __resetTokenStatsForTests();
+    __resetDashboardCacheForTests();
     await fn();
     passed++;
     console.log(`ok - ${name}`);
@@ -235,7 +236,10 @@ await test('no D1 binding degrades to 统计暂不可用 with em dashes, never a
   assert.ok(!html.includes('累计 Token'), 'old label format removed');
   // Em dash = "cannot obtain this number right now", NOT a confirmed zero.
   assert.ok(html.includes('>—<'));
-  assert.equal((html.match(/>—</g) || []).length, 4, 'all four KPIs degrade');
+  // Four KPIs degrade to em dash, and the model-usage panel also renders an
+  // em dash on empty — 5 total in the fully-degraded state.
+  assert.equal((html.match(/>—</g) || []).length, 5, 'all four KPIs + model panel degrade');
+  assert.ok(html.includes('model-usage-empty'), 'model panel shows degraded state');
   assert.ok(!html.includes('>0<'), 'a degraded panel must not claim 0 usage');
   assert.ok(!html.includes('class="hd '), 'no fabricated heatmap cells');
   assert.ok(!html.includes('NaN'));
@@ -272,6 +276,26 @@ await test('the D1-backed card renders the four KPIs from real aggregates', asyn
   assert.ok(html.includes('UTC+8'), 'UTC+8 timezone label shown');
   assert.ok(!html.includes('累计请求'), '累计请求 KPI removed');
   assert.ok(!html.includes('Usage 覆盖率'), 'coverage is not part of the new card');
+});
+
+await test('模型使用 · 近 7 天 renders one row per model with bars', async () => {
+  const d1 = createMockD1();
+  const env = deepClone(ENV);
+  env.TOKEN_STATS_DB = d1;
+  const HOUR = 3_600_000;
+  const h0 = Math.floor(Date.now() / HOUR) * HOUR;
+  await persistTokenUsage(env, { prompt_tokens: 100, completion_tokens: 0 }, h0, 'code-max');
+  await persistTokenUsage(env, { prompt_tokens: 40, completion_tokens: 10 }, h0, 'ultra');
+  const html = await pageText(anonRequest(), env);
+  assert.ok(html.includes('模型使用 · 近 7 天'), 'panel title');
+  assert.ok(html.includes('model-usage-list'), 'model list container');
+  assert.ok(html.includes('model-usage-row'), 'at least one model row');
+  assert.ok(html.includes('>code-max<'), 'top model name shown');
+  assert.ok(html.includes('>ultra<'), 'second model name shown');
+  assert.ok(html.includes('model-usage-bar'), 'bar element present');
+  assert.match(html, /<i style="width:\d+%"><\/i>/, 'bar width set');
+  assert.ok(html.includes('data-tooltip='), 'rows expose a tooltip');
+  assert.ok(html.includes('model-usage-value'), 'each row shows its token total');
 });
 
 await test('Token 活动 · 52 周 renders a full 364-cell heatmap with month labels', async () => {
@@ -455,6 +479,113 @@ await test('transforms without onUsage stay fully functional (observability opti
   const res = transformOpenAIStreamToAnthropic(upstream, 'model-x', 'req-1', null);
   const text = await res.text();
   assert.ok(text.includes('message_stop'));
+});
+
+// ---- Dashboard D1 cache: coalescing + TTL --------------------------------------
+
+await test('dashboard D1 cache coalesces concurrent requests within TTL', async () => {
+  const d1 = createMockD1();
+  const env = deepClone(ENV);
+  env.TOKEN_STATS_DB = d1;
+  const HOUR = 3_600_000;
+  const h0 = Math.floor(Date.now() / HOUR) * HOUR;
+  await persistTokenUsage(env, { prompt_tokens: 100, completion_tokens: 0 }, h0, 'code-max');
+  const [html1, html2] = await Promise.all([
+    pageText(anonRequest(), env),
+    pageText(anonRequest(), env),
+  ]);
+  assert.equal(html1, html2, 'concurrent requests share cached D1 result');
+  assert.equal(d1._reads.length, 3, 'two concurrent pages issue one summary + two series queries');
+  await pageText(anonRequest(), env);
+  assert.equal(d1._reads.length, 3, 'a later request inside the TTL performs no additional reads');
+});
+
+await test('dashboard D1 cache refreshes after TTL expires', async () => {
+  const d1 = createMockD1();
+  const env = deepClone(ENV);
+  env.TOKEN_STATS_DB = d1;
+  const HOUR = 3_600_000;
+  const h0 = Math.floor(Date.now() / HOUR) * HOUR;
+  await persistTokenUsage(env, { prompt_tokens: 100, completion_tokens: 0 }, h0, 'code-max');
+  const realNow = Date.now;
+  let fakeNow = h0 + 1_000;
+  Date.now = () => fakeNow;
+  try {
+    const html1 = await pageText(anonRequest(), env);
+    assert.ok(html1.includes('code-max'), 'initial data present');
+    assert.equal(d1._reads.length, 3);
+    await persistTokenUsage(env, { prompt_tokens: 200, completion_tokens: 0 }, h0, 'ultra');
+    fakeNow += 44_000;
+    const cached = await pageText(anonRequest(), env);
+    assert.ok(!cached.includes('ultra'), 'new data stays hidden before TTL expiry');
+    assert.equal(d1._reads.length, 3, 'no refresh before TTL expiry');
+    fakeNow += 2_000;
+    const refreshed = await pageText(anonRequest(), env);
+    assert.ok(refreshed.includes('ultra'), 'new model appears after TTL expiry');
+    assert.ok(refreshed.includes('code-max'), 'old model remains after refresh');
+    assert.equal(d1._reads.length, 6, 'TTL expiry performs exactly one new query set');
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+await test('dashboard cache does not leak across different D1 bindings', async () => {
+  const d1a = createMockD1();
+  const d1b = createMockD1();
+  const envA = deepClone(ENV);
+  const envB = deepClone(ENV);
+  envA.TOKEN_STATS_DB = d1a;
+  envB.TOKEN_STATS_DB = d1b;
+  const HOUR = 3_600_000;
+  const h0 = Math.floor(Date.now() / HOUR) * HOUR;
+  await persistTokenUsage(envA, { prompt_tokens: 100, completion_tokens: 0 }, h0, 'model-a');
+  await persistTokenUsage(envB, { prompt_tokens: 200, completion_tokens: 0 }, h0, 'model-b');
+  const htmlA = await pageText(anonRequest(), envA);
+  assert.ok(htmlA.includes('model-a'));
+  assert.ok(!htmlA.includes('model-b'));
+  const htmlB = await pageText(anonRequest(), envB);
+  assert.ok(htmlB.includes('model-b'));
+  assert.ok(!htmlB.includes('model-a'));
+  assert.equal(d1a._reads.length, 3);
+  assert.equal(d1b._reads.length, 3);
+});
+
+// P2-5: public homepage must never leak raw D1 errors (table names, SQL,
+// binding names, exception text) into the HTML
+await test('public homepage does not leak raw D1 errors in degraded state', async () => {
+  __resetDashboardCacheForTests();
+  const d1 = createMockD1({ failReads: true });
+  const env = deepClone(ENV);
+  env.TOKEN_STATS_DB = d1;
+  const html = await pageText(anonRequest(), env);
+  // Must show the generic degraded message
+  assert.ok(html.includes('统计暂不可用'), 'shows generic degraded message');
+  // Must NOT leak any raw D1 internals
+  assert.ok(!html.includes('token_usage_hourly'), 'table name not leaked');
+  assert.ok(!html.includes('token_usage_model_hourly'), 'model table name not leaked');
+  assert.ok(!html.includes('TOKEN_STATS_DB'), 'binding name not leaked');
+  assert.ok(!html.includes('mock D1 read failure'), 'exception text not leaked');
+  assert.ok(!html.includes('SELECT'), 'SQL not leaked');
+  assert.ok(!html.includes('FROM'), 'SQL not leaked');
+  assert.ok(!html.includes('WHERE'), 'SQL not leaked');
+  assert.ok(!html.includes('GROUP BY'), 'SQL not leaked');
+  assert.ok(!html.includes('ORDER BY'), 'SQL not leaked');
+});
+
+await test('model usage panel does not leak raw D1 errors in degraded state', async () => {
+  __resetDashboardCacheForTests();
+  const d1 = createMockD1({ failReads: true });
+  const env = deepClone(ENV);
+  env.TOKEN_STATS_DB = d1;
+  const html = await pageText(anonRequest(), env);
+  // Model panel should show em-dash, not error
+  assert.ok(html.includes('模型使用 · 近 7 天'), 'model panel title present');
+  assert.ok(html.includes('model-usage-empty'), 'model panel shows degraded state');
+  // Must NOT leak any raw D1 internals
+  assert.ok(!html.includes('token_usage_model_hourly'), 'model table name not leaked');
+  assert.ok(!html.includes('mock D1 read failure'), 'exception text not leaked');
+  assert.ok(!html.includes('SELECT'), 'SQL not leaked');
+  assert.ok(!html.includes('FROM'), 'SQL not leaked');
 });
 
 if (!process.exitCode) console.log(`\ntoken-stats tests passed (${passed}).`);

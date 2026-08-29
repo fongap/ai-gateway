@@ -89,7 +89,7 @@ To enable it, add a D1 binding to the operator config (the shared `wrangler.json
 ]
 ```
 
-Create the database and apply the migration (both use the free tier):
+Create the database and apply **all** migrations in order (both use the free tier):
 
 ```bash
 npx wrangler d1 create ai-gateway-token-stats
@@ -98,7 +98,27 @@ npx wrangler d1 migrations apply ai-gateway-token-stats --remote
 npx wrangler d1 migrations apply ai-gateway-token-stats --local
 ```
 
-Migration file: [`migrations/0001_token_usage_hourly.sql`](../migrations/0001_token_usage_hourly.sql).
+Migration files (applied in filename order — never modify an already-applied migration, only add the next number):
+
+1. [`migrations/0001_token_usage_hourly.sql`](../migrations/0001_token_usage_hourly.sql) — global hourly aggregate (`token_usage_hourly`).
+2. [`migrations/0002_token_usage_model_hourly.sql`](../migrations/0002_token_usage_model_hourly.sql) — per-model hourly aggregate (`token_usage_model_hourly`), used by the homepage's "模型使用 · 近 7 天" panel.
+
+All supported local deployment paths (`npm run deploy`, `scripts/deploy.sh`, and `scripts/deploy.ps1`) apply remote migrations automatically when the `TOKEN_STATS_DB` binding is present, so local deployment is consistent with the GitHub Actions workflow. Migration failure aborts before Worker publication; `npm run check:deploy` remains a local dry-run and never mutates D1.
+
+#### Scheduled cleanup (cron trigger)
+
+The per-model table (`token_usage_model_hourly`) grows at `O(models × hours)`. To prevent unbounded growth, the Worker exports a `scheduled` handler that deletes rows older than 7 days (matching the dashboard's query window). The global `token_usage_hourly` table is **never** pruned — it powers the cumulative KPIs and must retain all historical data.
+
+The shipped `wrangler.jsonc`, generated CI config, and newly generated operator configs enable the cleanup by default:
+
+```jsonc
+// wrangler.user.jsonc
+"triggers": {
+  "crons": ["0 3 * * *"]  // daily at 03:00 UTC
+}
+```
+
+The cleanup is idempotent and safe to run multiple times. Existing `wrangler.user.jsonc` files created before 1.2.4 should be checked for this trigger; without it, the per-model table retains all rows indefinitely.
 
 #### Streaming usage hint
 

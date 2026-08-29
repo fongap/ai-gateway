@@ -17,6 +17,12 @@
 // usage; it only observes what the upstream volunteered.
 
 import { normalizeTokenUsage } from '../observability/tokens.js';
+import { FIRST_EVENT_MAX_SSE_LINE } from './guard.js';
+
+// Hard limit for the model-rewrite line buffer in the tracked stream (after
+// first-event commit). Prevents unbounded growth from a never-terminated
+// SSE line. Same limit as the pre-first-event guard for consistency.
+const TRACK_MAX_LINE_BUFFER = FIRST_EVENT_MAX_SSE_LINE;
 
 export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFailure, onNeutral, onStreamStart, onStreamEnd, completionMarker, failureMarker, rewriteModel, onUsage, interruptionChunk, upstreamFailureReason }) {
   if (!response.body) {
@@ -135,11 +141,19 @@ export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFail
   };
 
   // Decode + optional rewrite, returning the bytes to forward for this chunk.
+  // The line buffer is capped so a never-terminated SSE line (no newline) from
+  // a malformed or adversarial upstream cannot grow it unbounded.
   const forwardBytes = (value) => {
     if (!encoder) return value;
     lineBuffer += rewriteDecoder.decode(value, { stream: true });
     const lines = lineBuffer.split('\n');
     lineBuffer = lines.pop() || '';
+    if (lineBuffer.length > TRACK_MAX_LINE_BUFFER || lines.some((line) => line.length > TRACK_MAX_LINE_BUFFER)) {
+      // Never invent a newline or forward a partial oversized event: either
+      // action corrupts the SSE protocol. The pull loop turns this into the
+      // normal post-commit interruption path and cancels the upstream reader.
+      throw new Error('tracked SSE line exceeded the hard limit');
+    }
     let out = '';
     for (const line of lines) out += processLine(line) + '\n';
     return encoder.encode(out);
@@ -215,7 +229,18 @@ export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFail
         }
         diagnosticTail = scanWindow.slice(-256);
       }
-      controller.enqueue(forwardBytes(value));
+      let forwarded;
+      try {
+        forwarded = forwardBytes(value);
+      } catch {
+        reader.cancel().catch(() => {});
+        failureReason = 'reader_error';
+        emitInterruption(controller);
+        finalize('failure');
+        try { controller.close(); } catch { /* closed */ }
+        return;
+      }
+      controller.enqueue(forwarded);
     },
     cancel() {
       finalize('neutral');

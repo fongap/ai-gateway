@@ -34,6 +34,7 @@ import { htmlResponse } from '../protocol/http.js';
 import {
   queryTokenSummary,
   queryTokenDailySeries,
+  queryTokenModelUsage,
   utc8DayStartUtcMs,
   isoDayUtc8,
 } from '../observability/token-store.js';
@@ -43,6 +44,97 @@ export const GITHUB_URL = 'https://github.com/fongap/ai-gateway';
 const DAY_MS = 86_400_000;
 const HEATMAP_WEEKS = 52;
 const HEATMAP_DAYS = HEATMAP_WEEKS * 7; // 364 cells, exactly
+
+// Short-lived cache for the public homepage's three D1 usage queries. The page
+// is unauthenticated and the same queries run for every visitor; without this,
+// a burst of concurrent anonymous GETs turns into N identical parallel D1
+// reads and amplifies load on the free D1 budget. Caching only the
+// *aggregate* D1 results (never per-request usage, never model health, never
+// the rendered HTML) keeps node ids, providers, tiers and credential material
+// out of the cache and out of the response.
+//
+// Contract:
+//   * TTL is intentionally short (DASHBOARD_CACHE_TTL_MS, default 45s) so
+//     numbers stay close to live without amplifying load.
+//   * Concurrent requests in the same window SHARE the same in-flight promise
+//     instead of stampeding D1 with parallel reads.
+//   * A missing or failing D1 binding is still fail-open: the cached (or
+//     freshly resolved) failure object is returned, the page keeps serving
+//     200, and no fake 0 is fabricated.
+//   * The cache holds only the public-facing aggregate (today / h24 / d7 /
+//     cumulative totals, the per-day rollup, and the per-model 7d rollup) —
+//     never access keys, node credentials, internal diagnostics, or HTML.
+const DASHBOARD_CACHE_TTL_MS = 45_000;
+let dashboardCaches = new WeakMap();
+let missingBindingCache = newDashboardCacheEntry();
+
+function newDashboardCacheEntry() {
+  return { expiresAt: 0, inFlight: null, value: null };
+}
+
+// Cache state is isolated by the actual binding object. A string conversion is
+// not a safe identity: most host objects and all plain test doubles stringify
+// to "[object Object]", which can make one database receive another database's
+// cached aggregate. If a runtime supplies a fresh wrapper on a later request,
+// the safe failure mode is a cache miss rather than cross-binding data reuse.
+function dashboardCacheFor(env) {
+  const d1 = env?.TOKEN_STATS_DB;
+  if (!d1 || (typeof d1 !== 'object' && typeof d1 !== 'function') || typeof d1.prepare !== 'function') {
+    return missingBindingCache;
+  }
+  let entry = dashboardCaches.get(d1);
+  if (!entry) {
+    entry = newDashboardCacheEntry();
+    dashboardCaches.set(d1, entry);
+  }
+  return entry;
+}
+
+async function getCachedDashboardStats(env, now) {
+  const cache = dashboardCacheFor(env);
+  const nowMs = typeof now === 'number' ? now : Date.now();
+  // An in-flight promise is shared across concurrent callers using this exact
+  // binding so they coalesce into one set of D1 reads.
+  if (cache.inFlight && cache.expiresAt > nowMs) return cache.inFlight;
+  if (cache.value && cache.expiresAt > nowMs) return cache.value;
+  cache.expiresAt = nowMs + DASHBOARD_CACHE_TTL_MS;
+  const task = loadDashboardStats(env, now);
+  const inFlight = task.finally(() => {
+    if (cache.inFlight === inFlight) cache.inFlight = null;
+  });
+  cache.inFlight = inFlight;
+  try {
+    cache.value = await cache.inFlight;
+    return cache.value;
+  } catch (e) {
+    // Cache failures don't poison subsequent requests — refresh on next call.
+    cache.expiresAt = 0;
+    throw e;
+  }
+}
+
+// Test-only escape hatch: every test that mutates D1 state must clear the
+// dashboard cache or it will see stale fixtures for the rest of the run.
+export function __resetDashboardCacheForTests() {
+  dashboardCaches = new WeakMap();
+  missingBindingCache = newDashboardCacheEntry();
+}
+
+// Three D1 queries, run once per cache window. Each call inside still honors
+// its own fail-open contract (missing binding / read error returns the
+// dashboard's `available: false` shape).
+async function loadDashboardStats(env, now) {
+  const gridStartUtc8 = utc8DayStartUtcMs(now);
+  const dow = (new Date(isoDayUtc8(gridStartUtc8)).getUTCDay() + 6) % 7;
+  const currentWeekStartUtc8 = gridStartUtc8 - dow * DAY_MS;
+  const startIso = isoDayUtc8(currentWeekStartUtc8 - (HEATMAP_WEEKS - 1) * 7 * DAY_MS);
+  const [summary, daily, modelUsage] = await Promise.all([
+    queryTokenSummary(env, now),
+    queryTokenDailySeries(env, startIso, now),
+    queryTokenModelUsage(env, 7, now),
+  ]);
+  return { summary, daily, modelUsage };
+}
 
 const STYLES = `
 :root{
@@ -145,16 +237,35 @@ a{color:var(--blue);text-decoration:none}
 .hd:hover{transform:scale(1.1);outline-color:rgba(0,0,0,.08)}
 .hd:focus-visible{outline:2px solid var(--blue);outline-offset:1px;transform:scale(1.1)}
 
-/* Custom tooltip */
+/* Custom tooltip — auto width, multi-line via pre-wrap */
 .tooltip{position:fixed;pointer-events:none;z-index:1000;background:#fff;
   border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:12px;
-  color:var(--text);box-shadow:0 2px 6px rgba(27,31,36,.08);white-space:nowrap;
-  opacity:0;transition:opacity 120ms ease;max-width:280px;white-space:normal}
+  color:var(--text);box-shadow:0 2px 6px rgba(27,31,36,.08);
+  white-space:pre-wrap;opacity:0;transition:opacity 120ms ease}
 .tooltip.show{opacity:1}
 .months{display:grid;grid-template-columns:repeat(52,minmax(0,1fr));margin-top:6px;
   color:var(--faint);font-size:10.5px;line-height:1.2}
 .months span{grid-row:1;text-align:left;white-space:nowrap}
 .heat-empty{padding:26px 0 20px;text-align:center;font-size:12.5px;color:var(--faint)}
+
+/* Model usage · 近 7 天: third section inside the same usage card */
+.model-usage{border-top:1px solid var(--line);padding:15px 17px 17px}
+.model-usage-head{min-height:22px;display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:10px}
+.model-usage-head b{font-size:13px;font-weight:600;color:#606872}
+.model-usage-empty{padding:14px 0 10px;text-align:center;font-size:12.5px;color:var(--faint)}
+.model-usage-list{list-style:none;display:grid;grid-template-columns:1fr;gap:6px;margin:0;padding:0}
+.model-usage-row{display:grid;grid-template-columns:max-content 1fr max-content;align-items:center;
+  gap:10px;padding:4px 8px;border-radius:6px;font-size:12px;
+  font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;
+  transition:background 120ms ease,outline-color 120ms ease;
+  outline:1px solid transparent;outline-offset:0}
+.model-usage-row:hover,.model-usage-row:focus-visible{background:rgba(0,0,0,.025);outline-color:rgba(0,0,0,.06)}
+.model-usage-row:focus-visible{outline:2px solid var(--blue);outline-offset:0}
+.model-usage-name{color:#4a525d;word-break:break-all}
+.model-usage-bar{height:6px;background:#eef1f3;border-radius:3px;overflow:hidden}
+.model-usage-bar i{display:block;height:100%;background:var(--blue);border-radius:3px;
+  transition:width 120ms ease}
+.model-usage-value{color:var(--text);text-align:right;font-variant-numeric:tabular-nums}
 
 /* Quick start — tabs so the three snippets never stack vertically */
 .tabs{height:42px;border-bottom:1px solid var(--line);display:flex;align-items:center;
@@ -398,6 +509,12 @@ function fmtInt(n) {
   return String(Math.trunc(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
+// Format a UTC+8 ISO date (YYYY-MM-DD) as "6月1日" for tooltip display.
+function fmtTooltipDate(iso) {
+  const d = new Date(iso + 'T00:00:00Z');
+  return `${d.getUTCMonth() + 1}月${d.getUTCDate()}日`;
+}
+
 // Build the 52×7 activity grid (364 cells, Monday-aligned weeks, the current
 // week is the last column) plus month labels pinned to the columns where each
 // month actually starts, so labels and cells always correspond. `daily` maps
@@ -430,7 +547,7 @@ function buildHeatmap(daily, now) {
       const total = future || !v ? 0 : v.total;
       const requests = future || !v ? 0 : v.requests;
       const level = total <= 0 || max <= 0 ? 0 : Math.min(4, Math.max(1, Math.ceil((total / max) * 4)));
-      const tip = future ? iso : `${iso} · ${fmtTokens(total)} · ${fmtInt(requests)} 次请求`;
+      const tip = future ? iso : `${fmtTooltipDate(iso)}\n${fmtTokens(total)} Token · ${fmtInt(requests)} 次请求`;
       cells.push(`<i class="hd lv${level}" tabindex="0" data-tooltip="${escapeHtml(tip)}" aria-label="${escapeHtml(tip)}"></i>`);
     }
   }
@@ -450,15 +567,9 @@ function buildHeatmap(daily, now) {
   return { cells, labels };
 }
 
-function usageCard(env, now) {
-  const gridStartUtc8 = utc8DayStartUtcMs(now);
-  const dow = (new Date(isoDayUtc8(gridStartUtc8)).getUTCDay() + 6) % 7;
-  const currentWeekStartUtc8 = gridStartUtc8 - dow * DAY_MS;
-  const startIso = isoDayUtc8(currentWeekStartUtc8 - (HEATMAP_WEEKS - 1) * 7 * DAY_MS);
-  return Promise.all([
-    queryTokenSummary(env, now),
-    queryTokenDailySeries(env, startIso, now),
-  ]).then(([summary, daily]) => ({ summary, daily }));
+async function usageCard(env, now) {
+  const { summary, daily, modelUsage } = await getCachedDashboardStats(env, now);
+  return { summary, daily, modelUsage };
 }
 
 function kpiCell(value, label) {
@@ -470,7 +581,7 @@ function kpiCell(value, label) {
 // Fail-open: a missing D1 binding or a failed query renders em dashes and an
 // error note — never a fake 0 and never a fabricated heatmap.
 async function usageSection(env, now = Date.now()) {
-  const { summary, daily } = await usageCard(env, now);
+  const { summary, daily, modelUsage } = await usageCard(env, now);
   const summaryOk = summary && summary.available !== false;
   const dailyOk = daily && daily.available !== false;
   const available = summaryOk && dailyOk;
@@ -492,16 +603,19 @@ async function usageSection(env, now = Date.now()) {
   if (available && daily) {
     for (const v of daily.values()) totalRequests += v.requests;
   }
-  // Collect error messages for debugging
+  // Collect error messages for server-side logging ONLY — never expose raw
+  // D1 errors (table names, SQL, binding names, exception text) to the public
+  // HTML. The public page shows only a generic "统计暂不可用" message.
   const errors = [];
   if (summary && summary.error) errors.push(summary.error);
   if (daily && daily.error) errors.push(daily.error);
   if (!summary) errors.push('TOKEN_STATS_DB binding missing');
   if (summary && !summary.available && !summary.error) errors.push('summary unavailable');
   if (daily && !daily.available && !daily.error) errors.push('daily unavailable');
-  const errorHtml = errors.length
-    ? `<div class="heat-empty">统计暂不可用<br><small style="font-size:10px;color:var(--faint)">${escapeHtml(errors.join('; '))}</small></div>`
-    : '';
+  // Server-side log for debugging (the operator sees this in wrangler tail / logs)
+  if (errors.length && env && env.LOG_LEVEL !== 'none') {
+    try { console.warn(`[dashboard D1 degraded] ${errors.join('; ')}`); } catch { /* ignore */ }
+  }
   const activity = available
     ? (() => {
         const { cells, labels } = buildHeatmap(daily, now);
@@ -510,7 +624,11 @@ async function usageSection(env, now = Date.now()) {
           `<div class="heatmap" aria-hidden="true">${cells.join('')}</div>` +
           `<div class="months" aria-hidden="true">${labels.join('')}</div></div>`;
       })()
-    : errorHtml || `<div class="heat-empty">统计暂不可用</div>`;
+    : `<div class="heat-empty">统计暂不可用</div>`;
+  // Model usage for the last 7 days: one lightweight horizontal bar per model,
+  // ordered by total tokens desc. Degrades independently of the heatmap/KPIs
+  // so a per-model query failure never blanks the whole card.
+  const modelSection = renderModelUsage(modelUsage);
   return `<section class="section">
   <div class="section-title">使用情况<span class="utc8">UTC+8</span></div>
   <div class="card">
@@ -519,8 +637,37 @@ async function usageSection(env, now = Date.now()) {
       <div class="activity-head"><b>Token 活动 · 52 周</b><span>${fmtInt(totalRequests)} 次请求</span></div>
       ${activity}
     </div>
+    ${modelSection}
   </div>
 </section>`;
+}
+
+function renderModelUsage(modelUsage) {
+  const head = `<div class="model-usage-head"><b>模型使用 · 近 7 天</b></div>`;
+  // Fail-open: a missing/failed per-model query renders an em-dash row, not
+  // an error that breaks the rest of the card.
+  if (!modelUsage || modelUsage.available === false) {
+    return `<div class="model-usage"><div class="model-usage-head"><b>模型使用 · 近 7 天</b></div>` +
+      `<div class="model-usage-empty">—</div></div>`;
+  }
+  const rows = Array.isArray(modelUsage.rows) ? modelUsage.rows : [];
+  if (!rows.length) {
+    return `<div class="model-usage"><div class="model-usage-head"><b>模型使用 · 近 7 天</b></div>` +
+      `<div class="model-usage-empty">近 7 天暂无数据</div></div>`;
+  }
+  // Build a bar row per model: name on the left, bar + Token count on the right.
+  // Bar width is relative to the max in this window so differences are visible.
+  const max = rows.reduce((m, r) => (r.total > m ? r.total : m), 0);
+  const items = rows.map((r) => {
+    const pct = max > 0 ? Math.max(2, Math.round((r.total / max) * 100)) : 0;
+    const exactTitle = `${fmtTokens(r.total)} Token · ${fmtInt(r.requests)} 次请求`;
+    return `<li class="model-usage-row" data-tooltip="${escapeHtml(exactTitle)}" tabindex="0" aria-label="${escapeHtml(exactTitle)}">` +
+      `<span class="model-usage-name">${escapeHtml(r.model)}</span>` +
+      `<span class="model-usage-bar" aria-hidden="true"><i style="width:${pct}%"></i></span>` +
+      `<span class="model-usage-value">${fmtTokens(r.total)}</span>` +
+      `<span class="sr-only">${escapeHtml(exactTitle)}</span></li>`;
+  }).join('');
+  return `<div class="model-usage">${head}<ul class="model-usage-list">${items}</ul></div>`;
 }
 
 // ---- 快速开始 (tabbed, no stacked code blocks) -------------------------------

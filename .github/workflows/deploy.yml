@@ -2,7 +2,14 @@ name: Deploy
 
 # Push-to-main auto deploy. Deployment material (real D1 database id, API
 # token) lives only in encrypted repo secrets — never in the repo itself.
-# Pipeline: verify → D1 migrations apply → Worker deploy.
+# Pipeline: full verify → D1 migrations apply → Worker deploy.
+#
+# The full verification (npm ci → npm run verify → npm run check:deploy) runs
+# INSIDE this workflow before any migration or deploy step. This guarantees
+# migrations and the Worker publish can NEVER execute before syntax checks,
+# tests, config checks, secret scan and a dry-run bundle all pass — even if the
+# CI workflow (which triggers separately on push) has not finished yet.
+#
 # Migrations run BEFORE deploy so the DB schema is ready when new code goes
 # live. Wrangler tracks applied migrations via the d1_migrations table, so
 # already-applied migrations are never re-run.
@@ -27,10 +34,19 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
 
       - name: Restore operator config
         run: |
@@ -42,6 +58,7 @@ jobs:
             "workers_dev": true,
             "keep_vars": true,
             "observability": { "enabled": true },
+            "triggers": { "crons": ["0 3 * * *"] },
             "d1_databases": [
               {
                 "binding": "TOKEN_STATS_DB",
@@ -55,8 +72,11 @@ jobs:
           node -e "JSON.parse(require('fs').readFileSync('wrangler.user.jsonc','utf8'))" \
             || { echo '::error::generated wrangler.user.jsonc is not valid JSON'; exit 1; }
 
-      - name: Syntax check
-        run: node scripts/check-syntax.mjs
+      - name: Verify project
+        run: npm run verify
+
+      - name: Dry-run Worker bundle
+        run: npm run check:deploy
 
       - name: Apply D1 migrations
         env:

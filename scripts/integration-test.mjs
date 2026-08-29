@@ -1459,7 +1459,7 @@ await test('/version is public and exposes only branding, no node/config topolog
   assert.equal(res.status, 200);
   const body = await res.json();
   assert.equal(body.name, 'ai-gateway');
-  assert.equal(body.version, '1.2.3');
+  assert.equal(body.version, '1.2.4');
   assert.equal(body.runtime, 'Cloudflare Workers');
   assert.ok(Array.isArray(body.protocols));
   const serialized = JSON.stringify(body);
@@ -1657,20 +1657,32 @@ await test('a D1 write failure never breaks a successful AI response (fail-open)
   resetMock();
   routeHandlers['d1ok.example.com'] = () => jsonUpstream(okCompletion('up-model'));
   const failingD1 = {
-    prepare: () => ({
-      bind: () => ({ run: async () => { throw new Error('D1 write exploded'); } }),
-      first: async () => ({}),
-    }),
+    prepare: () => { throw new Error('D1 prepare exploded synchronously'); },
   };
   const env = makeEnv({
     tier1: [basicNode('d1ok')], secrets: { 'd1ok': 'k' },
     extraEnv: { TOKEN_STATS_DB: failingD1 },
   });
-  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-  assert.equal(res.status, 200);
-  const body = JSON.parse(await res.text());
-  assert.equal(body.choices[0].message.content, 'hello');
-  assert.equal(getNodeState('d1ok').totalSuccesses, 1, 'node success unaffected by D1');
+  const errors = [];
+  const originalError = console.error;
+  console.error = (...args) => errors.push(args.join(' '));
+  try {
+    const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+    assert.equal(res.status, 200);
+    const body = JSON.parse(await res.text());
+    assert.equal(body.choices[0].message.content, 'hello');
+    // Let the deliberately detached no-ExecutionContext persistence settle.
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(getNodeState('d1ok').totalSuccesses, 1, 'node success unaffected by D1');
+  } finally {
+    console.error = originalError;
+  }
+  assert.equal(
+    errors.filter((line) => line.includes('token-stats D1')).length,
+    1,
+    'one delivered response produces at most one D1 persistence log',
+  );
 });
 
 await test('with no D1 binding the gateway serves an AI response normally', async () => {
@@ -1741,6 +1753,38 @@ await test('homepage with no D1 binding still serves and degrades the token pane
   assert.ok(html.includes('统计暂不可用'), 'no D1 -> panel degrades, never a fake 0');
   assert.ok(!html.includes('>0<'));
   assert.ok(!html.includes('class="hd '), 'no fabricated heatmap cells');
+});
+
+await test('scheduled entry runs model-stat cleanup for a ScheduledController', async () => {
+  const d1 = createMockD1();
+  await worker.scheduled(
+    { cron: '0 3 * * *', scheduledTime: Date.now(), noRetry() {} },
+    { TOKEN_STATS_DB: d1 },
+    {},
+  );
+  assert.equal(
+    d1._writes.filter((write) => /DELETE\s+FROM\s+token_usage_model_hourly/i.test(write.sql)).length,
+    1,
+  );
+});
+
+await test('scheduled cleanup rejection reaches the runtime and is logged once', async () => {
+  const errors = [];
+  const originalError = console.error;
+  console.error = (...args) => errors.push(args.join(' '));
+  try {
+    await assert.rejects(
+      worker.scheduled(
+        { cron: '0 3 * * *', scheduledTime: Date.now(), noRetry() {} },
+        { TOKEN_STATS_DB: createMockD1({ failWrites: true }) },
+        {},
+      ),
+      /mock D1 write failure/,
+    );
+  } finally {
+    console.error = originalError;
+  }
+  assert.equal(errors.filter((line) => line.includes('token-stats cleanup failed')).length, 1);
 });
 
 if (!process.exitCode) console.log(`\nintegration tests passed (${passed}).`);

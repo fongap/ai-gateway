@@ -34,6 +34,13 @@ Validation fails early on duplicate IDs, missing/orphan credentials, invalid URL
 sh scripts/update.sh         # git pull + verify + redeploy; remote vars/secrets untouched
 ```
 
+Every supported deploy entry (`npm run deploy`, `scripts/deploy.sh`, and
+`scripts/deploy.ps1`) applies **all** D1 migrations in order when the selected
+Wrangler config has a `TOKEN_STATS_DB` binding. Wrangler tracks applied migrations in the `d1_migrations` table, so
+already-applied migrations are never re-run. If the binding is absent the
+deploy proceeds normally — D1 is optional and never a startup dependency.
+A migration failure aborts before the Worker is published.
+
 ## Reconfigure nodes
 
 ```bash
@@ -56,9 +63,9 @@ npx wrangler tail            # live logs
 The Worker intentionally does not implement its own global rate limiting. For abuse protection use Cloudflare's platform features (current capabilities and free-tier allowances are documented at developers.cloudflare.com):
 
 - **WAF custom rules** — block unwanted origins/paths before they reach the Worker
-- **Rate limiting rules** — per-IP or per-header limits on `/v1/*`
+- **Rate limiting rules** — per-IP or per-header limits on `/v1/*`; also add a rule for the unauthenticated public entry page `GET /` (e.g., 10 req/min per IP) to complement the in-memory D1 query cache (45s TTL with concurrent request coalescing)
 - **Security headers / Bot Fight Mode** as appropriate
 
 ## CI
 
-`.github/workflows/ci.yml` runs `npm ci`, `npm run verify` and `npm run check:deploy` on push/PR. Tag pushes (`v*.*.*`) build release archives via `.github/workflows/release.yml`.
+`.github/workflows/ci.yml` runs `npm ci`, `npm run verify` and `npm run check:deploy` on push/PR. The `deploy.yml` workflow also runs the full verification (`npm ci` → `npm run verify` → `npm run check:deploy`) **before** applying D1 migrations or publishing the Worker, so a deploy can never bypass CI. Tag pushes (`v*.*.*`) build release archives via `.github/workflows/release.yml`.
