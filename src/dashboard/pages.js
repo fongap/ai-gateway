@@ -241,7 +241,8 @@ a{color:var(--blue);text-decoration:none}
 .tooltip{position:fixed;pointer-events:none;z-index:1000;background:#fff;
   border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:12px;
   color:var(--text);box-shadow:0 2px 6px rgba(27,31,36,.08);
-  white-space:pre-wrap;opacity:0;transition:opacity 120ms ease}
+  white-space:pre-wrap;width:max-content;max-width:90vw;
+  opacity:0;transition:opacity 120ms ease}
 .tooltip.show{opacity:1}
 .months{display:grid;grid-template-columns:repeat(52,minmax(0,1fr));margin-top:6px;
   color:var(--faint);font-size:10.5px;line-height:1.2}
