@@ -8,7 +8,7 @@
 //   Hero       — 一个入口，多个模型 (compact)
 //   模型状态   — 通用 / 编程 rows inside ONE card, light chips + status dot
 //   使用情况   — ONE card: 5-column KPI strip + 52×7 Token 活动 heatmap
-//   客户端配置 — OpenAI-compatible / Claude Code / Codex tabs (no stacked code blocks)
+//   快速开始 — OpenAI-compatible / Claude Code / Codex tabs (no stacked code blocks)
 //   Footer     — © 2026 Fongap Studio
 //
 // Public-safety rules:
@@ -214,7 +214,7 @@ a{color:var(--blue);text-decoration:none}
 .kpi strong{font-size:25px;line-height:1;font-weight:400;letter-spacing:-.035em;
   font-variant-numeric:tabular-nums}
 .kpi span{margin-top:7px;font-size:12px;color:var(--muted);white-space:nowrap}
-.activity{border-top:1px solid var(--line);padding:15px 17px 15px}
+.activity{border-top:1px solid var(--line);padding:18px 24px}
 .activity-head{min-height:22px;display:flex;align-items:baseline;justify-content:space-between;
   gap:12px}
 .activity-head b{font-size:13px;font-weight:600;color:#606872}
@@ -250,7 +250,7 @@ a{color:var(--blue);text-decoration:none}
 .heat-empty{padding:26px 0 20px;text-align:center;font-size:12.5px;color:var(--faint)}
 
 /* Model usage · 近 7 天: compact ranked list, not a full-width chart */
-.model-usage{border-top:1px solid var(--line);padding:22px 24px}
+.model-usage{border-top:1px solid var(--line);padding:18px 24px}
 .model-usage-head{min-height:22px;display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:12px}
 .model-usage-head b{font-size:13px;font-weight:600;color:#606872}
 .model-usage-empty{padding:14px 0 10px;text-align:center;font-size:12.5px;color:var(--faint)}
@@ -328,8 +328,9 @@ button.copy:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
    .heatmap,.months{min-width:520px}
    .heatmap{gap:2px}
    .months{font-size:9px;letter-spacing:-.02em}
-    .model-usage{padding:18px 16px}
+    .model-usage{padding:16px}
    .model-usage-row{grid-template-columns:minmax(84px,1fr) 76px max-content;gap:8px}
+   .activity{padding:16px}
    .model-usage-body{flex-direction:column;align-items:stretch}
    .model-usage-donut{margin:0 auto 8px}
   .snippet pre{white-space:pre-wrap;word-break:break-all;padding-right:17px}
@@ -723,7 +724,7 @@ function renderModelDonut(rows) {
 </div>`;
 }
 
-// ---- 客户端配置 (tabbed, no stacked code blocks) -------------------------------
+// ---- 快速开始 (tabbed, no stacked code blocks) -------------------------------
 
 function snippetPane({ id, copyLabel, active, code }) {
   const target = `#code-${id}`;
@@ -764,7 +765,7 @@ env_key = "GATEWAY_ACCESS_KEY"`;
     snippetPane({ id: 'codex', copyLabel: 'Codex 配置文件', active: false, code: codex }),
   ].join('\n');
   return `<section class="section">
-  <div class="section-title">客户端配置</div>
+  <div class="section-title">快速开始</div>
   <div class="card">
     <div class="tabs" role="tablist">${tabs}</div>
     ${panes}

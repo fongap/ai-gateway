@@ -1496,15 +1496,15 @@ await test('public home: brand & GitHub once, 通用/编程 grouped, no protocol
   // GitHub icon is SVG-only, no "GitHub" text label.
   assert.match(html, /aria-label="GitHub · ai-gateway 仓库"/);
   assert.match(html, /title="GitHub · ai-gateway"/);
-  // Structure: hero -> 模型状态 (通用 then 编程) -> 使用情况 -> 客户端配置.
+  // Structure: hero -> 模型状态 (通用 then 编程) -> 使用情况 -> 快速开始.
   assert.ok(html.indexOf('一个入口，多个模型') < html.indexOf('模型状态'));
   assert.ok(html.indexOf('模型状态') < html.indexOf('使用情况'));
   assert.ok(html.indexOf('通用') < html.indexOf('编程'), '通用 group must precede 编程');
-  assert.ok(html.indexOf('编程') < html.indexOf('客户端配置'));
+  assert.ok(html.indexOf('编程') < html.indexOf('快速开始'));
   assert.ok(!html.includes('API 地址'), 'the API-address block was removed');
   // Group placement: air/max under 通用, code-air/code-max under 编程, never mixed.
   const generalBlock = html.slice(html.indexOf('通用'), html.indexOf('编程'));
-  const programBlock = html.slice(html.indexOf('编程'), html.indexOf('客户端配置'));
+  const programBlock = html.slice(html.indexOf('编程'), html.indexOf('快速开始'));
   assert.match(generalBlock, /air/);
   assert.match(generalBlock, /max/);
   assert.ok(!generalBlock.includes('code-air'), 'code- models must not leak into 通用');

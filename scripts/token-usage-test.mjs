@@ -247,7 +247,7 @@ await test('no D1 binding degrades to 统计暂不可用 with em dashes, never a
   // The API-address block was removed; quick start stays.
   assert.ok(!html.includes('API 地址'));
   assert.ok(!html.includes('api-url'));
-  assert.ok(html.includes('客户端配置'));
+  assert.ok(html.includes('快速开始'));
   assert.ok(html.includes('data-tab="openai"'));
   assert.ok(html.includes('data-tab="claude"'));
   assert.ok(html.includes('data-tab="codex"'));
