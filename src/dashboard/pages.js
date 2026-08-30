@@ -688,7 +688,7 @@ function renderModelUsage(modelUsage) {
   // Bar width is relative to the max in this window, not a percentage share.
   const max = rows.reduce((m, r) => (r.total > m ? r.total : m), 0);
   const items = rows.map((r, i) => {
-    const color = DONUT_COLORS[i % DONUT_COLORS.length];
+    const color = modelShade(i, rows.length);
     const pct = max > 0 ? Math.max(2, Math.round((r.total / max) * 100)) : 0;
     const exactTitle = `${fmtTokens(r.total)} Token · ${fmtInt(r.requests)} 次请求`;
     return `<li class="model-usage-row" data-tooltip="${escapeHtml(exactTitle)}" tabindex="0" aria-label="${escapeHtml(exactTitle)}">` +
@@ -700,8 +700,17 @@ function renderModelUsage(modelUsage) {
   return `<div class="model-usage">${head}<div class="model-usage-body">${donut}<ul class="model-usage-list">${items}</ul></div></div>`;
 }
 
+// Monochrome blue ramp shared by the donut ring and the bar list (matches the
+// heatmap scale): rank 1 gets the page's --blue, later ranks fade toward a
+// light tint. Every model stays identifiable without leaving the blue palette.
+function modelShade(i, n) {
+  const from = [0x08, 0x7b, 0xbd], to = [0xcf, 0xe8, 0xf8];
+  const t = n <= 1 ? 0 : i / (n - 1);
+  const c = from.map((f, k) => Math.round(f + (to[k] - f) * t));
+  return `#${c.map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+}
+
 // SVG donut of token share per model (no chart library, plain inline SVG).
-const DONUT_COLORS = ['#087bbd', '#26855f', '#d5971f', '#8a63d2', '#e05d6f', '#2f9e8f', '#c07a3b', '#5b8def'];
 const DONUT_R = 40;
 const DONUT_STROKE = 14;
 const DONUT_CIRC = 2 * Math.PI * DONUT_R;
@@ -714,7 +723,7 @@ function renderModelDonut(rows) {
     const frac = total > 0 ? r.total / total : 0;
     const len = frac * DONUT_CIRC;
     const seg = `<circle class="donut-seg" cx="60" cy="60" r="${DONUT_R}" fill="none" ` +
-      `stroke="${DONUT_COLORS[i % DONUT_COLORS.length]}" stroke-width="${DONUT_STROKE}" ` +
+      `stroke="${modelShade(i, rows.length)}" stroke-width="${DONUT_STROKE}" ` +
       `stroke-dasharray="${len} ${DONUT_CIRC - len}" stroke-dashoffset="${-acc}" ` +
       `transform="rotate(-90 60 60)" ` +
       `data-tooltip="${escapeHtml(`${r.model}\n${fmtTokens(r.total)} Token · ${fmtInt(r.requests)} 次请求 · ${(frac * 100).toFixed(1)}%`)}" ` +
