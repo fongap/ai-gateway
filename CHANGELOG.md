@@ -11,7 +11,7 @@
 - **P2 — 公开首页不再泄露原始 D1 错误。** 仅显示通用“统计暂不可用”，详细错误仅写入服务端日志；新增回归测试验证表名、SQL、binding 名、异常文本均不出现在 HTML 中。
 - **P2 — 按模型统计写入错误不再静默吞掉或重复记录。** 全局与按模型写入并行完成后产生一个带 scope 的分类错误，由请求级 fail-open 边界统一记录，确保每个已交付响应至多一条 D1 持久化错误日志。
 - **P2 — 实现按模型统计表的定期清理策略。** 新增 `cleanupModelStats` 与 Worker `scheduled` handler，并在公开配置、CI 配置和操作员配置中默认启用 `0 3 * * *` Cron，每日清理超过 7 天的 `token_usage_model_hourly` 行；全局累计表 `token_usage_hourly` 永不清理。清理失败会上抛给 Workers runtime，便于告警。
-- **P2 — 修复测试文件字面 NUL 字节。** `scripts/d1-mock.mjs` 将 composite key 分隔符从 `\x00` 改为文本安全的 `|`，`git diff` 现可正常显示文本差异。
+- **P2 — 修复测试文件字面 NUL 字节。** `scripts/mock-d1-database.mjs` 将 composite key 分隔符从 `\x00` 改为文本安全的 `|`，`git diff` 现可正常显示文本差异。
 - **P2 — 修复热力图 hover 提示词格式。** 现在显示为两行：`6月1日` + `1235万 Token · 438 次请求`，宽度自动不再固定 280px。
 
 ### Added

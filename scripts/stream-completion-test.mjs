@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Unit tests for trackStreamResponse stream-end telemetry: the three disjoint
+// Stream-completion tests for trackStreamResponse stream-end telemetry: the three disjoint
 // interruption reasons (missing_completion_marker / idle_timeout / reader_error)
 // plus the completed and neutral outcomes, and the passive onUsage scan (the
 // usage capture point for chat-passthrough streams). These run against the
@@ -446,5 +446,5 @@ await test('post-commit oversized rewrite line terminates instead of fabricating
   assertCommonShape(r.calls.ends[0], 'interrupted', 'reader_error');
 });
 
-if (!process.exitCode) console.log(`\nstream-track tests passed (${passed}).`);
+if (!process.exitCode) console.log(`\nstream completion tests passed (${passed}).`);
 else process.exit(1);

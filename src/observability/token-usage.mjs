@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
 //
-// Isolate-local token usage observability. PURE observability, NOT billing:
+// Isolate-local token-usage normalization and observability. NOT billing:
 //
 //   - Only usage REPORTED by the upstream is recorded (prompt/completion or
 //     input/output aliases). Missing usage is counted as `missing` and is
@@ -14,7 +14,7 @@
 //     buckets over the last 7d — are the same isolate-local best-effort
 //     contract. They reset with the isolate and are never persisted. This
 //     module feeds /metrics and /health; the PUBLIC homepage reads the durable
-//     D1 aggregate (token-store.js) instead, so the panel is no longer
+//     D1 aggregate (token-usage-store.mjs) instead, so the panel is no longer
 //     isolate-scoped.
 //   - Zero imports: a leaf module so the stream layer (track.js) and the
 //     dashboard (pages.js) can use it without cycles.

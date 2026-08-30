@@ -43,7 +43,7 @@ read -r -p "node secrets JSON file ({ \"node-id\": \"credential\" }): " SECRETS_
 [ -n "$SECRETS_FILE" ] && [ -f "$SECRETS_FILE" ] || { echo "secrets file is required." >&2; exit 1; }
 PLAN_ARGS="$PLAN_ARGS --secrets $SECRETS_FILE"
 # shellcheck disable=SC2086
-node scripts/manage-nodes-config.mjs $PLAN_ARGS
+node scripts/plan-node-configuration.mjs $PLAN_ARGS
 
 echo "==> Sharding config into variables + secrets"
 TMP_PLAN="$(mktemp)"
@@ -52,7 +52,7 @@ SHARD_ARGS="plan --secrets $SECRETS_FILE --out $TMP_PLAN"
 [ -n "${TIER2:-}" ] && SHARD_ARGS="$SHARD_ARGS --tier2 $TIER2"
 [ -n "${TIER3:-}" ] && SHARD_ARGS="$SHARD_ARGS --tier3 $TIER3"
 # shellcheck disable=SC2086
-node scripts/manage-nodes-config.mjs $SHARD_ARGS
+node scripts/plan-node-configuration.mjs $SHARD_ARGS
 
 node -e '
 const fs = require("fs");

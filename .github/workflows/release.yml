@@ -35,7 +35,7 @@ jobs:
       - name: Verify tag matches package version
         shell: bash
         run: |
-          VERSION="$(node scripts/release-meta.mjs version)"
+          VERSION="$(node scripts/release-metadata.mjs version)"
           test "${GITHUB_REF_NAME}" = "v${VERSION}" || {
             echo "Tag ${GITHUB_REF_NAME} does not match package version v${VERSION}." >&2
             exit 1
@@ -48,8 +48,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ARTIFACT="$(node scripts/release-meta.mjs artifact)"
-          TITLE="$(node scripts/release-meta.mjs name) ${GITHUB_REF_NAME}"
+          ARTIFACT="$(node scripts/release-metadata.mjs artifact)"
+          TITLE="$(node scripts/release-metadata.mjs name) ${GITHUB_REF_NAME}"
           gh release create "${GITHUB_REF_NAME}" \
             "release/${ARTIFACT}.zip" \
             "release/${ARTIFACT}.tar.gz" \

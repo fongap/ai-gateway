@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Unit tests for node runtime state: concurrency slots, cooldowns, circuit
+// Request-reliability tests for node runtime state: concurrency slots, cooldowns, circuit
 // breaker transitions, half-open single probe.
 import assert from 'node:assert/strict';
 import {
@@ -343,4 +343,4 @@ await test('dispatchable count reflects the live pool, not the policy maximum', 
   recordNeutralEnd('live-count-b');
 });
 
-if (!process.exitCode) console.log(`reliability unit tests passed (${passed}).`);
+if (!process.exitCode) console.log(`request reliability tests passed (${passed}).`);

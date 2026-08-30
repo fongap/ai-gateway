@@ -11,7 +11,7 @@ if ($LASTEXITCODE -ne 0) { throw "项目验证失败。" }
 npm run checksums
 if ($LASTEXITCODE -ne 0) { throw "校验值生成失败。" }
 
-$baseName = (node scripts/release-meta.mjs artifact).Trim()
+$baseName = (node scripts/release-metadata.mjs artifact).Trim()
 if ($LASTEXITCODE -ne 0 -or -not $baseName) { throw "无法读取发布元数据。" }
 
 node scripts/prepare-release.mjs | Out-Null

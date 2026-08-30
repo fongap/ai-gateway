@@ -8,6 +8,8 @@ Production is designed so routine code delivery needs only:
 git push origin main
 ```
 
+Until a Fork owner sets `GATEWAY_CONFIG`, the Deploy job is skipped successfully. This keeps an unconfigured Fork green; after `GATEWAY_CONFIG` is set, missing credentials or invalid configuration fail the deployment explicitly.
+
 The `Deploy` workflow validates fork-specific Worker text-variable configuration and encrypted credentials, synchronizes them to Cloudflare, applies D1 migrations when configured, deploys the Worker, then performs live health checks on `/health`, `/v1/models`, and Anthropic `/v1/messages/count_tokens`. Any failed check fails the workflow.
 
 Cloudflare Dashboard configuration is **not** a deployment source. The workflow deploys with `keep_vars: false`, so a stale Dashboard text variable cannot survive a successful push and turn a healthy release into `configuration_status: invalid`.

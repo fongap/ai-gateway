@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
 //
-// Cloudflare D1 token-usage persistence: the ONLY cross-isolate / cross-PoP /
+// Cloudflare D1 token-usage persistence and query store: the ONLY cross-isolate / cross-PoP /
 // cross-restart durable counter. This is a FAIL-OPEN observability module, not
 // a business dependency:
 //
@@ -15,7 +15,7 @@
 //     single atomic UPSERT. No per-request rows, no per-node / per-provider /
 //     per-key / per-user high-cardinality dimensions.
 //   * Requests are NEVER estimated and NEVER buffered: usage is only the
-//     upstream-reported usage, normalized by src/observability/tokens.js.
+//     upstream-reported usage, normalized by src/observability/token-usage.mjs.
 //
 // Invariant (verified independently of any isolate):
 //   requests = usage_reports + usage_missing
@@ -33,7 +33,7 @@
 // boundaries (今日, 热力图日期, 星期, 月份). Rolling windows (24h, 7d, cumulative)
 // remain UTC-based sliding windows.
 
-import { normalizeTokenUsage } from './tokens.js';
+import { normalizeTokenUsage } from './token-usage.mjs';
 
 const TABLE = 'token_usage_hourly';
 const TABLE_MODEL = 'token_usage_model_hourly';

@@ -198,7 +198,7 @@ async function main() {
     console.log('Remote health checks passed.');
     return;
   }
-  throw new Error('usage: github-runtime-config.mjs <prepare|health-check> ...');
+  throw new Error('usage: github-deployment-config.mjs <prepare|health-check> ...');
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

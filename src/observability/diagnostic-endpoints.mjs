@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
 //
-// Diagnostic endpoints: /health, /metrics, /version, /v1/models.
+// Diagnostic HTTP endpoints: /health, /metrics, /version, /v1/models.
 // Responses contain node ids and runtime state only — never credentials.
 
 import { loadGatewayConfig } from '../config/nodes.js';
 import { snapshotNode } from '../reliability/node-state.js';
-import { gatewayStats, streamStats } from './stats.js';
-import { tokenStats, summarizeTokenStats, tokenMetricSeries } from './tokens.js';
+import { gatewayStats, streamStats } from './gateway-stats.mjs';
+import { tokenStats, summarizeTokenStats, tokenMetricSeries } from './token-usage.mjs';
 import { corsHeaders, jsonError } from '../protocol/http.js';
 import { loadModelRegistry, modelRegistryEntry, servesModel } from '../config/registry.js';
 

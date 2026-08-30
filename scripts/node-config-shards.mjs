@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MIT
-// Shared sharding + planning module for the new configuration schema.
+// Shared node-configuration sharding and planning module.
 //
 // Plain variables (no credential material allowed):
 //   TIER1_NODES_CONFIG_01 .. _99   JSON arrays of node configs

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   loadRuntimeConfig, normalizeRuntimeConfig, validateGatewayRuntime, buildWranglerConfig, withStaleNodeSecretsRemoved,
-} from './github-runtime-config.mjs';
+} from './github-deployment-config.mjs';
 
 function fixture() {
   return {
@@ -49,4 +49,4 @@ assert.deepEqual(
   withStaleNodeSecretsRemoved(runtime.secrets, [{ name: 'NODE_SECRETS_01' }, { name: 'NODE_SECRETS_02' }, { name: 'UNRELATED_SECRET' }]),
   { ...runtime.secrets, NODE_SECRETS_02: null },
 );
-console.log('github runtime config tests passed.');
+console.log('github deployment config tests passed.');

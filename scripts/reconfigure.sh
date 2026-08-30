@@ -36,7 +36,7 @@ PLAN_ARGS="$PLAN_ARGS --existing-vars $EXISTING_VARS_FILE"
 TMP_PLAN="$(mktemp)"
 PLAN_ARGS="$PLAN_ARGS --out $TMP_PLAN"
 # shellcheck disable=SC2086
-node scripts/manage-nodes-config.mjs $PLAN_ARGS
+node scripts/plan-node-configuration.mjs $PLAN_ARGS
 
 node -e '
 const fs = require("fs");

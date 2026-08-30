@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
 import { __resetAllStateForTests, getNodeState, noteRpmRequest, rpmUsage } from '../src/reliability/node-state.js';
-import { createMockD1 } from './d1-mock.mjs';
+import { createMockD1 } from './mock-d1-database.mjs';
 
 const ACCESS_KEY = 'test-access-key';
 

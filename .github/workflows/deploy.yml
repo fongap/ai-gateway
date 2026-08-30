@@ -35,6 +35,10 @@ concurrency:
 
 jobs:
   deploy:
+    # Forks stay green until their owner supplies the non-sensitive gateway
+    # configuration Variable. Once enabled, missing credentials/configuration
+    # remain hard failures rather than silently deploying a broken Worker.
+    if: vars.GATEWAY_CONFIG != ''
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -66,7 +70,7 @@ jobs:
           fi
           printf '%s' "$GATEWAY_CONFIG" > "$RUNNER_TEMP/gateway-vars-input.json"
           printf '%s' "$GATEWAY_SECRETS_CONFIG" > "$RUNNER_TEMP/gateway-secrets-input.json"
-          node scripts/github-runtime-config.mjs prepare \
+          node scripts/github-deployment-config.mjs prepare \
             --vars "$RUNNER_TEMP/gateway-vars-input.json" \
             --secrets-input "$RUNNER_TEMP/gateway-secrets-input.json" \
             --wrangler "$RUNNER_TEMP/wrangler.github.json" \
@@ -90,7 +94,7 @@ jobs:
         run: |
           npx --yes wrangler@4.114.0 secret list --format json -c "$RUNNER_TEMP/wrangler.github.json" > "$RUNNER_TEMP/current-secrets.json" \
             || printf '[]' > "$RUNNER_TEMP/current-secrets.json"
-          node scripts/github-runtime-config.mjs prepare \
+          node scripts/github-deployment-config.mjs prepare \
             --vars "$RUNNER_TEMP/gateway-vars-input.json" \
             --secrets-input "$RUNNER_TEMP/gateway-secrets-input.json" \
             --wrangler "$RUNNER_TEMP/wrangler.github.json" \
@@ -120,6 +124,6 @@ jobs:
         run: |
           printf '%s' "$GATEWAY_CONFIG" > "$RUNNER_TEMP/gateway-vars-input.json"
           printf '%s' "$GATEWAY_SECRETS_CONFIG" > "$RUNNER_TEMP/gateway-secrets-input.json"
-          node scripts/github-runtime-config.mjs health-check \
+          node scripts/github-deployment-config.mjs health-check \
             --vars "$RUNNER_TEMP/gateway-vars-input.json" \
             --secrets-input "$RUNNER_TEMP/gateway-secrets-input.json"

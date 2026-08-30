@@ -52,7 +52,7 @@ try {
 
   $planArgs = @('plan', '--secrets', $secretsFile, '--existing-vars', $existingVarsFile, '--out', $planFile)
   foreach ($n in 1, 2, 3) { if ($tierFiles[$n]) { $planArgs += @("--tier$n", $tierFiles[$n]) } }
-  node scripts/manage-nodes-config.mjs @planArgs
+  node scripts/plan-node-configuration.mjs @planArgs
   if ($LASTEXITCODE -ne 0) { throw 'configuration planning failed.' }
 
   $plan = Get-Content $planFile -Raw -Encoding UTF8 | ConvertFrom-Json

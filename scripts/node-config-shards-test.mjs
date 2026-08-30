@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// Unit tests for the sharding/planning module (scripts/nodes-shard.mjs).
+// Unit tests for the node-configuration sharding/planning module.
 import assert from 'node:assert/strict';
 import {
   buildPlan, assertNodesArray, assertSecretsObject,
   MANAGED_VAR_PATTERN, MANAGED_SECRET_PATTERN,
-} from './nodes-shard.mjs';
+} from './node-config-shards.mjs';
 
 const node = (id, extra = {}) => ({
   id,
@@ -111,4 +111,4 @@ test('assertNodesArray allows wildcard (empty) models', () => {
   assert.doesNotThrow(() => assertNodesArray([node('a', { models: undefined })]));
 });
 
-if (!process.exitCode) console.log(`nodes-shard tests passed (${passed}).`);
+if (!process.exitCode) console.log(`node-config-shards tests passed (${passed}).`);

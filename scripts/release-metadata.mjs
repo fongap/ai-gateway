@@ -1,4 +1,4 @@
-import { getArtifactBaseName, getRepositoryUrl, readPackageMeta } from './project-meta.mjs';
+import { getArtifactBaseName, getRepositoryUrl, readPackageMeta } from './project-metadata.mjs';
 
 const pkg = readPackageMeta();
 const values = {

@@ -51,10 +51,10 @@ import { transformOpenAIStreamToAnthropic } from '../stream/transform.js';
 import { collectOpenAIStreamObject } from '../stream/assemble.js';
 import { trackStreamResponse } from '../stream/track.js';
 import { getLogger } from '../observability/logger.js';
-import { healthResponse, metricsResponse, modelsListResponse, versionResponse } from '../observability/status.js';
-import { recordStreamStart, recordStreamCompleted, recordStreamInterrupted } from '../observability/stats.js';
-import { recordTokenUsage } from '../observability/tokens.js';
-import { persistTokenUsage } from '../observability/token-store.js';
+import { healthResponse, metricsResponse, modelsListResponse, versionResponse } from '../observability/diagnostic-endpoints.mjs';
+import { recordStreamStart, recordStreamCompleted, recordStreamInterrupted } from '../observability/gateway-stats.mjs';
+import { recordTokenUsage } from '../observability/token-usage.mjs';
+import { persistTokenUsage } from '../observability/token-usage-store.mjs';
 import { streamUsageSupported } from '../config/profiles.js';
 import { dashboardResponse } from '../dashboard/pages.js';
 import { isAuthorized } from './auth.js';
@@ -750,7 +750,7 @@ function scheduleD1TokenPersist(c, usage) {
 }
 
 // Node-layer stream tracking: node outcome recording + stream-end telemetry.
-// The client-facing layer (stats.js trackClientResponse) never passes the
+// The client-facing layer (gateway-stats.mjs trackClientResponse) never passes the
 // telemetry callbacks, so stream counters count each stream exactly once.
 function makeNodeStreamTrack(c, node, latencyMs) {
   return {

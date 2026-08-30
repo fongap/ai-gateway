@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Unit tests for the config layer: shard index parsing, fail-fast Node schema,
+// Gateway configuration tests: shard index parsing, fail-fast Node schema,
 // wildcard-vs-invalid `models` semantics, and the Model Registry.
 import assert from 'node:assert/strict';
 import {
@@ -354,5 +354,5 @@ test('valid MODELS_CONFIG + POLICIES_CONFIG resolve and stay ready', () => {
   assert.equal(cfg.diagnostics.length, 0, 'valid config yields no diagnostics');
 });
 
-if (!process.exitCode) console.log(`config unit tests passed (${passed}).`);
+if (!process.exitCode) console.log(`gateway configuration tests passed (${passed}).`);
 else process.exit(1);

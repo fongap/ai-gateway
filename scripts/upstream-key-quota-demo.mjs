@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Reproducible before/after demonstration: free-key yield under
+// Reproducible before/after demonstration: upstream-key quota yield under
 // per-key per-minute quotas enforced BY THE UPSTREAM (the mock counts
 // requests per key and answers 429 once its quota is gone, like real
 // free providers do).

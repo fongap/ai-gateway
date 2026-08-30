@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
 //
-// Minimal Cloudflare D1 mock for the token-stats store tests. It simulates the
+// Minimal Cloudflare D1 test database for the token-usage store tests. It simulates the
 // statements the real store issues:
 //   * persistTokenUsage (global)    -> prepare(INSERT INTO token_usage_hourly ...).run()
 //   * persistTokenUsage (per-model) -> prepare(INSERT INTO token_usage_model_hourly ...).run()

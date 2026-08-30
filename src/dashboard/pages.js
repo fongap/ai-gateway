@@ -20,7 +20,7 @@
 //   * The 使用情况 card exposes only AGGREGATE numbers (tokens / requests per
 //     UTC day) — never per-provider / per-tier / per-node breakdowns, so node
 //     ids, providers and tiers can never leak through it. Data comes from the
-//     durable D1 hourly aggregate (token-store.js) and degrades to "统计暂不可
+//     durable D1 hourly aggregate (token-usage-store.mjs) and degrades to "统计暂不可
 //     用" when the binding is absent or the query fails — never a fake 0.
 //
 // No external fonts, no framework, no chart library, no runtime dependency:
@@ -37,7 +37,7 @@ import {
   queryTokenModelUsage,
   utc8DayStartUtcMs,
   isoDayUtc8,
-} from '../observability/token-store.js';
+} from '../observability/token-usage-store.mjs';
 
 export const GITHUB_URL = 'https://github.com/fongap/ai-gateway';
 

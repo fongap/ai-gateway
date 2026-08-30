@@ -154,9 +154,9 @@ src/
 │  ├─ router.js              route allowlist / path normalization
 │  └─ errors.js              protocol-shaped errors, Retry-After, topology policy
 ├─ observability/
-│  ├─ logger.js, stats.js    counters, client stream accounting, stream interruption counters
-│  ├─ tokens.js              isolate-local token observability (normalize/record/summarize)
-│  ├─ token-store.js         optional D1 hourly aggregation (persist/query/normalizeHour) — fail-open
-│  └─ status.js              /health /metrics /version /v1/models
+│  ├─ logger.js, gateway-stats.mjs          counters, client stream accounting, stream interruption counters
+│  ├─ token-usage.mjs                       isolate-local token observability (normalize/record/summarize)
+│  ├─ token-usage-store.mjs                 optional D1 hourly aggregation (persist/query/normalizeHour) — fail-open
+│  └─ diagnostic-endpoints.mjs              /health /metrics /version /v1/models
 └─ dashboard/pages.js        browser pages
 ```

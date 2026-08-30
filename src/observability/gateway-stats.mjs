@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
 //
-// Gateway-level counters and the client-facing stream accounting wrapper.
+// Gateway request counters and the client-facing stream accounting wrapper.
 // All state is isolate-local best-effort.
 
 import { trackStreamResponse } from '../stream/track.js';

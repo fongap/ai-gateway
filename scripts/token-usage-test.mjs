@@ -10,14 +10,14 @@ import assert from 'node:assert/strict';
 import {
   normalizeTokenUsage, recordTokenUsage, summarizeTokenStats,
   tokenMetricSeries, __resetTokenStatsForTests,
-} from '../src/observability/tokens.js';
+} from '../src/observability/token-usage.mjs';
 import { dashboardResponse, __resetDashboardCacheForTests } from '../src/dashboard/pages.js';
-import { metricsResponse } from '../src/observability/status.js';
-import { persistTokenUsage } from '../src/observability/token-store.js';
+import { metricsResponse } from '../src/observability/diagnostic-endpoints.mjs';
+import { persistTokenUsage } from '../src/observability/token-usage-store.mjs';
 import { withUsageStreamOptions } from '../src/protocol/openai.js';
 import { transformOpenAIStreamToAnthropic } from '../src/stream/transform.js';
 import { transformOpenAIStreamToResponses } from '../src/protocol/responses/stream.js';
-import { createMockD1 } from './d1-mock.mjs';
+import { createMockD1 } from './mock-d1-database.mjs';
 
 let passed = 0;
 async function test(name, fn) {
@@ -589,5 +589,5 @@ await test('model usage panel does not leak raw D1 errors in degraded state', as
   assert.ok(!html.includes('FROM'), 'SQL not leaked');
 });
 
-if (!process.exitCode) console.log(`\ntoken-stats tests passed (${passed}).`);
+if (!process.exitCode) console.log(`\ntoken-usage tests passed (${passed}).`);
 else process.exit(1);

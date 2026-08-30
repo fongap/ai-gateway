@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertNodesArray, assertSecretsObject, buildPlan, parseJsonFile } from './nodes-shard.mjs';
+import { assertNodesArray, assertSecretsObject, buildPlan, parseJsonFile } from './node-config-shards.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
@@ -28,7 +28,7 @@ for (const file of [
   'scripts/install.sh', 'scripts/install.ps1',
   'scripts/update.sh', 'scripts/update.ps1',
   'scripts/reconfigure.sh', 'scripts/reconfigure.ps1',
-  'scripts/nodes-shard.mjs', 'scripts/manage-nodes-config.mjs',
+  'scripts/node-config-shards.mjs', 'scripts/plan-node-configuration.mjs',
 ]) {
   assert.ok(fs.existsSync(path.join(root, file)), `Missing deployment file: ${file}`);
 }
@@ -37,12 +37,12 @@ for (const file of ['scripts/install.sh', 'scripts/install.ps1']) {
   const source = read(file);
   assert.match(source, /secret['", ]+bulk|secret bulk/, `${file} must deploy secrets via secret bulk`);
   assert.match(source, /keep-vars/, `${file} must preserve remote vars`);
-  assert.match(source, /manage-nodes-config\.mjs/, `${file} must shard node configs via the shared planner`);
+  assert.match(source, /plan-node-configuration\.mjs/, `${file} must shard node configs via the shared planner`);
 }
 for (const file of ['scripts/reconfigure.sh', 'scripts/reconfigure.ps1']) {
   const source = read(file);
   assert.match(source, /secret['", ]+bulk|secret bulk/, `${file} must update runtime secrets without code changes`);
-  assert.match(source, /manage-nodes-config\.mjs/, `${file} must shard node configs via the shared planner`);
+  assert.match(source, /plan-node-configuration\.mjs/, `${file} must shard node configs via the shared planner`);
 }
 for (const file of ['scripts/update.sh', 'scripts/update.ps1', 'scripts/deploy.sh', 'scripts/deploy.ps1']) {
   const source = read(file);
@@ -58,26 +58,27 @@ for (const file of ['scripts/deploy.sh', 'scripts/deploy.ps1']) {
   assert.match(source, /TOKEN_STATS_DB/i, `${file} must check for TOKEN_STATS_DB binding before migrating`);
 }
 
-// The package.json deploy entry goes through run-wrangler.mjs. That wrapper
+// The package.json deploy entry goes through cloudflare-wrangler.mjs. That wrapper
 // must also migrate before a real deploy, otherwise the most obvious local
 // deployment command can publish code before its schema exists.
 const packageJson = JSON.parse(read('package.json'));
-assert.match(packageJson.scripts?.deploy || '', /run-wrangler\.mjs\s+deploy/, 'npm run deploy must use run-wrangler.mjs');
-const runWranglerSource = read('scripts/run-wrangler.mjs');
+assert.match(packageJson.scripts?.deploy || '', /cloudflare-wrangler\.mjs\s+deploy/, 'npm run deploy must use cloudflare-wrangler.mjs');
+const runWranglerSource = read('scripts/cloudflare-wrangler.mjs');
 for (const token of ['migrations', 'apply', 'TOKEN_STATS_DB', '--remote', '--dry-run']) {
-  assert.ok(runWranglerSource.includes(token), `run-wrangler.mjs must include ${token} migration/deploy handling`);
+  assert.ok(runWranglerSource.includes(token), `cloudflare-wrangler.mjs must include ${token} migration/deploy handling`);
 }
 
 const workflowSource = read('.github/workflows/deploy.yml');
 assert.match(workflowSource, /GATEWAY_CONFIG/, 'deploy workflow must read fork-specific non-sensitive Worker text variables from a GitHub Variable');
+assert.match(workflowSource, /if:\s*vars\.GATEWAY_CONFIG\s*!=\s*''/, 'unconfigured Forks must skip deployment rather than fail');
 assert.match(workflowSource, /GATEWAY_SECRETS_CONFIG/, 'deploy workflow must read credentials from the dedicated GitHub Secret');
 assert.doesNotMatch(workflowSource, /GATEWAY_RUNTIME_CONFIG/, 'deploy workflow must not put non-sensitive Worker variables in a Secret');
 assert.match(workflowSource, /Missing GitHub repository variable GATEWAY_CONFIG/, 'deploy workflow must name a missing non-sensitive Worker configuration variable directly');
 assert.match(workflowSource, /Missing GitHub repository Secret GATEWAY_SECRETS_CONFIG/, 'deploy workflow must name a missing credentials Secret directly');
 assert.match(workflowSource, /secret bulk/, 'deploy workflow must synchronize Worker Secrets from the dedicated GitHub Secret');
-assert.match(workflowSource, /github-runtime-config\.mjs health-check/, 'deploy workflow must verify the deployed gateway over its public API');
+assert.match(workflowSource, /github-deployment-config\.mjs health-check/, 'deploy workflow must verify the deployed gateway over its public API');
 assert.doesNotMatch(workflowSource, /deploy[^\n]*--keep-vars/, 'CI deployment must not preserve Dashboard runtime-variable drift');
-assert.ok(fs.existsSync(path.join(root, 'scripts/github-runtime-config.mjs')), 'GitHub runtime config bridge is required');
+assert.ok(fs.existsSync(path.join(root, 'scripts/github-deployment-config.mjs')), 'GitHub deployment config bridge is required');
 assert.ok(fs.existsSync(path.join(root, 'config/worker-vars.example.json')), 'Worker text-variable example is required');
 assert.ok(fs.existsSync(path.join(root, 'config/gateway-secrets.example.json')), 'Worker Secret example is required');
 

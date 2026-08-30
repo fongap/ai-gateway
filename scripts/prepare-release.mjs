@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getArtifactBaseName } from './project-meta.mjs';
+import { getArtifactBaseName } from './project-metadata.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const baseName = getArtifactBaseName();

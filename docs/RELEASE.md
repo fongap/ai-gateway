@@ -5,7 +5,7 @@
 发布前必须同步以下位置：
 
 1. `package.json` 中的 `version`；
-2. `src/observability/status.js` 中的 `APP_META.version`；
+2. `src/observability/diagnostic-endpoints.mjs` 中的 `APP_META.version`；
 3. `CHANGELOG.md` 中新增对应版本标题。
 
 随后更新依赖锁文件：
@@ -68,4 +68,3 @@ git push origin v1.2.1
 5. 创建 GitHub Release 并上传资产。
 
 Tag 不匹配时工作流会终止，不会发布错误版本。
-

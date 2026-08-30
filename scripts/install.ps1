@@ -49,14 +49,14 @@ foreach ($n in 1, 2, 3) {
   if ($p) { $tierFiles[$n] = (Resolve-Path $p).Path }
 }
 $secretsFile = Read-FilePath 'node secrets JSON file path ({ "node-id": "credential" })' $true
-node scripts/manage-nodes-config.mjs validate --tier1 $tierFiles[1] $(foreach($n in 2,3){ if($tierFiles[$n]){ "--tier$n"; $tierFiles[$n] } }) --secrets $secretsFile
+node scripts/plan-node-configuration.mjs validate --tier1 $tierFiles[1] $(foreach($n in 2,3){ if($tierFiles[$n]){ "--tier$n"; $tierFiles[$n] } }) --secrets $secretsFile
 if ($LASTEXITCODE -ne 0) { throw 'node configuration is invalid.' }
 
 Write-Host '==> Sharding config into variables + secrets'
 $planFile = Join-Path ([IO.Path]::GetTempPath()) ("gateway-plan-" + [guid]::NewGuid().ToString('N') + '.json')
 $planArgs = @('plan', '--secrets', $secretsFile, '--out', $planFile)
 foreach ($n in 1, 2, 3) { if ($tierFiles[$n]) { $planArgs += @("--tier$n", $tierFiles[$n]) } }
-node scripts/manage-nodes-config.mjs @planArgs
+node scripts/plan-node-configuration.mjs @planArgs
 if ($LASTEXITCODE -ne 0) { throw 'sharding failed.' }
 
 try {

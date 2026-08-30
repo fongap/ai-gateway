@@ -9,7 +9,7 @@ command -v tar >/dev/null 2>&1 || { echo "tar command is required." >&2; exit 1;
 
 npm run verify:release
 npm run checksums
-BASE_NAME="$(node scripts/release-meta.mjs artifact)"
+BASE_NAME="$(node scripts/release-metadata.mjs artifact)"
 node scripts/prepare-release.mjs >/dev/null
 
 (

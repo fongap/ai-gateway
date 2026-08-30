@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Node configuration planner CLI shared by install / reconfigure.
+// Node-configuration deployment planner shared by install / reconfigure.
 //
 //   validate --tier1 FILE [--tier2 FILE] [--tier3 FILE] [--secrets FILE]
 //       Validate node config files and (optionally) cross-check credentials.
@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import {
   parseJsonFile, buildPlan,
   MANAGED_VAR_PATTERN, MANAGED_SECRET_PATTERN,
-} from './nodes-shard.mjs';
+} from './node-config-shards.mjs';
 
 function fail(message) {
   console.error(`error: ${message}`);
@@ -100,5 +100,5 @@ if (command === 'validate') {
   for (const key of plan.deleteVars) console.log(`delete var ${key}`);
   for (const key of plan.deleteSecrets) console.log(`delete secret ${key}`);
 } else {
-  fail('usage: manage-nodes-config.mjs <validate|plan> [options]');
+  fail('usage: plan-node-configuration.mjs <validate|plan> [options]');
 }
