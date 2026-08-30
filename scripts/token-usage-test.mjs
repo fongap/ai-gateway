@@ -314,6 +314,29 @@ await test('模型使用 · 近 7 天 renders one row per model with bars plus a
   assert.match(html, /<span class="model-usage-value">50<\/span>/, 'ultra row shows its exact total');
 });
 
+await test('模型使用 · 近 7 天 folds models beyond the top 4 into one 其他 row', async () => {
+  const d1 = createMockD1();
+  const env = deepClone(ENV);
+  env.TOKEN_STATS_DB = d1;
+  const HOUR = 3_600_000;
+  const h0 = Math.floor(Date.now() / HOUR) * HOUR;
+  // Six models, descending: top 4 shown, the last two fold into 其他 (30 + 20).
+  const models = [['m1', 600], ['m2', 500], ['m3', 400], ['m4', 300], ['m5', 30], ['m6', 20]];
+  for (const [model, tokens] of models) {
+    await persistTokenUsage(env, { prompt_tokens: tokens, completion_tokens: 0 }, h0, model);
+  }
+  const html = await pageText(anonRequest(), env);
+  for (const model of ['m1', 'm2', 'm3', 'm4']) {
+    assert.ok(html.includes(`>${model}</span>`), `top model ${model} shown`);
+  }
+  for (const model of ['m5', 'm6']) {
+    assert.ok(!html.includes(`>${model}</span>`), `model ${model} folded into 其他`);
+  }
+  assert.ok(html.includes('其他（2 个模型）'), 'folded row labels the model count');
+  assert.ok(html.includes('<strong>1850</strong>'), 'donut center still equals the grand total');
+  assert.match(html, /<span class="model-usage-value">50<\/span>/, '其他 row shows its aggregated total (30+20)');
+});
+
 await test('Token 活动 · 52 周 renders a full 364-cell heatmap with month labels', async () => {
   const env = seededEnv([[{ prompt_tokens: 7, completion_tokens: 7 }]]);
   const html = await pageText(anonRequest(), env);

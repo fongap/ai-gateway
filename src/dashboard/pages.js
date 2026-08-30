@@ -681,14 +681,26 @@ function renderModelUsage(modelUsage) {
     return `<div class="model-usage"><div class="model-usage-head"><b>模型使用 · 近 7 天</b></div>` +
       `<div class="model-usage-empty">近 7 天暂无数据</div></div>`;
   }
-  // Donut ring: each model's share of total tokens in the 7-day window.
-  const donut = renderModelDonut(rows);
+  // Chart only the top 4 models; everything below folds into one "其他" row so
+  // the donut center total still equals the sum of the displayed rows.
+  const TOP_N = 4;
+  let chartRows = rows;
+  if (rows.length > TOP_N) {
+    const rest = rows.slice(TOP_N);
+    chartRows = [...rows.slice(0, TOP_N), {
+      model: `其他（${rest.length} 个模型）`,
+      total: rest.reduce((s, r) => s + r.total, 0),
+      requests: rest.reduce((s, r) => s + r.requests, 0),
+    }];
+  }
+  // Donut ring: each entry's share of total tokens in the 7-day window.
+  const donut = renderModelDonut(chartRows);
   // Build a compact ranked row: name (with a donut-matching color swatch),
   // comparison bar in the same per-model color, then the Token count.
   // Bar width is relative to the max in this window, not a percentage share.
-  const max = rows.reduce((m, r) => (r.total > m ? r.total : m), 0);
-  const items = rows.map((r, i) => {
-    const color = modelShade(i, rows.length);
+  const max = chartRows.reduce((m, r) => (r.total > m ? r.total : m), 0);
+  const items = chartRows.map((r, i) => {
+    const color = modelShade(i, chartRows.length);
     const pct = max > 0 ? Math.max(2, Math.round((r.total / max) * 100)) : 0;
     const exactTitle = `${fmtTokens(r.total)} Token · ${fmtInt(r.requests)} 次请求`;
     return `<li class="model-usage-row" data-tooltip="${escapeHtml(exactTitle)}" tabindex="0" aria-label="${escapeHtml(exactTitle)}">` +
