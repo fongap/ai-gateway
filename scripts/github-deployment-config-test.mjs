@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import {
   loadRuntimeConfig, normalizeRuntimeConfig, validateGatewayRuntime, buildWranglerConfig, withStaleNodeSecretsRemoved,
+  collectVarsFromEnv, collectSecretsFromEnv, buildRuntimeFromEnv, preflight, buildDeploymentSummary,
 } from './github-deployment-config.mjs';
 
 function fixture() {
@@ -44,9 +46,164 @@ const wrangler = buildWranglerConfig(runtime.vars, 'd1-id');
 assert.equal(wrangler.keep_vars, false);
 assert.equal(wrangler.vars.TIER1_NODES_CONFIG_01, runtime.vars.TIER1_NODES_CONFIG_01);
 assert.equal(wrangler.d1_databases[0].database_id, 'd1-id');
+assert.ok(path.isAbsolute(wrangler.main), 'entry point must be absolute (config lives in RUNNER_TEMP)');
+assert.ok(path.isAbsolute(wrangler.d1_databases[0].migrations_dir), 'migrations_dir must be absolute');
 
 assert.deepEqual(
   withStaleNodeSecretsRemoved(runtime.secrets, [{ name: 'NODE_SECRETS_01' }, { name: 'NODE_SECRETS_02' }, { name: 'UNRELATED_SECRET' }]),
   { ...runtime.secrets, NODE_SECRETS_02: null },
 );
+
+// ---- Individual GitHub Variables / Secrets collected from env ----
+
+function envFixture({ legacy = false } = {}) {
+  const env = {
+    CLOUDFLARE_ACCOUNT_ID: 'acct',
+    TOKEN_STATS_D1_ID: 'd1-id',
+    GATEWAY_PUBLIC_BASE_URL: 'https://gw.example.com',
+    MODELS_CONFIG: JSON.stringify({ 'code-pro': { policy: 'default' } }),
+    POLICIES_CONFIG: JSON.stringify({ default: { max_attempts: 5 } }),
+    TIER1_NODES_CONFIG_01: JSON.stringify([{ id: 'node-a', base_url: 'https://provider.example.com/v1', models: { 'code-pro': 'up' } }]),
+    CLOUDFLARE_API_TOKEN: 'cf-token',
+    GATEWAY_ACCESS_KEY: 'gw-key',
+    NODE_SECRETS_01: JSON.stringify({ 'node-a': 'upstream-key' }),
+  };
+  if (legacy) {
+    delete env.TIER1_NODES_CONFIG_01;
+    delete env.MODELS_CONFIG;
+    delete env.POLICIES_CONFIG;
+    delete env.GATEWAY_ACCESS_KEY;
+    delete env.NODE_SECRETS_01;
+    env.GATEWAY_CONFIG = JSON.stringify({
+      TIER1_NODES_CONFIG_01: env.TIER1_NODES_CONFIG_01 || JSON.stringify([{ id: 'node-a', base_url: 'https://provider.example.com/v1', models: { 'code-pro': 'up' } }]),
+      MODELS_CONFIG: { 'code-pro': { policy: 'default' } },
+      POLICIES_CONFIG: { default: { max_attempts: 5 } },
+    });
+    env.GATEWAY_SECRETS_CONFIG = JSON.stringify({ GATEWAY_ACCESS_KEY: 'gw-key', NODE_SECRETS_01: { 'node-a': 'upstream-key' } });
+  }
+  return env;
+}
+
+// Individual sources are collected and validate.
+{
+  const built = buildRuntimeFromEnv(envFixture());
+  assert.equal(built.usedLegacyVars, false, 'individual vars used, not legacy');
+  assert.equal(built.usedLegacySecrets, false, 'individual secrets used, not legacy');
+  assert.deepEqual(built.warnings, [], 'no deprecation warnings when individual sources present');
+  const c = validateGatewayRuntime(built.runtime);
+  assert.equal(c.ready, true);
+  assert.equal(JSON.parse(built.runtime.vars.TIER1_NODES_CONFIG_01)[0].id, 'node-a');
+  assert.equal(JSON.parse(built.runtime.secrets.NODE_SECRETS_01)['node-a'], 'upstream-key');
+}
+
+// Legacy blobs are read (with warnings) when individual sources are absent.
+{
+  const built = buildRuntimeFromEnv(envFixture({ legacy: true }));
+  assert.equal(built.usedLegacyVars, true, 'legacy GATEWAY_CONFIG used');
+  assert.equal(built.usedLegacySecrets, true, 'legacy GATEWAY_SECRETS_CONFIG used');
+  assert.ok(built.warnings.some((w) => w.includes('GATEWAY_CONFIG is deprecated')), 'vars deprecation warning');
+  assert.ok(built.warnings.some((w) => w.includes('GATEWAY_SECRETS_CONFIG is deprecated')), 'secrets deprecation warning');
+  const c = validateGatewayRuntime(built.runtime);
+  assert.equal(c.ready, true, 'legacy blob still produces a ready runtime');
+}
+
+// New individual sources win; legacy blobs are never merged in.
+{
+  const env = envFixture();
+  env.GATEWAY_CONFIG = JSON.stringify({ TIER1_NODES_CONFIG_01: JSON.stringify([{ id: 'stale-node', base_url: 'https://stale.example.com/v1' }]) });
+  env.GATEWAY_SECRETS_CONFIG = JSON.stringify({ GATEWAY_ACCESS_KEY: 'stale-key', NODE_SECRETS_01: { 'node-a': 'stale' } });
+  const built = buildRuntimeFromEnv(env);
+  assert.equal(built.usedLegacyVars, false, 'individual vars take precedence over the legacy blob');
+  assert.equal(built.usedLegacySecrets, false, 'individual secrets take precedence over the legacy blob');
+  assert.equal(JSON.parse(built.runtime.vars.TIER1_NODES_CONFIG_01)[0].id, 'node-a', 'legacy node-a did not leak');
+  assert.equal(built.runtime.secrets.GATEWAY_ACCESS_KEY, 'gw-key', 'legacy access key did not leak');
+}
+
+// Credentials must never appear in the vars map.
+{
+  const v = collectVarsFromEnv({ ...envFixture(), GATEWAY_ACCESS_KEY: 'gw-key', NODE_SECRETS_01: JSON.stringify({ 'node-a': 'x' }) });
+  assert.ok(!('GATEWAY_ACCESS_KEY' in v.vars), 'GATEWAY_ACCESS_KEY kept out of vars');
+  assert.ok(!('NODE_SECRETS_01' in v.vars), 'NODE_SECRETS_01 kept out of vars');
+}
+
+// Empty values are skipped, not collected as empty strings.
+{
+  const env = envFixture();
+  env.TIER1_NODES_CONFIG_02 = '';
+  env.NODE_SECRETS_02 = '';
+  const v = collectVarsFromEnv(env);
+  const s = collectSecretsFromEnv(env);
+  assert.ok(!('TIER1_NODES_CONFIG_02' in v.vars), 'empty variable skipped');
+  assert.ok(!('NODE_SECRETS_02' in s.secrets), 'empty secret skipped');
+}
+
+// Malformed legacy blob JSON fails clearly.
+assert.throws(
+  () => buildRuntimeFromEnv({ ...envFixture({ legacy: true }), GATEWAY_CONFIG: '{not json' }),
+  /GATEWAY_CONFIG is not valid JSON/,
+);
+
+// Preflight passes for a complete configuration.
+{
+  const r = preflight(envFixture());
+  assert.equal(r.ok, true, 'preflight ok for complete config');
+  assert.deepEqual(r.errors, [], 'no preflight errors');
+}
+
+// Preflight FAILS (not skips) when required config is missing.
+{
+  const env = envFixture();
+  delete env.CLOUDFLARE_ACCOUNT_ID;
+  delete env.GATEWAY_PUBLIC_BASE_URL;
+  delete env.TIER1_NODES_CONFIG_01;
+  delete env.NODE_SECRETS_01;
+  delete env.GATEWAY_ACCESS_KEY;
+  delete env.CLOUDFLARE_API_TOKEN;
+  const r = preflight(env);
+  assert.equal(r.ok, false, 'preflight fails on missing config');
+  assert.ok(r.errors.some((e) => e.includes('CLOUDFLARE_ACCOUNT_ID')), 'names the missing variable');
+  assert.ok(r.errors.some((e) => e.includes('GATEWAY_ACCESS_KEY')), 'names the missing secret');
+  assert.ok(r.errors.some((e) => e.includes('No TIER')), 'names the missing node-config shard');
+  assert.ok(r.errors.some((e) => e.includes('No NODE_SECRETS')), 'names the missing credential shard');
+}
+
+// MODELS_CONFIG / POLICIES_CONFIG absence is a warning, never a failure.
+{
+  const env = envFixture();
+  delete env.MODELS_CONFIG;
+  delete env.POLICIES_CONFIG;
+  const r = preflight(env);
+  assert.equal(r.ok, true, 'optional models/policies absence does not fail preflight');
+  assert.ok(r.warnings.some((w) => w.includes('MODELS_CONFIG')), 'MODELS_CONFIG absence warned');
+  assert.ok(r.warnings.some((w) => w.includes('POLICIES_CONFIG')), 'POLICIES_CONFIG absence warned');
+}
+
+// A node without a matching credential fails runtime validation.
+{
+  const built = buildRuntimeFromEnv({ ...envFixture(), NODE_SECRETS_01: JSON.stringify({ 'other-node': 'key' }) });
+  assert.throws(
+    () => validateGatewayRuntime(built.runtime),
+    /node.*has no credential|credential.*has no matching node|degraded|invalid/i,
+  );
+}
+
+// The deployment summary contains safe counts only — never credential values.
+{
+  const summary = buildDeploymentSummary({
+    config: cfg,
+    runtime,
+    d1Configured: 'd1-id',
+    removedSecretShards: 1,
+  });
+  for (const fragment of ['Deployment completed', 'Nodes: 1/1 usable', 'Models: 1', 'Node secret shards: 1', 'Status: ready', 'OK']) {
+    assert.ok(summary.includes(fragment), `summary contains "${fragment}"`);
+  }
+  for (const forbidden of ['upstream-key', 'gateway-key', 'Bearer', 'authorization']) {
+    assert.ok(!summary.includes(forbidden), `summary never contains "${forbidden}"`);
+  }
+  const disabled = buildDeploymentSummary({ config: cfg, runtime, d1Configured: '' });
+  assert.ok(disabled.includes('disabled'), 'D1 disabled is stated explicitly');
+}
+
 console.log('github deployment config tests passed.');
+

@@ -1,109 +1,247 @@
 # Deployment
 
-## Production deployment: push to `main`
+ai-gateway deploys from GitHub Actions. Push to `main` (or run the workflow manually) and the deploy job validates the configuration, syncs Worker variables and secrets, applies D1 migrations, publishes the Worker, and runs live health checks.
 
-Production is designed so routine code delivery needs only:
+The configuration source is the GitHub repository's **Variables** (non-sensitive) and **Secrets** (credentials). The Cloudflare Dashboard is never a daily configuration surface; the deploy job owns every runtime variable (`keep_vars: false`) and does not retain Dashboard drift.
 
-```bash
-git push origin main
+---
+
+## 1. First-time deployment
+
+1. In the GitHub repository, open **Settings → Secrets and variables → Actions**.
+2. Create the **Variables** and **Secrets** listed in §2 and §3.
+3. Push to `main` (or run the **Deploy** workflow from the Actions tab).
+
+The deploy job runs a **preflight** check first. If any required Variable or Secret is missing, the workflow **fails** with a clear `ERROR:` line naming the exact missing item — it never silently skips.
+
+The order inside the job is:
+
+```
+checkout → setup Node → npm ci
+  → Preflight deployment configuration
+  → npm run verify
+  → Validate runtime configuration
+  → Wrangler deploy --dry-run
+  → Cloudflare authentication check
+  → Synchronize Worker Secrets
+  → Apply D1 migrations (if TOKEN_STATS_D1_ID is set)
+  → Deploy Worker
+  → Verify deployed gateway
+  → Deployment summary
 ```
 
-Until a Fork owner sets `GATEWAY_CONFIG`, the Deploy job is skipped successfully. This keeps an unconfigured Fork green; after `GATEWAY_CONFIG` is set, missing credentials or invalid configuration fail the deployment explicitly.
+Any verification or validation step that fails blocks every subsequent step — the Worker, its Secrets, and D1 are never touched.
 
-The `Deploy` workflow validates fork-specific Worker text-variable configuration and encrypted credentials, synchronizes them to Cloudflare, applies D1 migrations when configured, deploys the Worker, then performs live health checks on `/health`, `/v1/models`, and Anthropic `/v1/messages/count_tokens`. Any failed check fails the workflow.
+---
 
-Cloudflare Dashboard configuration is **not** a deployment source. The workflow deploys with `keep_vars: false`, so a stale Dashboard text variable cannot survive a successful push and turn a healthy release into `configuration_status: invalid`.
+## 2. GitHub Variables
 
-### One-time GitHub setup
+Variables hold non-sensitive configuration. Create them under **Settings → Secrets and variables → Actions → Variables**.
 
-Create this GitHub repository Secret:
+| Variable | Required | Notes |
+|---|---|---|
+| `CLOUDFLARE_ACCOUNT_ID` | yes | Resource identifier, not a credential. |
+| `GATEWAY_PUBLIC_BASE_URL` | yes | `https://` URL of the deployed Worker (no trailing `/v1`). |
+| `TOKEN_STATS_D1_ID` | optional | D1 database ID. When set, D1 migrations are applied automatically. |
+| `TIER1_NODES_CONFIG_01` … `TIER1_NODES_CONFIG_10` | at least one tier variable total | JSON array of node configs for tier 1. The fixed range goes to `_10`; raise it in `.github/workflows/deploy.yml` if you need more. |
+| `TIER2_NODES_CONFIG_01` … `TIER2_NODES_CONFIG_10` | optional | Same shape, tier 2. |
+| `TIER3_NODES_CONFIG_01` … `TIER3_NODES_CONFIG_10` | optional | Same shape, tier 3. |
+| `MODELS_CONFIG` | optional | Model registry overrides; the registry supplies conservative defaults if absent. |
+| `POLICIES_CONFIG` | optional | Attempt budgets and per-tier policy; defaults apply if absent. |
+| `DEPLOY_ENABLED` | only on Forks | Set to `true` to opt a Fork into the deploy job. Ignored on the main repository. |
 
-| Secret | Required | Purpose |
-|---|---:|---|
-| `CLOUDFLARE_API_TOKEN` | yes | Permission to deploy the Worker, update Worker Secrets, and run D1 migrations |
-| `GATEWAY_SECRETS_CONFIG` | yes | Gateway access key and upstream credentials only |
-
-Create these non-secret GitHub repository variables:
-
-| Variable | Required | Purpose |
-|---|---:|---|
-| `CLOUDFLARE_ACCOUNT_ID` | yes | Cloudflare account selected by Wrangler |
-| `TOKEN_STATS_D1_ID` | no | D1 database ID; enables migrations and homepage usage persistence |
-| `GATEWAY_CONFIG` | yes | Non-sensitive Worker text variables: nodes, model mapping, policies, and runtime parameters |
-| `GATEWAY_PUBLIC_BASE_URL` | yes | Public gateway origin used only for post-deploy health checks; do not append `/v1` |
-
-### Worker text-variable configuration
-
-Copy [`config/worker-vars.example.json`](../config/worker-vars.example.json), replace the example node and model values, then paste the whole JSON object into the GitHub repository Variable `GATEWAY_CONFIG`. It contains only non-sensitive configuration: node IDs, provider URLs, model mapping, policies, and runtime parameters. Do not commit a Fork-specific configuration file.
-
-```bash
-cp config/worker-vars.example.json gateway-config.json
-# edit gateway-config.json locally, then paste it into GitHub Variable GATEWAY_CONFIG
-```
-
-### Worker Secret configuration
-
-Copy [`config/gateway-secrets.example.json`](../config/gateway-secrets.example.json), replace every placeholder, and store the resulting JSON in the encrypted GitHub repository Secret `GATEWAY_SECRETS_CONFIG`. Do not commit this file.
-
-```bash
-cp config/gateway-secrets.example.json gateway-secrets.json
-# edit gateway-secrets.json locally; do not commit it
-gh secret set GATEWAY_SECRETS_CONFIG < gateway-secrets.json
-```
-
-The Secret is a flat JSON object containing credentials only:
+Each `TIER*_NODES_CONFIG_XX` value is a JSON array of node objects:
 
 ```json
-{
-  "GATEWAY_ACCESS_KEY": "client-access-key",
-  "NODE_SECRETS_01": { "primary-01": "upstream-credential" }
-}
+[
+  {
+    "id": "nvidia-01",
+    "provider": "nvidia",
+    "base_url": "https://integrate.api.nvidia.com/v1",
+    "priority": 10,
+    "models": { "general-air": "deepseek-ai/deepseek-v3.1" },
+    "limits": { "concurrency": 3, "rpm": 40 }
+  }
+]
 ```
 
-`GATEWAY_CONFIG` accepts JSON arrays/objects, strings, numbers, or booleans; the workflow serializes each value to a Worker environment string. `GATEWAY_SECRETS_CONFIG` accepts only `GATEWAY_ACCESS_KEY` and `NODE_SECRETS_01..99`. Every Worker configuration value is validated against the 4.5 KB shard limit, and the same configuration loader used at runtime must report `ready` before the workflow changes Cloudflare.
+Sharding rules:
 
-After this one-time setup, push normally. The repository has no credential file to commit, and no Cloudflare Dashboard reconfiguration is needed after a code push.
+- The deploy job splits long tier arrays into `_01`, `_02`, … shards automatically; you only see this on the Cloudflare side. The fixed range of 10 shards per tier is a safety limit; raise it in the workflow if you need more.
+- A single shard must be smaller than 4500 bytes.
+- Set the actual content directly as the Variable value — paste the JSON.
+- **Do not** put credentials inside `TIER*_NODES_CONFIG_*`. The `forbidden_fields` list rejects `token`, `credential`, `api_key`, `apikey`, `authorization`, `password`, `secret`.
 
-### Changing runtime configuration
+`MODELS_CONFIG` and `POLICIES_CONFIG` are plain JSON objects, e.g.:
 
-Update GitHub Variable `GATEWAY_CONFIG` for non-sensitive changes (nodes, model mapping, policies, runtime parameters). Update `GATEWAY_SECRETS_CONFIG` only when rotating the gateway access key or an upstream credential. Then use **Run workflow** in GitHub Actions to apply the configuration change, or let the next `main` push apply it. The deployment replaces Worker text variables and updates managed Worker Secrets automatically; obsolete `NODE_SECRETS_XX` shards are deleted in the same bulk operation. Do not edit these managed values in the Cloudflare Dashboard.
+```json
+{ "fast": { "max_attempts": 5 }, "stable": { "max_attempts": 3 } }
+```
 
-## Local development and manual recovery
+---
 
-For local development or an emergency/manual install, use the existing operator scripts:
+## 3. GitHub Secrets
+
+Secrets hold credentials. Create them under **Settings → Secrets and variables → Actions → Secrets**.
+
+| Secret | Required | Notes |
+|---|---|---|
+| `CLOUDFLARE_API_TOKEN` | yes | Cloudflare deploy token. |
+| `GATEWAY_ACCESS_KEY` | yes | Bearer token clients send to the gateway. |
+| `NODE_SECRETS_01` … `NODE_SECRETS_20` | at least one | JSON object `{ "node-id": "credential" }`. The fixed range is 20; raise it in the workflow if you need more. |
+
+`NODE_SECRETS_XX` value shape:
+
+```json
+{ "nvidia-01": "nvapi-xxxxxxxx", "openrouter-01": "sk-or-xxxxxxxx" }
+```
+
+Multiple credentials in a single shard are fine; the deploy job packs shards until the 4500-byte Cloudflare limit is reached, so prefer bundling related credentials.
+
+**Never** store the `GATEWAY_ACCESS_KEY` or `NODE_SECRETS_XX` values in commit history, issues, or chat logs.
+
+---
+
+## 4. Add a new node
+
+1. Edit the matching `TIER*_NODES_CONFIG_XX` Variable — append the new node object, or split into a new shard if the existing shard is near 4500 bytes.
+2. Add the credential to a `NODE_SECRETS_XX` Secret (or create a new one if the shard is full).
+3. Push to `main` (or run the Deploy workflow).
+
+Nothing else needs to change. No other Variable, Secret, or shard is touched.
+
+---
+
+## 5. Edit a node
+
+Modify the matching `TIER*_NODES_CONFIG_XX` Variable. Common changes:
+
+- **URL or model mapping** → edit the node JSON, push.
+- **Priority / limits** → edit the node JSON, push.
+
+The Secret is untouched unless the credential itself is being rotated (see §6).
+
+---
+
+## 6. Rotate one API key
+
+1. Edit the `NODE_SECRETS_XX` Secret that contains the node. Update the value to a new JSON object with the new credential.
+2. Push to `main` (or run the Deploy workflow).
+
+Other `NODE_SECRETS_XX` shards and `GATEWAY_ACCESS_KEY` are untouched. The previous credential is replaced in Cloudflare in the same deploy.
+
+---
+
+## 7. Rotate the Gateway Access Key
+
+1. Edit the `GATEWAY_ACCESS_KEY` Secret in the repository.
+2. Push to `main` (or run the Deploy workflow).
+
+No `NODE_SECRETS_XX` is changed.
+
+---
+
+## 8. Run the workflow manually
+
+Use **Actions → Deploy → Run workflow**. The same validation, dry-run, secret sync, migration, deploy, and health-check sequence runs.
+
+---
+
+## 9. Automatic deploy on `main`
+
+The Deploy workflow runs on every push to `main` (documentation-only changes are ignored). A green check means the gateway is updated and the live health checks passed.
+
+---
+
+## 10. Configuration check
+
+Before pushing, validate the local configuration files:
 
 ```bash
-npm ci
-sh scripts/install.sh        # Windows: powershell scripts/install.ps1
+npm run config:check -- \
+  --tier1 config/tier1-nodes.example.json \
+  --tier2 config/tier2-nodes.example.json \
+  --secrets config/node-secrets.example.json
 ```
 
-They generate a gitignored `wrangler.user.jsonc`, shard node configuration, and upload Worker Secrets. This path is useful for bootstrapping, but it is not the production configuration source once GitHub Actions deployment is enabled.
+The CLI verifies JSON format, schema, duplicate node ids, node↔credential correspondence, and shard sizes, and prints a safe summary. The same check runs inside CI; failures fail the deploy.
+
+Inspect a deployed-shape summary of a single configuration:
 
 ```bash
-sh scripts/reconfigure.sh    # Windows: powershell scripts/reconfigure.ps1
+npm run config:show -- --tier1 ... --secrets ...
 ```
 
-Use reconfigure only to recover or bootstrap a local/operator deployment. A subsequent GitHub deployment replaces its Worker text variables from GitHub Variable `GATEWAY_CONFIG`.
-
-## Verification and operations
+Diff two configurations:
 
 ```bash
-npm run verify               # syntax + version + config checks + tests + secret scan
-npm run check:deploy         # local Wrangler dry-run using local operator config
-npm run bench                # gateway overhead benchmark smoke
-npx wrangler tail            # live logs
+npm run config:diff -- --old-tier1 old.json --new-tier1 new.json --old-secrets old.sec --new-secrets new.sec
 ```
 
-The authenticated `/health` response contains `diagnostics` when configuration is invalid. In production, the workflow validates that same configuration before deployment and checks the live endpoint afterward, so a generic Claude 500 response should be treated as a failed workflow/configuration incident, not as a Claude protocol problem.
+All three commands print only `configured` / `missing` for credentials — never the value.
 
-## Platform-level protection
+---
 
-The Worker intentionally does not implement its own global rate limiting. For abuse protection use Cloudflare's platform features:
+## 11. Rollback
 
-- **WAF custom rules** — block unwanted origins/paths before they reach the Worker.
-- **Rate limiting rules** — per-IP or per-header limits on `/v1/*`; also protect unauthenticated `GET /`.
-- **Security headers / Bot Fight Mode** as appropriate.
+1. Revert the commit on `main` (or push a new commit that restores the previous Variable / Secret values).
+2. The next Deploy restores the Worker to the previous code and the previous runtime variables.
 
-## CI behaviour
+For an emergency stop without a new push, use **Actions → Deploy → Run workflow** with the previous commit selected via `git checkout <sha>` followed by `git push`. A `git revert` + `git push` is the normal path.
 
-`.github/workflows/ci.yml` verifies every push and pull request. `.github/workflows/deploy.yml` runs independently on non-documentation pushes to `main`; it repeats the full verification before it changes D1, Worker Secrets, or the Worker. Tag pushes (`v*.*.*`) build release archives through `.github/workflows/release.yml`.
+The deploy job also cleans up `NODE_SECRETS_XX` shards that are no longer referenced by the current configuration, so a rollback that legitimately removes shards does not leave orphans in Cloudflare.
+
+---
+
+## 12. Troubleshooting
+
+**`ERROR: CLOUDFLARE_ACCOUNT_ID is missing from GitHub Repository Variables.`**
+Set the Variable (§2). The preflight name is the exact missing key.
+
+**`ERROR: GATEWAY_ACCESS_KEY is missing from GitHub Repository Secrets.`**
+Set the Secret (§3).
+
+**`ERROR: No TIER{1,2,3}_NODES_CONFIG_XX Variable is configured.`**
+Add at least one tier-config Variable with valid JSON (§2).
+
+**`ERROR: No NODE_SECRETS_XX Secret is configured.`**
+Add at least one `NODE_SECRETS_01` Secret with a JSON object `{ "node-id": "credential" }` (§3).
+
+**`D1 persistence disabled: TOKEN_STATS_D1_ID is not configured.`**
+Expected and harmless if you do not need durable token stats. To enable, set the `TOKEN_STATS_D1_ID` Variable.
+
+**`GATEWAY_CONFIG is deprecated.` / `GATEWAY_SECRETS_CONFIG is deprecated.`**
+You are still using the old single-blob format. Migrate to the individual Variables and Secrets (§2, §3). Use `npm run config:migrate` to generate the manifest.
+
+**Health check fails with `remote /health is not ready`.**
+Inspect `wrangler tail` for the deployed Worker. The access key in the `GATEWAY_ACCESS_KEY` Secret must match the one the runtime sees (Cloudflare Secret list shows the current value). A stale cache or an incomplete `secrets bulk` can cause this — re-run the workflow.
+
+**Worker deploy succeeds but `/v1/models` returns empty.**
+The current `TIER*_NODES_CONFIG_XX` declares nodes whose `models` map is empty (a wildcard) or whose `MODELS_CONFIG` registry overrides are invalid. Run `npm run config:check` locally to surface the exact error.
+
+---
+
+## 13. Migrating from the legacy single-blob format
+
+The previous design used one Variable (`GATEWAY_CONFIG`) and one Secret (`GATEWAY_SECRETS_CONFIG`) as big JSON blobs. They still work, but emit a deprecation warning and will be removed in a future release.
+
+To migrate:
+
+1. Parse the existing blobs:
+
+   ```bash
+   npm run config:migrate -- \
+     --gateway-config old-gateway-config.json \
+     --gateway-secrets old-gateway-secrets.json \
+     --out ./migrated
+   ```
+
+   This writes one file per shard into `./migrated/` (except `GATEWAY_ACCESS_KEY`, which is not written unless you also pass `--include-access-key`).
+
+2. In the GitHub repository, create the individual Variables and Secrets from the file names. Each file's contents go into the matching entry.
+
+3. Remove `GATEWAY_CONFIG` and `GATEWAY_SECRETS_CONFIG` from the repository only **after** the new Variables and Secrets are in place and a Deploy has succeeded end to end (preflight, dry-run, real deploy, `/health`, `/v1/models`, `count_tokens`, and a real model call).
+
+The deploy job never mixes the two formats: when individual Variables / Secrets are present, the legacy blob is ignored. When only the blob is present, the deploy reads the blob and prints a deprecation warning. Both formats cannot both be authoritative at once.
+
+Do not delete `GATEWAY_CONFIG` or `GATEWAY_SECRETS_CONFIG` before a successful end-to-end deploy on the new individual format.

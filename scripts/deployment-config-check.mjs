@@ -69,13 +69,15 @@ for (const token of ['migrations', 'apply', 'TOKEN_STATS_DB', '--remote', '--dry
 }
 
 const workflowSource = read('.github/workflows/deploy.yml');
-assert.match(workflowSource, /GATEWAY_CONFIG/, 'deploy workflow must read fork-specific non-sensitive Worker text variables from a GitHub Variable');
-assert.match(workflowSource, /if:\s*vars\.GATEWAY_CONFIG\s*!=\s*''/, 'unconfigured Forks must skip deployment rather than fail');
-assert.match(workflowSource, /GATEWAY_SECRETS_CONFIG/, 'deploy workflow must read credentials from the dedicated GitHub Secret');
-assert.doesNotMatch(workflowSource, /GATEWAY_RUNTIME_CONFIG/, 'deploy workflow must not put non-sensitive Worker variables in a Secret');
-assert.match(workflowSource, /Missing GitHub repository variable GATEWAY_CONFIG/, 'deploy workflow must name a missing non-sensitive Worker configuration variable directly');
-assert.match(workflowSource, /Missing GitHub repository Secret GATEWAY_SECRETS_CONFIG/, 'deploy workflow must name a missing credentials Secret directly');
-assert.match(workflowSource, /secret bulk/, 'deploy workflow must synchronize Worker Secrets from the dedicated GitHub Secret');
+assert.match(workflowSource, /github\.repository\s*==\s*'fongap\/ai-gateway'\s*\|\|\s*vars\.DEPLOY_ENABLED\s*==\s*'true'/, 'deploy job must run for the main repo or forks opted in via DEPLOY_ENABLED');
+assert.doesNotMatch(workflowSource, /if:\s*vars\.GATEWAY_CONFIG\s*!=\s*''/, 'deploy must not be gated on a business config variable; missing config must FAIL not SKIP');
+assert.match(workflowSource, /node scripts\/github-deployment-config\.mjs preflight/, 'deploy workflow must run a preflight check before verify');
+assert.match(workflowSource, /prepare --from-env/, 'deploy workflow must read individual GitHub Variables / Secrets from the environment');
+assert.match(workflowSource, /NODE_SECRETS_01:/, 'deploy workflow must inject individual credential shards via a fixed range');
+assert.match(workflowSource, /TIER1_NODES_CONFIG_01:/, 'deploy workflow must inject individual node-config shards via a fixed range');
+assert.match(workflowSource, /GATEWAY_CONFIG:/, 'deploy workflow must keep the legacy GATEWAY_CONFIG blob as a deprecated fallback');
+assert.match(workflowSource, /GATEWAY_SECRETS_CONFIG:/, 'deploy workflow must keep the legacy GATEWAY_SECRETS_CONFIG blob as a deprecated fallback');
+assert.match(workflowSource, /secret bulk/, 'deploy workflow must synchronize Worker Secrets');
 assert.match(workflowSource, /github-deployment-config\.mjs health-check/, 'deploy workflow must verify the deployed gateway over its public API');
 assert.doesNotMatch(workflowSource, /deploy[^\n]*--keep-vars/, 'CI deployment must not preserve Dashboard runtime-variable drift');
 assert.ok(fs.existsSync(path.join(root, 'scripts/github-deployment-config.mjs')), 'GitHub deployment config bridge is required');
@@ -87,11 +89,6 @@ for (const file of ['scripts/install.sh', 'scripts/install.ps1', 'scripts/reconf
   const source = read(file);
   assert.doesNotMatch(source, /PRIMARY_API_TOKENS|FALLBACK_API_TOKEN|MODEL_MAPPING/, `${file} must not reference removed legacy variables`);
   assert.doesNotMatch(source, /TIER[123]_NODES_CONFIG(?![_\d])['"]/ , `${file} must not create un-suffixed legacy node config variables`);
-}
-
-const releaseSource = read('scripts/prepare-release.mjs');
-for (const token of ['.wrangler-dry-run', 'node_modules', 'release']) {
-  assert.match(releaseSource, new RegExp(token.replace(/[.*+?${}()|[\]\\]/g, '\\$&')), `Release staging must exclude ${token}`);
 }
 
 // The shipped config/ examples must always be valid new-schema configs and

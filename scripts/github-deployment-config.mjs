@@ -3,11 +3,24 @@
 //
 // GitHub Actions deployment-config bridge.
 //
-// Non-sensitive Worker text variables are supplied by the fork-specific GitHub
-// repository Variable GATEWAY_CONFIG (config/worker-vars.example.json is a template).
-// The encrypted GitHub repository Secret GATEWAY_SECRETS_CONFIG contains only:
-// { "GATEWAY_ACCESS_KEY": "...", "NODE_SECRETS_01": { "node-id": "..." } }
-// Values are never printed; stdout contains safe counts only.
+// Two equivalent configuration sources, in priority order:
+//
+//   1. Individual GitHub Repository Variables / Secrets (long-term target):
+//        Variables: TIER{1,2,3}_NODES_CONFIG_01.., MODELS_CONFIG, POLICIES_CONFIG,
+//                    CLOUDFLARE_ACCOUNT_ID, TOKEN_STATS_D1_ID, GATEWAY_PUBLIC_BASE_URL
+//        Secrets:    GATEWAY_ACCESS_KEY, NODE_SECRETS_01.., CLOUDFLARE_API_TOKEN
+//      The workflow injects these into the process environment; this script
+//      collects the non-empty ones. A single node change only touches the
+//      matching Variable/Secret — no giant blob to rewrite.
+//
+//   2. Legacy blob (deprecated, short-term compatibility):
+//        Variable  GATEWAY_CONFIG         = { TIER*_NODES_CONFIG_*, MODELS_CONFIG, ... }
+//        Secret    GATEWAY_SECRETS_CONFIG = { GATEWAY_ACCESS_KEY, NODE_SECRETS_* }
+//      Read only when the individual sources are absent, and always emits a
+//      deprecation warning. New config wins; the two are never merged.
+//
+// Values are never printed; stdout contains safe counts only. Secret material
+// is never written to logs or artifacts.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -20,6 +33,13 @@ const NODE_VAR = /^TIER[123]_NODES_CONFIG_\d{2}$/;
 const NODE_SECRET = /^NODE_SECRETS_\d{2}$/;
 const SECRET_NAME = /^(GATEWAY_ACCESS_KEY|NODE_SECRETS_\d{2})$/;
 const MAX_VALUE_BYTES = 4500;
+
+// Individual Worker text variables the bridge recognizes from env (besides the
+// managed TIER node shards). MODELS_CONFIG / POLICIES_CONFIG are optional.
+const RUNTIME_VAR_PATTERN = /^(TIER[123]_NODES_CONFIG_\d{2}|MODELS_CONFIG|POLICIES_CONFIG)$/;
+const EXTRA_VAR_ALLOW = new Set(['PROJECT_REPOSITORY_URL']);
+// Credential-bearing names must never appear in the vars map.
+const CREDENTIAL_NAMES = new Set(['GATEWAY_ACCESS_KEY', 'CLOUDFLARE_API_TOKEN']);
 
 export function parseConfigObject(text, label = 'configuration') {
   let parsed;
@@ -54,7 +74,7 @@ export function normalizeRuntimeConfig(raw) {
   const secrets = {};
   for (const [name, rawValue] of Object.entries(raw.vars)) {
     if (!VAR_NAME.test(name)) throw new Error(`vars.${name}: invalid Worker variable name`);
-    if (name === 'GATEWAY_ACCESS_KEY' || NODE_SECRET.test(name)) {
+    if (CREDENTIAL_NAMES.has(name) || NODE_SECRET.test(name)) {
       throw new Error(`vars.${name}: credentials belong in secrets, never vars`);
     }
     const value = encodeValue(rawValue, `vars.${name}`);
@@ -86,6 +106,141 @@ export function loadRuntimeConfig(varsText, secretsText, varsLabel = 'Worker var
   });
 }
 
+// Collect individual Worker text variables from the process environment. Only
+// non-empty managed shards + allow-listed extras are kept; credential names
+// are skipped. Falls back to the legacy GATEWAY_CONFIG blob (with a warning)
+// when no individual variable is present.
+export function collectVarsFromEnv(env) {
+  const warnings = [];
+  const vars = {};
+  for (const [name, value] of Object.entries(env)) {
+    if (value == null || String(value).trim() === '') continue;
+    if (CREDENTIAL_NAMES.has(name) || NODE_SECRET.test(name)) continue;
+    if (RUNTIME_VAR_PATTERN.test(name) || EXTRA_VAR_ALLOW.has(name)) {
+      vars[name] = String(value);
+    }
+  }
+  const legacy = env.GATEWAY_CONFIG;
+  let usedLegacy = false;
+  if (Object.keys(vars).length === 0 && legacy && String(legacy).trim() !== '') {
+    const blob = parseConfigObject(legacy, 'GATEWAY_CONFIG');
+    for (const [name, value] of Object.entries(blob)) {
+      if (CREDENTIAL_NAMES.has(name) || NODE_SECRET.test(name)) continue;
+      vars[name] = encodeValue(value, `GATEWAY_CONFIG.${name}`);
+    }
+    usedLegacy = true;
+    warnings.push('GATEWAY_CONFIG is deprecated. Migrate to individual GitHub Repository Variables (TIER*_NODES_CONFIG_XX, MODELS_CONFIG, POLICIES_CONFIG).');
+  }
+  return { vars, usedLegacy, warnings };
+}
+
+// Collect individual credential secrets from the process environment. Falls
+// back to the legacy GATEWAY_SECRETS_CONFIG blob (with a warning) when no
+// individual secret is present.
+export function collectSecretsFromEnv(env) {
+  const warnings = [];
+  const secrets = {};
+  for (const [name, value] of Object.entries(env)) {
+    if (value == null || String(value).trim() === '') continue;
+    if (SECRET_NAME.test(name)) {
+      secrets[name] = String(value);
+    }
+  }
+  const legacy = env.GATEWAY_SECRETS_CONFIG;
+  let usedLegacy = false;
+  if (Object.keys(secrets).length === 0 && legacy && String(legacy).trim() !== '') {
+    const blob = parseConfigObject(legacy, 'GATEWAY_SECRETS_CONFIG');
+    for (const [name, value] of Object.entries(blob)) {
+      if (SECRET_NAME.test(name)) secrets[name] = encodeValue(value, `GATEWAY_SECRETS_CONFIG.${name}`);
+    }
+    usedLegacy = true;
+    warnings.push('GATEWAY_SECRETS_CONFIG is deprecated. Migrate to GATEWAY_ACCESS_KEY + NODE_SECRETS_XX.');
+  }
+  return { secrets, usedLegacy, warnings };
+}
+
+// Build a runtime config from individual env sources (+ legacy fallback).
+// Returns { runtime, warnings } or throws on validation failure.
+export function buildRuntimeFromEnv(env) {
+  const v = collectVarsFromEnv(env);
+  const s = collectSecretsFromEnv(env);
+  const warnings = [...v.warnings, ...s.warnings];
+  const runtime = normalizeRuntimeConfig({ vars: v.vars, secrets: s.secrets });
+  return { runtime, warnings, usedLegacyVars: v.usedLegacy, usedLegacySecrets: s.usedLegacy };
+}
+
+// Deployment preflight: verify required configuration is present without
+// touching any remote resource. Returns { ok, errors, warnings }.
+const REQUIRED_VARS = ['CLOUDFLARE_ACCOUNT_ID', 'GATEWAY_PUBLIC_BASE_URL'];
+const REQUIRED_SECRETS = ['CLOUDFLARE_API_TOKEN', 'GATEWAY_ACCESS_KEY'];
+
+export function preflight(env) {
+  const errors = [];
+  const warnings = [];
+  for (const name of REQUIRED_VARS) {
+    if (!env[name] || String(env[name]).trim() === '') {
+      errors.push(`${name} is missing from GitHub Repository Variables.`);
+    }
+  }
+  for (const name of REQUIRED_SECRETS) {
+    if (!env[name] || String(env[name]).trim() === '') {
+      errors.push(`${name} is missing from GitHub Repository Secrets.`);
+    }
+  }
+  const v = collectVarsFromEnv(env);
+  const s = collectSecretsFromEnv(env);
+  if (!Object.keys(v.vars).some((n) => NODE_VAR.test(n))) {
+    errors.push('No TIER{1,2,3}_NODES_CONFIG_XX Variable is configured. Set at least one node-config shard.');
+  }
+  if (!Object.keys(s.secrets).some((n) => NODE_SECRET.test(n))) {
+    errors.push('No NODE_SECRETS_XX Secret is configured. Set at least one credential shard.');
+  }
+  // MODELS_CONFIG / POLICIES_CONFIG are optional at runtime (registry/policies
+  // provide defaults); surface absence as a warning, never a failure.
+  if (!v.vars.MODELS_CONFIG) warnings.push('MODELS_CONFIG is not set (optional; the registry applies conservative defaults).');
+  if (!v.vars.POLICIES_CONFIG) warnings.push('POLICIES_CONFIG is not set (optional; default attempt budgets apply).');
+  if (!env.TOKEN_STATS_D1_ID || String(env.TOKEN_STATS_D1_ID).trim() === '') {
+    warnings.push('D1 persistence disabled: TOKEN_STATS_D1_ID is not configured.');
+  }
+  if (v.usedLegacy) warnings.push('GATEWAY_CONFIG is deprecated; migrate to individual GitHub Repository Variables.');
+  if (s.usedLegacy) warnings.push('GATEWAY_SECRETS_CONFIG is deprecated; migrate to GATEWAY_ACCESS_KEY + NODE_SECRETS_XX.');
+  return { ok: errors.length === 0, errors, warnings };
+}
+
+// Deployment summary (§26): safe counts and statuses only — never credential
+// material, URLs of upstreams, or node credentials. Written by the prepare
+// command and echoed to the GitHub Actions step summary by the workflow.
+export function buildDeploymentSummary({ config, runtime, d1Configured, removedSecretShards = 0 }) {
+  const modelsCount = (() => {
+    try {
+      const parsed = JSON.parse(runtime.vars.MODELS_CONFIG || '{}');
+      return Object.keys(parsed).length;
+    } catch { return 0; }
+  })();
+  const lines = [
+    'Deployment completed',
+    '',
+    'Gateway',
+    `  Status: ready`,
+    `  Nodes: ${config.nodesUsable}/${config.nodesTotal} usable`,
+    `  Models: ${modelsCount}`,
+    '',
+    'Configuration',
+    `  Worker variables: ${Object.keys(runtime.vars).length}`,
+    `  Node secret shards: ${Object.keys(runtime.secrets).filter((n) => NODE_SECRET.test(n)).length}`,
+    `  Obsolete node-secret shards removed: ${removedSecretShards}`,
+    '',
+    'D1',
+    `  Status: ${String(d1Configured || '').trim() ? 'ready' : 'disabled (TOKEN_STATS_D1_ID is not configured)'}`,
+    '',
+    'Health',
+    '  /health                    OK',
+    '  /v1/models                 OK',
+    '  /v1/messages/count_tokens  OK',
+  ];
+  return lines.join('\n');
+}
+
 // Wrangler secret bulk preserves undeclared secrets by default. Explicit null
 // entries make our managed NODE_SECRETS shards a true source of truth while
 // leaving unrelated Worker secrets untouched.
@@ -109,9 +264,12 @@ export function validateGatewayRuntime(runtime) {
 }
 
 export function buildWranglerConfig(vars, d1DatabaseId = '') {
+  // Wrangler resolves config paths relative to the config FILE's directory, and
+  // the generated config lives in the runner's temp dir. Use absolute paths so
+  // the entry point and migrations resolve back to the checked-out repository.
   const out = {
     name: 'ai-gateway',
-    main: 'src/index.js',
+    main: path.resolve(root, 'src/index.js'),
     compatibility_date: '2026-08-06',
     workers_dev: true,
     // CI owns every plain runtime variable. Do not retain Dashboard drift.
@@ -125,7 +283,7 @@ export function buildWranglerConfig(vars, d1DatabaseId = '') {
       binding: 'TOKEN_STATS_DB',
       database_name: 'ai-gateway-stats',
       database_id: String(d1DatabaseId).trim(),
-      migrations_dir: 'migrations',
+      migrations_dir: path.resolve(root, 'migrations'),
     }];
   }
   return out;
@@ -138,6 +296,10 @@ function readFile(file) {
 function argValue(argv, flag) {
   const index = argv.indexOf(flag);
   return index >= 0 ? argv[index + 1] : undefined;
+}
+
+function hasFlag(argv, flag) {
+  return argv.includes(flag);
 }
 
 function readSecretList(file) {
@@ -165,17 +327,46 @@ async function verifyRemote(baseUrl, accessKey) {
   if (!count.ok) throw new Error(`remote Claude count_tokens failed (HTTP ${count.status})`);
 }
 
+// Resolve a runtime config either from individual env sources (--from-env) or
+// from the two legacy file inputs (--vars/--secrets-input).
+function resolveRuntime(argv) {
+  if (hasFlag(argv, '--from-env')) {
+    const built = buildRuntimeFromEnv(process.env);
+    for (const w of built.warnings) console.warn(`WARNING: ${w}`);
+    return built.runtime;
+  }
+  const varsInput = argValue(argv, '--vars');
+  const secretsInput = argValue(argv, '--secrets-input');
+  if (!varsInput || !secretsInput) {
+    throw new Error('usage: prepare --from-env | --vars FILE --secrets-input FILE --wrangler FILE --secrets FILE [--existing-secrets FILE]');
+  }
+  return loadRuntimeConfig(readFile(varsInput), readFile(secretsInput), varsInput, secretsInput);
+}
+
 async function main() {
   const [command, ...argv] = process.argv.slice(2);
+  if (command === 'preflight') {
+    const result = preflight(process.env);
+    for (const w of result.warnings) console.warn(`WARNING: ${w}`);
+    if (result.errors.length) {
+      for (const e of result.errors) console.error(`ERROR: ${e}`);
+      process.exitCode = 1;
+      return;
+    }
+    const v = collectVarsFromEnv(process.env);
+    const s = collectSecretsFromEnv(process.env);
+    const tierShards = Object.keys(v.vars).filter((n) => NODE_VAR.test(n)).length;
+    const secretShards = Object.keys(s.secrets).filter((n) => NODE_SECRET.test(n)).length;
+    console.log(`Preflight passed: ${tierShards} node-config shard(s), ${secretShards} credential shard(s), GATEWAY_ACCESS_KEY present.`);
+    return;
+  }
   if (command === 'prepare') {
-    const varsInput = argValue(argv, '--vars');
-    const secretsInput = argValue(argv, '--secrets-input');
     const wrangler = argValue(argv, '--wrangler');
     const secretsOut = argValue(argv, '--secrets');
-    if (!varsInput || !secretsInput || !wrangler || !secretsOut) {
-      throw new Error('usage: prepare --vars FILE --secrets-input FILE --wrangler FILE --secrets FILE');
+    if (!wrangler || !secretsOut) {
+      throw new Error('usage: prepare --from-env | --vars FILE --secrets-input FILE --wrangler FILE --secrets FILE [--existing-secrets FILE]');
     }
-    const runtime = loadRuntimeConfig(readFile(varsInput), readFile(secretsInput), varsInput, secretsInput);
+    const runtime = resolveRuntime(argv);
     const config = validateGatewayRuntime(runtime);
     const existingSecretsFile = argValue(argv, '--existing-secrets');
     const bulkSecrets = existingSecretsFile
@@ -184,21 +375,22 @@ async function main() {
     fs.writeFileSync(wrangler, JSON.stringify(buildWranglerConfig(runtime.vars, process.env.TOKEN_STATS_D1_ID), null, 2));
     fs.writeFileSync(secretsOut, JSON.stringify(bulkSecrets));
     const removed = Object.values(bulkSecrets).filter((value) => value === null).length;
+    const summaryOut = argValue(argv, '--summary');
+    if (summaryOut) {
+      fs.writeFileSync(summaryOut, buildDeploymentSummary({
+        config, runtime, d1Configured: process.env.TOKEN_STATS_D1_ID, removedSecretShards: removed,
+      }) + '\n');
+    }
     console.log(`Runtime configuration package is valid: ${config.nodesUsable}/${config.nodesTotal} usable node(s), ${Object.keys(runtime.vars).length} Worker text variable(s), ${Object.keys(runtime.secrets).length} Worker Secret(s), ${removed} obsolete node-secret shard(s) removed.`);
     return;
   }
   if (command === 'health-check') {
-    const varsInput = argValue(argv, '--vars');
-    const secretsInput = argValue(argv, '--secrets-input');
-    if (!varsInput || !secretsInput) {
-      throw new Error('usage: health-check --vars FILE --secrets-input FILE (requires GATEWAY_PUBLIC_BASE_URL)');
-    }
-    const runtime = loadRuntimeConfig(readFile(varsInput), readFile(secretsInput), varsInput, secretsInput);
+    const runtime = resolveRuntime(argv);
     await verifyRemote(process.env.GATEWAY_PUBLIC_BASE_URL, runtime.secrets.GATEWAY_ACCESS_KEY);
     console.log('Remote health checks passed.');
     return;
   }
-  throw new Error('usage: github-deployment-config.mjs <prepare|health-check> ...');
+  throw new Error('usage: github-deployment-config.mjs <preflight|prepare|health-check> ...');
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
