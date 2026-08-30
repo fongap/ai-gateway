@@ -35,8 +35,9 @@ const SECRET_NAME = /^(GATEWAY_ACCESS_KEY|NODE_SECRETS_\d{2})$/;
 const MAX_VALUE_BYTES = 4500;
 
 // Individual Worker text variables the bridge recognizes from env (besides the
-// managed TIER node shards). MODELS_CONFIG / POLICIES_CONFIG are optional.
-const RUNTIME_VAR_PATTERN = /^(TIER[123]_NODES_CONFIG_\d{2}|MODELS_CONFIG|POLICIES_CONFIG)$/;
+// managed TIER node shards). MODELS_CONFIG / POLICIES_CONFIG are optional;
+// RATE_LIMIT_COOLDOWN_MS is an optional runtime tunable.
+const RUNTIME_VAR_PATTERN = /^(TIER[123]_NODES_CONFIG_\d{2}|MODELS_CONFIG|POLICIES_CONFIG|RATE_LIMIT_COOLDOWN_MS)$/;
 const EXTRA_VAR_ALLOW = new Set(['PROJECT_REPOSITORY_URL']);
 // Credential-bearing names must never appear in the vars map.
 const CREDENTIAL_NAMES = new Set(['GATEWAY_ACCESS_KEY', 'CLOUDFLARE_API_TOKEN']);

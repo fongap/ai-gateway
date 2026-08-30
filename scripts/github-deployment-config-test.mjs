@@ -61,6 +61,7 @@ function envFixture({ legacy = false } = {}) {
     CLOUDFLARE_ACCOUNT_ID: 'acct',
     TOKEN_STATS_D1_ID: 'd1-id',
     GATEWAY_PUBLIC_BASE_URL: 'https://gw.example.com',
+    RATE_LIMIT_COOLDOWN_MS: '15000',
     MODELS_CONFIG: JSON.stringify({ 'code-pro': { policy: 'default' } }),
     POLICIES_CONFIG: JSON.stringify({ default: { max_attempts: 5 } }),
     TIER1_NODES_CONFIG_01: JSON.stringify([{ id: 'node-a', base_url: 'https://provider.example.com/v1', models: { 'code-pro': 'up' } }]),
@@ -72,6 +73,7 @@ function envFixture({ legacy = false } = {}) {
     delete env.TIER1_NODES_CONFIG_01;
     delete env.MODELS_CONFIG;
     delete env.POLICIES_CONFIG;
+    delete env.RATE_LIMIT_COOLDOWN_MS;
     delete env.GATEWAY_ACCESS_KEY;
     delete env.NODE_SECRETS_01;
     env.GATEWAY_CONFIG = JSON.stringify({
@@ -93,6 +95,7 @@ function envFixture({ legacy = false } = {}) {
   const c = validateGatewayRuntime(built.runtime);
   assert.equal(c.ready, true);
   assert.equal(JSON.parse(built.runtime.vars.TIER1_NODES_CONFIG_01)[0].id, 'node-a');
+  assert.equal(built.runtime.vars.RATE_LIMIT_COOLDOWN_MS, '15000', 'runtime tunable passthrough');
   assert.equal(JSON.parse(built.runtime.secrets.NODE_SECRETS_01)['node-a'], 'upstream-key');
 }
 
