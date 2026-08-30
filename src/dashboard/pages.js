@@ -259,22 +259,25 @@ a{color:var(--blue);text-decoration:none}
 .model-usage-row:hover,.model-usage-row:focus-visible{background:rgba(0,0,0,.025);outline-color:rgba(0,0,0,.06)}
 .model-usage-row:focus-visible{outline:2px solid var(--blue);outline-offset:0}
 .model-usage-name{color:#4a525d;word-break:break-all}
+/* Per-model swatch: links each bar row to its donut segment color */
+.model-usage-swatch{display:inline-block;width:8px;height:8px;border-radius:50%;
+  margin-right:8px;vertical-align:0}
 .model-usage-bar{height:6px;background:#eef1f3;border-radius:999px;overflow:hidden}
 .model-usage-bar i{display:block;height:100%;background:var(--blue);border-radius:999px;
   transition:width 120ms ease}
 .model-usage-value{color:var(--text);text-align:right;font-size:12px;font-variant-numeric:tabular-nums}
 
 /* Model usage body: donut ring and bar list side by side (stacked on mobile) */
-.model-usage-body{display:flex;align-items:center;gap:24px}
+.model-usage-body{display:flex;align-items:center;gap:28px}
 /* Model usage donut · 近 7 天: SVG ring, token share per model */
-.model-usage-donut{position:relative;width:148px;height:148px;flex:0 0 auto;margin:0}
+.model-usage-donut{position:relative;width:180px;height:180px;flex:0 0 auto;margin:0}
 .donut-svg{width:100%;height:100%;display:block}
 .donut-seg{transition:opacity 120ms ease,stroke-width 120ms ease;cursor:default}
 .donut-seg:hover,.donut-seg:focus-visible{opacity:.85;stroke-width:19}
 .donut-seg:focus-visible{outline:none}
 .donut-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
   justify-content:center;pointer-events:none;text-align:center}
-.donut-center strong{font-size:20px;font-weight:600;color:var(--text);line-height:1.1;
+.donut-center strong{font-size:22px;font-weight:600;color:var(--text);line-height:1.1;
   font-variant-numeric:tabular-nums}
 .donut-center span{font-size:11px;color:var(--faint);margin-top:2px}
 
@@ -328,7 +331,7 @@ button.copy:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
    .model-usage-row{grid-template-columns:minmax(84px,1fr) 76px max-content;gap:8px}
    .activity{padding:16px}
    .model-usage-body{flex-direction:column;align-items:stretch}
-   .model-usage-donut{margin:0 auto 8px}
+   .model-usage-donut{width:148px;height:148px;margin:0 auto 8px}
   .snippet pre{white-space:pre-wrap;word-break:break-all;padding-right:17px}
   .snippet .copy{position:static;margin:8px 12px 0}
   .site-footer{flex-direction:column;align-items:flex-start;gap:4px}
@@ -680,15 +683,17 @@ function renderModelUsage(modelUsage) {
   }
   // Donut ring: each model's share of total tokens in the 7-day window.
   const donut = renderModelDonut(rows);
-  // Build a compact ranked row: name, short comparison bar, then Token count.
+  // Build a compact ranked row: name (with a donut-matching color swatch),
+  // comparison bar in the same per-model color, then the Token count.
   // Bar width is relative to the max in this window, not a percentage share.
   const max = rows.reduce((m, r) => (r.total > m ? r.total : m), 0);
-  const items = rows.map((r) => {
+  const items = rows.map((r, i) => {
+    const color = DONUT_COLORS[i % DONUT_COLORS.length];
     const pct = max > 0 ? Math.max(2, Math.round((r.total / max) * 100)) : 0;
     const exactTitle = `${fmtTokens(r.total)} Token · ${fmtInt(r.requests)} 次请求`;
     return `<li class="model-usage-row" data-tooltip="${escapeHtml(exactTitle)}" tabindex="0" aria-label="${escapeHtml(exactTitle)}">` +
-      `<span class="model-usage-name">${escapeHtml(r.model)}</span>` +
-      `<span class="model-usage-bar" aria-hidden="true"><i style="width:${pct}%"></i></span>` +
+      `<span class="model-usage-name"><i class="model-usage-swatch" style="background:${color}" aria-hidden="true"></i>${escapeHtml(r.model)}</span>` +
+      `<span class="model-usage-bar" aria-hidden="true"><i style="width:${pct}%;background:${color}"></i></span>` +
       `<span class="model-usage-value">${fmtTokens(r.total)}</span>` +
       `<span class="sr-only">${escapeHtml(exactTitle)}</span></li>`;
   }).join('');

@@ -293,7 +293,9 @@ await test('模型使用 · 近 7 天 renders one row per model with bars plus a
   assert.ok(html.includes('>code-max<'), 'top model name shown');
   assert.ok(html.includes('>ultra<'), 'second model name shown');
   assert.ok(html.includes('model-usage-bar'), 'bar element present');
-  assert.match(html, /<i style="width:\d+%"><\/i>/, 'bar width set');
+  assert.match(html, /<i style="width:\d+%;background:#[0-9a-f]+"><\/i>/, 'bar width and per-model color set');
+  assert.ok(html.includes('model-usage-swatch'), 'per-model color swatch present');
+  assert.ok(html.includes('background:#087bbd'), 'first model uses the first donut color in list and ring');
   assert.ok(html.includes('data-tooltip='), 'rows expose a tooltip');
   assert.ok(html.includes('model-usage-value'), 'each row shows its token total');
   assert.ok(html.includes('model-usage-donut'), 'donut ring container present');
