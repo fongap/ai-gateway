@@ -1874,6 +1874,139 @@ await test('hedge: single candidate means no twin and normal behavior', async ()
   assert.equal(upstreamCalls.length, 1, 'no twin without a second candidate');
 });
 
+// A stream whose first byte arrives only after delayMs, then all events at
+// once — lets a test separate header latency from time-to-first-event.
+const delayedFirstEventSse = (delayMs, events) => {
+  const encoder = new TextEncoder();
+  return new ReadableStream({
+    async start(controller) {
+      await new Promise((r) => setTimeout(r, delayMs));
+      for (const e of events) {
+        controller.enqueue(encoder.encode(`data: ${typeof e === 'string' ? e : JSON.stringify(e)}\n\n`));
+      }
+      controller.close();
+    },
+  });
+};
+
+await test('hedge: double failure still charges the twin tier slot', async () => {
+  resetMock();
+  installMockFetch();
+  // Primary is still awaiting headers when the hedge fires; the twin fails
+  // fast and the primary fails slow. Both contacted an upstream, so BOTH tier
+  // slots must be charged even though neither produced a response — otherwise
+  // tier1 (cap=2) gets a third dispatch its budget never funded.
+  routeHandlers['df-slow.example.com'] = async () => {
+    await new Promise((r) => setTimeout(r, 400));
+    return jsonUpstream({}, 500);
+  };
+  routeHandlers['df-fast.example.com'] = () => jsonUpstream({}, 500);
+  routeHandlers['df-third.example.com'] = () => jsonUpstream({}, 500);
+  const env = makeEnv({
+    tier1: [basicNode('df-slow'), basicNode('df-fast'), basicNode('df-third')],
+    secrets: { 'df-slow': 'k', 'df-fast': 'k', 'df-third': 'k' },
+    extraEnv: {
+      HEDGE_DELAY_MS: '100',
+      FAILOVER_BUDGET_MS: '30000',
+      MODELS_CONFIG: JSON.stringify({ 'general-air': { policy: 'fast' } }),
+      POLICIES_CONFIG: JSON.stringify({ fast: { max_attempts: 5, tier_attempts: { tier1: 2 } } }),
+    },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 502);
+  const hosts = upstreamCalls.map((c) => c.host);
+  assert.deepEqual(hosts, ['df-slow.example.com', 'df-fast.example.com'],
+    `tier cap=2 funds exactly two dispatches even when primary and twin both fail (got ${hosts.length}: ${hosts.join(', ')})`);
+});
+
+await test('hedge: no twin when the shared budget only funds the in-flight primary', async () => {
+  resetMock();
+  installMockFetch();
+  // max_attempts=2: mb1 fails fast (attempt 1), mb2 is the IN-FLIGHT attempt 2.
+  // While mb2 flies, its slot is uncharged, so a completed-attempts-only check
+  // (1 < 2) would launch a twin and yield a 3rd upstream dispatch. The guard
+  // must count the flying attempt and refuse.
+  routeHandlers['mb1.example.com'] = () => jsonUpstream({}, 500);
+  routeHandlers['mb2.example.com'] = async () => {
+    await new Promise((r) => setTimeout(r, 400));
+    return jsonUpstream(okCompletion());
+  };
+  routeHandlers['mb3.example.com'] = () => jsonUpstream({}, 500);
+  const env = makeEnv({
+    tier1: [basicNode('mb1'), basicNode('mb2'), basicNode('mb3')],
+    secrets: { mb1: 'k', mb2: 'k', mb3: 'k' },
+    extraEnv: {
+      HEDGE_DELAY_MS: '100',
+      FAILOVER_BUDGET_MS: '30000',
+      MODELS_CONFIG: JSON.stringify({ 'general-air': { policy: 'fast' } }),
+      POLICIES_CONFIG: JSON.stringify({ fast: { max_attempts: 2 } }),
+    },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).choices?.[0]?.message?.content, 'hello');
+  assert.deepEqual(upstreamCalls.map((c) => c.host), ['mb1.example.com', 'mb2.example.com'],
+    'max_attempts=2 must cap the whole request at two upstream dispatches');
+});
+
+await test('hedge: a tier cap of 1 leaves no room for a twin', async () => {
+  resetMock();
+  installMockFetch();
+  // tier_attempts tier1=1 funds exactly the primary; launching a twin would be
+  // a second dispatch from a tier that pays for one.
+  routeHandlers['tc1.example.com'] = async () => {
+    await new Promise((r) => setTimeout(r, 400));
+    return jsonUpstream(okCompletion());
+  };
+  routeHandlers['tc2.example.com'] = () => jsonUpstream({}, 500);
+  const env = makeEnv({
+    tier1: [basicNode('tc1'), basicNode('tc2')],
+    secrets: { tc1: 'k', tc2: 'k' },
+    extraEnv: {
+      HEDGE_DELAY_MS: '100',
+      FAILOVER_BUDGET_MS: '30000',
+      MODELS_CONFIG: JSON.stringify({ 'general-air': { policy: 'fast' } }),
+      POLICIES_CONFIG: JSON.stringify({ fast: { max_attempts: 5, tier_attempts: { tier1: 1 } } }),
+    },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 200);
+  assert.equal(upstreamCalls.length, 1, 'no twin when the tier budget cannot fund both slots');
+});
+
+await test('scheduler uses measured TTFT, not header latency, once both are known', async () => {
+  resetMock();
+  installMockFetch();
+  // tt-a answers headers fast (~30ms) but stalls ~600ms before the first
+  // token; tt-b answers headers slow (~200ms) and streams immediately. Header
+  // latency alone prefers tt-a; TTFT must prefer tt-b once both have measured
+  // a first event.
+  routeHandlers['tt-a.example.com'] = async () => {
+    await new Promise((r) => setTimeout(r, 30));
+    return new Response(delayedFirstEventSse(600, [chunk('ok'), 'data: [DONE]']),
+      { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  routeHandlers['tt-b.example.com'] = async () => {
+    await new Promise((r) => setTimeout(r, 200));
+    return sseResponse([chunk('ok'), 'data: [DONE]']);
+  };
+  const env = makeEnv({
+    tier1: [basicNode('tt-a'), basicNode('tt-b')],
+    secrets: { 'tt-a': 'k', 'tt-b': 'k' },
+    extraEnv: { FAILOVER_BUDGET_MS: '30000' },
+  });
+  // Request 1: both unmeasured, list order wins -> tt-a. Request 2: tt-b is
+  // the only untouched (LRU) candidate -> tt-b. Request 3: both have TTFT
+  // measurements -> tt-b (fast first token) despite slower headers.
+  for (const expected of ['tt-a', 'tt-b', 'tt-b']) {
+    const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
+    assert.equal(res.status, 200);
+    assert.ok((await streamText(res)).includes('ok'));
+    assert.equal(upstreamCalls.at(-1).host, `${expected}.example.com`,
+      `request ${upstreamCalls.length} must land on ${expected}`);
+  }
+});
+
 if (!process.exitCode) console.log(`
 integration tests passed (${passed}).`);
 else process.exit(1);

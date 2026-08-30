@@ -8,8 +8,9 @@
 //   valid config -> model supported -> circuit available -> cooldown expired
 //   -> concurrency available -> not already attempted in this request
 // then the best candidate is picked with a single O(n) pass:
-//   priority ASC -> activeRequests ASC -> health DESC (band) -> rolling-latency
-//   preference (decisive EWMA advantage) -> lastUsedAt ASC (LRU) -> avg latency
+//   priority ASC -> activeRequests ASC -> health DESC (band) -> first-token
+//   latency preference (TTFT EWMA when measured, header-latency EWMA as
+//   fallback; decisive advantage only) -> lastUsedAt ASC (LRU) -> avg latency
 //   ASC
 //
 // The LRU tiebreak spreads sequential traffic across equal-priority free keys
@@ -150,18 +151,35 @@ const HEALTH_TIE_BAND = 10;
 // sheds traffic automatically and rejoins the rotation when it recovers.
 const LATENCY_ADVANTAGE_FACTOR = 1.5;
 
+// Streaming is the dominant LLM workload, and what the client feels is when
+// tokens START, not when response headers arrive: a node can answer headers in
+// 100ms and then stall seconds before the first token. When both candidates
+// have measured a first event, TTFT decides. Header-latency EWMA stays as the
+// fallback for candidates that have not (e.g. non-stream traffic only); 0
+// remains neutral, so fresh nodes still receive traffic and learn their speed.
+function latencyPreference(a, b) {
+  if (a.avgTtftMs > 0 && b.avgTtftMs > 0) {
+    if (a.avgTtftMs <= b.avgTtftMs / LATENCY_ADVANTAGE_FACTOR) return true;
+    if (b.avgTtftMs <= a.avgTtftMs / LATENCY_ADVANTAGE_FACTOR) return false;
+    return null;
+  }
+  if (a.avgLatencyMs > 0 && b.avgLatencyMs > 0) {
+    if (a.avgLatencyMs <= b.avgLatencyMs / LATENCY_ADVANTAGE_FACTOR) return true;
+    if (b.avgLatencyMs <= a.avgLatencyMs / LATENCY_ADVANTAGE_FACTOR) return false;
+  }
+  return null;
+}
+
 function betterThan(a, aNode, b, bNode) {
   if (aNode.priority !== bNode.priority) return aNode.priority < bNode.priority;
   if (a.activeRequests !== b.activeRequests) return a.activeRequests < b.activeRequests;
   if (Math.abs(a.healthScore - b.healthScore) >= HEALTH_TIE_BAND) {
     return a.healthScore > b.healthScore;
   }
-  // Rolling-latency preference (EWMA, α=0.3). Unknown latency (0) is neutral:
-  // fresh nodes still receive traffic and learn their speed.
-  if (a.avgLatencyMs > 0 && b.avgLatencyMs > 0) {
-    if (a.avgLatencyMs <= b.avgLatencyMs / LATENCY_ADVANTAGE_FACTOR) return true;
-    if (b.avgLatencyMs <= a.avgLatencyMs / LATENCY_ADVANTAGE_FACTOR) return false;
-  }
+  // Rolling-latency preference (EWMA, α=0.3): TTFT when measured, header
+  // latency otherwise. Unknown latency (0) is neutral.
+  const preference = latencyPreference(a, b);
+  if (preference !== null) return preference;
   // LRU: prefer the node idle longest (0 = never used). This rotates
   // sequential traffic across free keys instead of concentrating it on one
   // node until it rate-limits.

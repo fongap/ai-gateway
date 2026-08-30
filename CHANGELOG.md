@@ -1,5 +1,21 @@
 ﻿# Changelog
 
+## Unreleased
+
+### Fixed
+
+- **P0 — Hedged dispatch 不再突破 `max_attempts` 与 tier 预算。** 修复前,启动 twin 前只检查"已完成的 attempt 数"(`totalAttempts >= maxAttempts`),而在飞的 primary 尚未入账:`max_attempts=5`、已失败 4 次、primary 在飞时,hedge 仍会启动 twin,实际产生第 6 次 upstream dispatch;同时 twin 启动完全不检查 tier 剩余预算,`tier1 cap=1` 时也会发出第二个请求。现在 twin 启动要求 `已完成 + 在飞 primary + twin <= max_attempts` 且 `tier 剩余预算 >= 2`(`src/request/handler.js` `dispatchWithHedge`)。
+- **P0 — Hedge 双失败时补记 twin 的 tier 槽位。** 修复前,只有产生响应的赢家路径会带 `extraCharges: 1`;primary 与 twin 都失败时返回值不带 `extraCharges`,twin 实际消耗的 tier 槽位没有入账,`usedInTier` 少记一次,tier 实际可用次数超过 `tierCaps` 上限,侵占留给后续 tier 的预算。现在双失败路径按 co-failer 是否真实触达上游(`budgetCharged`)补记槽位;pre-dispatch deny(从未触达上游)仍不收费。
+- **P1 — 修复 `elapsedSinceStart` 引用错误对象导致 client-abort 延迟记录为 NaN。** `handleSuccess` 中误读 `s.attemptStartMs`(undefined)而非 `c.attemptStartMs`,两条 client-abort 路径传给 `recordOutcome` 的延迟为 NaN(被 `latency_ms` 判定静默丢弃)。改为正确引用。
+
+### Changed
+
+- **P0 — 调度器的延迟感知改为 TTFT(time-to-first-event)优先。** 修复前 `avgLatencyMs` 记录的是 `fetch()` 返回(收到 HTTP 响应头)的延迟,对 LLM 流式请求而言 headers 延迟 ≠ 首 Token 延迟:一个 headers 100ms 但首字 8s 的节点会战胜 headers 300ms 首字 1.5s 的节点。现在流式路径在 first-event guard 提交点测量 TTFT,`node-state` 新增 `avgTtftMs` EWMA(α=0.3,与延迟同参)并经 `snapshotNode` 暴露 `avg_ttft_ms`;`scheduler` 的 `betterThan` 在双方都测得 TTFT 时以 TTFT(1.5x 判定)决定胜者,未测得时回退 headers 延迟 EWMA,0 仍为中性(新节点照常获得流量)。非流式路径不产生 TTFT 测量,继续依赖 headers 延迟。
+
+### Added
+
+- **Hedge / TTFT 边界集成测试 ×4**(此前 hedge 仅有"twin 赢"与"单候选不 hedge"两个用例):双失败仍按 tier cap 收敛 dispatch 数(`tier_attempts tier1=2` + 三节点,恰好 2 次而非 3 次);`max_attempts=2` 时在飞 primary 独占预算、不启动 twin;tier cap=1 无 twin 空间;TTFT 实测值(而非手写状态)驱动调度——headers 快但首字慢的节点让位于 headers 慢但首字快的节点。4 个用例在修复前的 `main` 上全部失败,具备回归判别力。
+
 ## 1.2.4 - 2026-08-29
 
 ### Fixed

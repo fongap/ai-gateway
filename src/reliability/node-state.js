@@ -79,6 +79,11 @@ function createState() {
     activeRequests: 0,
     healthScore: HEALTH_INITIAL,
     avgLatencyMs: 0,
+    // Time-to-first-event EWMA. Header latency says nothing about how soon
+    // tokens start flowing — an upstream can answer headers fast and stall
+    // before the first token — so latency-aware scheduling compares this for
+    // streaming traffic. 0 = never measured (neutral).
+    avgTtftMs: 0,
     cooldownUntil: 0,
     cooldownReason: null,
     circuitState: 'closed',
@@ -151,6 +156,17 @@ export function recordSuccess(nodeId, latencyMs, now = Date.now()) {
   // Any successful upstream response proves the node is alive, so it always
   // closes a half-open probe and never leaves a probe in flight.
   recoverFromHalfOpen(s);
+}
+
+// Record a time-to-first-event measurement. Unlike recordSuccess this runs
+// MID-attempt — at the moment the first real stream event commits, while the
+// attempt is still in flight — so it must NOT touch concurrency slots, health
+// or the circuit breaker; those belong to the final outcome recording.
+export function recordTtft(nodeId, ttftMs) {
+  const s = getNodeState(nodeId);
+  s.avgTtftMs = s.avgTtftMs === 0 || typeof ttftMs !== 'number' || ttftMs < 0
+    ? Math.max(0, ttftMs || 0)
+    : s.avgTtftMs * (1 - LATENCY_EWMA_ALPHA) + ttftMs * LATENCY_EWMA_ALPHA;
 }
 
 // Record a failure. `counted` marks transient upstream failures (5xx /
@@ -324,6 +340,7 @@ export function snapshotNode(nodeId, now = Date.now()) {
     active_requests: s.activeRequests,
     consecutive_failures: s.consecutiveFailures,
     avg_latency_ms: Math.round(s.avgLatencyMs),
+    avg_ttft_ms: Math.round(s.avgTtftMs),
     total_requests: s.totalRequests,
     total_successes: s.totalSuccesses,
     total_failures: s.totalFailures,

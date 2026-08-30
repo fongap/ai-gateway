@@ -22,7 +22,7 @@ import { getLimits, attemptHeadersTimeoutMs, attemptFirstEventTimeoutMs, attempt
 import { pickCandidate, supportsModel, tierHasDispatchableNode, countDispatchableNodes } from '../scheduler/scheduler.js';
 import {
   recordSuccess, recordFailure, recordNeutralEnd, rollbackRpmBucket, recordModelMissing,
-  applyHealthPenalty,
+  applyHealthPenalty, recordTtft,
 } from '../reliability/node-state.js';
 import {
   classifyUpstreamStatus, classifyNetworkError, classifyFirstEventFailure,
@@ -219,6 +219,9 @@ export async function handleRequest(request, env, ctx) {
         clientWantsStream, fakeStream, bodyJson, anthropicConversion, responsesConversion,
         limits, exposeUpstreamInfo, state, failoverBudgetMs, requestStartMs,
         remainingDispatchableAttempts,
+        // This tier's unspent attempt slots, settled attempts only. The hedge
+        // needs it because its own in-flight primary is not charged yet.
+        tierCapRemaining: cap - usedInTier,
       }, tiers[tierNumber]);
       // A pre-dispatch outcome that never reached an upstream (distributed
       // rate-limiter deny, invalid base URL) carries budgetCharged:false and
@@ -336,9 +339,15 @@ async function dispatchWithHedge(args, tierNodes) {
   ]);
   if (verdict === 'settled') return primary;
 
-  // The twin costs a full attempt slot; hedge only when the policy budget can
-  // fund it AND a second dispatchable candidate exists right now.
-  if (args.state.totalAttempts >= args.state.maxAttempts) return primary;
+  // The twin costs a full attempt slot on both budgets. The in-flight primary
+  // is NOT charged yet — its slot lands only when dispatchWithHedge returns —
+  // so the shared budget must fund BOTH the flying attempt and the proposed
+  // twin (completedAttempts + 1 in-flight + 1 twin <= maxAttempts), and this
+  // tier's own budget must have room for the two slots as well (tierCapRemaining
+  // already excludes only settled attempts). Checking completed attempts alone
+  // let a hedge push a request past max_attempts and past the tier cap.
+  if (args.state.totalAttempts + 2 > args.state.maxAttempts) return primary;
+  if ((args.tierCapRemaining ?? Infinity) < 2) return primary;
   const twinNode = pickCandidate(tierNodes, args.requestedModel, args.state.attempted, Date.now(), args.node.id);
   if (!twinNode) return primary;
 
@@ -358,6 +367,8 @@ async function dispatchWithHedge(args, tierNodes) {
     let resolved = false;
     let settled = 0;
     let firstFailure = null;
+    let primaryOutcome = null;
+    let twinOutcome = null;
     const win = (outcome, loserAbort) => {
       if (resolved) {
         // Lost after the winner was chosen: drop any committed stream so no
@@ -371,10 +382,20 @@ async function dispatchWithHedge(args, tierNodes) {
     };
     const onSettled = (outcome, isPrimary, loserAbort) => {
       settled++;
+      if (isPrimary) primaryOutcome = outcome; else twinOutcome = outcome;
       if (outcome.response) win(outcome, loserAbort);
       else {
         if (!firstFailure || isPrimary) firstFailure = outcome;
-        if (settled >= 2) resolve(firstFailure);
+        if (settled >= 2) {
+          // Both hedge sides failed: the co-failer consumed a tier slot too,
+          // exactly like the aborted loser on the win path — unless it was a
+          // pre-dispatch deny (budgetCharged:false), which consumed nothing.
+          // Missing this charge let a tier spend one more dispatch than its
+          // cap funds: the twin was attempted, but usedInTier only counted the
+          // primary.
+          const other = isPrimary ? twinOutcome : primaryOutcome;
+          resolve({ ...firstFailure, extraCharges: other?.budgetCharged ? 1 : 0 });
+        }
       }
     };
     safePrimary.then((o) => onSettled(o, true, hedgeAbort));
@@ -561,7 +582,7 @@ function isAnthropicRealOutput(json) {
 async function handleSuccess(s) {
   const { upstream, c, latencyMs, detach, upstreamWasStreaming } = s;
   const { request, env, logger, requestId, route, node, requestedModel, bodyJson, clientWantsStream, fakeStream, limits, exposeUpstreamInfo, state } = c;
-  const elapsedSinceStart = () => Date.now() - s.attemptStartMs;
+  const elapsedSinceStart = () => Date.now() - c.attemptStartMs;
   // Topology-leak policy (P1): by default a successful client response carries
   // only x-request-id. Node id / tier are operational details exposed only when
   // EXPOSE_UPSTREAM_INFO=true (debugging) or via the auth-protected /health.
@@ -610,6 +631,10 @@ async function handleSuccess(s) {
       return { rotate: true };
     }
     detach();
+    // TTFT: dispatch start -> first committed stream event. The scheduler's
+    // latency preference compares THIS for streaming traffic; avgLatencyMs
+    // keeps measuring headers, which says nothing about when tokens start.
+    recordTtft(node.id, Date.now() - c.attemptStartMs);
     const hiddenStreamFailure = () => guardedStreamFailureReason(guarded);
 
     const headers = finalHeaders(env, request, guarded.headers, extraHeaders);
