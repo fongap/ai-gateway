@@ -1072,7 +1072,7 @@ await test('public home is served but never leaks internal diagnostics when degr
   const html = await res.text();
   // Public homepage content only: brand once, topic, no general-* models shown.
   assert.match(html, /Smart AI Gateway/);
-  assert.match(html, /一个入口，多个模型/);
+  assert.match(html, /一个入口，应对所有变化/);
   // general-air is filtered from display per UTC+8 revamp
   assert.ok(!html.includes('general-air'), 'general-* models must not appear on the homepage');
   assert.match(html, /可用/);
@@ -1497,7 +1497,7 @@ await test('public home: brand & GitHub once, 通用/编程 grouped, no protocol
   assert.match(html, /aria-label="GitHub · ai-gateway 仓库"/);
   assert.match(html, /title="GitHub · ai-gateway"/);
   // Structure: hero -> 模型状态 (通用 then 编程) -> 使用情况 -> 快速开始.
-  assert.ok(html.indexOf('一个入口，多个模型') < html.indexOf('模型状态'));
+  assert.ok(html.indexOf('一个入口，应对所有变化') < html.indexOf('模型状态'));
   assert.ok(html.indexOf('模型状态') < html.indexOf('使用情况'));
   assert.ok(html.indexOf('通用') < html.indexOf('编程'), '通用 group must precede 编程');
   assert.ok(html.indexOf('编程') < html.indexOf('快速开始'));

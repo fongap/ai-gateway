@@ -5,7 +5,7 @@
 //
 // Single-screen-first status entry in a light, flat, Flyme-3-like design:
 //   Header     — δ Smart AI Gateway | GitHub (brand & GitHub each appear once)
-//   Hero       — 一个入口，多个模型 (compact)
+//   Hero       — 一个入口，应对所有变化 (compact)
 //   模型状态   — 通用 / 编程 rows inside ONE card, light chips + status dot
 //   使用情况   — ONE card: 5-column KPI strip + 52×7 Token 活动 heatmap
 //   快速开始 — OpenAI-compatible / Claude Code / Codex tabs (no stacked code blocks)
@@ -833,8 +833,8 @@ export async function dashboardResponse(request, env) {
 
   const body = `
 <section class="hero">
-  <h1>一个入口，多个模型</h1>
-  <p class="desc">将多 API、多 Key 与多模型聚合为一个统一入口，自动轮换、限流避让、故障切换与恢复。</p>
+  <h1>一个入口，应对所有变化</h1>
+  <p class="desc">模型、供应商、Key 与节点随时调整，自动轮换、切换与恢复，对外始终保持同一个端点。</p>
 </section>
 
 <section class="section">
