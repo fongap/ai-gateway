@@ -388,13 +388,18 @@ function showTip(target){
   tipEl.textContent=text;tipEl.classList.add('show');
   var r=target.getBoundingClientRect();
   var tw=tipEl.offsetWidth,th=tipEl.offsetHeight;
-  // Prefer below the cell; flip above when the bottom would overflow; clamp
-  // last so the tooltip never leaves the viewport on any edge.
+  // Keep the tooltip inside its card frame (intersection with the viewport):
+  // prefer below the cell, flip above when the bottom would overflow, then
+  // clamp on every edge.
+  var card=target.closest&&target.closest('.card');
+  var b=card?card.getBoundingClientRect():{left:0,top:0,right:window.innerWidth,bottom:window.innerHeight};
+  var minL=Math.max(4,b.left+4),maxR=Math.min(window.innerWidth-4,b.right-4);
+  var minT=Math.max(4,b.top+4),maxB=Math.min(window.innerHeight-4,b.bottom-4);
   var left=r.left+r.width/2-tw/2;var top=r.bottom+8;
-  if(top+th>window.innerHeight-4)top=r.top-th-8;
-  if(top<4)top=Math.max(4,window.innerHeight-th-4);
-  if(left<4)left=4;
-  if(left+tw>window.innerWidth-4)left=Math.max(4,window.innerWidth-tw-4);
+  if(top+th>maxB)top=r.top-th-8;
+  if(top<minT)top=maxB-th;
+  if(left<minL)left=minL;
+  if(left+tw>maxR)left=maxR-tw;
   tipEl.style.left=left+'px';tipEl.style.top=top+'px';
 }
 function hideTip(){tipEl.classList.remove('show');tipEl.textContent='';}
@@ -748,6 +753,7 @@ model_provider = "gateway"
 
 [model_providers.gateway]
 base_url = "${escapeHtml(apiBase)}"
+# env_key 填环境变量的名字（不带 $），Codex 自己读取它的值
 env_key = "GATEWAY_ACCESS_KEY"`;
   const tabs = [
     { id: 'openai', label: 'OpenAI 兼容' },
