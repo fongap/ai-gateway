@@ -268,8 +268,10 @@ a{color:var(--blue);text-decoration:none}
   transition:width 120ms ease}
 .model-usage-value{color:var(--text);text-align:right;font-size:12px;font-variant-numeric:tabular-nums}
 
+/* Model usage body: donut ring and bar list side by side (stacked on mobile) */
+.model-usage-body{display:flex;align-items:center;gap:24px}
 /* Model usage donut · 近 7 天: SVG ring, token share per model */
-.model-usage-donut{position:relative;width:148px;height:148px;margin:2px auto 16px}
+.model-usage-donut{position:relative;width:148px;height:148px;flex:0 0 auto;margin:0}
 .donut-svg{width:100%;height:100%;display:block}
 .donut-seg{transition:opacity 120ms ease,stroke-width 120ms ease;cursor:default}
 .donut-seg:hover,.donut-seg:focus-visible{opacity:.85;stroke-width:19}
@@ -328,6 +330,8 @@ button.copy:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
    .months{font-size:9px;letter-spacing:-.02em}
     .model-usage{padding:18px 16px}
    .model-usage-row{grid-template-columns:minmax(84px,1fr) 76px max-content;gap:8px}
+   .model-usage-body{flex-direction:column;align-items:stretch}
+   .model-usage-donut{margin:0 auto 8px}
   .snippet pre{white-space:pre-wrap;word-break:break-all;padding-right:17px}
   .snippet .copy{position:static;margin:8px 12px 0}
   .site-footer{flex-direction:column;align-items:flex-start;gap:4px}
@@ -685,7 +689,7 @@ function renderModelUsage(modelUsage) {
       `<span class="model-usage-value">${fmtTokens(r.total)}</span>` +
       `<span class="sr-only">${escapeHtml(exactTitle)}</span></li>`;
   }).join('');
-  return `<div class="model-usage">${head}${donut}<ul class="model-usage-list">${items}</ul></div>`;
+  return `<div class="model-usage">${head}<div class="model-usage-body">${donut}<ul class="model-usage-list">${items}</ul></div></div>`;
 }
 
 // SVG donut of token share per model (no chart library, plain inline SVG).

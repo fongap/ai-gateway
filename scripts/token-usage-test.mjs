@@ -300,6 +300,16 @@ await test('模型使用 · 近 7 天 renders one row per model with bars plus a
   assert.ok(html.includes('class="donut-seg"'), 'at least one donut segment per model');
   assert.ok(html.includes('donut-center'), 'donut center shows the 7-day total');
   assert.ok(html.includes('role="img"'), 'donut is announced as an image');
+  // Donut and bars sit side by side inside one body container.
+  assert.match(html, /<div class="model-usage-body"><div class="model-usage-donut"[\s\S]*?<ul class="model-usage-list">/,
+    'donut ring and bar list are siblings inside model-usage-body');
+  // Both views must agree: donut center total equals the sum of every row's
+  // token value (code-max 100 + ultra 50 = 150).
+  assert.ok(html.includes('<strong>150</strong>'), 'donut center shows the summed 7-day total');
+  assert.ok(html.includes('code-max\n100 Token'), 'donut segment tooltip total matches the code-max row');
+  assert.ok(html.includes('ultra\n50 Token'), 'donut segment tooltip total matches the ultra row');
+  assert.match(html, /<span class="model-usage-value">100<\/span>/, 'code-max row shows its exact total');
+  assert.match(html, /<span class="model-usage-value">50<\/span>/, 'ultra row shows its exact total');
 });
 
 await test('Token 活动 · 52 周 renders a full 364-cell heatmap with month labels', async () => {
