@@ -753,7 +753,6 @@ model_provider = "gateway"
 
 [model_providers.gateway]
 base_url = "${escapeHtml(apiBase)}"
-# env_key 填环境变量的名字（不带 $），Codex 自己读取它的值
 env_key = "GATEWAY_ACCESS_KEY"`;
   const tabs = [
     { id: 'openai', label: 'OpenAI 兼容' },
