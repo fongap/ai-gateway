@@ -226,7 +226,7 @@ function seededEnv(writes) {
 await test('no D1 binding degrades to 统计暂不可用 with em dashes, never a fake 0', async () => {
   const html = await pageText(authedRequest(), ENV);
   assert.ok(html.includes('使用情况'), 'section title');
-  assert.ok(html.includes('UTC+8'), 'UTC+8 label shown');
+  assert.ok(!html.includes('class="utc8"'), 'redundant UTC+8 label removed');
   assert.ok(html.includes('今日'), 'four KPI labels');
   assert.ok(html.includes('累计'));
   assert.ok(html.includes('近 24 小时'));
@@ -273,7 +273,7 @@ await test('the D1-backed card renders the four KPIs from real aggregates', asyn
   const html = await pageText(anonRequest(), env);
   assert.ok(html.includes('使用情况'));
   assert.ok(html.includes('>35<'), 'cumulative total (10+20)+(3+2) must render');
-  assert.ok(html.includes('UTC+8'), 'UTC+8 timezone label shown');
+  assert.ok(!html.includes('class="utc8"'), 'redundant UTC+8 label removed');
   assert.ok(!html.includes('累计请求'), '累计请求 KPI removed');
   assert.ok(!html.includes('Usage 覆盖率'), 'coverage is not part of the new card');
 });

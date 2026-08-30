@@ -175,7 +175,6 @@ a{color:var(--blue);text-decoration:none}
 .section{margin-top:20px}
 .section-title{display:flex;align-items:center;justify-content:space-between;gap:12px;
   font-size:13px;font-weight:600;color:#666e78;margin:0 0 10px 2px}
-.section-title .utc8{font-size:11px;color:var(--faint);font-weight:400}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
   box-shadow:0 1px 2px rgba(27,31,36,.025)}
 
@@ -200,9 +199,6 @@ a{color:var(--blue);text-decoration:none}
 .model-item .dot.available{background:var(--green)}
 .model-item .dot.degraded{background:var(--orange)}
 .model-item .dot.unavailable{background:var(--faint)}
-.model-status{font-size:11px;color:var(--faint)}
-.model-status .dot{width:6px;height:6px;border-radius:50%;display:inline-block;margin-right:5px}
-.model-status .dot.ok{background:var(--green)}
 .empty{padding:16px;font-size:13px;color:var(--faint)}
 
 /* Usage — ONE card: KPI strip on top, activity heatmap below */
@@ -392,10 +388,13 @@ function showTip(target){
   tipEl.textContent=text;tipEl.classList.add('show');
   var r=target.getBoundingClientRect();
   var tw=tipEl.offsetWidth,th=tipEl.offsetHeight;
-  var left=r.left+r.width/2-tw/2;var top=r.top-th-8;
-  if(top<4)top=r.bottom+8;
+  // Prefer below the cell; flip above when the bottom would overflow; clamp
+  // last so the tooltip never leaves the viewport on any edge.
+  var left=r.left+r.width/2-tw/2;var top=r.bottom+8;
+  if(top+th>window.innerHeight-4)top=r.top-th-8;
+  if(top<4)top=Math.max(4,window.innerHeight-th-4);
   if(left<4)left=4;
-  if(left+tw>window.innerWidth-4)left=window.innerWidth-tw-4;
+  if(left+tw>window.innerWidth-4)left=Math.max(4,window.innerWidth-tw-4);
   tipEl.style.left=left+'px';tipEl.style.top=top+'px';
 }
 function hideTip(){tipEl.classList.remove('show');tipEl.textContent='';}
@@ -408,6 +407,9 @@ root.addEventListener('mouseout',function(e){
 root.addEventListener('focusin',function(e){
   var t=e.target.closest&&e.target.closest(tipSel);if(t)showTip(t);
 });
+// The tooltip is position:fixed — hide it on scroll instead of letting it
+// drift away from its anchor cell.
+window.addEventListener('scroll',hideTip,{passive:true});
 root.addEventListener('focusout',function(e){
   var t=e.target.closest&&e.target.closest(tipSel);if(t)hideTip();
 });
@@ -476,16 +478,11 @@ function modelRow(kind, list) {
 
 function renderModels(models) {
   const groups = groupModels(models);
-  const total = groups.general.length + groups.program.length;
-  const available = [...groups.general, ...groups.program].filter(m => m.status === 'available').length;
   const rows = [];
   if (groups.general.length) rows.push(modelRow('通用 / General', groups.general));
   if (groups.program.length) rows.push(modelRow('编程 / Coding', groups.program));
-  if (!rows.length) return { html: `<div class="card models-card"><div class="empty">模型映射配置后在此显示。</div></div>`, statusHtml: '' };
-  const statusHtml = total > 0
-    ? `<span class="model-status"><span class="dot ok" aria-hidden="true"></span>${available} / ${total} 正常</span>`
-    : '';
-  return { html: `<div class="card models-card">${rows.join('')}</div>`, statusHtml };
+  if (!rows.length) return { html: `<div class="card models-card"><div class="empty">模型映射配置后在此显示。</div></div>` };
+  return { html: `<div class="card models-card">${rows.join('')}</div>` };
 }
 
 // Pick the quick-start example model deterministically: prefer a known
@@ -651,7 +648,7 @@ async function usageSection(env, now = Date.now()) {
   // so a per-model query failure never blanks the whole card.
   const modelSection = renderModelUsage(modelUsage);
   return `<section class="section">
-  <div class="section-title">使用情况<span class="utc8">UTC+8</span></div>
+  <div class="section-title">使用情况</div>
   <div class="card">
     <div class="kpis">${kpis}</div>
     <div class="activity">
@@ -810,7 +807,7 @@ export async function dashboardResponse(request, env) {
 </section>
 
 <section class="section">
-  <div class="section-title">模型状态${modelsResult.statusHtml}</div>
+  <div class="section-title">模型状态</div>
   ${modelsResult.html}
 </section>
 

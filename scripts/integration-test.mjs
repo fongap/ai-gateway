@@ -1523,13 +1523,13 @@ await test('public home: brand & GitHub once, 通用/编程 grouped, no protocol
   assert.match(html, /ArrowLeft/);
   assert.match(html, /ArrowRight/);
   assert.match(html, /复制失败/);
-  // UTC+8 label shown in usage section.
-  assert.ok(html.includes('UTC+8'), 'UTC+8 timezone label shown');
+  // Redundant UTC+8 label removed from the usage section title.
+  assert.ok(!html.includes('class="utc8"'), 'UTC+8 label removed');
   // Heatmap title updated.
   assert.ok(html.includes('Token 活动 · 52 周'), 'heatmap title updated');
   assert.ok(html.includes('次请求'), 'request count in heatmap header');
-  // Model status shows overall availability count.
-  assert.match(html, /\d+ \/ \d+ 正常/, 'overall model status shown');
+  // Redundant overall availability count removed from the section title.
+  assert.ok(!html.includes('正常</span>'), 'availability count removed');
   // No general-* models in display.
   assert.ok(!html.includes('general-air'), 'general-* models filtered from display');
 });
