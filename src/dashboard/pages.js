@@ -268,6 +268,18 @@ a{color:var(--blue);text-decoration:none}
   transition:width 120ms ease}
 .model-usage-value{color:var(--text);text-align:right;font-size:12px;font-variant-numeric:tabular-nums}
 
+/* Model usage donut · 近 7 天: SVG ring, token share per model */
+.model-usage-donut{position:relative;width:148px;height:148px;margin:2px auto 16px}
+.donut-svg{width:100%;height:100%;display:block}
+.donut-seg{transition:opacity 120ms ease,stroke-width 120ms ease;cursor:default}
+.donut-seg:hover,.donut-seg:focus-visible{opacity:.85;stroke-width:19}
+.donut-seg:focus-visible{outline:none}
+.donut-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;pointer-events:none;text-align:center}
+.donut-center strong{font-size:20px;font-weight:600;color:var(--text);line-height:1.1;
+  font-variant-numeric:tabular-nums}
+.donut-center span{font-size:11px;color:var(--faint);margin-top:2px}
+
 /* Client configuration — tabs so the three snippets never stack vertically */
 .tabs{height:42px;border-bottom:1px solid var(--line);display:flex;align-items:center;
   gap:4px;padding:0 12px}
@@ -369,6 +381,7 @@ root.addEventListener('keydown',function(e){
 });
 var tipEl=document.createElement('div');tipEl.className='tooltip';tipEl.setAttribute('role','tooltip');
 document.body.appendChild(tipEl);
+var tipSel='.hd[data-tooltip],.donut-seg[data-tooltip]';
 function showTip(target){
   var text=target.getAttribute('data-tooltip');if(!text)return;
   tipEl.textContent=text;tipEl.classList.add('show');
@@ -382,16 +395,16 @@ function showTip(target){
 }
 function hideTip(){tipEl.classList.remove('show');tipEl.textContent='';}
 root.addEventListener('mouseover',function(e){
-  var t=e.target.closest&&e.target.closest('.hd[data-tooltip]');if(t)showTip(t);
+  var t=e.target.closest&&e.target.closest(tipSel);if(t)showTip(t);
 });
 root.addEventListener('mouseout',function(e){
-  var t=e.target.closest&&e.target.closest('.hd[data-tooltip]');if(t)hideTip();
+  var t=e.target.closest&&e.target.closest(tipSel);if(t)hideTip();
 });
 root.addEventListener('focusin',function(e){
-  var t=e.target.closest&&e.target.closest('.hd[data-tooltip]');if(t)showTip(t);
+  var t=e.target.closest&&e.target.closest(tipSel);if(t)showTip(t);
 });
 root.addEventListener('focusout',function(e){
-  var t=e.target.closest&&e.target.closest('.hd[data-tooltip]');if(t)hideTip();
+  var t=e.target.closest&&e.target.closest(tipSel);if(t)hideTip();
 });
 })();</script>`;
 
@@ -658,6 +671,8 @@ function renderModelUsage(modelUsage) {
     return `<div class="model-usage"><div class="model-usage-head"><b>模型使用 · 近 7 天</b></div>` +
       `<div class="model-usage-empty">近 7 天暂无数据</div></div>`;
   }
+  // Donut ring: each model's share of total tokens in the 7-day window.
+  const donut = renderModelDonut(rows);
   // Build a compact ranked row: name, short comparison bar, then Token count.
   // Bar width is relative to the max in this window, not a percentage share.
   const max = rows.reduce((m, r) => (r.total > m ? r.total : m), 0);
@@ -670,7 +685,38 @@ function renderModelUsage(modelUsage) {
       `<span class="model-usage-value">${fmtTokens(r.total)}</span>` +
       `<span class="sr-only">${escapeHtml(exactTitle)}</span></li>`;
   }).join('');
-  return `<div class="model-usage">${head}<ul class="model-usage-list">${items}</ul></div>`;
+  return `<div class="model-usage">${head}${donut}<ul class="model-usage-list">${items}</ul></div>`;
+}
+
+// SVG donut of token share per model (no chart library, plain inline SVG).
+const DONUT_COLORS = ['#087bbd', '#26855f', '#d5971f', '#8a63d2', '#e05d6f', '#2f9e8f', '#c07a3b', '#5b8def'];
+const DONUT_R = 40;
+const DONUT_STROKE = 14;
+const DONUT_CIRC = 2 * Math.PI * DONUT_R;
+
+function renderModelDonut(rows) {
+  const total = rows.reduce((s, r) => s + r.total, 0);
+  if (total <= 0) return '';
+  let acc = 0;
+  const segments = rows.map((r, i) => {
+    const frac = total > 0 ? r.total / total : 0;
+    const len = frac * DONUT_CIRC;
+    const seg = `<circle class="donut-seg" cx="60" cy="60" r="${DONUT_R}" fill="none" ` +
+      `stroke="${DONUT_COLORS[i % DONUT_COLORS.length]}" stroke-width="${DONUT_STROKE}" ` +
+      `stroke-dasharray="${len} ${DONUT_CIRC - len}" stroke-dashoffset="${-acc}" ` +
+      `transform="rotate(-90 60 60)" ` +
+      `data-tooltip="${escapeHtml(`${r.model}\n${fmtTokens(r.total)} Token · ${fmtInt(r.requests)} 次请求 · ${(frac * 100).toFixed(1)}%`)}" ` +
+      `tabindex="0" aria-label="${escapeHtml(`${r.model} ${(frac * 100).toFixed(1)}%`)}"></circle>`;
+    acc += len;
+    return seg;
+  }).join('');
+  return `<div class="model-usage-donut" role="img" aria-label="近7天各模型 Token 占比环形图">
+  <svg viewBox="0 0 120 120" class="donut-svg">
+    <circle cx="60" cy="60" r="${DONUT_R}" fill="none" stroke="#eef1f3" stroke-width="${DONUT_STROKE}"></circle>
+    ${segments}
+  </svg>
+  <div class="donut-center"><strong>${fmtTokens(total)}</strong><span>近 7 天</span></div>
+</div>`;
 }
 
 // ---- 客户端配置 (tabbed, no stacked code blocks) -------------------------------

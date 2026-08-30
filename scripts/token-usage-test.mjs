@@ -278,7 +278,7 @@ await test('the D1-backed card renders the four KPIs from real aggregates', asyn
   assert.ok(!html.includes('Usage 覆盖率'), 'coverage is not part of the new card');
 });
 
-await test('模型使用 · 近 7 天 renders one row per model with bars', async () => {
+await test('模型使用 · 近 7 天 renders one row per model with bars plus a donut ring', async () => {
   const d1 = createMockD1();
   const env = deepClone(ENV);
   env.TOKEN_STATS_DB = d1;
@@ -296,7 +296,10 @@ await test('模型使用 · 近 7 天 renders one row per model with bars', asyn
   assert.match(html, /<i style="width:\d+%"><\/i>/, 'bar width set');
   assert.ok(html.includes('data-tooltip='), 'rows expose a tooltip');
   assert.ok(html.includes('model-usage-value'), 'each row shows its token total');
-  assert.ok(!html.includes('donut'), 'model usage intentionally uses horizontal bars, never a donut chart');
+  assert.ok(html.includes('model-usage-donut'), 'donut ring container present');
+  assert.ok(html.includes('class="donut-seg"'), 'at least one donut segment per model');
+  assert.ok(html.includes('donut-center'), 'donut center shows the 7-day total');
+  assert.ok(html.includes('role="img"'), 'donut is announced as an image');
 });
 
 await test('Token 活动 · 52 周 renders a full 364-cell heatmap with month labels', async () => {
