@@ -1789,5 +1789,91 @@ await test('scheduled cleanup rejection reaches the runtime and is logged once',
   assert.equal(errors.filter((line) => line.includes('token-stats cleanup failed')).length, 1);
 });
 
-if (!process.exitCode) console.log(`\nintegration tests passed (${passed}).`);
+
+// ---- Rolling-latency scheduling + hedged dispatch --------------------------
+
+const streamText = async (res) => {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    text += decoder.decode(value, { stream: true });
+  }
+  return text;
+};
+
+await test('scheduler prefers the currently-faster node as measured latency drifts', async () => {
+  resetMock();
+  installMockFetch();
+  routeHandlers['lat-a.example.com'] = () => sseResponse([chunk('ok'), 'data: [DONE]']);
+  routeHandlers['lat-b.example.com'] = () => sseResponse([chunk('ok'), 'data: [DONE]']);
+  const env = makeEnv({
+    tier1: [basicNode('lat-a'), basicNode('lat-b')],
+    secrets: { 'lat-a': 'k', 'lat-b': 'k' },
+  });
+  // lat-a measured slow, lat-b measured fast: latency preference must override
+  // LRU so every request lands on the fast node.
+  getNodeState('lat-a').avgLatencyMs = 3000;
+  getNodeState('lat-b').avgLatencyMs = 50;
+  for (let i = 0; i < 3; i++) {
+    const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
+    assert.equal(res.status, 200);
+    await streamText(res);
+  }
+  const hosts = upstreamCalls.map((c) => c.host);
+  assert.deepEqual(hosts, ['lat-b.example.com', 'lat-b.example.com', 'lat-b.example.com'],
+    'decisively faster node wins all three requests');
+  // Speeds drift: lat-a recovers, lat-b degrades. The next request must follow
+  // the new measurement instead of a stale snapshot.
+  getNodeState('lat-a').avgLatencyMs = 10;
+  getNodeState('lat-b').avgLatencyMs = 2000;
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
+  await streamText(res);
+  assert.equal(upstreamCalls[3].host, 'lat-a.example.com', 'preference follows the new latency measurements');
+});
+
+await test('hedge: a slow primary is raced after HEDGE_DELAY_MS and the twin wins', async () => {
+  resetMock();
+  installMockFetch();
+  const slow = async () => { await new Promise((r) => setTimeout(r, 3000)); return sseResponse([chunk('slow'), 'data: [DONE]']); };
+  routeHandlers['hs-slow.example.com'] = slow;
+  routeHandlers['hs-fast.example.com'] = () => sseResponse([chunk('fast'), 'data: [DONE]']);
+  const env = makeEnv({
+    tier1: [basicNode('hs-slow'), basicNode('hs-fast')],
+    secrets: { 'hs-slow': 'k', 'hs-fast': 'k' },
+    extraEnv: { HEDGE_DELAY_MS: '400', FAILOVER_BUDGET_MS: '30000' },
+  });
+  const t0 = Date.now();
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
+  assert.equal(res.status, 200);
+  const text = await streamText(res);
+  const elapsed = Date.now() - t0;
+  assert.ok(elapsed < 2500, `twin must win the race quickly (took ${elapsed}ms)`);
+  assert.ok(text.includes('fast'), 'response served by the fast twin');
+  const hosts = upstreamCalls.map((c) => c.host);
+  assert.equal(hosts[0], 'hs-slow.example.com', 'primary dispatched first');
+  assert.equal(hosts[1], 'hs-fast.example.com', 'twin dispatched after the hedge delay');
+  assert.ok(!text.includes('slow'), 'slow primary output never surfaces');
+});
+
+await test('hedge: single candidate means no twin and normal behavior', async () => {
+  resetMock();
+  installMockFetch();
+  const slow = async () => { await new Promise((r) => setTimeout(r, 700)); return sseResponse([chunk('solo'), 'data: [DONE]']); };
+  routeHandlers['hs-solo.example.com'] = slow;
+  const env = makeEnv({
+    tier1: [basicNode('hs-solo')],
+    secrets: { 'hs-solo': 'k' },
+    extraEnv: { HEDGE_DELAY_MS: '200', FAILOVER_BUDGET_MS: '30000' },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
+  assert.equal(res.status, 200);
+  assert.ok((await streamText(res)).includes('solo'));
+  assert.equal(upstreamCalls.length, 1, 'no twin without a second candidate');
+});
+
+if (!process.exitCode) console.log(`
+integration tests passed (${passed}).`);
 else process.exit(1);

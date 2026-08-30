@@ -214,12 +214,12 @@ export async function handleRequest(request, env, ctx) {
       );
       const node = pickCandidate(tiers[tierNumber], requestedModel, state.attempted);
       if (!node) break; // tier exhausted -> fallback to next tier
-      const outcome = await attemptNode({
+      const outcome = await dispatchWithHedge({
         request, env, ctx, logger, requestId, route, node, requestedModel,
         clientWantsStream, fakeStream, bodyJson, anthropicConversion, responsesConversion,
         limits, exposeUpstreamInfo, state, failoverBudgetMs, requestStartMs,
         remainingDispatchableAttempts,
-      });
+      }, tiers[tierNumber]);
       // A pre-dispatch outcome that never reached an upstream (distributed
       // rate-limiter deny, invalid base URL) carries budgetCharged:false and
       // consumes NOTHING: neither totalAttempts nor this tier's attempt slot —
@@ -228,8 +228,10 @@ export async function handleRequest(request, env, ctx) {
       // always defined on an outcome, so there is no implicit default being
       // matched here. Termination is unaffected: such nodes land in
       // state.attempted and pickCandidate skips them, so the candidate set
-      // itself bounds the loop rather than the budgets.
+      // itself bounds the loop rather than the budgets. A won hedge reports
+      // extraCharges:1 for its aborted twin's tier slot.
       if (outcome.budgetCharged) usedInTier++;
+      usedInTier += outcome.extraCharges ?? 0;
       if (outcome.response) return outcome.response;
       if (outcome.stop) break;
     }
@@ -307,6 +309,79 @@ async function attemptNode(c) {
   return outcome;
 }
 
+const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// ---- Hedged dispatch (reactive per-try hedge, Envoy-style) -----------------
+// A slow-but-alive node is the dominant tail-latency source: the scheduler
+// cannot know a candidate will be slow, and once an attempt is awaiting its
+// first event the sequential loop simply waits for it. If the first attempt
+// has not committed a response within HEDGE_DELAY_MS, launch ONE twin attempt
+// against the next-best candidate and let the two race. The first committed
+// response wins; the twin is aborted and recorded as a NEUTRAL end (it was
+// slow, not broken). Bounded fan-out: the twin consumes a full attempt slot
+// (maxAttempts + tier budget still apply) and only one hedge is ever in
+// flight per request. See The Tail at Scale (Dean & Barroso, 2013) for the
+// underlying technique and its overload caveat.
+async function dispatchWithHedge(args, tierNodes) {
+  const hedgeDelayMs = args.limits.hedgeDelayMs || 0;
+  if (hedgeDelayMs <= 0 || args.state.hedged) return attemptNode(args);
+
+  // Both sides get an external abort handle up front so the loser can be
+  // cancelled no matter which one wins the race.
+  const primaryAbort = new AbortController();
+  const primary = attemptNode({ ...args, hedgeAbort: primaryAbort });
+  const verdict = await Promise.race([
+    primary.then(() => 'settled', () => 'settled'),
+    sleepMs(hedgeDelayMs).then(() => 'hedge'),
+  ]);
+  if (verdict === 'settled') return primary;
+
+  // The twin costs a full attempt slot; hedge only when the policy budget can
+  // fund it AND a second dispatchable candidate exists right now.
+  if (args.state.totalAttempts >= args.state.maxAttempts) return primary;
+  const twinNode = pickCandidate(tierNodes, args.requestedModel, args.state.attempted, Date.now(), args.node.id);
+  if (!twinNode) return primary;
+
+  args.state.hedged = true;
+  const hedgeAbort = new AbortController();
+  args.logger.info(`hedge: ${args.node.id} uncommitted after ${hedgeDelayMs}ms, racing twin ${twinNode.id}`);
+  const twin = attemptNode({ ...args, node: twinNode, hedgeAbort }).then(undefined, (error) => {
+    args.logger.debug(`hedge: twin ${twinNode.id} error ${error?.message || error}`);
+    return { rotate: true };
+  });
+  const safePrimary = primary.then(undefined, (error) => {
+    args.logger.debug(`hedge: primary ${args.node.id} error ${error?.message || error}`);
+    return { rotate: true };
+  });
+
+  return new Promise((resolve) => {
+    let resolved = false;
+    let settled = 0;
+    let firstFailure = null;
+    const win = (outcome, loserAbort) => {
+      if (resolved) {
+        // Lost after the winner was chosen: drop any committed stream so no
+        // upstream keeps streaming into the void.
+        try { outcome.response?.body?.cancel(); } catch { /* already closed */ }
+        return;
+      }
+      resolved = true;
+      loserAbort?.abort();
+      resolve({ ...outcome, extraCharges: 1 });
+    };
+    const onSettled = (outcome, isPrimary, loserAbort) => {
+      settled++;
+      if (outcome.response) win(outcome, loserAbort);
+      else {
+        if (!firstFailure || isPrimary) firstFailure = outcome;
+        if (settled >= 2) resolve(firstFailure);
+      }
+    };
+    safePrimary.then((o) => onSettled(o, true, hedgeAbort));
+    twin.then((o) => onSettled(o, false, primaryAbort));
+  });
+}
+
 async function dispatchAttempt(c) {
   const {
     request, env, logger, requestId, route, node, requestedModel, clientWantsStream,
@@ -382,6 +457,14 @@ async function dispatchAttempt(c) {
   const headers = buildUpstreamHeaders(request, node.credential, requestId);
   const controller = new AbortController();
   let headersTimeoutHit = false;
+  // A hedged twin loses the race by being aborted: once the winning attempt
+  // commits its response, the twin's controller fires and both the upstream
+  // fetch and the first-event guard unwind through their normal error paths.
+  if (c.hedgeAbort) {
+    const onHedgeAbort = () => controller.abort();
+    if (c.hedgeAbort.signal.aborted) onHedgeAbort();
+    else c.hedgeAbort.signal.addEventListener('abort', onHedgeAbort, { once: true });
+  }
   // Cap this attempt's own wait by a FAIR SHARE of the remaining whole-request
   // budget instead of letting one node consume UPSTREAM_HEADERS_TIMEOUT_MS in
   // full: the budget is split across the attempts that may still be needed, so
@@ -419,6 +502,16 @@ async function dispatchAttempt(c) {
     clearTimeout(timeoutId);
     detach();
     const latencyMs = Date.now() - startMs;
+    if (c.hedgeAbort?.signal.aborted) {
+      // Lost the hedge race: the upstream was healthy, just slower than its
+      // twin. Neutral end — no health penalty, no cooldown; the attempt still
+      // counts toward the shared budget because it did contact an upstream.
+      state.attempted.add(node.id);
+      state.totalAttempts++;
+      recordNeutralEnd(node.id);
+      logger.debug(`hedge: ${node.id} cancelled after losing the race (${latencyMs}ms)`);
+      return { rotate: true, hedgedAway: true };
+    }
     if (request.signal?.aborted && !headersTimeoutHit) {
       recordOutcome(state, node, classifyClientAbort(), latencyMs);
       return { response: gatewayError(request, env, route, 499, 'Client closed the request.', requestId) };
@@ -500,6 +593,15 @@ async function handleSuccess(s) {
     } catch (e) {
       detach();
       const code = e?.code || GUARD_ERROR.EMPTY;
+      if (code === GUARD_ERROR.ABORTED && c.hedgeAbort?.signal.aborted) {
+        // Lost the hedge race while waiting for the first event: same neutral
+        // treatment as the fetch-phase loss — slow is not broken.
+        state.attempted.add(node.id);
+        state.totalAttempts++;
+        recordNeutralEnd(node.id);
+        logger.debug(`hedge: ${node.id} cancelled at the first-event guard`);
+        return { rotate: true, hedgedAway: true };
+      }
       if (code === GUARD_ERROR.ABORTED) {
         recordOutcome(state, node, classifyClientAbort(), latencyMs);
         return { response: gatewayError(request, env, route, 499, 'Client closed the request before the first stream event.', requestId) };

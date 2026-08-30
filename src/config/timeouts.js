@@ -17,6 +17,10 @@ const LIMITS = {
   // spend rotating across nodes for ONE client request. Prevents the worst
   // case of headersTimeout(60s) * maxAttempts(5) ≈ 300s per Agent call.
   FAILOVER_BUDGET_MS: { min: 1_000, max: 900_000, def: 240_000 },
+  // Reactive hedge (Envoy-style per-try hedge): when the first attempt has
+  // not committed a response within this window, ONE twin attempt is launched
+  // against the next-best candidate and the two race. 0 disables hedging.
+  HEDGE_DELAY_MS: { min: 0, max: 600_000, def: 4_000 },
 };
 
 // Retry-After is always clamped into this window so a hostile or broken
@@ -89,6 +93,7 @@ export function getLimits(env) {
     authFailCooldownMs: clampInt(readEnv(env, 'AUTH_FAIL_COOLDOWN_MS'), LIMITS.AUTH_FAIL_COOLDOWN_MS.min, LIMITS.AUTH_FAIL_COOLDOWN_MS.max, LIMITS.AUTH_FAIL_COOLDOWN_MS.def),
     maxBodyBytes: clampInt(readEnv(env, 'MAX_BODY_BYTES'), LIMITS.MAX_BODY_BYTES.min, LIMITS.MAX_BODY_BYTES.max, LIMITS.MAX_BODY_BYTES.def),
     failoverBudgetMs: clampInt(readEnv(env, 'FAILOVER_BUDGET_MS'), LIMITS.FAILOVER_BUDGET_MS.min, LIMITS.FAILOVER_BUDGET_MS.max, LIMITS.FAILOVER_BUDGET_MS.def),
+    hedgeDelayMs: clampInt(readEnv(env, 'HEDGE_DELAY_MS'), LIMITS.HEDGE_DELAY_MS.min, LIMITS.HEDGE_DELAY_MS.max, LIMITS.HEDGE_DELAY_MS.def),
   };
   cache.set(env, cached);
   return cached;
