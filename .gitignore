@@ -19,3 +19,4 @@ release/
 .wrangler-local-*.jsonc
 wrangler.user.jsonc
 .plan.json
+.preview-dashboard.html
