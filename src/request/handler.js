@@ -187,7 +187,19 @@ export async function handleRequest(request, env, ctx) {
     }
   }
 
-  const state = { attempted: new Set(), attempts: [], totalAttempts: 0, failureKinds: {}, logger, maxAttempts: policy.maxAttempts, requestedModel };
+  // Three SEPARATE counters, never one overloaded total:
+  //   logicalAttempts — max_attempts budget; a primary + its optional hedge
+  //                     twin together are ONE logical attempt;
+  //   dispatches      — real upstream requests (pre-dispatch denies excluded);
+  //   hedges          — hedge twins launched. Hard-capped by
+  //                     MAX_HEDGES_PER_REQUEST; worst case
+  //                     maxDispatches = maxAttempts + maxHedgesPerRequest.
+  const state = {
+    attempted: new Set(), attempts: [], logicalAttempts: 0, dispatches: 0, hedges: 0,
+    failureKinds: {}, logger, requestId, maxAttempts: policy.maxAttempts,
+    maxDispatches: policy.maxAttempts + limits.maxHedgesPerRequest,
+    requestedModel,
+  };
 
   // Per-tier attempt budgets, computed ONCE per request (dispatchability-aware):
   // a lower tier only receives budget when it can DISPATCH this model right now
@@ -195,12 +207,13 @@ export async function handleRequest(request, env, ctx) {
   // hard-RPM exhausted). Deferred capacity — busy or temporarily over-quota
   // nodes that free up later — surfaces only in Retry-After / diagnostics and
   // earns NO budget. The loop below is strict tier precedence: a tier is
-  // drained (its budget spent) before the next tier is entered.
+  // drained (its budget spent) before the next tier is entered. Tier caps and
+  // max_attempts both count LOGICAL attempts; a hedge twin charges neither.
   const tierCaps = computeTierCaps(tiers, requestedModel, state.attempted, policy);
   for (const tierNumber of TIER_ORDER) {
     const cap = tierCaps[tierNumber] ?? 0;
     let usedInTier = 0;
-    while (usedInTier < cap && state.totalAttempts < policy.maxAttempts) {
+    while (usedInTier < cap && state.logicalAttempts < policy.maxAttempts) {
       // Failover budget gate: before preparing a NEW attempt, stop if the
       // request has already consumed the whole budget. Never keep hammering
       // upstreams once the client has waited ~FAILOVER_BUDGET_MS overall.
@@ -210,7 +223,7 @@ export async function handleRequest(request, env, ctx) {
       }
       const remainingDispatchableAttempts = countRemainingDispatchableAttempts(
         tiers, requestedModel, state.attempted, tierCaps,
-        tierNumber, usedInTier, policy.maxAttempts - state.totalAttempts,
+        tierNumber, usedInTier, policy.maxAttempts - state.logicalAttempts,
       );
       const node = pickCandidate(tiers[tierNumber], requestedModel, state.attempted);
       if (!node) break; // tier exhausted -> fallback to next tier
@@ -219,22 +232,18 @@ export async function handleRequest(request, env, ctx) {
         clientWantsStream, fakeStream, bodyJson, anthropicConversion, responsesConversion,
         limits, exposeUpstreamInfo, state, failoverBudgetMs, requestStartMs,
         remainingDispatchableAttempts,
-        // This tier's unspent attempt slots, settled attempts only. The hedge
-        // needs it because its own in-flight primary is not charged yet.
-        tierCapRemaining: cap - usedInTier,
       }, tiers[tierNumber]);
       // A pre-dispatch outcome that never reached an upstream (distributed
       // rate-limiter deny, invalid base URL) carries budgetCharged:false and
-      // consumes NOTHING: neither totalAttempts nor this tier's attempt slot —
-      // charging the slot instead would let denied-but-untried keys starve
-      // same-tier healthy candidates and every fallback tier. budgetCharged is
-      // always defined on an outcome, so there is no implicit default being
-      // matched here. Termination is unaffected: such nodes land in
-      // state.attempted and pickCandidate skips them, so the candidate set
-      // itself bounds the loop rather than the budgets. A won hedge reports
-      // extraCharges:1 for its aborted twin's tier slot.
+      // consumes NOTHING: neither the logical-attempt budget nor this tier's
+      // attempt slot — charging the slot instead would let denied-but-untried
+      // keys starve same-tier healthy candidates and every fallback tier.
+      // budgetCharged is always defined on an outcome, so there is no implicit
+      // default being matched here. Termination is unaffected: such nodes land
+      // in state.attempted and pickCandidate skips them, so the candidate set
+      // itself bounds the loop rather than the budgets. A hedge twin never
+      // charges a slot: it is an extra executioner of the SAME logical attempt.
       if (outcome.budgetCharged) usedInTier++;
-      usedInTier += outcome.extraCharges ?? 0;
       if (outcome.response) return outcome.response;
       if (outcome.stop) break;
     }
@@ -305,10 +314,28 @@ function countRemainingDispatchableAttempts(tiers, requestedModel, attempted, ti
 // to contact) an upstream — charging failover budget by default — or opted out
 // explicitly on a pre-dispatch path. Normalizing here guarantees every outcome
 // carries a defined `budgetCharged`, so the main loop never has to infer
-// charging from a failure-kind string.
+// charging from a failure-kind string. Successful dispatches get one debug
+// line here (failures log their own dispatch line inside recordOutcome), so
+// every upstream dispatch emits exactly one completion record.
 async function attemptNode(c) {
   const outcome = await dispatchAttempt(c);
   if (outcome.budgetCharged === undefined) outcome.budgetCharged = true;
+  if (outcome.response?.status === 200) {
+    // Successful dispatches never pass through recordOutcome, so charge them
+    // here — exactly once, like every failure/neutral path. A committed
+    // response reached an upstream, so it always charges the dispatch count;
+    // a hedge twin still never charges the logical attempt.
+    c.state.dispatches++;
+    if (!c.hedgedAttempt) c.state.logicalAttempts++;
+    c.logger.debug(
+      `dispatch request=${c.requestId} logical_attempt=${c.state.logicalAttempts}/${c.state.maxAttempts}`
+      + ` dispatch=${c.state.dispatches} node=${c.node.id} tier=${c.node.tier}`
+      + ` model=${c.requestedModel}->${upstreamModelOf(c.node, c.requestedModel)}`
+      + ` hedged=${!!(c.hedgedAttempt || c.hedgedWithTwin)} kind=ok status=200`
+      + ` headers_ms=${c.headersMs ?? -1}${c.ttftMs !== undefined ? ` ttft_ms=${c.ttftMs}` : ''}`
+      + ` latency_ms=${c.attemptStartMs ? Date.now() - c.attemptStartMs : -1}`,
+    );
+  }
   return outcome;
 }
 
@@ -321,46 +348,70 @@ const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // has not committed a response within HEDGE_DELAY_MS, launch ONE twin attempt
 // against the next-best candidate and let the two race. The first committed
 // response wins; the twin is aborted and recorded as a NEUTRAL end (it was
-// slow, not broken). Bounded fan-out: the twin consumes a full attempt slot
-// (maxAttempts + tier budget still apply) and only one hedge is ever in
-// flight per request. See The Tail at Scale (Dean & Barroso, 2013) for the
-// underlying technique and its overload caveat.
+// slow, not broken).
+//
+// Hedge vs. logical attempt: the twin is an EXTRA executioner of the SAME
+// logical attempt, not an attempt of its own. It charges neither the
+// max_attempts budget nor the tier cap; it is bounded instead by
+// MAX_HEDGES_PER_REQUEST (default 1) and by the hard dispatch ceiling
+// maxDispatches = maxAttempts + maxHedgesPerRequest. Both executioners share
+// the logical attempt's wall-clock slice: the twin INHERITS the primary's
+// absolute attempt deadline instead of being handed a fresh one. See The Tail
+// at Scale (Dean & Barroso, 2013) for the underlying technique and its
+// overload caveat.
 async function dispatchWithHedge(args, tierNodes) {
   const hedgeDelayMs = args.limits.hedgeDelayMs || 0;
-  if (hedgeDelayMs <= 0 || args.state.hedged) return attemptNode(args);
+  const maxHedges = args.limits.maxHedgesPerRequest ?? 1;
+  if (hedgeDelayMs <= 0 || maxHedges <= 0) return attemptNode(args);
 
-  // Both sides get an external abort handle up front so the loser can be
-  // cancelled no matter which one wins the race.
-  const primaryAbort = new AbortController();
-  const primary = attemptNode({ ...args, hedgeAbort: primaryAbort });
+  // The primary holds its own args object so the twin can inherit the logical
+  // attempt deadline it computes, and so its ttft measurement can feed the
+  // winner log even when it wins after the twin was already launched.
+  const primaryArgs = { ...args, hedgeAbort: new AbortController() };
+  const primary = attemptNode(primaryArgs);
   const verdict = await Promise.race([
     primary.then(() => 'settled', () => 'settled'),
     sleepMs(hedgeDelayMs).then(() => 'hedge'),
   ]);
   if (verdict === 'settled') return primary;
 
-  // The twin costs a full attempt slot on both budgets. The in-flight primary
-  // is NOT charged yet — its slot lands only when dispatchWithHedge returns —
-  // so the shared budget must fund BOTH the flying attempt and the proposed
-  // twin (completedAttempts + 1 in-flight + 1 twin <= maxAttempts), and this
-  // tier's own budget must have room for the two slots as well (tierCapRemaining
-  // already excludes only settled attempts). Checking completed attempts alone
-  // let a hedge push a request past max_attempts and past the tier cap.
-  if (args.state.totalAttempts + 2 > args.state.maxAttempts) return primary;
-  if ((args.tierCapRemaining ?? Infinity) < 2) return primary;
+  // Hedge gates: hard caps ONLY — never the logical-attempt budget or the tier
+  // cap, which the twin deliberately does not consume. The in-flight primary
+  // has not charged its dispatch yet, so the eventual dispatch count is
+  // dispatches + 2 (primary charge + twin); the ceiling bounds the whole
+  // request to maxAttempts + maxHedgesPerRequest upstream calls.
+  if (args.state.hedges >= maxHedges) return primary;
+  if (args.state.dispatches + 2 > args.state.maxDispatches) return primary;
   const twinNode = pickCandidate(tierNodes, args.requestedModel, args.state.attempted, Date.now(), args.node.id);
   if (!twinNode) return primary;
+  // Shared deadline: the twin inherits the logical attempt's absolute
+  // deadline. No remaining time means no fresh budget can be conjured here.
+  const deadlineRemainingMs = (primaryArgs.attemptDeadlineMs ?? 0) - Date.now();
+  if (deadlineRemainingMs <= 0) return primary;
 
-  args.state.hedged = true;
-  const hedgeAbort = new AbortController();
-  args.logger.info(`hedge: ${args.node.id} uncommitted after ${hedgeDelayMs}ms, racing twin ${twinNode.id}`);
-  const twin = attemptNode({ ...args, node: twinNode, hedgeAbort }).then(undefined, (error) => {
+  args.state.hedges++;
+  primaryArgs.hedgedWithTwin = true;
+  const logicalAttemptNo = args.state.logicalAttempts + 1;
+  args.logger.info(
+    `hedge: request=${args.requestId} logical_attempt=${logicalAttemptNo}/${args.state.maxAttempts}`
+    + ` primary=${args.node.id} twin=${twinNode.id} delay_ms=${hedgeDelayMs}`
+    + ` deadline_remaining_ms=${deadlineRemainingMs}`,
+  );
+
+  // Both sides get an external abort handle up front so the loser can be
+  // cancelled no matter which one wins the race.
+  const twinArgs = {
+    ...args, node: twinNode, hedgeAbort: new AbortController(), hedgedAttempt: true,
+    // THE shared logical attempt deadline (absolute; not re-sliced).
+    attemptDeadlineMs: primaryArgs.attemptDeadlineMs,
+  };
+  const twin = attemptNode(twinArgs).then(undefined, (error) => {
     args.logger.debug(`hedge: twin ${twinNode.id} error ${error?.message || error}`);
-    return { rotate: true };
+    return { rotate: true, kind: 'unknown' };
   });
   const safePrimary = primary.then(undefined, (error) => {
     args.logger.debug(`hedge: primary ${args.node.id} error ${error?.message || error}`);
-    return { rotate: true };
+    return { rotate: true, kind: 'unknown' };
   });
 
   return new Promise((resolve) => {
@@ -369,7 +420,7 @@ async function dispatchWithHedge(args, tierNodes) {
     let firstFailure = null;
     let primaryOutcome = null;
     let twinOutcome = null;
-    const win = (outcome, loserAbort) => {
+    const win = (outcome, winnerArgs, loserAbort) => {
       if (resolved) {
         // Lost after the winner was chosen: drop any committed stream so no
         // upstream keeps streaming into the void.
@@ -378,28 +429,31 @@ async function dispatchWithHedge(args, tierNodes) {
       }
       resolved = true;
       loserAbort?.abort();
-      resolve({ ...outcome, extraCharges: 1 });
+      args.logger.info(
+        `hedge winner: request=${args.requestId} logical_attempt=${logicalAttemptNo}/${args.state.maxAttempts}`
+        + ` winner=${winnerArgs.node.id} loser=${(winnerArgs === primaryArgs ? twinNode : args.node).id}`
+        + ` winner_ttft_ms=${winnerArgs.ttftMs ?? -1}`,
+      );
+      resolve(outcome);
     };
     const onSettled = (outcome, isPrimary, loserAbort) => {
       settled++;
       if (isPrimary) primaryOutcome = outcome; else twinOutcome = outcome;
-      if (outcome.response) win(outcome, loserAbort);
+      if (outcome.response) win(outcome, isPrimary ? primaryArgs : twinArgs, loserAbort);
       else {
         if (!firstFailure || isPrimary) firstFailure = outcome;
         if (settled >= 2) {
-          // Both hedge sides failed: the co-failer consumed a tier slot too,
-          // exactly like the aborted loser on the win path — unless it was a
-          // pre-dispatch deny (budgetCharged:false), which consumed nothing.
-          // Missing this charge let a tier spend one more dispatch than its
-          // cap funds: the twin was attempted, but usedInTier only counted the
-          // primary.
-          const other = isPrimary ? twinOutcome : primaryOutcome;
-          resolve({ ...firstFailure, extraCharges: other?.budgetCharged ? 1 : 0 });
+          args.logger.info(
+            `hedge failed: request=${args.requestId} logical_attempt=${logicalAttemptNo}/${args.state.maxAttempts}`
+            + ` primary=${args.node.id} twin=${twinNode.id}`
+            + ` primary_kind=${primaryOutcome?.kind || 'unknown'} twin_kind=${twinOutcome?.kind || 'unknown'}`,
+          );
+          resolve({ ...firstFailure });
         }
       }
     };
-    safePrimary.then((o) => onSettled(o, true, hedgeAbort));
-    twin.then((o) => onSettled(o, false, primaryAbort));
+    safePrimary.then((o) => onSettled(o, true, twinArgs.hedgeAbort));
+    twin.then((o) => onSettled(o, false, primaryArgs.hedgeAbort));
   });
 }
 
@@ -435,7 +489,7 @@ async function dispatchAttempt(c) {
   try {
     targetUrl = buildTargetUrl(node.baseUrl, '/v1/chat/completions');
   } catch {
-    return rotateWithNeutralEnd(state, node, 'invalid_base_url', { preDispatch: true });
+    return rotateWithNeutralEnd(state, node, 'invalid_base_url', c, true);
   }
 
   // ---- Optional distributed rate shaping (Cloudflare Rate Limiting) ---------
@@ -465,8 +519,13 @@ async function dispatchAttempt(c) {
         recordNeutralEnd(node.id);
         rollbackRpmBucket(node.id);
         noteFailure(state, 'rate_limit_global');
-        state.logger.info(`attempt ${state.totalAttempts}/${state.maxAttempts} node=${node.id} kind=rate_limit_global status=429 (pre-dispatch, no budget charged)`);
-        state.attempts.push({ attempt: state.totalAttempts, node_id: node.id, status: 429, kind: 'rate_limit_global' });
+        state.logger.info(
+          `dispatch request=${requestId} logical_attempt=${state.logicalAttempts + 1}/${state.maxAttempts}`
+          + ` dispatch=${state.dispatches} node=${node.id} tier=${node.tier}`
+          + ` model=${requestedModel}->${upstreamModelOf(node, requestedModel)}`
+          + ` hedged=false kind=rate_limit_global status=429 counted=false (pre-dispatch, no budget charged)`,
+        );
+        state.attempts.push({ attempt: state.logicalAttempts + 1, dispatch: state.dispatches, node_id: node.id, status: 429, kind: 'rate_limit_global', hedged: false });
         return { rotate: true, budgetCharged: false };
       }
     } catch {
@@ -492,14 +551,27 @@ async function dispatchAttempt(c) {
   // a slow first candidate no longer starves every later one. The last
   // remaining attempt keeps the entire remaining budget (share = remaining),
   // and the wait never exceeds UPSTREAM_HEADERS_TIMEOUT_MS.
-  const remainingBudgetMs = failoverBudgetMs - (Date.now() - requestStartMs);
-  const attemptBudgetMs = attemptBudgetSliceMs(remainingBudgetMs, remainingDispatchableAttempts);
-  c.attemptDeadlineMs = Date.now() + attemptBudgetMs;
-  const attemptHeadersTimeout = attemptHeadersTimeoutMs(
-    limits.headersTimeoutMs,
-    attemptBudgetMs,
-    1,
-  );
+  //
+  // A hedged TWIN does not get a fresh slice: it inherits the logical
+  // attempt's absolute deadline (primary + twin share ONE budget), so its
+  // header wait is simply the time left until that deadline.
+  let attemptHeadersTimeout;
+  if (c.hedgedAttempt && c.attemptDeadlineMs) {
+    attemptHeadersTimeout = attemptHeadersTimeoutMs(
+      limits.headersTimeoutMs,
+      Math.max(1, c.attemptDeadlineMs - Date.now()),
+      1,
+    );
+  } else {
+    const remainingBudgetMs = failoverBudgetMs - (Date.now() - requestStartMs);
+    const attemptBudgetMs = attemptBudgetSliceMs(remainingBudgetMs, remainingDispatchableAttempts);
+    c.attemptDeadlineMs = Date.now() + attemptBudgetMs;
+    attemptHeadersTimeout = attemptHeadersTimeoutMs(
+      limits.headersTimeoutMs,
+      attemptBudgetMs,
+      1,
+    );
+  }
   const timeoutId = setTimeout(() => {
     headersTimeoutHit = true;
     controller.abort();
@@ -523,37 +595,43 @@ async function dispatchAttempt(c) {
     clearTimeout(timeoutId);
     detach();
     const latencyMs = Date.now() - startMs;
-    if (c.hedgeAbort?.signal.aborted) {
-      // Lost the hedge race: the upstream was healthy, just slower than its
-      // twin. Neutral end — no health penalty, no cooldown; the attempt still
-      // counts toward the shared budget because it did contact an upstream.
-      state.attempted.add(node.id);
-      state.totalAttempts++;
-      recordNeutralEnd(node.id);
-      logger.debug(`hedge: ${node.id} cancelled after losing the race (${latencyMs}ms)`);
-      return { rotate: true, hedgedAway: true };
-    }
     if (request.signal?.aborted && !headersTimeoutHit) {
-      recordOutcome(state, node, classifyClientAbort(), latencyMs);
+      recordOutcome(state, node, classifyClientAbort(), c, { latencyMs });
       return { response: gatewayError(request, env, route, 499, 'Client closed the request.', requestId) };
     }
-    recordOutcome(state, node, classifyNetworkError(headersTimeoutHit), latencyMs);
+    if (c.hedgeAbort?.signal.aborted) {
+      // Lost the hedge race: the upstream was healthy, just slower than its
+      // twin. Neutral end — no health penalty, no cooldown, no circuit
+      // failure; it still counts as a real dispatch because it did contact
+      // an upstream (the twin charges dispatches, never logicalAttempts).
+      state.attempted.add(node.id);
+      state.dispatches++;
+      if (!c.hedgedAttempt) state.logicalAttempts++;
+      recordNeutralEnd(node.id);
+      logger.info(
+        `hedge loser: request=${requestId} node=${node.id} phase=headers`
+        + ` reason=cancelled_after_peer_commit neutral=true latency_ms=${latencyMs}`,
+      );
+      return { rotate: true, hedgedAway: true, kind: 'cancelled_after_peer_commit' };
+    }
+    recordOutcome(state, node, classifyNetworkError(headersTimeoutHit), c, { latencyMs });
     logger.debug(`upstream fetch failed on ${node.id}: ${error?.message || error}`);
     return { rotate: true };
   }
   clearTimeout(timeoutId);
   const latencyMs = Date.now() - startMs;
+  c.headersMs = latencyMs;
 
   // ---- Non-OK response ----
   if (!upstream.ok) {
     detach();
     const errorText = await safeReadErrorBody(upstream, DIAGNOSTIC_BYTES);
     const classification = classifyUpstreamStatus(upstream.status, upstream.headers, env, undefined, errorText);
-    recordOutcome(state, node, classification, latencyMs, errorText, exposeUpstreamInfo, upstream.status);
+    recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: errorText });
     if (classification.action === 'stop') {
       return { response: buildClientErrorResponse(request, env, route, requestId, requestedModel, upstream.status, errorText, state, exposeUpstreamInfo) };
     }
-    return { rotate: true };
+    return { rotate: true, kind: classification.kind };
   }
 
   return handleSuccess({
@@ -596,6 +674,7 @@ async function handleSuccess(s) {
   // Streaming passthrough / transformed streams: run the first-event guard
   // BEFORE returning anything to the client.
   if (clientWantsStream && upstreamWasStreaming) {
+    const guardStartMs = Date.now();
     let guarded;
     try {
       const remainingRequestBudgetMs = (c.failoverBudgetMs ?? limits.failoverBudgetMs) - (Date.now() - (c.requestStartMs || s.attemptStartMs));
@@ -614,27 +693,45 @@ async function handleSuccess(s) {
     } catch (e) {
       detach();
       const code = e?.code || GUARD_ERROR.EMPTY;
-      if (code === GUARD_ERROR.ABORTED && c.hedgeAbort?.signal.aborted) {
-        // Lost the hedge race while waiting for the first event: same neutral
-        // treatment as the fetch-phase loss — slow is not broken.
-        state.attempted.add(node.id);
-        state.totalAttempts++;
-        recordNeutralEnd(node.id);
-        logger.debug(`hedge: ${node.id} cancelled at the first-event guard`);
-        return { rotate: true, hedgedAway: true };
-      }
-      if (code === GUARD_ERROR.ABORTED) {
-        recordOutcome(state, node, classifyClientAbort(), latencyMs);
+      if (request.signal?.aborted) {
+        recordOutcome(state, node, classifyClientAbort(), c, {
+          latencyMs: Date.now() - c.attemptStartMs,
+          ttftWaitMs: Date.now() - guardStartMs,
+          status: upstream.status,
+        });
         return { response: gatewayError(request, env, route, 499, 'Client closed the request before the first stream event.', requestId) };
       }
-      recordOutcome(state, node, classifyFirstEventFailure(), latencyMs, code, exposeUpstreamInfo);
-      return { rotate: true };
+      if (c.hedgeAbort?.signal.aborted) {
+        // Lost the hedge race while waiting for the first event: same neutral
+        // treatment as the fetch-phase loss — slow is not broken. This holds
+        // REGARDLESS of the guard error code: once the peer committed, this
+        // side was cancelled, and a body-reader unwinding caused by our own
+        // abort must not be miscounted as a first-event timeout.
+        state.attempted.add(node.id);
+        state.dispatches++;
+        if (!c.hedgedAttempt) state.logicalAttempts++;
+        recordNeutralEnd(node.id);
+        logger.info(
+          `hedge loser: request=${requestId} node=${node.id} phase=first_event`
+          + ` reason=cancelled_after_peer_commit neutral=true latency_ms=${Date.now() - c.attemptStartMs}`,
+        );
+        return { rotate: true, hedgedAway: true, kind: 'cancelled_after_peer_commit' };
+      }
+      const classification = classifyFirstEventFailure();
+      recordOutcome(state, node, classification, c, {
+        latencyMs: Date.now() - c.attemptStartMs,
+        ttftWaitMs: Date.now() - guardStartMs,
+        status: upstream.status,
+        diagnostic: code,
+      });
+      return { rotate: true, kind: classification.kind };
     }
     detach();
     // TTFT: dispatch start -> first committed stream event. The scheduler's
     // latency preference compares THIS for streaming traffic; avgLatencyMs
     // keeps measuring headers, which says nothing about when tokens start.
-    recordTtft(node.id, Date.now() - c.attemptStartMs);
+    c.ttftMs = Date.now() - c.attemptStartMs;
+    recordTtft(node.id, c.ttftMs);
     const hiddenStreamFailure = () => guardedStreamFailureReason(guarded);
 
     const headers = finalHeaders(env, request, guarded.headers, extraHeaders);
@@ -702,11 +799,11 @@ async function handleSuccess(s) {
           ? Math.trunc(Number(data.error.status))
           : 502;
         const classification = classifyUpstreamStatus(status, upstream.headers, env, undefined, data.error?.message || '');
-        recordOutcome(state, node, classification, latencyMs, trimDiagnostic(data.error.message || 'embedded error', 200), exposeUpstreamInfo, status);
+        recordOutcome(state, node, classification, c, { latencyMs, status, diagnostic: trimDiagnostic(data.error.message || 'embedded error', 200) });
         if (classification.action === 'stop') {
           return { response: buildClientErrorResponse(request, env, route, requestId, requestedModel, status, JSON.stringify(data), state, exposeUpstreamInfo) };
         }
-        return { rotate: true };
+        return { rotate: true, kind: classification.kind };
       }
       // Single usage capture point for BOTH delivered forms below (plain JSON
       // and the synthesized Responses SSE) — the transform never runs here.
@@ -722,11 +819,12 @@ async function handleSuccess(s) {
       return { response: synthesizeResponsesFromCompletion(data, requestedModel, bodyJson, { ...extraHeaders, ...corsHeaders(request, env) }) };
     } catch (error) {
       if (request.signal?.aborted) {
-        recordOutcome(state, node, classifyClientAbort(), elapsedSinceStart());
+        recordOutcome(state, node, classifyClientAbort(), c, { latencyMs: elapsedSinceStart(), status: upstream.status });
         return { response: gatewayError(request, env, route, 499, 'Client closed the request during assembly.', requestId) };
       }
-      recordOutcome(state, node, classifyFirstEventFailure(), latencyMs, error.message, exposeUpstreamInfo);
-      return { rotate: true };
+      const classification = classifyFirstEventFailure();
+      recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: error.message });
+      return { rotate: true, kind: classification.kind };
     }
   }
 
@@ -746,11 +844,12 @@ async function handleSuccess(s) {
         return { response: jsonResponse(200, data, env, request, extraHeaders) };
       } catch (error) {
         if (request.signal?.aborted) {
-          recordOutcome(state, node, classifyClientAbort(), elapsedSinceStart());
+          recordOutcome(state, node, classifyClientAbort(), c, { latencyMs: elapsedSinceStart(), status: upstream.status });
           return { response: gatewayError(request, env, route, 499, 'Client closed the request during assembly.', requestId) };
         }
-        recordOutcome(state, node, classifyFirstEventFailure(), latencyMs, error.message, exposeUpstreamInfo);
-        return { rotate: true };
+        const classification = classifyFirstEventFailure();
+        recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: error.message });
+        return { rotate: true, kind: classification.kind };
       }
     }
     if (upstreamWasStreaming) {
@@ -781,7 +880,7 @@ async function handleSuccess(s) {
     try {
       data = JSON.parse(text);
     } catch {
-      return rotateWithNeutralEnd(state, node, 'upstream_200_non_json_body');
+      return rotateWithNeutralEnd(state, node, 'upstream_200_non_json_body', c);
     }
     if (data && typeof data === 'object' && data.error) {
       // Provider returned 200 with an embedded error: treat as a real failure
@@ -790,11 +889,11 @@ async function handleSuccess(s) {
         ? Math.trunc(Number(data.error.status))
         : 502;
       const classification = classifyUpstreamStatus(status, upstream.headers, env, undefined, data.error?.message || '');
-      recordOutcome(state, node, classification, latencyMs, trimDiagnostic(data.error.message || 'embedded error', 200), exposeUpstreamInfo, status);
+      recordOutcome(state, node, classification, c, { latencyMs, status, diagnostic: trimDiagnostic(data.error.message || 'embedded error', 200) });
       if (classification.action === 'stop') {
         return { response: buildClientErrorResponse(request, env, route, requestId, requestedModel, status, text, state, exposeUpstreamInfo) };
       }
-      return { rotate: true };
+      return { rotate: true, kind: classification.kind };
     }
     // Single usage capture point for BOTH delivered forms below (plain JSON
     // and the synthesized chat SSE) — nothing else parses this body.
@@ -831,11 +930,12 @@ async function handleSuccess(s) {
     return { response: jsonResponse(200, message, env, request, extraHeaders) };
   } catch (error) {
     if (request.signal?.aborted) {
-      recordOutcome(state, node, classifyClientAbort(), latencyMs);
+      recordOutcome(state, node, classifyClientAbort(), c, { latencyMs, status: upstream.status });
       return { response: gatewayError(request, env, route, 499, 'Client closed the request during conversion.', requestId) };
     }
-    recordOutcome(state, node, classifyFirstEventFailure(), latencyMs, error.message, exposeUpstreamInfo);
-    return { rotate: true };
+    const classification = classifyFirstEventFailure();
+    recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: error.message });
+    return { rotate: true, kind: classification.kind };
   }
 }
 
@@ -927,12 +1027,15 @@ function upstreamModelOf(node, logicalModel) {
   return node.models[logicalModel] || logicalModel;
 }
 
-function rotateWithNeutralEnd(state, node, reason, { preDispatch = false } = {}) {
+function rotateWithNeutralEnd(state, node, reason, c = {}, preDispatch = false) {
   state.attempted.add(node.id);
   // Pre-dispatch neutrals (invalid base URL) never reached an upstream, so they
-  // do not consume the shared attempt budget — no totalAttempts++, and the
-  // outcome reports budgetCharged:false exactly like the rate-limiter deny.
-  if (!preDispatch) state.totalAttempts++;
+  // do not consume any budget — no dispatch/attempt charge, and the outcome
+  // reports budgetCharged:false exactly like the rate-limiter deny.
+  if (!preDispatch) {
+    state.dispatches++;
+    if (!c.hedgedAttempt) state.logicalAttempts++;
+  }
   recordNeutralEnd(node.id);
   // Pre-dispatch neutrals also never touched the network, so the RPM reservation
   // acquireSlot made must be returned to the bucket — otherwise a structurally
@@ -941,9 +1044,14 @@ function rotateWithNeutralEnd(state, node, reason, { preDispatch = false } = {})
   // upstream WAS contacted.
   if (preDispatch) rollbackRpmBucket(node.id);
   noteFailure(state, reason);
-  state.logger.info(`attempt ${state.totalAttempts}/${state.maxAttempts} node=${node.id} kind=${reason} status=0`);
-  state.attempts.push({ attempt: state.totalAttempts, node_id: node.id, status: 0, kind: reason });
-  return preDispatch ? { rotate: true, budgetCharged: false } : { rotate: true };
+  state.logger.info(
+    `dispatch request=${c.requestId ?? state.requestId} logical_attempt=${preDispatch ? state.logicalAttempts + 1 : state.logicalAttempts}/${state.maxAttempts}`
+    + ` dispatch=${state.dispatches} node=${node.id} tier=${node.tier ?? ''}`
+    + ` model=${state.requestedModel}->${upstreamModelOf(node, state.requestedModel)}`
+    + ` hedged=${!!(c.hedgedAttempt || c.hedgedWithTwin)} kind=${reason} status=0 counted=false`,
+  );
+  state.attempts.push({ attempt: state.logicalAttempts + (preDispatch ? 1 : 0), dispatch: state.dispatches, node_id: node.id, status: 0, kind: reason, hedged: !!(c.hedgedAttempt || c.hedgedWithTwin) });
+  return preDispatch ? { rotate: true, budgetCharged: false, kind: reason } : { rotate: true, kind: reason };
 }
 
 // Aggregate failure-kind counter for the exhausted response. Kinds alone (no
@@ -953,10 +1061,18 @@ function noteFailure(state, kind) {
   state.failureKinds[kind] = (state.failureKinds[kind] || 0) + 1;
 }
 
-// Record a classified attempt outcome exactly once.
-function recordOutcome(state, node, classification, latencyMs, diagnostic, exposeUpstreamInfo, status = 0) {
+// Record a classified attempt outcome exactly once. `c` is the dispatch
+// context (attemptNode args): its hedgedAttempt / hedgedWithTwin flags decide
+// charging and the hedged log field, headersMs feeds the timing fields.
+//   * dispatches counts every real upstream dispatch (never a pre-dispatch deny);
+//   * logicalAttempts counts the logical attempt the dispatch belongs to — a
+//     hedge twin belongs to its primary's attempt and does not increment it.
+function recordOutcome(state, node, classification, c, { latencyMs = -1, ttftWaitMs, status = 0, diagnostic } = {}) {
   state.attempted.add(node.id);
-  state.totalAttempts++;
+  state.dispatches++;
+  if (!c?.hedgedAttempt) state.logicalAttempts++;
+  const hedged = !!(c?.hedgedAttempt || c?.hedgedWithTwin);
+  const headersMs = c?.headersMs ?? (latencyMs >= 0 ? latencyMs : undefined);
 
   if (classification.modelScoped) {
     // A 404 "model not found" is a (node, model) mapping mismatch, not a node
@@ -972,14 +1088,23 @@ function recordOutcome(state, node, classification, latencyMs, diagnostic, expos
 
   noteFailure(state, classification.kind);
   state.logger.info(
-    `attempt ${state.totalAttempts}/${state.maxAttempts} node=${node.id} kind=${classification.kind}`
-    + ` status=${status} counted=${classification.counted} latency=${latencyMs ?? -1}ms`
-    + `${diagnostic && exposeUpstreamInfo ? ` detail=${trimDiagnostic(diagnostic, 200)}` : ''}`,
+    `dispatch request=${c?.requestId ?? state.requestId} logical_attempt=${state.logicalAttempts}/${state.maxAttempts}`
+    + ` dispatch=${state.dispatches} node=${node.id} tier=${node.tier}`
+    + ` model=${state.requestedModel}->${upstreamModelOf(node, state.requestedModel)}`
+    + ` hedged=${hedged} kind=${classification.kind} status=${status} counted=${classification.counted}`
+    + ` headers_ms=${headersMs ?? -1}${ttftWaitMs !== undefined ? ` ttft_wait_ms=${ttftWaitMs}` : ''}`
+    + ` latency_ms=${latencyMs}`
+    + `${diagnostic && c?.exposeUpstreamInfo ? ` detail=${trimDiagnostic(diagnostic, 200)}` : ''}`,
   );
 
-  const record = { attempt: state.totalAttempts, node_id: node.id, status, kind: classification.kind };
-  if (latencyMs !== undefined && latencyMs >= 0) record.latency_ms = latencyMs;
-  if (exposeUpstreamInfo && diagnostic) record.detail = trimDiagnostic(diagnostic, 300);
+  const record = {
+    attempt: state.logicalAttempts, dispatch: state.dispatches, node_id: node.id,
+    status, kind: classification.kind, hedged,
+  };
+  if (headersMs !== undefined && headersMs >= 0) record.headers_ms = headersMs;
+  if (ttftWaitMs !== undefined && ttftWaitMs >= 0) record.ttft_wait_ms = ttftWaitMs;
+  if (latencyMs >= 0) record.latency_ms = latencyMs;
+  if (c?.exposeUpstreamInfo && diagnostic) record.detail = trimDiagnostic(diagnostic, 300);
   state.attempts.push(record);
 }
 

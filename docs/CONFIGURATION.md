@@ -193,6 +193,8 @@ Tier order is fixed: tier-1 → tier-2 → tier-3. A lower tier is used only whe
 | `RATE_LIMIT_COOLDOWN_MS` | 60000 | 1s–600s | 429 cooldown without Retry-After |
 | `AUTH_FAIL_COOLDOWN_MS` | 3600000 | 1min–7d | 401/403 credential cooldown |
 | `FAILOVER_BUDGET_MS` | 240000 | 5s–900s | Whole-request failover budget: total wall-clock time spent rotating across nodes for one request |
+| `HEDGE_DELAY_MS` | 6000 | 0s–600s | Reactive hedge delay: when the first attempt has not committed within this window, one twin attempt races it. `0` disables hedging |
+| `MAX_HEDGES_PER_REQUEST` | 1 | 0–3 | Hedge twins ONE request may launch in total. A twin is an extra executioner of the SAME logical attempt (it consumes neither `max_attempts` nor the tier budget); worst-case upstream dispatches = `max_attempts` + this value |
 | `ALLOWED_ORIGIN` | *(unset)* | origin or `*` | CORS is OFF unless set |
 | `EXPOSE_UPSTREAM_INFO` | false | | Expose upstream node/provider/tier + per-attempt detail in responses; `false` keeps client responses topology-safe |
 | `FAKE_STREAM_PROTECTION` | false | | Convert non-stream requests to streaming upstream + reassemble |

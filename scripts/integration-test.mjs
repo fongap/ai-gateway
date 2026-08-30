@@ -4,7 +4,7 @@
 // worker.fetch() against a mocked global fetch upstream.
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
-import { __resetAllStateForTests, getNodeState, noteRpmRequest, rpmUsage } from '../src/reliability/node-state.js';
+import { __resetAllStateForTests, getNodeState, getCooldownRemainingMs, noteRpmRequest, rpmUsage } from '../src/reliability/node-state.js';
 import { createMockD1 } from './mock-d1-database.mjs';
 
 const ACCESS_KEY = 'test-access-key';
@@ -46,7 +46,9 @@ function installMockFetch() {
     } else {
       upstreamCalls.push({ host: url.hostname, url, authorization: init.headers.get('authorization'), body: null });
     }
-    return handler(req ?? {}, url);
+    // `init` is passed as a third argument so handlers can honor the dispatch
+    // AbortController (abort-driven hang/reject semantics for hedge tests).
+    return handler(req ?? {}, url, init);
   };
 }
 
@@ -1889,13 +1891,13 @@ const delayedFirstEventSse = (delayMs, events) => {
   });
 };
 
-await test('hedge: double failure still charges the twin tier slot', async () => {
+await test('hedge: a twin is not a logical attempt; the tier cap funds logical attempts', async () => {
   resetMock();
   installMockFetch();
-  // Primary is still awaiting headers when the hedge fires; the twin fails
-  // fast and the primary fails slow. Both contacted an upstream, so BOTH tier
-  // slots must be charged even though neither produced a response — otherwise
-  // tier1 (cap=2) gets a third dispatch its budget never funded.
+  // tier1 cap=2 with three nodes: logical attempt 1 = primary df-slow + its
+  // hedge twin df-fast (the twin charges NO attempt slot), logical attempt 2 =
+  // df-third. The twin being extra means the tier still dispatches its third
+  // node — total upstream calls = maxAttempts-in-tier + hedges.
   routeHandlers['df-slow.example.com'] = async () => {
     await new Promise((r) => setTimeout(r, 400));
     return jsonUpstream({}, 500);
@@ -1915,17 +1917,22 @@ await test('hedge: double failure still charges the twin tier slot', async () =>
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.equal(res.status, 502);
   const hosts = upstreamCalls.map((c) => c.host);
-  assert.deepEqual(hosts, ['df-slow.example.com', 'df-fast.example.com'],
-    `tier cap=2 funds exactly two dispatches even when primary and twin both fail (got ${hosts.length}: ${hosts.join(', ')})`);
+  assert.deepEqual(hosts, ['df-slow.example.com', 'df-fast.example.com', 'df-third.example.com'],
+    `logical attempt 1 = slow primary + twin, logical attempt 2 = third node (got ${hosts.join(', ')})`);
+  const body = await res.json();
+  assert.equal(body.error.details.attempts, 2, 'attempts counts LOGICAL attempts');
+  assert.equal(body.error.details.dispatches, 3, 'dispatches counts real upstream calls');
+  assert.equal(body.error.details.hedges, 1, 'hedges counts hedge twins');
+  assert.deepEqual(body.error.details.failure_kinds, { server: 3 });
 });
 
-await test('hedge: no twin when the shared budget only funds the in-flight primary', async () => {
+await test('hedge: twin is decoupled from max_attempts but bounded by max_dispatches', async () => {
   resetMock();
   installMockFetch();
-  // max_attempts=2: mb1 fails fast (attempt 1), mb2 is the IN-FLIGHT attempt 2.
-  // While mb2 flies, its slot is uncharged, so a completed-attempts-only check
-  // (1 < 2) would launch a twin and yield a 3rd upstream dispatch. The guard
-  // must count the flying attempt and refuse.
+  // max_attempts=2 -> max_dispatches = 2 + 1 = 3. mb1 fails fast (logical
+  // attempt 1), mb2 is the in-flight logical attempt 2 and STILL gets a twin
+  // (the twin is not an attempt); the third upstream dispatch is exactly the
+  // max_dispatches ceiling, and mb2 winning returns the response.
   routeHandlers['mb1.example.com'] = () => jsonUpstream({}, 500);
   routeHandlers['mb2.example.com'] = async () => {
     await new Promise((r) => setTimeout(r, 400));
@@ -1945,15 +1952,16 @@ await test('hedge: no twin when the shared budget only funds the in-flight prima
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.equal(res.status, 200);
   assert.equal((await res.json()).choices?.[0]?.message?.content, 'hello');
-  assert.deepEqual(upstreamCalls.map((c) => c.host), ['mb1.example.com', 'mb2.example.com'],
-    'max_attempts=2 must cap the whole request at two upstream dispatches');
+  assert.deepEqual(upstreamCalls.map((c) => c.host),
+    ['mb1.example.com', 'mb2.example.com', 'mb3.example.com'],
+    'max_attempts=2 allows exactly 3 upstream dispatches (2 logical + 1 hedge)');
 });
 
-await test('hedge: a tier cap of 1 leaves no room for a twin', async () => {
+await test('hedge: a tier cap of 1 still allows a twin (a hedge is not an attempt)', async () => {
   resetMock();
   installMockFetch();
-  // tier_attempts tier1=1 funds exactly the primary; launching a twin would be
-  // a second dispatch from a tier that pays for one.
+  // tier_attempts tier1=1 funds ONE LOGICAL attempt — which may still consist
+  // of a primary AND its hedge twin, because the twin charges no attempt slot.
   routeHandlers['tc1.example.com'] = async () => {
     await new Promise((r) => setTimeout(r, 400));
     return jsonUpstream(okCompletion());
@@ -1971,8 +1979,255 @@ await test('hedge: a tier cap of 1 leaves no room for a twin', async () => {
   });
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.equal(res.status, 200);
-  assert.equal(upstreamCalls.length, 1, 'no twin when the tier budget cannot fund both slots');
+  assert.deepEqual(upstreamCalls.map((c) => c.host), ['tc1.example.com', 'tc2.example.com'],
+    'the twin rides along with the single funded logical attempt');
 });
+
+// Signal-aware hang: the dispatch never returns headers until the gateway
+// aborts it — mirrors a real stuck upstream whose fetch rejects on abort.
+const hangUntilAbort = () => (req, url, init) => new Promise((resolve, reject) => {
+  const err = Object.assign(new Error('The operation was aborted'), { name: 'AbortError' });
+  if (init?.signal?.aborted) { reject(err); return; }
+  init.signal.addEventListener('abort', () => reject(err), { once: true });
+});
+
+// HTTP 200 + SSE headers immediately, but the body errors when aborted and
+// carries no events — a first-event stall whose reader unwinds on hedge loss.
+const stallSseUntilAbort = () => (req, url, init) => new Response(new ReadableStream({
+  start(controller) {
+    init.signal.addEventListener('abort', () => controller.error(new TypeError('aborted')), { once: true });
+  },
+}), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+
+await test('hedge: no hedge at all when MAX_HEDGES_PER_REQUEST=0', async () => {
+  resetMock();
+  installMockFetch();
+  const slow = async () => { await new Promise((r) => setTimeout(r, 400)); return sseResponse([chunk('solo'), 'data: [DONE]']); };
+  routeHandlers['nh-slow.example.com'] = slow;
+  routeHandlers['nh-idle.example.com'] = () => sseResponse([chunk('never'), 'data: [DONE]']);
+  const env = makeEnv({
+    tier1: [basicNode('nh-slow'), basicNode('nh-idle')],
+    secrets: { 'nh-slow': 'k', 'nh-idle': 'k' },
+    extraEnv: { HEDGE_DELAY_MS: '100', MAX_HEDGES_PER_REQUEST: '0', FAILOVER_BUDGET_MS: '30000' },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
+  assert.equal(res.status, 200);
+  assert.ok((await streamText(res)).includes('solo'));
+  assert.equal(upstreamCalls.length, 1, 'MAX_HEDGES_PER_REQUEST=0 disables the twin');
+});
+
+await test('hedge: max 5 logical attempts and 6 dispatches when every attempt fails (1 hedge)', async () => {
+  resetMock();
+  installMockFetch();
+  // Six failing tier1 nodes, max_attempts=5: logical attempt 1 gets a twin
+  // (slow primary), attempts 2..5 do not (hedge budget spent). Final: 5
+  // logical attempts, 6 upstream dispatches, 1 hedge.
+  routeHandlers['mf-p1.example.com'] = async () => { await new Promise((r) => setTimeout(r, 300)); return jsonUpstream({}, 500); };
+  for (const id of ['mf-t2', 'mf-p3', 'mf-p4', 'mf-p5', 'mf-p6']) {
+    routeHandlers[`${id}.example.com`] = () => jsonUpstream({}, 500);
+  }
+  const env = makeEnv({
+    tier1: [basicNode('mf-p1'), basicNode('mf-t2'), basicNode('mf-p3'), basicNode('mf-p4'), basicNode('mf-p5'), basicNode('mf-p6')],
+    secrets: Object.fromEntries(['mf-p1', 'mf-t2', 'mf-p3', 'mf-p4', 'mf-p5', 'mf-p6'].map((id) => [id, 'k'])),
+    extraEnv: {
+      HEDGE_DELAY_MS: '100',
+      FAILOVER_BUDGET_MS: '60000',
+      MODELS_CONFIG: JSON.stringify({ 'general-air': { policy: 'fast' } }),
+      POLICIES_CONFIG: JSON.stringify({ fast: { max_attempts: 5 } }),
+    },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 502);
+  const body = await res.json();
+  assert.equal(body.error.details.attempts, 5, '5 logical attempts despite the hedge');
+  assert.equal(body.error.details.dispatches, 6, '6 real upstream dispatches');
+  assert.equal(body.error.details.hedges, 1, 'exactly one hedge twin');
+  assert.deepEqual(body.error.details.failure_kinds, { server: 6 });
+  assert.equal(upstreamCalls.length, 6);
+});
+
+await test('hedge winner: primary aborted and recorded NEUTRAL (no failure, no penalty)', async () => {
+  resetMock();
+  installMockFetch();
+  routeHandlers['hw-slow.example.com'] = hangUntilAbort();
+  routeHandlers['hw-fast.example.com'] = () => sseResponse([chunk('fast'), 'data: [DONE]']);
+  const env = makeEnv({
+    tier1: [basicNode('hw-slow'), basicNode('hw-fast')],
+    secrets: { 'hw-slow': 'k', 'hw-fast': 'k' },
+    extraEnv: { HEDGE_DELAY_MS: '200', FAILOVER_BUDGET_MS: '30000' },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
+  assert.equal(res.status, 200);
+  assert.ok((await streamText(res)).includes('fast'));
+  assert.deepEqual(upstreamCalls.map((c) => c.host), ['hw-slow.example.com', 'hw-fast.example.com']);
+  // Let the aborted primary's dispatch rejection unwind.
+  await new Promise((r) => setTimeout(r, 50));
+  const slowState = getNodeState('hw-slow');
+  assert.equal(slowState.totalFailures, 0, 'hedge loser must not count as a failure');
+  assert.equal(slowState.consecutiveFailures, 0, 'hedge loser must not feed the circuit breaker');
+  assert.equal(getCooldownRemainingMs('hw-slow'), 0, 'hedge loser must not be cooled down');
+});
+
+await test('hedge winner at the first-event guard: primary loser stays neutral', async () => {
+  resetMock();
+  installMockFetch();
+  // Primary returns 200 + SSE headers then stalls before the first event;
+  // when the twin commits, the primary's guard unwinds through the abort
+  // path — that cancellation must NOT be miscounted as a first-event timeout.
+  routeHandlers['gl-stall.example.com'] = stallSseUntilAbort();
+  routeHandlers['gl-fast.example.com'] = () => sseResponse([chunk('fast'), 'data: [DONE]']);
+  const env = makeEnv({
+    tier1: [basicNode('gl-stall'), basicNode('gl-fast')],
+    secrets: { 'gl-stall': 'k', 'gl-fast': 'k' },
+    extraEnv: { HEDGE_DELAY_MS: '200', FAILOVER_BUDGET_MS: '30000' },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
+  assert.equal(res.status, 200);
+  assert.ok((await streamText(res)).includes('fast'));
+  await new Promise((r) => setTimeout(r, 50));
+  const stallState = getNodeState('gl-stall');
+  assert.equal(stallState.totalFailures, 0, 'guard-phase hedge loser is neutral, not first_event_timeout');
+  assert.equal(stallState.consecutiveFailures, 0);
+  assert.equal(getCooldownRemainingMs('gl-stall'), 0);
+});
+
+await test('hedge: primary wins the race and the hanging twin is neutral', async () => {
+  resetMock();
+  installMockFetch();
+  routeHandlers['pw-slow.example.com'] = async () => {
+    await new Promise((r) => setTimeout(r, 400));
+    return sseResponse([chunk('primary'), 'data: [DONE]']);
+  };
+  routeHandlers['pw-twin.example.com'] = hangUntilAbort();
+  const env = makeEnv({
+    tier1: [basicNode('pw-slow'), basicNode('pw-twin')],
+    secrets: { 'pw-slow': 'k', 'pw-twin': 'k' },
+    extraEnv: { HEDGE_DELAY_MS: '100', FAILOVER_BUDGET_MS: '30000' },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
+  assert.equal(res.status, 200);
+  assert.ok((await streamText(res)).includes('primary'));
+  assert.deepEqual(upstreamCalls.map((c) => c.host), ['pw-slow.example.com', 'pw-twin.example.com']);
+  await new Promise((r) => setTimeout(r, 50));
+  const twinState = getNodeState('pw-twin');
+  assert.equal(twinState.totalFailures, 0, 'aborted twin is neutral');
+  assert.equal(twinState.consecutiveFailures, 0);
+});
+
+await test('hedge: both sides fail -> one logical attempt consumed, the next one runs', async () => {
+  resetMock();
+  installMockFetch();
+  routeHandlers['bf-p.example.com'] = async () => { await new Promise((r) => setTimeout(r, 300)); return jsonUpstream({}, 500); };
+  routeHandlers['bf-t.example.com'] = () => jsonUpstream({}, 500);
+  routeHandlers['bf-next.example.com'] = () => jsonUpstream(okCompletion());
+  const env = makeEnv({
+    tier1: [basicNode('bf-p'), basicNode('bf-t'), basicNode('bf-next')],
+    secrets: { 'bf-p': 'k', 'bf-t': 'k', 'bf-next': 'k' },
+    extraEnv: { HEDGE_DELAY_MS: '100', FAILOVER_BUDGET_MS: '30000' },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 200);
+  assert.deepEqual(upstreamCalls.map((c) => c.host),
+    ['bf-p.example.com', 'bf-t.example.com', 'bf-next.example.com'],
+    'the failed hedge pair consumes ONE logical attempt, then attempt 2 serves');
+  // The twin's 500 was a REAL failure of its own (not a cancellation).
+  assert.equal(getNodeState('bf-t').totalFailures, 1, 'a twin that genuinely 5xxes counts as a real failure');
+});
+
+await test('hedge twin inherits the logical attempt deadline (no fresh budget)', async () => {
+  resetMock();
+  installMockFetch();
+  // Budget 2000ms / 2 live dispatchable nodes -> 1000ms logical attempt slice.
+  // Primary hangs; the hedge fires at 300ms and the twin MUST die at the
+  // shared ~1000ms deadline, not run a fresh ~1000ms of its own (which would
+  // end near 1300ms).
+  routeHandlers['sd-a.example.com'] = hangUntilAbort();
+  routeHandlers['sd-b.example.com'] = hangUntilAbort();
+  const env = makeEnv({
+    tier1: [basicNode('sd-a'), basicNode('sd-b')],
+    secrets: { 'sd-a': 'k', 'sd-b': 'k' },
+    extraEnv: { HEDGE_DELAY_MS: '300', FAILOVER_BUDGET_MS: '2000', EXPOSE_UPSTREAM_INFO: 'true' },
+  });
+  const t0 = Date.now();
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  const elapsed = Date.now() - t0;
+  assert.equal(res.status, 504, 'both hedged sides time out at the shared deadline');
+  const body = await res.json();
+  assert.equal(body.error.details.attempts, 1);
+  assert.equal(body.error.details.dispatches, 2);
+  assert.equal(body.error.details.hedges, 1);
+  assert.deepEqual(body.error.details.failure_kinds, { headers_timeout: 2 });
+  const [primaryRec, twinRec] = body.error.details.attempts_detail;
+  assert.equal(primaryRec.node_id, 'sd-a');
+  assert.equal(twinRec.node_id, 'sd-b');
+  assert.ok(primaryRec.latency_ms <= 1200, `primary dies at the attempt deadline (got ${primaryRec.latency_ms}ms)`);
+  assert.ok(twinRec.latency_ms < 950,
+    `twin must end by the SHARED deadline (~700ms), not a fresh 1000ms slice (got ${twinRec.latency_ms}ms)`);
+  assert.ok(elapsed < 1600, `request must not outlive the shared deadline (took ${elapsed}ms)`);
+});
+
+await test('timeout kinds: no HTTP status -> headers_timeout (status=0)', async () => {
+  resetMock();
+  installMockFetch();
+  routeHandlers['tk-hang.example.com'] = hangUntilAbort();
+  const env = makeEnv({
+    tier1: [basicNode('tk-hang')],
+    secrets: { 'tk-hang': 'k' },
+    extraEnv: { FAILOVER_BUDGET_MS: '1200', EXPOSE_UPSTREAM_INFO: 'true' },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 504);
+  const body = await res.json();
+  assert.deepEqual(body.error.details.failure_kinds, { headers_timeout: 1 });
+  const record = body.error.details.attempts_detail[0];
+  assert.equal(record.kind, 'headers_timeout');
+  assert.equal(record.status, 0, 'no HTTP status was ever received');
+});
+
+await test('timeout kinds: HTTP 200 but no SSE event -> first_event_timeout (status=200)', async () => {
+  resetMock();
+  installMockFetch();
+  routeHandlers['tk-stall.example.com'] = stallSseUntilAbort();
+  const env = makeEnv({
+    tier1: [basicNode('tk-stall')],
+    secrets: { 'tk-stall': 'k' },
+    extraEnv: { FAILOVER_BUDGET_MS: '1200', EXPOSE_UPSTREAM_INFO: 'true' },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
+  assert.equal(res.status, 504);
+  const body = await res.json();
+  assert.deepEqual(body.error.details.failure_kinds, { first_event_timeout: 1 });
+  const record = body.error.details.attempts_detail[0];
+  assert.equal(record.kind, 'first_event_timeout');
+  assert.equal(record.status, 200, 'headers were received; the wait after them timed out');
+  assert.ok(record.ttft_wait_ms > 0, 'the first-event wait is reported separately');
+});
+
+await test('client abort: neutral end, never misrecorded as headers_timeout', async () => {
+  resetMock();
+  installMockFetch();
+  routeHandlers['ca-hang.example.com'] = hangUntilAbort();
+  const env = makeEnv({
+    tier1: [basicNode('ca-hang')],
+    secrets: { 'ca-hang': 'k' },
+    extraEnv: { FAILOVER_BUDGET_MS: '30000' },
+  });
+  const controller = new AbortController();
+  const pending = worker.fetch(
+    chatRequest({ model: 'general-air', messages: [] }, ACCESS_KEY, { signal: controller.signal }),
+    env, {},
+  );
+  await new Promise((r) => setTimeout(r, 100));
+  controller.abort();
+  const res = await pending;
+  assert.equal(res.status, 499, 'client abort returns 499');
+  await new Promise((r) => setTimeout(r, 30));
+  const nodeState = getNodeState('ca-hang');
+  assert.equal(nodeState.totalFailures, 0, 'client abort is not a node failure');
+  assert.equal(nodeState.consecutiveFailures, 0);
+  assert.equal(getCooldownRemainingMs('ca-hang'), 0);
+});
+
 
 await test('scheduler uses measured TTFT, not header latency, once both are known', async () => {
   resetMock();

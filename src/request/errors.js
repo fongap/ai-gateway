@@ -62,14 +62,16 @@ export function buildBudgetExhaustedResponse(request, env, route, requestId, req
   const status = 504;
   const details = {
     requested_model: requestedModel,
-    attempts: state.totalAttempts,
+    attempts: state.logicalAttempts,
+    dispatches: state.dispatches,
+    hedges: state.hedges,
     ...(state.failureKinds && Object.keys(state.failureKinds).length
       ? { failure_kinds: state.failureKinds }
       : {}),
     ...(exposeUpstreamInfo && state.attempts.length ? { attempts_detail: state.attempts } : {}),
   };
   return gatewayError(request, env, route, status,
-    `Gateway failover budget exhausted after ${state.totalAttempts} attempt(s).`, requestId, details);
+    `Gateway failover budget exhausted after ${state.logicalAttempts} attempt(s).`, requestId, details);
 }
 
 export function buildExhaustedResponse(request, env, route, requestId, requestedModel, state, tiers, exposeUpstreamInfo) {
@@ -122,7 +124,11 @@ export function buildExhaustedResponse(request, env, route, requestId, requested
 
   const details = {
     requested_model: requestedModel,
-    attempts: state.totalAttempts,
+    // attempts = LOGICAL attempts (primary + optional hedge twin each);
+    // dispatches = real upstream requests; hedges = hedge twin count.
+    attempts: state.logicalAttempts,
+    dispatches: state.dispatches,
+    hedges: state.hedges,
     ...(state.failureKinds && Object.keys(state.failureKinds).length
       ? { failure_kinds: state.failureKinds }
       : {}),
@@ -202,7 +208,7 @@ export function buildClientErrorResponse(request, env, route, requestId, request
   return new Response(JSON.stringify({
     error: {
       message: detail,
-      details: { requested_model: requestedModel, attempts: state.totalAttempts, ...attemptsDetail },
+      details: { requested_model: requestedModel, attempts: state.logicalAttempts, dispatches: state.dispatches, hedges: state.hedges, ...attemptsDetail },
     },
   }), {
     status,
@@ -229,7 +235,7 @@ function extractErrorMessage(text) {
 
 // Map the aggregated per-attempt failure kinds to a terminal HTTP status.
 //   dominant rate_limit / distributed deny -> 429 (retryable)
-//   dominant timeout / first-event        -> 504 (spent, terminal)
+//   dominant headers/first-event timeout  -> 504 (spent, terminal)
 //   otherwise (server/network/auth/model) -> 502
 function dominantKind(failureKinds) {
   let best = null;
@@ -244,6 +250,6 @@ function terminalStatus(failureKinds) {
   const dom = dominantKind(failureKinds);
   if (!dom) return null;
   if (dom === 'rate_limit' || dom === 'rate_limit_global') return 429;
-  if (dom === 'timeout' || dom === 'first_event') return 504;
+  if (dom === 'headers_timeout' || dom === 'first_event_timeout') return 504;
   return 502;
 }

@@ -18,8 +18,12 @@ const KIND = {
   ENDPOINT_NOT_FOUND: 'endpoint_not_found',
   SERVER: 'server',
   NETWORK: 'network',
-  TIMEOUT: 'timeout',
-  FIRST_EVENT: 'first_event',
+  // Waiting for HTTP response headers timed out: no HTTP status was ever
+  // received (status=0 in attempt records).
+  HEADERS_TIMEOUT: 'headers_timeout',
+  // HTTP 200 headers were received but no valid SSE event arrived in time
+  // (status=200 in attempt records; the wait after headers is the TTFT wait).
+  FIRST_EVENT_TIMEOUT: 'first_event_timeout',
   CLIENT_ABORT: 'client_abort',
 };
 
@@ -75,16 +79,16 @@ function looksLikeModelMissing(body) {
   return /(not found|does not exist|unknown|no such|not supported|invalid model)/.test(text);
 }
 
-export function classifyNetworkError(kindTimeout) {
+export function classifyNetworkError(kindHeadersTimeout) {
   // No standalone cooldown: transient failures feed the circuit breaker,
   // which owns the open-period cooldown when the threshold trips.
-  return kindTimeout
-    ? { kind: KIND.TIMEOUT, action: 'rotate', cooldownMs: 0, counted: true }
+  return kindHeadersTimeout
+    ? { kind: KIND.HEADERS_TIMEOUT, action: 'rotate', cooldownMs: 0, counted: true }
     : { kind: KIND.NETWORK, action: 'rotate', cooldownMs: 0, counted: true };
 }
 
 export function classifyFirstEventFailure() {
-  return { kind: KIND.FIRST_EVENT, action: 'rotate', cooldownMs: 0, counted: true };
+  return { kind: KIND.FIRST_EVENT_TIMEOUT, action: 'rotate', cooldownMs: 0, counted: true };
 }
 
 export function classifyClientAbort() {

@@ -20,7 +20,18 @@ const LIMITS = {
   // Reactive hedge (Envoy-style per-try hedge): when the first attempt has
   // not committed a response within this window, ONE twin attempt is launched
   // against the next-best candidate and the two race. 0 disables hedging.
-  HEDGE_DELAY_MS: { min: 0, max: 600_000, def: 4_000 },
+  // 6s balances the two failure modes: shorter delays fire on healthy
+  // long-context / reasoning requests that simply think before their first
+  // byte, longer ones rescue genuinely stuck upstreams too late. Kept a fixed
+  // default on purpose — a future adaptive delay (from avgHeaderLatency /
+  // avgTtftMs EWMA) slots in here without touching callers.
+  HEDGE_DELAY_MS: { min: 0, max: 600_000, def: 6_000 },
+  // Hedge twins are NOT logical attempts: max_attempts stays the logical
+  // attempt budget. This separately caps how many hedge twins ONE request may
+  // launch in total, so the worst-case upstream dispatch count is
+  // max_attempts + MAX_HEDGES_PER_REQUEST — decoupling hedge from the attempt
+  // budget must not open an unbounded-fanout hole.
+  MAX_HEDGES_PER_REQUEST: { min: 0, max: 3, def: 1 },
 };
 
 // Retry-After is always clamped into this window so a hostile or broken
@@ -94,6 +105,7 @@ export function getLimits(env) {
     maxBodyBytes: clampInt(readEnv(env, 'MAX_BODY_BYTES'), LIMITS.MAX_BODY_BYTES.min, LIMITS.MAX_BODY_BYTES.max, LIMITS.MAX_BODY_BYTES.def),
     failoverBudgetMs: clampInt(readEnv(env, 'FAILOVER_BUDGET_MS'), LIMITS.FAILOVER_BUDGET_MS.min, LIMITS.FAILOVER_BUDGET_MS.max, LIMITS.FAILOVER_BUDGET_MS.def),
     hedgeDelayMs: clampInt(readEnv(env, 'HEDGE_DELAY_MS'), LIMITS.HEDGE_DELAY_MS.min, LIMITS.HEDGE_DELAY_MS.max, LIMITS.HEDGE_DELAY_MS.def),
+    maxHedgesPerRequest: clampInt(readEnv(env, 'MAX_HEDGES_PER_REQUEST'), LIMITS.MAX_HEDGES_PER_REQUEST.min, LIMITS.MAX_HEDGES_PER_REQUEST.max, LIMITS.MAX_HEDGES_PER_REQUEST.def),
   };
   cache.set(env, cached);
   return cached;

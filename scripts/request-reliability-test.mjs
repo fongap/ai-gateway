@@ -12,7 +12,8 @@ import {
   parseRetryAfterMs, attemptBudgetSliceMs, attemptHeadersTimeoutMs, attemptFirstEventTimeoutMs,
   MIN_ATTEMPT_HEADERS_MS, MIN_ATTEMPT_FIRST_EVENT_MS,
 } from '../src/config/timeouts.js';
-import { classifyUpstreamStatus } from '../src/reliability/classify.js';
+import { classifyUpstreamStatus, classifyNetworkError, classifyFirstEventFailure, classifyClientAbort } from '../src/reliability/classify.js';
+import { getLimits } from '../src/config/timeouts.js';
 import { countDispatchableNodes } from '../src/scheduler/scheduler.js';
 
 const ENV = {};
@@ -328,6 +329,42 @@ await test('first-event timeout is fairly shared across live attempts', async ()
   assert.equal(attemptFirstEventTimeoutMs(120_000, 240_000, 5), 48_000);
   assert.equal(attemptFirstEventTimeoutMs(120_000, 10_000, 5), MIN_ATTEMPT_FIRST_EVENT_MS);
   assert.equal(attemptFirstEventTimeoutMs(120_000, 3_000, 5), 3_000, 'remaining budget caps the floor');
+});
+
+await test('timeout failures are classified as headers_timeout / first_event_timeout', async () => {
+  // fetch never got HTTP status -> headers_timeout, counted for the circuit.
+  const headers = classifyNetworkError(true);
+  assert.equal(headers.kind, 'headers_timeout');
+  assert.equal(headers.action, 'rotate');
+  assert.equal(headers.counted, true);
+  // plain network error keeps its own kind, also counted.
+  const network = classifyNetworkError(false);
+  assert.equal(network.kind, 'network');
+  assert.equal(network.counted, true);
+  // HTTP 200 received, but no valid SSE event -> first_event_timeout, counted.
+  const firstEvent = classifyFirstEventFailure();
+  assert.equal(firstEvent.kind, 'first_event_timeout');
+  assert.equal(firstEvent.action, 'rotate');
+  assert.equal(firstEvent.counted, true);
+  // client abort stays a neutral, uncounted end of its own kind.
+  const abort = classifyClientAbort();
+  assert.equal(abort.kind, 'client_abort');
+  assert.equal(abort.action, 'neutral');
+  assert.equal(abort.counted, false);
+});
+
+await test('hedge defaults: 6000ms delay, 1 hedge per request, overridable', async () => {
+  const defaults = getLimits(ENV);
+  assert.equal(defaults.hedgeDelayMs, 6_000, 'HEDGE_DELAY_MS default is 6000');
+  assert.equal(defaults.maxHedgesPerRequest, 1, 'MAX_HEDGES_PER_REQUEST default is 1');
+  const overridden = getLimits({ HEDGE_DELAY_MS: '8000', MAX_HEDGES_PER_REQUEST: '2' });
+  assert.equal(overridden.hedgeDelayMs, 8_000);
+  assert.equal(overridden.maxHedgesPerRequest, 2);
+  // 0 disables hedging entirely but stays inside the clamped range.
+  assert.equal(getLimits({ MAX_HEDGES_PER_REQUEST: '0' }).maxHedgesPerRequest, 0);
+  // Out-of-range values are clamped, not trusted.
+  assert.equal(getLimits({ MAX_HEDGES_PER_REQUEST: '99' }).maxHedgesPerRequest, 3);
+  assert.equal(getLimits({ HEDGE_DELAY_MS: '-5' }).hedgeDelayMs, 0);
 });
 
 await test('dispatchable count reflects the live pool, not the policy maximum', async () => {
