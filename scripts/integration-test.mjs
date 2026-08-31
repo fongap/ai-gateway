@@ -1309,35 +1309,6 @@ await test('public home shows degraded status when all serving nodes are cooling
   assert.ok(!html.includes('dot available'), 'must not claim a model available when cooling');
 });
 
-await test('public home model hint uses a registry model, never a hardcoded model', async () => {
-  resetMock();
-  const env = makeEnv({
-    tier1: [basicNode('h-a', { models: {} })], // wildcard serves registry models incl. code-max
-    secrets: { 'h-a': 'k' },
-    extraEnv: { MODELS_CONFIG: JSON.stringify({ 'code-max': { policy: 'fast' } }) },
-  });
-  const res = await worker.fetch(new Request('https://gateway.example.com/', {
-    headers: { accept: 'text/html' },
-  }), env, {});
-  assert.equal(res.status, 200);
-  const html = await res.text();
-  assert.match(html, /OPENAI_MODEL=code-max/);
-  assert.ok(!html.includes('OPENAI_MODEL=code-pro'), 'must not hardcode code-pro');
-});
-
-await test('public home model hint falls back to placeholder when nothing is available', async () => {
-  resetMock();
-  const env = makeEnv({ tier1: [basicNode('ph-a')], secrets: { 'ph-a': 'k' } });
-  const state = getNodeState('ph-a');
-  state.cooldownUntil = Date.now() + 60_000; // degrade all serving nodes
-  const res = await worker.fetch(new Request('https://gateway.example.com/', {
-    headers: { accept: 'text/html' },
-  }), env, {});
-  assert.equal(res.status, 200);
-  const html = await res.text();
-  assert.match(html, /OPENAI_MODEL=&lt;model&gt;/, 'must show a placeholder when nothing is available');
-});
-
 // ---- Information exposure (P1) ---------------------------------------------
 
 await test('default success response does not leak node id / tier', async () => {
@@ -1570,7 +1541,7 @@ await test('public home: brand & GitHub once, 通用/编程 grouped, no protocol
   // expose their selected panel, and the dense heatmap has one concise label.
   assert.match(html, /class="sr-only">状态：可用/);
   assert.match(html, /role="tab" aria-controls="pane-openai" aria-selected="true"/);
-  assert.match(html, /id="pane-claude" role="tabpanel" aria-labelledby="tab-claude" hidden/);
+  assert.match(html, /id="pane-anthropic" role="tabpanel" aria-labelledby="tab-anthropic" hidden/);
   assert.match(html, /ArrowLeft/);
   assert.match(html, /ArrowRight/);
   assert.match(html, /复制失败/);

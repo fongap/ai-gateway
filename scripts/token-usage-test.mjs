@@ -248,8 +248,7 @@ await test('no D1 binding degrades to 统计暂不可用 with em dashes, never a
   assert.ok(!html.includes('api-url'));
   assert.ok(html.includes('快速开始'));
   assert.ok(html.includes('data-tab="openai"'));
-  assert.ok(html.includes('data-tab="claude"'));
-  assert.ok(html.includes('data-tab="codex"'));
+  assert.ok(html.includes('data-tab="anthropic"'));
 });
 
 await test('a failing D1 query also degrades instead of 500 / fake zero', async () => {

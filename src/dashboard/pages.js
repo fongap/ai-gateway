@@ -8,7 +8,7 @@
 //   Hero       — 一个入口，应对所有变化 (compact)
 //   模型状态   — 通用 / 编程 rows inside ONE card, light chips + status dot
 //   使用情况   — ONE card: 5-column KPI strip + 52×7 Token 活动 heatmap
-//   快速开始 — OpenAI-compatible / Claude Code / Codex tabs (no stacked code blocks)
+//   快速开始 — OpenAI / Anthropic 协议 tabs (no stacked code blocks)
 //   Footer     — © 2026 Fongap Studio
 //
 // Public-safety rules:
@@ -493,26 +493,6 @@ function renderModels(models) {
   return { html: `<div class="card models-card">${rows.join('')}</div>` };
 }
 
-// Pick the quick-start example model deterministically: prefer a known
-// recommended, currently-available logical model; else any available model;
-// else show a placeholder the operator must fill in (never a hardcoded model
-// that may not exist). Never take the first string-sorted model.
-// general-* models are excluded from public display and recommendations.
-const RECOMMENDED_ORDER = [
-  'ultra', 'max', 'pro', 'air',
-  'code-ultra', 'code-max', 'code-pro', 'code-air',
-];
-const MODEL_PLACEHOLDER = '<model>';
-function recommendedExampleModel(models) {
-  // general-* models are excluded from public display and recommendations.
-  const visible = models.filter((m) => !m.id.toLowerCase().startsWith(GENERAL_PREFIX));
-  for (const name of RECOMMENDED_ORDER) {
-    if (visible.some((m) => m.id === name && m.status === 'available')) return name;
-  }
-  const any = visible.find((m) => m.status === 'available');
-  return any ? any.id : MODEL_PLACEHOLDER;
-}
-
 // ---- 使用情况 (KPI strip + Token 活动 heatmap, one card) --------------------
 
 // Chinese unit formatting for KPI values: 万 (10^4) and 亿 (10^8).
@@ -765,32 +745,21 @@ function snippetPane({ id, copyLabel, active, code }) {
   </div>`;
 }
 
-function quickStartSection(apiBase, model) {
-  const openai = `OPENAI_BASE_URL=${escapeHtml(apiBase)}
-OPENAI_API_KEY=$GATEWAY_ACCESS_KEY
-OPENAI_MODEL=${escapeHtml(model)}`;
+function quickStartSection(apiBase) {
   const origin = new URL(apiBase).origin;
-  const claude = `ANTHROPIC_BASE_URL=${escapeHtml(origin)}
-ANTHROPIC_AUTH_TOKEN=$GATEWAY_ACCESS_KEY
-ANTHROPIC_MODEL=${escapeHtml(model)}`;
-  const codex = `# ~/.codex/config.toml
-model = "${escapeHtml(model)}"
-model_provider = "gateway"
-
-[model_providers.gateway]
-base_url = "${escapeHtml(apiBase)}"
-env_key = "GATEWAY_ACCESS_KEY"`;
+  const openai = `OPENAI_BASE_URL=${escapeHtml(apiBase)}
+OPENAI_API_KEY=$GATEWAY_ACCESS_KEY`;
+  const anthropic = `ANTHROPIC_BASE_URL=${escapeHtml(origin)}
+ANTHROPIC_AUTH_TOKEN=$GATEWAY_ACCESS_KEY`;
   const tabs = [
-    { id: 'openai', label: 'OpenAI 兼容' },
-    { id: 'claude', label: 'Claude Code' },
-    { id: 'codex', label: 'Codex' },
+    { id: 'openai', label: 'OpenAI 协议' },
+    { id: 'anthropic', label: 'Anthropic 协议' },
   ].map((t, i) => `<button class="tab${i === 0 ? ' active' : ''}" id="tab-${t.id}" ` +
     `type="button" role="tab" aria-controls="pane-${t.id}" aria-selected="${i === 0}" ` +
     `tabindex="${i === 0 ? 0 : -1}" data-tab="${t.id}">${t.label}</button>`).join('');
   const panes = [
-    snippetPane({ id: 'openai', copyLabel: 'OpenAI 兼容客户端环境变量', active: true, code: openai }),
-    snippetPane({ id: 'claude', copyLabel: 'Claude Code 环境变量', active: false, code: claude }),
-    snippetPane({ id: 'codex', copyLabel: 'Codex 配置文件', active: false, code: codex }),
+    snippetPane({ id: 'openai', copyLabel: 'OpenAI 协议环境变量', active: true, code: openai }),
+    snippetPane({ id: 'anthropic', copyLabel: 'Anthropic 协议环境变量', active: false, code: anthropic }),
   ].join('\n');
   return `<section class="section">
   <div class="section-title">快速开始</div>
@@ -825,11 +794,10 @@ export async function dashboardResponse(request, env) {
   const config = loadGatewayConfig(env);
   const models = publicModelStatus(config.nodes || [], env);
   const apiBase = `${new URL(request.url).origin}/v1`;
-  const defaultModel = recommendedExampleModel(models);
 
   const modelsResult = renderModels(models);
   const usageHtml = await usageSection(env);
-  const quickHtml = quickStartSection(apiBase, defaultModel);
+  const quickHtml = quickStartSection(apiBase);
 
   const body = `
 <section class="hero">
