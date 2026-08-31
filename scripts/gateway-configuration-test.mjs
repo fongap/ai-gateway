@@ -340,6 +340,55 @@ test('POLICIES_CONFIG rejects unknown policy fields', () => {
   assert.match(diags[0], /has unknown field "nope"/);
 });
 
+// ---- Hedge policy parsing -----------------------------------------------
+
+test('POLICIES_CONFIG parses a valid hedge policy', () => {
+  const policies = loadPoliciesConfig(makeEnv({
+    extraEnv: { POLICIES_CONFIG: JSON.stringify({ 'hp': { max_attempts: 5, hedge: { enabled: true, delay_ms: 4000, tiers: ['tier1'] } } }) },
+  }));
+  assert.equal(policies.hp.hedge.enabled, true);
+  assert.equal(policies.hp.hedge.delayMs, 4000);
+  assert.deepEqual(policies.hp.hedge.tiers, ['tier1']);
+});
+
+test('POLICIES_CONFIG hedge null/absent returns null (legacy behavior)', () => {
+  const policies = loadPoliciesConfig(makeEnv({
+    extraEnv: { POLICIES_CONFIG: JSON.stringify({ 'hp': { max_attempts: 5 } }) },
+  }));
+  assert.equal(policies.hp.hedge, null, 'absent hedge field = null = legacy global hedge');
+});
+
+test('POLICIES_CONFIG hedge.enabled=false is accepted', () => {
+  const policies = loadPoliciesConfig(makeEnv({
+    extraEnv: { POLICIES_CONFIG: JSON.stringify({ 'hp': { max_attempts: 5, hedge: { enabled: false } } }) },
+  }));
+  assert.equal(policies.hp.hedge.enabled, false);
+});
+
+test('POLICIES_CONFIG rejects a non-boolean hedge.enabled', () => {
+  const diags = policyDiags({ 'hp': { hedge: { enabled: 'yes' } } });
+  assert.equal(diags.length, 1);
+  assert.match(diags[0], /hedge\.enabled must be a boolean/);
+});
+
+test('POLICIES_CONFIG rejects a non-integer hedge.delay_ms', () => {
+  const diags = policyDiags({ 'hp': { hedge: { delay_ms: 1.5 } } });
+  assert.equal(diags.length, 1);
+  assert.match(diags[0], /hedge\.delay_ms must be a non-negative integer/);
+});
+
+test('POLICIES_CONFIG rejects a negative hedge.delay_ms', () => {
+  const diags = policyDiags({ 'hp': { hedge: { delay_ms: -1 } } });
+  assert.equal(diags.length, 1);
+  assert.match(diags[0], /hedge\.delay_ms must be a non-negative integer/);
+});
+
+test('POLICIES_CONFIG rejects invalid hedge.tiers values', () => {
+  const diags = policyDiags({ 'hp': { hedge: { tiers: ['tier9'] } } });
+  assert.equal(diags.length, 1);
+  assert.match(diags[0], /hedge\.tiers must be an array of/);
+});
+
 test('MODELS_CONFIG rejects a non-string policy', () => {
   const diags = modelDiags({ 'm-num': { policy: 123 } });
   assert.equal(diags.length, 1, `one isolated diagnostic expected, got ${JSON.stringify(diags)}`);

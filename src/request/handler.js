@@ -232,7 +232,7 @@ export async function handleRequest(request, env, ctx) {
         request, env, ctx, logger, requestId, route, node, requestedModel,
         clientWantsStream, fakeStream, bodyJson, limits, exposeUpstreamInfo, state,
         failoverBudgetMs, requestStartMs, reqDescriptor,
-        remainingDispatchableAttempts,
+        remainingDispatchableAttempts, policy, tierNumber,
       }, tiers[tierNumber]);
       // A pre-dispatch outcome that never reached an upstream (distributed
       // rate-limiter deny, invalid base URL) carries budgetCharged:false and
@@ -363,8 +363,22 @@ const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // at Scale (Dean & Barroso, 2013) for the underlying technique and its
 // overload caveat.
 async function dispatchWithHedge(args, tierNodes) {
-  const hedgeDelayMs = args.limits.hedgeDelayMs || 0;
-  const maxHedges = args.limits.maxHedgesPerRequest ?? 1;
+  // Resolve effective hedge config: policy.hedge (per-model) overrides
+  // the global env defaults. When no policy hedge is configured (null),
+  // keep the legacy behavior — hedge enabled on ALL tiers with
+  // HEDGE_DELAY_MS / MAX_HEDGES_PER_REQUEST from env.
+  const hedgePolicy = args.policy?.hedge ?? null;
+  const tierKey = `tier${args.tierNumber}`;
+  let hedgeDelayMs, maxHedges;
+  if (hedgePolicy) {
+    if (hedgePolicy.enabled === false) return attemptNode(args);
+    if (hedgePolicy.tiers && !hedgePolicy.tiers.includes(tierKey)) return attemptNode(args);
+    hedgeDelayMs = hedgePolicy.delayMs ?? args.limits.hedgeDelayMs;
+    maxHedges = args.limits.maxHedgesPerRequest ?? 1;
+  } else {
+    hedgeDelayMs = args.limits.hedgeDelayMs || 0;
+    maxHedges = args.limits.maxHedgesPerRequest ?? 1;
+  }
   if (hedgeDelayMs <= 0 || maxHedges <= 0) return attemptNode(args);
 
   // The primary holds its own args object so the twin can inherit the logical

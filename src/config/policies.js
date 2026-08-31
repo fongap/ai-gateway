@@ -17,7 +17,7 @@ const DEFAULT_POLICY = { maxAttempts: 5 };
 const MIN_ATTEMPTS = 1;
 const MAX_ATTEMPTS = 8;
 const TIER_KEYS = ['tier1', 'tier2', 'tier3'];
-const ALLOWED_FIELDS = new Set(['max_attempts', 'tier_attempts']);
+const ALLOWED_FIELDS = new Set(['max_attempts', 'tier_attempts', 'hedge']);
 
 let cachedEnv;
 let cached;
@@ -60,6 +60,7 @@ function analyzePolicies(env) {
           }
         }
         const tierAttempts = parseTierAttempts(config.tier_attempts, name, errors);
+        const hedge = parseHedge(config.hedge, name, errors);
         // max_attempts only participates when explicitly configured; a present
         // value (null included) must be an integer in [MIN_ATTEMPTS, MAX_ATTEMPTS].
         let attempts = DEFAULT_POLICY.maxAttempts;
@@ -75,12 +76,51 @@ function analyzePolicies(env) {
         policies[name.trim()] = {
           maxAttempts: attempts,
           tierAttempts,
+          hedge,
         };
       }
     }
   }
   cached = { policies, errors };
   return cached;
+}
+
+// Parse an optional hedge policy: { enabled?, delay_ms?, tiers? }.
+//   enabled   — boolean (default true); false disables hedging for this policy.
+//   delay_ms  — integer >= 0; overrides HEDGE_DELAY_MS for this policy.
+//   tiers     — array of "tier1"/"tier2"/"tier3"; if present, only those
+//               tiers may launch hedge twins. Absent = all tiers.
+// When the field is absent entirely, null is returned and the handler
+// falls back to the legacy global behavior (hedge enabled everywhere).
+function parseHedge(value, policyName, errors) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    errors.push(`POLICIES_CONFIG: "${policyName}": hedge must be an object { enabled?, delay_ms?, tiers? }`);
+    return null;
+  }
+  const out = {};
+  if (value.enabled !== undefined) {
+    if (typeof value.enabled !== 'boolean') {
+      errors.push(`POLICIES_CONFIG: "${policyName}": hedge.enabled must be a boolean`);
+    } else {
+      out.enabled = value.enabled;
+    }
+  }
+  if (value.delay_ms !== undefined) {
+    if (!Number.isInteger(value.delay_ms) || value.delay_ms < 0) {
+      errors.push(`POLICIES_CONFIG: "${policyName}": hedge.delay_ms must be a non-negative integer`);
+    } else {
+      out.delayMs = value.delay_ms;
+    }
+  }
+  if (value.tiers !== undefined) {
+    if (!Array.isArray(value.tiers) || !value.tiers.every((t) => typeof t === 'string' && TIER_KEYS.includes(t))) {
+      errors.push(`POLICIES_CONFIG: "${policyName}": hedge.tiers must be an array of "tier1", "tier2", "tier3"`);
+    } else {
+      out.tiers = value.tiers;
+    }
+  }
+  return Object.keys(out).length ? out : null;
 }
 
 // Parse an optional per-tier attempt budget object: { tier1, tier2, tier3 }.

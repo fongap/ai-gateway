@@ -2319,6 +2319,61 @@ await test('hedge twin inherits the logical attempt deadline (no fresh budget)',
   assert.ok(elapsed < 1600, `request must not outlive the shared deadline (took ${elapsed}ms)`);
 });
 
+await test('hedge policy: tiers filter excludes tier-2 from hedging', async () => {
+  resetMock();
+  installMockFetch();
+  // Policy says hedge only on tier1. Tier-1 nodes fail fast; the request
+  // falls through to tier-2. Tier-2's primary hangs (the hedge timer WOULD
+  // fire on tier1), but the policy excludes tier2 — no twin is launched.
+  routeHandlers['hp-t1a.example.com'] = () => jsonUpstream({}, 500);
+  routeHandlers['hp-t1b.example.com'] = () => jsonUpstream({}, 500);
+  routeHandlers['hp-t2a.example.com'] = hangUntilAbort();
+  routeHandlers['hp-t2b.example.com'] = () => jsonUpstream(okCompletion());
+  const env = makeEnv({
+    tier1: [basicNode('hp-t1a'), basicNode('hp-t1b')],
+    tier2: [basicNode('hp-t2a'), basicNode('hp-t2b')],
+    secrets: { 'hp-t1a': 'k', 'hp-t1b': 'k', 'hp-t2a': 'k', 'hp-t2b': 'k' },
+    extraEnv: {
+      HEDGE_DELAY_MS: '100', FAILOVER_BUDGET_MS: '2000',
+      MODELS_CONFIG: JSON.stringify({ 'general-air': { policy: 'hp' } }),
+      POLICIES_CONFIG: JSON.stringify({ 'hp': { max_attempts: 5, hedge: { tiers: ['tier1'] } } }),
+    },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.ok(!res.ok, 'the hanging tier-2 primary eventually exhausts the budget');
+  const body = await res.json();
+  assert.equal(body.error.details.hedges, 0, 'no hedge twin may be launched on tier-2 (excluded by policy)');
+  // hp-t2b was never dispatched (tier2 cap=1, only hp-t2a was tried).
+  assert.equal(getNodeState('hp-t2b').totalRequests, 0, 'the unused tier-2 twin candidate is never touched');
+});
+
+await test('hedge policy: enabled=false disables hedging entirely', async () => {
+  resetMock();
+  installMockFetch();
+  routeHandlers['hd-a.example.com'] = hangUntilAbort();
+  routeHandlers['hd-b.example.com'] = () => sseResponse([chunk('fast'), 'data: [DONE]']);
+  const env = makeEnv({
+    tier1: [basicNode('hd-a'), basicNode('hd-b')],
+    secrets: { 'hd-a': 'k', 'hd-b': 'k' },
+    extraEnv: {
+      HEDGE_DELAY_MS: '100', FAILOVER_BUDGET_MS: '30000',
+      MODELS_CONFIG: JSON.stringify({ 'general-air': { policy: 'hd' } }),
+      POLICIES_CONFIG: JSON.stringify({ 'hd': { max_attempts: 5, hedge: { enabled: false } } }),
+    },
+  });
+  const t0 = Date.now();
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
+  const elapsed = Date.now() - t0;
+  // Without hedge, the hanging primary must time out before the fast twin
+  // is ever tried. The response comes from hd-b on attempt 2 (after the
+  // primary's attempt budget slice expires).
+  assert.equal(res.status, 200);
+  assert.ok((await streamText(res)).includes('fast'));
+  // No twin was dispatched on attempt 1.
+  assert.equal(getNodeState('hd-b').totalRequests, 1, 'hd-b was dispatched as attempt-2 primary, not as a hedge twin');
+  assert.equal(upstreamCalls.length, 2, 'exactly 2 upstream calls (primary timeout + attempt-2 success)');
+});
+
 await test('timeout kinds: no HTTP status -> headers_timeout (status=0)', async () => {
   resetMock();
   installMockFetch();
