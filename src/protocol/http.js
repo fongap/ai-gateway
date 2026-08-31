@@ -101,7 +101,17 @@ export function buildTargetUrl(baseUrl, upstreamPath) {
   }
   base.pathname = joinPath(base.pathname, path);
   base.search = '';
-  return base.toString();
+  // 测试开始.
+  const finalUrl = base.toString();
+
+console.log('[buildTargetUrl]', {
+  baseUrl,
+  upstreamPath,
+  finalUrl,
+});
+
+return finalUrl;
+// 测试结束.
 }
 
 function joinPath(left, right) {
