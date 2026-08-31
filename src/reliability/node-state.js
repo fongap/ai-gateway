@@ -89,6 +89,10 @@ function createState() {
     cooldownReason: null,
     circuitState: 'closed',
     consecutiveFailures: 0,
+    // Timestamp of the latest real transport/timeout failure. The scheduler
+    // uses it only as a short-lived preference against this node when a peer
+    // exists; it never makes a sole node unavailable or replaces the circuit.
+    lastTransientFailureAt: 0,
     probeInFlight: false,
     totalRequests: 0,
     totalSuccesses: 0,
@@ -154,6 +158,7 @@ export function acquireSlot(nodeId, now = Date.now()) {
 export function recordSuccess(nodeId, latencyMs, model, now = Date.now()) {
   const s = releaseAndReturn(nodeId);
   s.totalSuccesses++;
+  s.lastTransientFailureAt = 0;
   s.healthScore = Math.min(HEALTH_MAX, s.healthScore + HEALTH_SUCCESS_GAIN);
   s.consecutiveFailures = 0;
   s.avgLatencyMs = s.avgLatencyMs === 0 || typeof latencyMs !== 'number'
@@ -213,6 +218,7 @@ export function recordFailure(nodeId, { counted = false, cooldownMs = 0, reason 
     s.cooldownReason = reason;
   }
   s.consecutiveFailures = counted ? s.consecutiveFailures + 1 : 0;
+  if (counted) s.lastTransientFailureAt = now;
 
   if (!counted) {
     // Non-counted outcomes (429 / 401 / 403 / 404 / client 4xx). These never

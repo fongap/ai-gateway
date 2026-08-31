@@ -20,6 +20,7 @@ import { loadModelsConfig } from '../config/models.js';
 import { loadPoliciesConfig, getPolicy } from '../config/policies.js';
 import { getLimits, attemptHeadersTimeoutMs, attemptFirstEventTimeoutMs, attemptBudgetSliceMs } from '../config/timeouts.js';
 import { pickCandidate, supportsRequest, tierHasDispatchableNode, countDispatchableNodes } from '../scheduler/scheduler.js';
+import { scheduleModelProbe } from '../scheduler/model-probes.js';
 import {
   recordSuccess, recordFailure, recordNeutralEnd, rollbackRpmBucket, recordModelMissing,
   applyHealthPenalty, recordTtft,
@@ -200,6 +201,7 @@ export async function handleRequest(request, env, ctx) {
     failureKinds: {}, logger, requestId, maxAttempts: policy.maxAttempts,
     maxDispatches: policy.maxAttempts + limits.maxHedgesPerRequest,
     requestedModel,
+    nodes: config.nodes,
   };
 
   // Per-tier attempt budgets, computed ONCE per request (dispatchability-aware):
@@ -871,13 +873,13 @@ async function handleSuccess(s) {
       // and the synthesized Responses SSE).
       recordTokens(c, node, data?.usage);
       if (!clientWantsStream) {
-        recordSuccess(node.id, latencyMs, state.requestedModel);
+        recordNodeSuccess(c, node, latencyMs);
         if (data && typeof data === 'object') data.model = requestedModel;
         return { response: jsonResponse(200, data, env, request, extraHeaders) };
       }
       // Stream requested but upstream returned a full object: synthesize a
       // well-formed Responses SSE stream in one body.
-      recordSuccess(node.id, latencyMs, state.requestedModel);
+      recordNodeSuccess(c, node, latencyMs);
       return { response: synthesizeResponsesFromObject(data, requestedModel, { ...extraHeaders, ...corsHeaders(request, env) }) };
     } catch (error) {
       if (request.signal?.aborted) {
@@ -896,7 +898,7 @@ async function handleSuccess(s) {
       // Assemble the full object; nothing reached the client yet, so failures rotate.
       try {
         const data = await collectOpenAIStreamObject(upstream, request.signal);
-        recordSuccess(node.id, latencyMs, state.requestedModel);
+        recordNodeSuccess(c, node, latencyMs);
         // Assembled-from-stream usage (fake-stream protection and the
         // upstream-stream / client-non-stream case): the collect helper
         // already carries the final usage chunk — record it here, exactly
@@ -961,13 +963,13 @@ async function handleSuccess(s) {
     // and the synthesized chat SSE) — nothing else parses this body.
     recordTokens(c, node, data?.usage);
     if (!clientWantsStream) {
-      recordSuccess(node.id, latencyMs, state.requestedModel);
+      recordNodeSuccess(c, node, latencyMs);
       if (data && typeof data === 'object') data.model = requestedModel;
       return { response: jsonResponse(200, data, env, request, extraHeaders) };
     }
     // Valid completion JSON for a streaming client: synthesize a proper SSE
     // stream so SSE clients receive a well-formed event sequence.
-    recordSuccess(node.id, latencyMs, state.requestedModel);
+    recordNodeSuccess(c, node, latencyMs);
     if (data && typeof data === 'object') data.model = requestedModel;
     return { response: synthesizeSseFromCompletion(data, env, request, extraHeaders) };
   }
@@ -997,7 +999,7 @@ async function handleSuccess(s) {
       }
       return { rotate: true, kind: classification.kind };
     }
-    recordSuccess(node.id, latencyMs, state.requestedModel);
+    recordNodeSuccess(c, node, latencyMs);
     // Single usage capture point: this branch serves both the plain JSON body
     // and the upstream-stream-assembled object.
     recordTokens(c, node, data?.usage);
@@ -1056,12 +1058,27 @@ function scheduleD1TokenPersist(c, usage) {
   }
 }
 
+// Record the real request outcome first.  The optional background probe is
+// queued only after a completed response (or stream) releases its slot, and
+// never participates in the client request's latency or error semantics.
+function recordNodeSuccess(c, node, latencyMs) {
+  recordSuccess(node.id, latencyMs, c.state?.requestedModel);
+  scheduleModelProbe(c.ctx, {
+    nodes: c.state?.nodes,
+    model: c.state?.requestedModel,
+    protocol: node.protocol,
+    surface: c.surface,
+    env: c.env,
+    logger: c.logger,
+  });
+}
+
 // Node-layer stream tracking: node outcome recording + stream-end telemetry.
 // The client-facing layer (gateway-stats.mjs trackClientResponse) never passes the
 // telemetry callbacks, so stream counters count each stream exactly once.
 function makeNodeStreamTrack(c, node, latencyMs) {
   return {
-    onSuccess: () => recordSuccess(node.id, latencyMs, c.state?.requestedModel),
+    onSuccess: () => recordNodeSuccess(c, node, latencyMs),
     // Field evidence (NVIDIA-hosted stalls mid-generation): 2s let a stalling
     // node straight back into rotation. 60s matches the rate-limit cooldown —
     // long enough to push repeat offenders out of candidate ordering without
