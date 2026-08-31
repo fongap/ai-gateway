@@ -184,6 +184,22 @@ All three commands print only `configured` / `missing` for credentials — never
 
 ## 11. Rollback
 
+### Automatic (post-deploy health-check failure)
+
+The Deploy workflow includes an **automatic Worker-code rollback** step. If the Worker deploys successfully but the post-deploy health check (`/health`, `/v1/models`, `count_tokens`) fails, the workflow automatically runs `wrangler rollback` to restore the **previous** Worker version, then re-runs the health check.
+
+**What is rolled back:**
+- Worker code/version only — the previous Worker bundle is re-activated.
+
+**What is NOT rolled back:**
+- **Worker variables** — the new deploy's `vars` (set by `wrangler deploy`) remain in effect. If the new deploy changed a variable that the old code does not understand, the old code may fail. This is rare in 1.x (variables are additive), but possible.
+- **Worker secrets** — synchronized before deploy; not reversed by `wrangler rollback`.
+- **D1 migrations** — forward-only; never auto-reversed.
+
+If the rollback health check also fails, the workflow exits with an error and manual intervention is required.
+
+### Manual (code or configuration rollback)
+
 1. Revert the commit on `main` (or push a new commit that restores the previous Variable / Secret values).
 2. The next Deploy restores the Worker to the previous code and the previous runtime variables.
 
@@ -245,3 +261,19 @@ To migrate:
 The deploy job never mixes the two formats: when individual Variables / Secrets are present, the legacy blob is ignored. When only the blob is present, the deploy reads the blob and prints a deprecation warning. Both formats cannot both be authoritative at once.
 
 Do not delete `GATEWAY_CONFIG` or `GATEWAY_SECRETS_CONFIG` before a successful end-to-end deploy on the new individual format.
+
+---
+
+## 14. Branch protection (manual one-time setup)
+
+`main` triggers auto-deploy — it must not accept unreviewed or force-pushed commits. GitHub Rulesets are configured in **Settings → Rules → Rulesets** and cannot be set from the repository itself. Complete this once:
+
+1. **Settings → Rules → Rulesets → New ruleset → Target: branch `main`**
+2. Enable:
+   - **Require a pull request before merging** — at least 1 approval; the author may not self-approve.
+   - **Require status checks to pass** — select `verify` (from the `CI` workflow) and `Deploy` (from the `Deploy` workflow). Optionally require the branch to be up to date.
+   - **Block force push** — `main` history must be append-only.
+   - **Block branch deletion** — `main` must never be deleted.
+3. **Settings → General → Pull Requests → Allow squash merge** (recommended); disable "Allow merge commits" and "Allow rebase merge" if a linear history is preferred.
+
+These settings protect against human error, AI agents, automation scripts, and accidental direct pushes. They apply even for a single-maintainer repository.

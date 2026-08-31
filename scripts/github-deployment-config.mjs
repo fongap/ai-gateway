@@ -195,7 +195,17 @@ export function preflight(env) {
   }
   const v = collectVarsFromEnv(env);
   const s = collectSecretsFromEnv(env);
-  if (!Object.keys(v.vars).some((n) => NODE_VAR.test(n))) {
+  const tierShards = Object.keys(v.vars).filter((n) => NODE_VAR.test(n)).length;
+  const secretShards = Object.keys(s.secrets).filter((n) => NODE_SECRET.test(n)).length;
+  // Cloudflare Workers imposes a platform limit on the total number of
+  // environment variables + bindings. The _01..99 shard namespace is a
+  // parser convention, NOT a recommended deployment size. Warn early.
+  const totalManaged = Object.keys(v.vars).length + Object.keys(s.secrets).length;
+  const CF_VAR_WARNING_THRESHOLD = 80;
+  if (totalManaged > CF_VAR_WARNING_THRESHOLD) {
+    warnings.push(`Worker variable + secret count is ${totalManaged} (threshold ${CF_VAR_WARNING_THRESHOLD}). Cloudflare Workers has a platform limit on bindings; consolidate shards or reduce node count.`);
+  }
+  if (!tierShards) {
     errors.push('No TIER{1,2,3}_NODES_CONFIG_XX Variable is configured. Set at least one node-config shard.');
   }
   if (!Object.keys(s.secrets).some((n) => NODE_SECRET.test(n))) {
@@ -363,7 +373,7 @@ async function main() {
     const s = collectSecretsFromEnv(process.env);
     const tierShards = Object.keys(v.vars).filter((n) => NODE_VAR.test(n)).length;
     const secretShards = Object.keys(s.secrets).filter((n) => NODE_SECRET.test(n)).length;
-    console.log(`Preflight passed: ${tierShards} node-config shard(s), ${secretShards} credential shard(s), GATEWAY_ACCESS_KEY present.`);
+    console.log(`Preflight passed: ${tierShards} node-config shard(s), ${secretShards} credential shard(s), ${Object.keys(v.vars).length + Object.keys(s.secrets).length} total binding(s), GATEWAY_ACCESS_KEY present.`);
     return;
   }
   if (command === 'prepare') {
