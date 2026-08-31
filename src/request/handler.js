@@ -385,16 +385,25 @@ async function dispatchWithHedge(args, tierNodes) {
   // request to maxAttempts + maxHedgesPerRequest upstream calls.
   if (args.state.hedges >= maxHedges) return primary;
   if (args.state.dispatches + 2 > args.state.maxDispatches) return primary;
+  // Shared deadline FIRST, BEFORE any candidate is picked or claimed. The
+  // selector below claims a concurrency slot + RPM reservation as a side
+  // effect of picking (acquireSlot inside pickCandidate), so a deadline that
+  // is already exhausted must bail out here — returning after the pick would
+  // strand those reservations on a twin that is never dispatched (the node
+  // then looks saturated, worst case at limits.concurrency=1). No remaining
+  // time means no fresh budget can be conjured here; an undefined deadline
+  // (primary still awaiting its rate-limiter check) is treated the same way.
+  const deadlineRemainingMs = (primaryArgs.attemptDeadlineMs ?? 0) - Date.now();
+  if (deadlineRemainingMs <= 0) return primary;
   // The twin is picked through the same protocol/surface/model-gated selector
   // as the primary, so a hedge twin is ALWAYS same-protocol and same-surface
   // as its primary — an anthropic node can never twin an openai request, and
-  // a chat-only node can never twin a /v1/responses attempt.
+  // a chat-only node can never twin a /v1/responses attempt. The pick claims
+  // the twin's slot atomically (re-checked inside acquireSlot), and the
+  // deadline gate above guarantees the claim is always followed by a real
+  // dispatch or a legitimate loser lifecycle.
   const twinNode = pickCandidate(tierNodes, args.reqDescriptor, args.state.attempted, Date.now(), args.node.id);
   if (!twinNode) return primary;
-  // Shared deadline: the twin inherits the logical attempt's absolute
-  // deadline. No remaining time means no fresh budget can be conjured here.
-  const deadlineRemainingMs = (primaryArgs.attemptDeadlineMs ?? 0) - Date.now();
-  if (deadlineRemainingMs <= 0) return primary;
 
   args.state.hedges++;
   primaryArgs.hedgedWithTwin = true;

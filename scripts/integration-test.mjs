@@ -4,7 +4,7 @@
 // worker.fetch() against a mocked global fetch upstream.
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
-import { __resetAllStateForTests, getNodeState, getCooldownRemainingMs, noteRpmRequest, rpmUsage } from '../src/reliability/node-state.js';
+import { __resetAllStateForTests, getNodeState, getCooldownRemainingMs, noteRpmRequest, rpmUsage, peekAvailability } from '../src/reliability/node-state.js';
 import { createMockD1 } from './mock-d1-database.mjs';
 
 const ACCESS_KEY = 'test-access-key';
@@ -2152,6 +2152,139 @@ await test('hedge: both sides fail -> one logical attempt consumed, the next one
     'the failed hedge pair consumes ONE logical attempt, then attempt 2 serves');
   // The twin's 500 was a REAL failure of its own (not a cancellation).
   assert.equal(getNodeState('bf-t').totalFailures, 1, 'a twin that genuinely 5xxes counts as a real failure');
+});
+
+// ---- Hedge twin slot/RPM leak regressions ----------------------------------
+// The hedge gate MUST check the shared attempt deadline BEFORE picking (and
+// therefore claiming) a twin: pickCandidate claims a concurrency slot + RPM
+// reservation as a side effect, so a post-pick bail-out would strand those
+// reservations on a twin that is never dispatched. The trigger is a primary
+// stalled in the distributed rate limiter (attemptDeadlineMs not yet set) when
+// the hedge timer fires: the `?? 0` fallback makes deadlineRemaining negative,
+// so the gate must bail BEFORE pickCandidate to avoid leaking the twin's slot.
+
+await test('hedge gate: exhausted deadline claims NOTHING from the twin (no slot/RPM leak)', async () => {
+  resetMock();
+  installMockFetch();
+  // A slow rate limiter stalls the primary before it sets attemptDeadlineMs.
+  // The hedge timer fires during that stall, the deadline gate bails, and the
+  // twin must never be picked or claimed. The primary then succeeds after the
+  // limiter resolves, so no retry ever touches the twin.
+  routeHandlers['hz-p.example.com'] = () => jsonUpstream(okCompletion());
+  routeHandlers['hz-t.example.com'] = () => jsonUpstream(okCompletion());
+  const slowLimiter = {
+    limit: async () => { await new Promise((r) => setTimeout(r, 400)); return { success: true }; },
+  };
+  const env = makeEnv({
+    tier1: [
+      basicNode('hz-p', { limits: { concurrency: 5, rpm: 100 } }),
+      basicNode('hz-t', { limits: { concurrency: 5, rpm: 100 } }),
+    ],
+    secrets: { 'hz-p': 'k', 'hz-t': 'k' },
+    extraEnv: { HEDGE_DELAY_MS: '200', FAILOVER_BUDGET_MS: '30000', QUOTA_RATE_LIMITER: slowLimiter },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 200, 'the primary succeeds after the limiter resolves');
+  await res.text();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(upstreamCalls.map((c) => c.host), ['hz-p.example.com'],
+    'no phantom twin dispatch after the deadline is gone');
+  const twin = getNodeState('hz-t');
+  assert.equal(twin.activeRequests, 0, 'no concurrency slot may stay claimed');
+  assert.equal(twin.totalRequests, 0, 'no totalRequests charge for a never-dispatched twin');
+  assert.equal(rpmUsage('hz-t', Date.now()), 0, 'no RPM reservation for a never-dispatched twin');
+  assert.equal(twin.lastUsedAt, 0, 'lastUsedAt untouched');
+});
+
+await test('hedge gate: a valid deadline claims and dispatches the twin normally', async () => {
+  resetMock();
+  installMockFetch();
+  // Generous budget: the deadline is alive when the hedge timer fires, so the
+  // twin is claimed AND dispatched, then both sides die at the shared deadline.
+  routeHandlers['hg-p.example.com'] = hangUntilAbort();
+  routeHandlers['hg-t.example.com'] = hangUntilAbort();
+  const env = makeEnv({
+    tier1: [basicNode('hg-p'), basicNode('hg-t')],
+    secrets: { 'hg-p': 'k', 'hg-t': 'k' },
+    extraEnv: { HEDGE_DELAY_MS: '200', FAILOVER_BUDGET_MS: '2000' },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 504);
+  const body = await res.json();
+  assert.equal(body.error.details.dispatches, 2, 'primary + twin both dispatched');
+  assert.equal(body.error.details.hedges, 1);
+  await new Promise((r) => setTimeout(r, 50));
+  const twin = getNodeState('hg-t');
+  assert.equal(twin.totalRequests, 1, 'the twin was really claimed and dispatched');
+  assert.equal(twin.activeRequests, 0, 'its slot was released when the attempt ended');
+  if (Math.floor(Date.now() / 60_000) === Math.floor((twin.lastUsedAt || 0) / 60_000)) {
+    assert.equal(rpmUsage('hg-t', Date.now()), 1, 'the twin genuinely reached an upstream, so the RPM charge stays');
+  }
+});
+
+await test('hedge loser: twin loses the race, releases its slot, keeps its RPM charge', async () => {
+  resetMock();
+  installMockFetch();
+  routeHandlers['lw-p.example.com'] = async () => {
+    await new Promise((r) => setTimeout(r, 150));
+    return sseResponse([chunk('primary'), 'data: [DONE]']);
+  };
+  routeHandlers['lw-t.example.com'] = hangUntilAbort();
+  const env = makeEnv({
+    tier1: [basicNode('lw-p'), basicNode('lw-t')],
+    secrets: { 'lw-p': 'k', 'lw-t': 'k' },
+    extraEnv: { HEDGE_DELAY_MS: '100', FAILOVER_BUDGET_MS: '30000' },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
+  assert.equal(res.status, 200);
+  assert.ok((await streamText(res)).includes('primary'));
+  assert.deepEqual(upstreamCalls.map((c) => c.host), ['lw-p.example.com', 'lw-t.example.com'],
+    'both sides really dispatched (2 upstream calls)');
+  await new Promise((r) => setTimeout(r, 50));
+  const twin = getNodeState('lw-t');
+  assert.equal(twin.activeRequests, 0, 'the loser released its concurrency slot');
+  assert.equal(twin.totalRequests, 1);
+  if (Math.floor(Date.now() / 60_000) === Math.floor((twin.lastUsedAt || 0) / 60_000)) {
+    assert.equal(rpmUsage('lw-t', Date.now()), 1, 'the loser reached the upstream, so its RPM charge is legitimate');
+  }
+  assert.equal(twin.totalFailures, 0, 'losing the race is neutral, never a failure');
+  assert.equal(twin.consecutiveFailures, 0, 'no circuit chain from a neutral loser');
+});
+
+await test('hedge gate: an exhausted deadline never strands a half-open probe on the twin', async () => {
+  resetMock();
+  installMockFetch();
+  // The twin is probe-ready (circuit open, open period elapsed). A slow rate
+  // limiter stalls the primary so the hedge gate fires with an undefined
+  // deadline. The twin must NOT be claimed as the half-open probe: a stuck
+  // probeInFlight would make the node permanently unavailable.
+  routeHandlers['hx-p.example.com'] = () => jsonUpstream(okCompletion());
+  routeHandlers['hx-t.example.com'] = () => jsonUpstream(okCompletion());
+  const slowLimiter = {
+    limit: async () => { await new Promise((r) => setTimeout(r, 400)); return { success: true }; },
+  };
+  const env = makeEnv({
+    tier1: [
+      basicNode('hx-p', { limits: { concurrency: 5, rpm: 100 } }),
+      basicNode('hx-t', { limits: { concurrency: 5, rpm: 100 } }),
+    ],
+    secrets: { 'hx-p': 'k', 'hx-t': 'k' },
+    extraEnv: { HEDGE_DELAY_MS: '200', FAILOVER_BUDGET_MS: '30000', QUOTA_RATE_LIMITER: slowLimiter },
+  });
+  const probe = getNodeState('hx-t');
+  probe.circuitState = 'open';
+  probe.cooldownUntil = Date.now() - 1;
+  probe.consecutiveFailures = 3;
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 200, 'the primary succeeds; the twin is never touched');
+  await res.text();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(upstreamCalls.map((c) => c.host), ['hx-p.example.com']);
+  const twin = getNodeState('hx-t');
+  assert.equal(twin.probeInFlight, false, 'the probe must never be claimed by a dead deadline');
+  assert.equal(twin.activeRequests, 0, 'no slot leaked through the probe path either');
+  assert.equal(twin.circuitState, 'open', 'circuit state unchanged');
+  assert.equal(peekAvailability('hx-t', Date.now()), 'probe', 'the node stays probe-dispatchable');
 });
 
 await test('hedge twin inherits the logical attempt deadline (no fresh budget)', async () => {

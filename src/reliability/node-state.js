@@ -47,9 +47,9 @@ export function noteRpmRequest(nodeId, now) {
   }
   bucket.count++;
 }
-
+// eslint-disable-next-line
 // Requests already issued by this node within the current minute.
-export function rpmUsage(nodeId, now) {
+export function rpmUsage(nodeId, now = Date.now()) {
   const bucket = rpmBuckets.get(nodeId);
   if (!bucket || bucket.minute !== currentMinute(now)) return 0;
   return bucket.count;
@@ -314,7 +314,21 @@ function maybeCleanup(now) {
     // would shrink with every deletion and terminate early, leaving the map
     // over MAX_STATE_ENTRIES.
     const excess = nodeState.size - target;
-    for (let i = 0; i < excess; i++) nodeState.delete(entries[i][0]);
+    // NEVER evict a state that is still doing work: an active stream owns a
+    // concurrency slot (activeRequests > 0) and a half-open probe owns
+    // probeInFlight. Deleting either would reset the counters to a fresh
+    // state — the in-flight request's eventual release would then underflow
+    // (clamped to 0) while the node silently gained a phantom free slot, and
+    // an in-flight probe would vanish, re-arming the circuit prematurely.
+    // Such states are skipped here and become evictable once their request
+    // ends; the map may therefore stay above target until they drain.
+    let deleted = 0;
+    for (let i = 0; i < entries.length && deleted < excess; i++) {
+      const s = entries[i][1];
+      if (s.activeRequests > 0 || s.probeInFlight) continue;
+      nodeState.delete(entries[i][0]);
+      deleted++;
+    }
   }
   // Prune RPM buckets that belong to a previous minute.
   const minute = currentMinute(now);
