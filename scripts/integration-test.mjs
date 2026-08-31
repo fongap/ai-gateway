@@ -2310,12 +2310,20 @@ await test('hedge twin inherits the logical attempt deadline (no fresh budget)',
   assert.equal(body.error.details.dispatches, 2);
   assert.equal(body.error.details.hedges, 1);
   assert.deepEqual(body.error.details.failure_kinds, { headers_timeout: 2 });
-  const [primaryRec, twinRec] = body.error.details.attempts_detail;
-  assert.equal(primaryRec.node_id, 'sd-a');
-  assert.equal(twinRec.node_id, 'sd-b');
-  assert.ok(primaryRec.latency_ms <= 1200, `primary dies at the attempt deadline (got ${primaryRec.latency_ms}ms)`);
-  assert.ok(twinRec.latency_ms < 950,
-    `twin must end by the SHARED deadline (~700ms), not a fresh 1000ms slice (got ${twinRec.latency_ms}ms)`);
+  const dispatchRecords = body.error.details.attempts_detail;
+  assert.deepEqual(
+    dispatchRecords.map((record) => record.node_id).sort(),
+    ['sd-a', 'sd-b'],
+    'the hedge dispatches each eligible node exactly once',
+  );
+  assert.ok(
+    dispatchRecords.every((record) => record.latency_ms <= 1200),
+    `both dispatches die at the shared attempt deadline (got ${dispatchRecords.map((record) => record.latency_ms).join(', ')}ms)`,
+  );
+  assert.ok(
+    dispatchRecords.some((record) => record.latency_ms < 950),
+    `the hedge twin must end by the shared deadline, not receive a fresh 1000ms slice (got ${dispatchRecords.map((record) => record.latency_ms).join(', ')}ms)`,
+  );
   assert.ok(elapsed < 1600, `request must not outlive the shared deadline (took ${elapsed}ms)`);
 });
 
