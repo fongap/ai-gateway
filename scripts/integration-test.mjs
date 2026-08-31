@@ -1855,10 +1855,19 @@ await test('scheduler prefers the currently-faster node as measured latency drif
     tier1: [basicNode('lat-a'), basicNode('lat-b')],
     secrets: { 'lat-a': 'k', 'lat-b': 'k' },
   });
+  const setMeasuredLatency = (nodeId, latencyMs) => {
+    const state = getNodeState(nodeId);
+    state.avgLatencyMs = latencyMs;
+    state.modelPerf.set('general-air', {
+      avgTtftMs: 0,
+      avgLatencyMs: latencyMs,
+      lastUsedAt: Date.now(),
+    });
+  };
   // lat-a measured slow, lat-b measured fast: latency preference must override
   // LRU so every request lands on the fast node.
-  getNodeState('lat-a').avgLatencyMs = 3000;
-  getNodeState('lat-b').avgLatencyMs = 50;
+  setMeasuredLatency('lat-a', 3000);
+  setMeasuredLatency('lat-b', 50);
   for (let i = 0; i < 3; i++) {
     const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
     assert.equal(res.status, 200);
@@ -1868,9 +1877,9 @@ await test('scheduler prefers the currently-faster node as measured latency drif
   assert.deepEqual(hosts, ['lat-b.example.com', 'lat-b.example.com', 'lat-b.example.com'],
     'decisively faster node wins all three requests');
   // Speeds drift: lat-a recovers, lat-b degrades. The next request must follow
-  // the new measurement instead of a stale snapshot.
-  getNodeState('lat-a').avgLatencyMs = 10;
-  getNodeState('lat-b').avgLatencyMs = 2000;
+  // the new per-model measurement instead of a stale snapshot.
+  setMeasuredLatency('lat-a', 10);
+  setMeasuredLatency('lat-b', 2000);
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
   await streamText(res);
   assert.equal(upstreamCalls[3].host, 'lat-a.example.com', 'preference follows the new latency measurements');
