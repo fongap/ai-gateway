@@ -7,12 +7,12 @@
 // Responsibility split (kept out of this module):
 //   Node / Scheduler   = logical model -> upstream model, which node to use,
 //                        whether the node is usable right now.
-//   Provider / Profile = how to talk to the upstream (transport protocol).
+//   Transport (src/transport) = how to talk to the upstream (path, headers, stream semantics).
 //   Model Registry     = what a logical model CAN do (policy + capabilities).
 //
 // The registry is fed from MODELS_CONFIG (logical model -> { policy,
 // capabilities?, reasoning_efforts? }). A model without explicit capabilities /
-// reasoning_efforts gets conservative defaults. Provider profiles are NEVER used
+// reasoning_efforts gets conservative defaults. Provider quirks are NEVER used
 // as the model-capability truth: a provider only describes transport/protocol,
 // not what every model under it does.
 
@@ -51,7 +51,7 @@ export function loadModelRegistry(env) {
 
 // Resolve the registry entry for a logical model, filling conservative defaults
 // for models not declared in the registry (so /v1/models never has to guess
-// capability from a provider profile).
+// capability from a provider quirk).
 export function modelRegistryEntry(env, model) {
   const registry = loadModelRegistry(env);
   return registry[model] || {

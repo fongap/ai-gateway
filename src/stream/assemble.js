@@ -3,7 +3,7 @@
 //
 // Assemble a full OpenAI Chat Completions object from an upstream SSE stream.
 // Used when the client asked for non-streaming output but the upstream only
-// streams (FAKE_STREAM_PROTECTION mode, or Anthropic non-stream conversion of
+// streams (FAKE_STREAM_PROTECTION mode, or an upstream that streams while
 // a streaming upstream). Nothing has been sent to the client while assembling,
 // so a failure here still allows node rotation.
 

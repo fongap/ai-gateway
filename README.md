@@ -39,7 +39,7 @@ flowchart TB
 
 - 多协议：OpenAI Chat / Responses、Anthropic Messages / count_tokens
 - 原生协议转发：Chat → 上游 `/v1/chat/completions`，Responses → 上游 `/v1/responses`，Messages → 上游 `/v1/messages`；节点通过 `protocol` + `surfaces` 显式声明，任何提供 OpenAI-compatible 或 Anthropic-compatible API 的服务均可接入
-- 默认不做 OpenAI ↔ Anthropic 跨协议转换，也不做跨协议 fallback
+- 不做 OpenAI ↔ Anthropic 跨协议转换，也不做跨协议 fallback
 - `limits.rpm` 默认 hard，单 Worker isolate 内不主动越配额
 - 整请求 failover budget，超时即停
 

@@ -12,7 +12,8 @@ TIER1_NODES_CONFIG_01='[
   {"id":"nvidia-02","provider":"nvidia","protocol":"openai","surfaces":["chat_completions"],"base_url":"https://integrate.api.nvidia.com/v1","priority":10,"models":{"general-air":"deepseek-ai/deepseek-v3.1"},"limits":{"concurrency":3,"rpm":40}},
   {"id":"glm-01","provider":"zhipu","protocol":"openai","surfaces":["chat_completions"],"base_url":"https://open.bigmodel.cn/api/paas/v4","priority":20,"models":{"code-max":"glm-4.7"},"limits":{"concurrency":2}}
 ]'
-# 鍚屽眰鍚?priority = LRU 杞浆鎽婃祦锛涗笉鍚?priority = 涓ユ牸鍏堝悗銆?# NODE_SECRETS_01='{"nvidia-01":"nvapi-xxx","nvidia-02":"nvapi-yyy","glm-01":"zzz.id"}'
+# Same tier + same priority = LRU rotation; different priority = strict order.
+# NODE_SECRETS_01='{"nvidia-01":"nvapi-xxx","nvidia-02":"nvapi-yyy","glm-01":"zzz.id"}'
 # TIER2_NODES_CONFIG_01='[{"id":"fallback-01","base_url":"https://fallback.example.com/v1","models":{"general-air":"fa"}}]'
 # TIER3_NODES_CONFIG_01='[{"id":"last-resort-01","base_url":"https://last.example.com/v1","models":{}}]'
 
@@ -25,6 +26,9 @@ TIER1_NODES_CONFIG_01='[
 # POLICIES_CONFIG='{"fast":{"max_attempts":5}}'
 
 # ============ Runtime knobs (all optional) ============
+# The full list and defaults live in src/config/runtime-vars.js (single source
+# of truth). The GitHub deployment bridge and deploy.yml inject every name
+# listed there; local dev can override any of them in this file.
 MAX_BODY_BYTES="20971520"
 UPSTREAM_HEADERS_TIMEOUT_MS="60000"
 FIRST_EVENT_TIMEOUT_MS="120000"
@@ -32,25 +36,23 @@ STREAM_IDLE_TIMEOUT_MS="240000"
 FAILOVER_BUDGET_MS="240000"
 RATE_LIMIT_COOLDOWN_MS="60000"
 AUTH_FAIL_COOLDOWN_MS="3600000"
+HEDGE_DELAY_MS="6000"
+MAX_HEDGES_PER_REQUEST="1"
 LOG_LEVEL="info"
 EXPOSE_UPSTREAM_INFO="false"
 FAKE_STREAM_PROTECTION="false"
 ALLOW_INSECURE_HTTP_UPSTREAM="false"
 ANTHROPIC_COUNT_TOKENS_MODE="approximate"
-ANTHROPIC_REASONING_REQUEST_MODE="none"
 
 # ============ Token-usage stream hint (all optional, fail-open) ============
 # Ask OpenAI-compatible streaming upstreams to report usage in the final chunk
 # via stream_options.include_usage. "auto" (default) uses each node's provider
-# protocol and provider quirks; "on" forces it; "off" disables it everywhere. Off never
-# breaks any request 鈥?an upstream that rejects the field just means that
-# provider's streaming usage counts as missing (never estimated).
+# protocol and provider quirks; "on" forces it; "off" disables it everywhere.
+# Off never breaks any request — an upstream that rejects the field just means
+# that provider's streaming usage counts as missing (never estimated).
 # STREAM_INCLUDE_USAGE="auto"
 # Comma-separated provider labels to disable the streaming usage hint for:
 # STREAM_USAGE_INCLUDE_OFF_PROVIDERS="my-llm-provider"
 
 # CORS is DISABLED by default. Set an explicit origin to enable browser access:
 # ALLOWED_ORIGIN="https://your-app.example.com"
-
-
-

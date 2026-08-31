@@ -347,12 +347,11 @@ await test('S10 node isolation: a circuit-open node leaves siblings serving', as
   assertNoLeaks(['cir-a', 'cir-b', 'cir-c']);
 });
 
-// ---- S11: fallback reserve keeps Tier 2 reachable when Tier 1 is wide ----
+// ---- S11: per-tier attempt budget keeps Tier 2 reachable when Tier 1 is wide ----
 // A Tier 1 of many failing free keys must NOT eat the whole attempt budget:
-// the default fallbackReservePerTier=1 holds back one attempt for every
-// lower tier that can still serve the model, so the paid Tier 2 always gets
-// a turn. With maxAttempts=5 and Tier 2 capable, Tier 1 is capped at 4
-// attempts and Tier 2 is reached.
+// the per-tier attempt budget (computeTierCaps) distributes max_attempts so
+// every dispatchable tier gets at least one attempt. With maxAttempts=5 and
+// Tier 2 dispatchable, Tier 1 is capped and Tier 2 is reached.
 await test('S11 fallback reserve: a wide failing Tier 1 cannot starve Tier 2', async () => {
   resetMock();
   for (const id of ['fb1', 'fb2', 'fb3', 'fb4', 'fb5', 'fb6']) {

@@ -1,15 +1,15 @@
 ﻿# Configuration
 
-> This document describes the current 1.x configuration schema. In production, deliver non-sensitive Worker text variables through the fork-specific GitHub Variable `GATEWAY_CONFIG` and Worker Secrets through the encrypted GitHub Secret `GATEWAY_SECRETS_CONFIG`; Cloudflare Dashboard editing is a local/manual recovery path only.
+> This document describes the current 1.x configuration schema. In production, deliver non-sensitive Worker text variables through individual GitHub Repository Variables (`TIER*_NODES_CONFIG_XX`, `MODELS_CONFIG`, `POLICIES_CONFIG`, and optional runtime tunables) and Worker Secrets through individual GitHub Repository Secrets (`GATEWAY_ACCESS_KEY`, `NODE_SECRETS_XX`). The legacy blob (`GATEWAY_CONFIG` / `GATEWAY_SECRETS_CONFIG`) is deprecated — see [Deployment](DEPLOYMENT.md) for migration. Cloudflare Dashboard editing is a local/manual recovery path only.
 
 ## Production configuration sources
 
-The production deployment workflow reads two intentionally separate sources:
+The production deployment workflow reads individual GitHub Repository Variables and Secrets (the long-term target). The legacy blob (`GATEWAY_CONFIG` / `GATEWAY_SECRETS_CONFIG`) remains supported as a deprecated fallback while operators migrate; new individual sources always win and the two are never merged.
 
-- GitHub repository Variable `GATEWAY_CONFIG` — non-sensitive Worker text variables: `TIER*_NODES_CONFIG_XX`, `MODELS_CONFIG`, `POLICIES_CONFIG`, and optional runtime parameters. Copy [`config/worker-vars.example.json`](../config/worker-vars.example.json), replace the example values, and paste it into the Variable. It is Fork-specific and is not committed.
-- GitHub repository Secret `GATEWAY_SECRETS_CONFIG` — credentials only: `GATEWAY_ACCESS_KEY` and `NODE_SECRETS_01..99`. Its shape is shown in [`config/gateway-secrets.example.json`](../config/gateway-secrets.example.json).
+- **GitHub Repository Variables** (non-sensitive): `TIER{1,2,3}_NODES_CONFIG_01..10`, `MODELS_CONFIG`, `POLICIES_CONFIG`, and optional runtime tunables (see the [Runtime knobs](#runtime-knobs) table below). Each variable is a plain string (JSON for structured values). The deployment bridge enforces the 4.5 KB per-value shard limit.
+- **GitHub Repository Secrets** (credentials): `GATEWAY_ACCESS_KEY`, `NODE_SECRETS_01..20`, `CLOUDFLARE_API_TOKEN`. Injected via a fixed range; unset entries arrive as empty strings and are skipped.
 
-Structured values may be written naturally as JSON arrays/objects in `GATEWAY_CONFIG`; the deployment workflow serializes them to Worker environment strings. The deployment bridge enforces the 4.5 KB per-value shard limit and calls the runtime configuration loader before it synchronizes anything to Cloudflare. See [Deployment](DEPLOYMENT.md) for one-time GitHub setup and push-to-`main` deployment.
+See [Deployment](DEPLOYMENT.md) for one-time GitHub setup and push-to-`main` deployment.
 
 ## Worker Secrets (Wrangler / Cloudflare Dashboard “Secret”)
 
@@ -154,7 +154,7 @@ The cleanup is idempotent and safe to run multiple times. Existing `wrangler.use
 To capture usage on OpenAI-compatible **streaming** responses (which otherwise only report usage when asked), the gateway adds `stream_options: { include_usage: true }` to the outbound request whenever the request streams and the node's protocol/provider quirks allow it (only OpenAI-chat surfaces — the field does not exist on /v1/responses or /v1/messages). This never changes what the client receives. It preserves an existing `stream_options` the client sent (spread first, and `include_usage` is only added when absent). Two knobs give fail-safe control without editing any node id:
 
 - `STREAM_INCLUDE_USAGE`: `"auto"` (default, protocol + provider quirks) | `"on"` (force) | `"off"` (never add).
-- `STREAM_USAGE_INCLUDE_OFF_PROVIDERS`: a comma-separated list of `provider` labels to opt out of the hint (for an upstream that rejects the field). Non-streaming requests and responses/messages conversions are covered too — the hint is applied to the converted OpenAI-chat outbound body.
+- `STREAM_USAGE_INCLUDE_OFF_PROVIDERS`: a comma-separated list of `provider` labels to opt out of the hint (for an upstream that rejects the field).
 
 > **Scope caveat**: the hourly aggregate and the streaming-usage hint are observability only. They are not billing, not per-key accounting, not quota enforcement. Token persistence is best-effort: high throughput near the free D1 write budget simply stops persisting (the gateway keeps serving); the homepage then shows the numbers that did land.
 
@@ -219,8 +219,6 @@ Tier order is fixed: tier-1 → tier-2 → tier-3. A lower tier is used only whe
 | `FAKE_STREAM_PROTECTION` | false | | Convert non-stream requests to streaming upstream + reassemble |
 | `ALLOW_INSECURE_HTTP_UPSTREAM` | false | | Allow http:// base_url |
 | `ANTHROPIC_COUNT_TOKENS_MODE` | approximate | approximate/disabled | Local token counting. The estimator is script-aware and deliberately conservative: ASCII ≈ chars/4, CJK/Kana ≈ 1 token per character, tool schemas charged denser, images a fixed ~1600-token allowance. It is an approximation, not a tokenizer |
-| `ANTHROPIC_REASONING_REQUEST_MODE` | none | none/reasoning_effort/chat_template_kwargs/thinking | Reasoning passthrough style (Anthropic Messages) |
-| `RESPONSES_REASONING_MODE` | reasoning_effort | reasoning_effort/chat_template_kwargs/thinking | How `/v1/responses` `reasoning` maps to a chat-completions upstream |
 | `LOG_LEVEL` | info | none/error/info/debug | Logging verbosity |
 | `PROJECT_REPOSITORY_URL` | — | https URL | Shown on the dashboard |
 

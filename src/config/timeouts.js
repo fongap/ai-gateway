@@ -5,34 +5,14 @@
 // Do not hardcode timeout defaults anywhere else.
 
 import { readEnv, clampInt } from './env.js';
+import { RUNTIME_TUNABLES } from './runtime-vars.js';
 
-const LIMITS = {
-  UPSTREAM_HEADERS_TIMEOUT_MS: { min: 5_000, max: 600_000, def: 60_000 },
-  FIRST_EVENT_TIMEOUT_MS: { min: 5_000, max: 600_000, def: 120_000 },
-  STREAM_IDLE_TIMEOUT_MS: { min: 10_000, max: 600_000, def: 240_000 },
-  RATE_LIMIT_COOLDOWN_MS: { min: 1_000, max: 600_000, def: 60_000 },
-  AUTH_FAIL_COOLDOWN_MS: { min: 60_000, max: 7 * 86_400_000, def: 3_600_000 },
-  MAX_BODY_BYTES: { min: 1024, max: 100 * 1024 * 1024, def: 20 * 1024 * 1024 },
-  // Whole-request failover budget: the total wall-clock time the gateway may
-  // spend rotating across nodes for ONE client request. Prevents the worst
-  // case of headersTimeout(60s) * maxAttempts(5) ≈ 300s per Agent call.
-  FAILOVER_BUDGET_MS: { min: 1_000, max: 900_000, def: 240_000 },
-  // Reactive hedge (Envoy-style per-try hedge): when the first attempt has
-  // not committed a response within this window, ONE twin attempt is launched
-  // against the next-best candidate and the two race. 0 disables hedging.
-  // 6s balances the two failure modes: shorter delays fire on healthy
-  // long-context / reasoning requests that simply think before their first
-  // byte, longer ones rescue genuinely stuck upstreams too late. Kept a fixed
-  // default on purpose — a future adaptive delay (from avgHeaderLatency /
-  // avgTtftMs EWMA) slots in here without touching callers.
-  HEDGE_DELAY_MS: { min: 0, max: 600_000, def: 6_000 },
-  // Hedge twins are NOT logical attempts: max_attempts stays the logical
-  // attempt budget. This separately caps how many hedge twins ONE request may
-  // launch in total, so the worst-case upstream dispatch count is
-  // max_attempts + MAX_HEDGES_PER_REQUEST — decoupling hedge from the attempt
-  // budget must not open an unbounded-fanout hole.
-  MAX_HEDGES_PER_REQUEST: { min: 0, max: 3, def: 1 },
-};
+// Derived from the single source of truth in runtime-vars.js. Do not add
+// tunable definitions here — add them there so the deployment bridge, docs
+// and example configs stay in sync automatically.
+const LIMITS = Object.fromEntries(
+  RUNTIME_TUNABLES.map((v) => [v.name, { min: v.min, max: v.max, def: v.def }]),
+);
 
 // Retry-After is always clamped into this window so a hostile or broken
 // upstream cannot park a node for hours via one header.

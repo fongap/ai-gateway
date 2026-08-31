@@ -39,7 +39,7 @@ flowchart LR
 
 - Multi-protocol: OpenAI Chat / Responses, Anthropic Messages / count_tokens
 - Native protocol forwarding: Chat → upstream `/v1/chat/completions`, Responses → upstream `/v1/responses`, Messages → upstream `/v1/messages`; nodes declare `protocol` + `surfaces` explicitly, and any service offering an OpenAI-compatible or Anthropic-compatible API can join
-- No automatic OpenAI ↔ Anthropic cross-protocol conversion, and no cross-protocol failover by default
+- No OpenAI ↔ Anthropic cross-protocol conversion, and no cross-protocol failover
 - `limits.rpm` defaults hard — never knowingly exceeds the configured quota within a single Worker isolate
 - Whole-request failover budget; stops rotating once spent
 

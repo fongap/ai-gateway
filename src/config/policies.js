@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Fongap Studio
 //
 // POLICIES_CONFIG: policy name -> { max_attempts, tier_attempts? }. Optional.
-// `max_attempts` bounds total upstream attempts per request across ALL tiers
+// `max_attempts` bounds total LOGICAL attempts per request across ALL tiers
 // (default 5, valid range 1-8). `tier_attempts` optionally overrides the per-tier
 // attempt budget (see handler.js computeTierCaps for the default distribution).
 // Tier order is fixed (tier-1 -> tier-2 -> tier-3, hard precedence).

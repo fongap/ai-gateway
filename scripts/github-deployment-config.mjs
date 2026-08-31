@@ -26,6 +26,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadGatewayConfig } from '../src/config/nodes.js';
+import { RUNTIME_VAR_NAMES } from '../src/config/runtime-vars.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const VAR_NAME = /^[A-Z][A-Z0-9_]{0,127}$/;
@@ -35,9 +36,13 @@ const SECRET_NAME = /^(GATEWAY_ACCESS_KEY|NODE_SECRETS_\d{2})$/;
 const MAX_VALUE_BYTES = 4500;
 
 // Individual Worker text variables the bridge recognizes from env (besides the
-// managed TIER node shards). MODELS_CONFIG / POLICIES_CONFIG are optional;
-// the *_MS entries are optional runtime tunables.
-const RUNTIME_VAR_PATTERN = /^(TIER[123]_NODES_CONFIG_\d{2}|MODELS_CONFIG|POLICIES_CONFIG|RATE_LIMIT_COOLDOWN_MS|FIRST_EVENT_TIMEOUT_MS|HEDGE_DELAY_MS|MAX_HEDGES_PER_REQUEST)$/;
+// managed TIER node shards). Derived from the single source of truth in
+// src/config/runtime-vars.js so the deployment bridge, timeout loader, docs
+// and example configs can never drift.
+const RUNTIME_VAR_PATTERN = new RegExp(
+  '^(TIER[123]_NODES_CONFIG_\\d{2}|MODELS_CONFIG|POLICIES_CONFIG|' +
+  RUNTIME_VAR_NAMES.join('|') + ')$',
+);
 const EXTRA_VAR_ALLOW = new Set(['PROJECT_REPOSITORY_URL']);
 // Credential-bearing names must never appear in the vars map.
 const CREDENTIAL_NAMES = new Set(['GATEWAY_ACCESS_KEY', 'CLOUDFLARE_API_TOKEN']);
