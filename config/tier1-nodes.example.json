@@ -1,7 +1,11 @@
-[
+﻿[
   {
     "id": "nvidia-01",
     "provider": "nvidia",
+    "protocol": "openai",
+    "surfaces": [
+      "chat_completions"
+    ],
     "base_url": "https://integrate.api.nvidia.com/v1",
     "priority": 10,
     "models": {
@@ -13,6 +17,10 @@
   {
     "id": "nvidia-02",
     "provider": "nvidia",
+    "protocol": "openai",
+    "surfaces": [
+      "chat_completions"
+    ],
     "base_url": "https://integrate.api.nvidia.com/v1",
     "priority": 10,
     "models": {
@@ -23,6 +31,10 @@
   {
     "id": "glm-01",
     "provider": "zhipu",
+    "protocol": "openai",
+    "surfaces": [
+      "chat_completions"
+    ],
     "base_url": "https://open.bigmodel.cn/api/paas/v4",
     "priority": 20,
     "models": {
@@ -32,3 +44,4 @@
     "limits": { "concurrency": 2, "rpm": 30 }
   }
 ]
+

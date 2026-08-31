@@ -5,7 +5,8 @@
 //
 // There is NO static retry index. Before every attempt the eligible set is
 // recomputed from current node state:
-//   valid config -> model supported -> circuit available -> cooldown expired
+//   valid config -> protocol matches -> surface supported -> model supported
+//   -> circuit available -> cooldown expired
 //   -> concurrency available -> not already attempted in this request
 // then the best candidate is picked with a single O(n) pass:
 //   priority ASC -> activeRequests ASC -> health DESC (band) -> first-token
@@ -18,13 +19,26 @@
 // than 429 reaction. The latency preference above it adapts to speed drift:
 // upstreams get faster and slower over time, so measured recent latency — not
 // a static snapshot — decides between otherwise-equal candidates.
+//
+// Protocol/surface isolation is a HARD scheduler gate, not a preference: an
+// OpenAI request is never routed to an Anthropic node and vice versa, and a
+// node that only serves chat_completions never receives a /v1/responses
+// request. There is no cross-protocol conversion and no cross-protocol
+// failover anywhere in the gateway.
 
 import { peekAvailability, acquireSlot, getNodeState, rpmUsage, isModelCooling } from '../reliability/node-state.js';
 import { servesModel } from '../config/registry.js';
 
-export function supportsModel(node, logicalModel) {
+// A request descriptor: { model, protocol, surface }. Every selection helper
+// below filters candidates through ALL THREE dimensions — a node is eligible
+// only when its protocol matches, its declared surfaces include the request
+// surface, and it serves the logical model.
+export function supportsRequest(node, req) {
+  if (!req || typeof req !== 'object') return false;
+  if (node.protocol !== req.protocol) return false;
+  if (!Array.isArray(node.surfaces) || !node.surfaces.includes(req.surface)) return false;
   // Empty models map = wildcard (node serves any configured logical model).
-  return servesModel(node, logicalModel);
+  return servesModel(node, req.model);
 }
 
 function underRpmCap(node, now) {
@@ -48,7 +62,10 @@ export function rpmWindowRetryAfterSec(now = Date.now()) {
 }
 
 // Pick and claim the best eligible node from one tier, or return null.
-// `attempted` is the request-scoped Set of node ids that already failed.
+// `req` is the request descriptor { model, protocol, surface }; `attempted`
+// is the request-scoped Set of node ids that already failed. Because the
+// eligibility filter includes protocol + surface, a hedge twin picked through
+// this function is ALWAYS same-protocol and same-surface as its primary.
 //
 // RPM semantics:
 //   hard (default when limits.rpm is set): an exhausted node is NOT a fallback
@@ -56,7 +73,7 @@ export function rpmWindowRetryAfterSec(now = Date.now()) {
 //     otherwise. When every candidate is exhausted the tier is skipped.
 //   soft ("rpm_mode":"soft"): exhausted nodes remain last-resort candidates so
 //     a lone capped node still serves instead of failing the request.
-export function pickCandidate(tierNodes, requestedModel, attempted, now = Date.now(), excludeId = null) {
+export function pickCandidate(tierNodes, req, attempted, now = Date.now(), excludeId = null) {
   let best = null;
   let bestState = null;
   let bestUncapped = null;
@@ -65,11 +82,11 @@ export function pickCandidate(tierNodes, requestedModel, attempted, now = Date.n
   for (const node of tierNodes) {
     if (node.id === excludeId) continue;
     if (attempted.has(node.id)) continue;
-    if (!supportsModel(node, requestedModel)) continue;
+    if (!supportsRequest(node, req)) continue;
     if (peekAvailability(node.id, now) === 'no') continue;
     // A (node, model) pair in model_missing cooldown is skipped without
     // disabling the node for its other models.
-    if (isModelCooling(node.id, requestedModel, now)) continue;
+    if (isModelCooling(node.id, req.model, now)) continue;
     const s = getNodeState(node.id);
     if (s.activeRequests >= node.limits.concurrency) continue;
     if (underRpmCap(node, now)) {
@@ -95,15 +112,15 @@ export function pickCandidate(tierNodes, requestedModel, attempted, now = Date.n
   return chosen;
 }
 
-// True when this tier could serve the model if it had capacity right now
+// True when this tier could serve the request if it had capacity right now
 // (every candidate busy at its concurrency limit or hard-RPM exhausted). Used
 // to distinguish "saturated" from "cooling down" in client responses.
-export function tierHasDeferredCapacity(tierNodes, requestedModel, attempted, now = Date.now()) {
+export function tierHasDeferredCapacity(tierNodes, req, attempted, now = Date.now()) {
   for (const node of tierNodes) {
     if (attempted.has(node.id)) continue;
-    if (!supportsModel(node, requestedModel)) continue;
+    if (!supportsRequest(node, req)) continue;
     if (peekAvailability(node.id, now) === 'no') continue;
-    if (isModelCooling(node.id, requestedModel, now)) continue;
+    if (isModelCooling(node.id, req.model, now)) continue;
     const s = getNodeState(node.id);
     if (s.activeRequests >= node.limits.concurrency) return true;
     if (isHardRpmExhausted(node, now)) return true;
@@ -120,21 +137,21 @@ export function tierHasDeferredCapacity(tierNodes, requestedModel, attempted, no
 // selectable as last resort, so budget must agree with selection. Deferred
 // capacity (concurrency-saturated / hard-RPM-exhausted) belongs to
 // tierHasDeferredCapacity instead: Retry-After and diagnostics, no budget.
-export function tierHasDispatchableNode(tierNodes, requestedModel, attempted, now = Date.now()) {
-  return countDispatchableNodes(tierNodes, requestedModel, attempted, now) > 0;
+export function tierHasDispatchableNode(tierNodes, req, attempted, now = Date.now()) {
+  return countDispatchableNodes(tierNodes, req, attempted, now) > 0;
 }
 
 // Count candidates that pickCandidate could dispatch right now without
 // claiming their slots.  The request pipeline uses this to divide its
 // remaining wall-clock budget across attempts that can actually happen,
 // rather than across a policy maximum that may be larger than the live pool.
-export function countDispatchableNodes(tierNodes, requestedModel, attempted, now = Date.now()) {
+export function countDispatchableNodes(tierNodes, req, attempted, now = Date.now()) {
   let count = 0;
   for (const node of tierNodes) {
     if (attempted.has(node.id)) continue;
-    if (!supportsModel(node, requestedModel)) continue;
+    if (!supportsRequest(node, req)) continue;
     if (peekAvailability(node.id, now) === 'no') continue;
-    if (isModelCooling(node.id, requestedModel, now)) continue;
+    if (isModelCooling(node.id, req.model, now)) continue;
     if (getNodeState(node.id).activeRequests >= node.limits.concurrency) continue;
     if (isHardRpmExhausted(node, now)) continue;
     count++;

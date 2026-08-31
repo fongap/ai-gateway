@@ -200,9 +200,13 @@ function runShow(args) {
   for (const { node, tier } of sorted) {
     const credState = node.id in (secrets || {}) ? 'configured' : 'missing';
     const models = Object.keys(node.models || {}).join(', ') || '(wildcard)';
+    const protocol = node.protocol || 'openai (implicit, deprecated)';
+    const surfaces = Array.isArray(node.surfaces) ? node.surfaces.join(', ') : '(implicit default)';
     console.log(node.id);
     console.log(`  Tier: ${tier}`);
     console.log(`  Provider: ${node.provider || '(unspecified)'}`);
+    console.log(`  Protocol: ${protocol}`);
+    console.log(`  Surfaces: ${surfaces}`);
     console.log(`  Models: ${models}`);
     console.log(`  Credential: ${credState}`);
   }

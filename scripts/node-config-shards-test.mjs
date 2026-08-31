@@ -60,6 +60,30 @@ test('rejects http base_url', () => {
   );
 });
 
+// ---- protocol / surfaces schema ---------------------------------------------
+
+test('accepts explicit protocol and surfaces values', () => {
+  assert.doesNotThrow(() => buildPlan({
+    tiers: { 1: [node('a', { protocol: 'openai', surfaces: ['chat_completions', 'responses'] })] },
+    secretsMap: { a: 'x' },
+  }));
+  assert.doesNotThrow(() => buildPlan({
+    tiers: { 1: [node('b', { protocol: 'anthropic', surfaces: ['messages'], base_url: 'https://api.example.com' })] },
+    secretsMap: { b: 'x' },
+  }));
+});
+
+test('accepts legacy nodes without protocol/surfaces (implicit openai defaults)', () => {
+  assert.doesNotThrow(() => buildPlan({ tiers: { 1: [node('legacy')] }, secretsMap: { legacy: 'x' } }));
+});
+
+test('rejects unknown protocol and protocol/surface mismatches', () => {
+  assert.throws(() => buildPlan({ tiers: { 1: [node('a', { protocol: 'gemini' })] } }), /protocol must be "openai" or "anthropic"/);
+  assert.throws(() => buildPlan({ tiers: { 1: [node('a', { protocol: 'anthropic', surfaces: ['chat_completions'] })] } }), /not valid for protocol "anthropic"/);
+  assert.throws(() => buildPlan({ tiers: { 1: [node('a', { surfaces: ['messages'] })] } }), /not valid for protocol "openai"/);
+  assert.throws(() => buildPlan({ tiers: { 1: [node('a', { surfaces: [] })] } }), /non-empty array/);
+});
+
 test('rejects node without matching credential', () => {
   assert.throws(() => buildPlan({ tiers: { 1: [node('a')] }, secretsMap: {} }), /no credential/);
 });

@@ -1,8 +1,12 @@
-{
+﻿{
   "TIER1_NODES_CONFIG_01": [
     {
       "id": "primary-01",
-      "provider": "openai-compatible",
+      "provider": "custom",
+      "protocol": "openai",
+      "surfaces": [
+        "chat_completions"
+      ],
       "base_url": "https://provider.example.com/v1",
       "priority": 10,
       "models": { "code-pro": "provider-coding-model" },
@@ -18,3 +22,4 @@
   "POLICIES_CONFIG": { "default": { "max_attempts": 5 } },
   "PROJECT_REPOSITORY_URL": "https://github.com/your-org/ai-gateway"
 }
+

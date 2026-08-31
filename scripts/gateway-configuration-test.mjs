@@ -27,6 +27,8 @@ function test(name, fn) {
 const node = (id, extra = {}) => ({
   id,
   provider: 'mock',
+  protocol: 'openai',
+  surfaces: ['chat_completions'],
   base_url: `https://${id}.example.com/v1`,
   models: { 'general-air': 'up-model' },
   ...extra,
@@ -134,6 +136,63 @@ test('valid priority defaults to 100 and concurrency to 2', () => {
   assert.equal(cfg.status, 'ready');
   assert.equal(cfg.nodes[0].priority, 100);
   assert.equal(cfg.nodes[0].limits.concurrency, 2);
+});
+
+// ---- protocol / surfaces schema --------------------------------------------
+
+test('explicit protocol + surfaces build cleanly with no diagnostics', () => {
+  const cfg = loadGatewayConfig(makeEnv({ tier1: [node('p1')], secrets: { p1: 'x' } }));
+  assert.equal(cfg.status, 'ready');
+  assert.deepEqual(cfg.diagnostics, []);
+  assert.equal(cfg.nodes[0].protocol, 'openai');
+  assert.deepEqual(cfg.nodes[0].surfaces, ['chat_completions']);
+});
+
+test('legacy nodes without protocol/surfaces still build (deprecated defaults, NOT invalid)', () => {
+  const legacy = { id: 'old-01', provider: 'nvidia', base_url: 'https://old.example.com/v1', models: {} };
+  const cfg = loadGatewayConfig(makeEnv({ tier1: [legacy], secrets: { 'old-01': 'x' } }));
+  assert.equal(cfg.status, 'ready', 'a legacy node must NOT invalidate the gateway');
+  assert.equal(cfg.ready, true);
+  assert.equal(cfg.nodes.length, 1);
+  assert.equal(cfg.nodes[0].protocol, 'openai', 'missing protocol defaults to openai');
+  assert.deepEqual(cfg.nodes[0].surfaces, ['chat_completions'], 'missing surfaces defaults to chat_completions');
+  assert.ok(cfg.diagnostics.some((d) => d.includes('old-01') && d.includes('protocol is implicit and defaults to "openai"')),
+    `expected a protocol deprecation diagnostic, got ${cfg.diagnostics}`);
+  assert.ok(cfg.diagnostics.some((d) => d.includes('old-01') && d.includes('surfaces is implicit and defaults to ["chat_completions"]')),
+    `expected a surfaces deprecation diagnostic, got ${cfg.diagnostics}`);
+});
+
+test('anthropic protocol nodes default to the messages surface', () => {
+  const legacy = { id: 'an-01', provider: 'anthropic', protocol: 'anthropic', base_url: 'https://an.example.com', models: {} };
+  const cfg = loadGatewayConfig(makeEnv({ tier1: [legacy], secrets: { 'an-01': 'x' } }));
+  assert.equal(cfg.status, 'ready');
+  assert.deepEqual(cfg.nodes[0].surfaces, ['messages']);
+});
+
+test('invalid protocol value is rejected with a named diagnostic', () => {
+  for (const bad of ['gemini', 'grpc', 'OPENAI-X', '']) {
+    const cfg = loadGatewayConfig(makeEnv({ tier1: [node('bp', { protocol: bad })], secrets: { bp: 'x' } }));
+    assert.equal(cfg.nodes.length, 0, `protocol=${JSON.stringify(bad)} must be rejected`);
+    assert.ok(cfg.diagnostics.some((d) => d.includes('protocol must be "openai" or "anthropic"')));
+  }
+});
+
+test('invalid surfaces entries are rejected with a named diagnostic', () => {
+  const empty = loadGatewayConfig(makeEnv({ tier1: [node('se', { surfaces: [] })], secrets: { se: 'x' } }));
+  assert.equal(empty.nodes.length, 0);
+  assert.ok(empty.diagnostics.some((d) => d.includes('surfaces must be a non-empty array')));
+  const wrongProto = loadGatewayConfig(makeEnv({ tier1: [node('sw', { protocol: 'anthropic', surfaces: ['chat_completions'] })], secrets: { sw: 'x' } }));
+  assert.equal(wrongProto.nodes.length, 0, 'an anthropic node cannot declare the chat_completions surface');
+  assert.ok(wrongProto.diagnostics.some((d) => d.includes('not valid for protocol "anthropic"')));
+  const unknown = loadGatewayConfig(makeEnv({ tier1: [node('su', { surfaces: ['gemini'] })], secrets: { su: 'x' } }));
+  assert.equal(unknown.nodes.length, 0);
+  assert.ok(unknown.diagnostics.some((d) => d.includes('not valid for protocol "openai"')));
+});
+
+test('openai nodes may declare both chat_completions and responses surfaces', () => {
+  const cfg = loadGatewayConfig(makeEnv({ tier1: [node('multi', { surfaces: ['responses', 'chat_completions'] })], secrets: { multi: 'x' } }));
+  assert.equal(cfg.status, 'ready');
+  assert.deepEqual(cfg.nodes[0].surfaces, ['responses', 'chat_completions']);
 });
 
 // ---- Model Registry --------------------------------------------------------

@@ -1,4 +1,4 @@
-# Local development only (wrangler dev). Copy to .dev.vars and fill in real values.
+﻿# Local development only (wrangler dev). Copy to .dev.vars and fill in real values.
 # .dev.vars is gitignored; never commit real credentials.
 
 GATEWAY_ACCESS_KEY="replace-with-a-long-random-key"
@@ -8,12 +8,11 @@ GATEWAY_ACCESS_KEY="replace-with-a-long-random-key"
 # stays under the 5 KB Cloudflare variable limit (split at node boundaries).
 
 TIER1_NODES_CONFIG_01='[
-  {"id":"nvidia-01","provider":"nvidia","base_url":"https://integrate.api.nvidia.com/v1","priority":10,"models":{"general-air":"deepseek-ai/deepseek-v3.1","code-pro":"qwen/qwen3-coder-480b"},"limits":{"concurrency":3,"rpm":40}},
-  {"id":"nvidia-02","provider":"nvidia","base_url":"https://integrate.api.nvidia.com/v1","priority":10,"models":{"general-air":"deepseek-ai/deepseek-v3.1"},"limits":{"concurrency":3,"rpm":40}},
-  {"id":"glm-01","provider":"zhipu","base_url":"https://open.bigmodel.cn/api/paas/v4","priority":20,"models":{"code-max":"glm-4.7"},"limits":{"concurrency":2}}
+  {"id":"nvidia-01","provider":"nvidia","protocol":"openai","surfaces":["chat_completions"],"base_url":"https://integrate.api.nvidia.com/v1","priority":10,"models":{"general-air":"deepseek-ai/deepseek-v3.1","code-pro":"qwen/qwen3-coder-480b"},"limits":{"concurrency":3,"rpm":40}},
+  {"id":"nvidia-02","provider":"nvidia","protocol":"openai","surfaces":["chat_completions"],"base_url":"https://integrate.api.nvidia.com/v1","priority":10,"models":{"general-air":"deepseek-ai/deepseek-v3.1"},"limits":{"concurrency":3,"rpm":40}},
+  {"id":"glm-01","provider":"zhipu","protocol":"openai","surfaces":["chat_completions"],"base_url":"https://open.bigmodel.cn/api/paas/v4","priority":20,"models":{"code-max":"glm-4.7"},"limits":{"concurrency":2}}
 ]'
-# 同层同 priority = LRU 轮转摊流；不同 priority = 严格先后。
-# NODE_SECRETS_01='{"nvidia-01":"nvapi-xxx","nvidia-02":"nvapi-yyy","glm-01":"zzz.id"}'
+# 鍚屽眰鍚?priority = LRU 杞浆鎽婃祦锛涗笉鍚?priority = 涓ユ牸鍏堝悗銆?# NODE_SECRETS_01='{"nvidia-01":"nvapi-xxx","nvidia-02":"nvapi-yyy","glm-01":"zzz.id"}'
 # TIER2_NODES_CONFIG_01='[{"id":"fallback-01","base_url":"https://fallback.example.com/v1","models":{"general-air":"fa"}}]'
 # TIER3_NODES_CONFIG_01='[{"id":"last-resort-01","base_url":"https://last.example.com/v1","models":{}}]'
 
@@ -43,8 +42,8 @@ ANTHROPIC_REASONING_REQUEST_MODE="none"
 # ============ Token-usage stream hint (all optional, fail-open) ============
 # Ask OpenAI-compatible streaming upstreams to report usage in the final chunk
 # via stream_options.include_usage. "auto" (default) uses each node's provider
-# profile capability; "on" forces it; "off" disables it everywhere. Off never
-# breaks any request — an upstream that rejects the field just means that
+# protocol and provider quirks; "on" forces it; "off" disables it everywhere. Off never
+# breaks any request 鈥?an upstream that rejects the field just means that
 # provider's streaming usage counts as missing (never estimated).
 # STREAM_INCLUDE_USAGE="auto"
 # Comma-separated provider labels to disable the streaming usage hint for:
@@ -52,3 +51,6 @@ ANTHROPIC_REASONING_REQUEST_MODE="none"
 
 # CORS is DISABLED by default. Set an explicit origin to enable browser access:
 # ALLOWED_ORIGIN="https://your-app.example.com"
+
+
+

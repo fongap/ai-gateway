@@ -6,32 +6,35 @@ One question gates every feature: does it make more upstream quota usable, more 
 
 ## Overview
 
+The gateway natively speaks exactly **two** protocol families — OpenAI and Anthropic. Any service offering an OpenAI-compatible or Anthropic-compatible API can join as a node. The gateway does NOT convert between protocols, does NOT route across protocol boundaries, and does not fail over from an OpenAI node to an Anthropic node (or back).
+
 ```text
 Client (OpenAI / Anthropic SDK)
    ↓  auth (timing-safe), route allowlist, body limits
 Request pipeline (src/request/handler.js)
-   ↓
+   ↓  route → (protocol, surface): openai chat|responses, anthropic messages
 Config Layer (src/config)          ← parses env shards ONCE per isolate
-   ↓  Runtime Node { id, tier, provider, baseUrl, credential, priority, models, limits, profile }
+   ↓  Runtime Node { id, tier, provider, protocol, surfaces, baseUrl, credential, priority, models, limits }
 Scheduler (src/scheduler)
-   ↓  dynamic eligible candidate set, recomputed before EVERY attempt
+   ↓  protocol + surface + model triple filter, dynamic eligible set per attempt
 Reliability (src/reliability)      ← node-local state: cooldowns, circuit, health
-Protocol / Stream (src/protocol, src/stream)
+Transport (src/transport)          ← openai.js / anthropic.js: native path, headers, stream semantics
    ↓
-Upstream providers
+Upstream providers (native endpoint of the SAME protocol + surface)
 ```
 
 ## Responsibility split
 
 ```text
 Model Registry (src/config/registry.js)   →  logical model, its policy + capabilities
-Node (src/config/nodes.js)                →  logical model → upstream model
-Provider / Transport (src/config/profiles.js, src/protocol)  →  HOW to talk to the upstream
+Node (src/config/nodes.js)                →  logical model → upstream model, protocol + surfaces
+Transport (src/transport)                 →  HOW to talk to the upstream (path, headers, stream semantics)
+Provider quirks (src/config/provider-quirks.js) → known wire-format compatibility differences
 Scheduler (src/scheduler)                 →  decides WHICH node gets a request
 Reliability (src/reliability)             →  whether a node is currently usable
 ```
 
-`src/protocol/*` never schedules a node; `src/scheduler` and `src/reliability` never parse Responses events or know which wire format an upstream speaks. Streaming event conversion is separate from the HTTP transport. The Model Registry owns model capability; the Provider Profile never claims it.
+`src/transport/*` never schedules a node; `src/scheduler` and `src/reliability` never parse protocol events or know which wire format an upstream speaks. `provider` is metadata only (dashboard / metrics / diagnostics / quirks) — it never decides the transport. The Model Registry owns model capability; no transport or provider label ever claims it.
 
 ## Config Layer → Runtime Node
 
@@ -39,8 +42,10 @@ Reliability (src/reliability)             →  whether a node is currently usabl
 
 - Tier is derived only from the variable prefix; the node JSON cannot declare it.
 - Credential lookup happens here and nowhere else. Downstream modules only ever see `runtimeNode.credential`.
+- `protocol` (`openai` | `anthropic`) decides the wire format, upstream endpoint, auth header and protocol headers. `surfaces` declares which endpoints the node really serves (`openai`: `chat_completions` and/or `responses`; `anthropic`: `messages`); the scheduler hard-filters on both. `provider` is a free-form label for diagnostics only and never influences the transport.
+- Legacy migration: a node without `protocol` defaults to `openai` and without `surfaces` to the protocol's default surface, emitting a **deprecated** diagnostic — the node still builds and the gateway is not marked invalid.
 - Structural conflicts (duplicate ids, duplicate credential keys) mark the configuration `invalid`; nodes without credentials are excluded (`degraded` if others remain).
-- Fail-fast node schema: unknown node/limits fields, invalid `priority`/`concurrency`/`rpm`, and a filled-but-invalid `models` map are rejected with a named diagnostic (a bad `models` map is **never** silently emptied into a wildcard). Only a missing or explicitly-empty `models` is a wildcard.
+- Fail-fast node schema: unknown node/limits fields, invalid `protocol`/`surfaces`/`priority`/`concurrency`/`rpm`, and a filled-but-invalid `models` map are rejected with a named diagnostic (a bad `models` map is **never** silently emptied into a wildcard). Only a missing or explicitly-empty `models` is a wildcard.
 - The result is cached for the isolate lifetime; env vars never change while an isolate is alive.
 
 ## Scheduler: dynamic eligible candidate set
@@ -48,11 +53,11 @@ Reliability (src/reliability)             →  whether a node is currently usabl
 There is no static retry index. Before every attempt the eligible set is recomputed from current node state:
 
 ```
-current tier → valid config → model supported → circuit available
-→ cooldown expired → concurrency available → not already attempted (request-scoped Set)
+current tier → valid config → protocol matches → surface supported → model supported
+→ circuit available → cooldown expired → concurrency available → not already attempted (request-scoped Set)
 ```
 
-then one O(n) pass picks the best candidate: `priority ASC → activeRequests ASC → health (band ≥10) DESC → lastUsedAt ASC (LRU) → avg latency ASC`. Health differences inside the band are treated as noise so the LRU tiebreak can rotate sequential traffic across equal-priority keys — spreading load prevents 429s instead of reacting to them. A failed node can never be retried within the same request, and a node that becomes eligible mid-request is never skipped.
+then one O(n) pass picks the best candidate: `priority ASC → activeRequests ASC → health (band ≥10) DESC → lastUsedAt ASC (LRU) → avg latency ASC`. Health differences inside the band are treated as noise so the LRU tiebreak can rotate sequential traffic across equal-priority keys — spreading load prevents 429s instead of reacting to them. A failed node can never be retried within the same request, and a node that becomes eligible mid-request is never skipped. **Protocol/surface isolation is a hard scheduler gate**: an OpenAI request is never routed to an Anthropic node and vice versa, and a node whose `surfaces` exclude the request surface never receives it — there is no cross-protocol conversion and no cross-protocol failover anywhere in the pipeline.
 
 **Rotation vs fallback + per-tier budget**: staying in the same tier is *node rotation*; moving to tier N+1 happens only when tier N yields no candidate left OR spends its per-tier attempt budget. Tiers are hard precedence — the higher-preference pool is always exhausted first and is never skipped in favour of a lower tier that has no dispatchable candidate. Each tier gets its own attempt budget: by default `max_attempts` is split over **dispatchable** work only: every tier with a currently-dispatchable candidate (model supported, not cooling / circuit-open / model-cooling) receives at least one attempt, and the surplus goes to the highest-priority dispatchable tier; a tier whose candidates are merely **deferred** (concurrency-saturated or hard-RPM-exhausted this minute) reserves no budget by default — deferral feeds Retry-After / saturated diagnostics instead. Budget is only ever given to a tier that can genuinely be dispatched — an unavailable tier (all candidates cooling / circuit-open) is not reserved an attempt, so a wide failing Tier 1 never eats the whole budget while a healthy Tier 1 is never held back for an unusable fallback. `tier_attempts` in `POLICIES_CONFIG` overrides a tier's budget explicitly (`0` disables it). `max_attempts` caps LOGICAL attempts — a primary plus its optional hedge twin are one logical attempt — and `FAILOVER_BUDGET_MS` caps the wall clock.
 
@@ -91,28 +96,47 @@ Local Anthropic `count_tokens` is a script-aware conservative approximation (ASC
 
 ## Streaming boundary (src/stream)
 
-`guard.js` implements the single first-event guard: it consumes the upstream SSE stream until a committing event — OpenAI Chat / Responses commit on any valid non-error SSE event, while Anthropic Messages commits only on real output (`text` / `reasoning` / `tool_call`; role-only / usage-only / empty deltas never commit) — or `[DONE]`, timeout, abort, malformed data, or a JSON **error envelope** (`{"error":{...}}` counts as a failure, so a zero-output HTTP-200 stream still rotates) and returns a replayable response. The guard runs on **every** streaming path before any byte reaches the client. After the first event there is no transparent failover — a mid-stream death delivers already-buffered bytes and closes cleanly while hidden guard state preserves a reader exception for telemetry. The tracked stream distinguishes `missing_completion_marker` (clean EOF without the marker), `idle_timeout`, and `reader_error`, feeding the gateway stream counters in `/metrics`, and appends at most one protocol-shaped interruption event. A Responses `response.failed` emitted by its transformer is already terminal and is never followed by a duplicate `event: error`; injected Responses errors continue the observed `sequence_number`. Node identity (node, provider, model, duration, bytes, marker seen) is logged server-side only as a `[stream-interrupted]` line.
+`guard.js` implements the single first-event guard: it consumes the upstream SSE stream until a committing event — with a **per-protocol "first real output" judgment** — or timeout, abort, malformed data, or a JSON **error envelope** (`{"error":{...}}` counts as a failure, so a zero-output HTTP-200 stream still rotates), and returns a replayable response. The two protocol families deliberately do not share one judgment:
 
-A shared SSE scanner feeds both the guard and the OpenAI→Anthropic transformer so each upstream event is parsed exactly once. Model-name rewriting on passthrough streams skips lines that cannot contain `"model"` and is skipped entirely when logical == upstream model.
+- **OpenAI Chat** commits on any parseable non-error SSE event (original rule).
+- **OpenAI Responses** commits only on `response.*.delta` events — lifecycle events (`response.created`, `output_item.added`, …) are NOT commit points.
+- **Anthropic Messages** commits only on native content deltas (`text_delta` / `thinking_delta` / `input_json_delta`) — `message_start`, block start/stop, `ping` and `message_delta` never commit.
+
+The predicates are defined by the transports (`src/transport/openai.js`, `src/transport/anthropic.js`). The guard runs on **every** streaming path before any byte reaches the client; before the commit point the request can still fail over, after it transparent failover is forbidden — a mid-stream death delivers already-buffered bytes and closes cleanly while hidden guard state preserves a reader exception for telemetry. The tracked stream distinguishes `missing_completion_marker` (clean EOF without the marker), `idle_timeout`, and `reader_error`, feeding the gateway stream counters in `/metrics`, and appends at most one protocol-shaped interruption event. A native Responses `response.failed` terminal event is never followed by a duplicate `event: error`; injected interruption errors continue the observed `sequence_number`. Node identity (node, provider, model, duration, bytes, marker seen) is logged server-side only as a `[stream-interrupted]` line.
+
+The shared SSE scanner feeds the guard, the native stream→object assemblers and the tracked passthrough so each SSE line is parsed exactly once. Model-name rewriting on passthrough streams knows where the model lives per protocol (chat: top-level `data.model`; Responses: `data.response.model`; Anthropic: `data.message.model`), skips lines that cannot contain `"model"`, and is skipped entirely when logical == upstream model.
+
+## Transport layer (src/transport) and native protocol paths
+
+Each client surface maps to a (protocol, surface) pair and is forwarded to the **native** upstream endpoint of that same pair — no cross-protocol or cross-surface conversion exists:
+
+```text
+Client /v1/chat/completions → OpenAI transport    → upstream /v1/chat/completions
+Client /v1/responses        → OpenAI transport    → upstream /v1/responses
+Client /v1/messages         → Anthropic transport → upstream /v1/messages
+```
+
+`transport/openai.js` owns the OpenAI upstream paths (`OPENAI_SURFACE_PATH`), the `Authorization: Bearer` header shape, and the Responses first-real-output predicate. `transport/anthropic.js` owns the `/v1/messages` path, the native auth header (`x-api-key`, never `Authorization: Bearer`), `anthropic-version` (forwarded or defaulted) and `anthropic-beta` passthrough, and the Anthropic first-real-output predicate. `transport/index.js` dispatches per protocol (`resolveUpstreamPath`, `buildUpstreamHeadersFor`). Client auth material never reaches the upstream for either protocol.
+
+`src/config/provider-quirks.js` holds known wire-format compatibility differences only — e.g. whether `stream_options.include_usage` may be added to a streaming OpenAI-chat request (it never applies to Responses or Anthropic bodies). It decides nothing structural: not the protocol, not the upstream path, not the transport.
+
+Defensive stream↔object helpers per protocol live beside their wire formats (`src/protocol/responses/native-stream.js`, `src/stream/anthropic-native.js`): a streaming upstream + non-stream client assembles the final object; a JSON upstream + streaming client synthesizes a well-formed SSE lifecycle. Both run entirely before the first client-visible byte, so failures still rotate.
 
 ## OpenAI Responses protocol (`src/protocol/responses`)
 
-`/v1/responses` is a real Responses surface, not a shim. Because the upstream is a generic chat-completions provider, the module converts in both directions:
+`/v1/responses` is a **native** surface: the client's request is forwarded verbatim (model substituted) to the upstream `/v1/responses` endpoint and the upstream's native Responses event sequence is relayed. There is no Chat Completions conversion anywhere in this path.
 
-- Inbound (`request.js`): Responses request → Chat Completions request. `input` items (message / function_call / function_call_output / reasoning), `tools`, `tool_choice`, `parallel_tool_calls`, `reasoning`, `instructions`, `max_output_tokens` are mapped losslessly. Unsupported host-managed tool types raise a clear 400.
-- Outbound (`response.js`): Chat Completions object → Responses response object (message / reasoning / function_call items, usage, status). Reasoning items preserve a `summary` facet and, when the upstream exposes opaque `encrypted_content`, relay it verbatim rather than flattening it into reasoning_text.
-- Streaming (`stream.js`): Chat Completions SSE → Responses SSE using the shared scanner, emitting the documented ordered event lifecycle (`response.created` … `response.completed`/`incomplete`/`failed`) with `sequence_number`. `events.js` owns the event framing; `reasoning.js` and `tools.js` own reasoning and function-call fidelity.
-- Errors (`events.js` + `index.js`): OpenAI Responses envelope `{ error: { message, type, param, code } }`. Terminal errors (any HTTP error other than 429/503) carry `x-should-retry: false` so clients do not blind-retry a request the gateway already resolved; 429/503 stay retryable via Retry-After. Fields a generic chat-completions upstream cannot represent losslessly (`context_management`, `mcp_servers`, `extra_body`, non-`effort` `output_config.*`) are rejected with the exact field name; `stop_sequences` and `top_k` are converted rather than rejected.
-
-Streaming failover is unchanged: the first-event guard runs on the raw upstream before `response.created` is synthesized, so no failover ever occurs after the first client-visible event.
-
-## Provider compatibility profile (`src/config/profiles.js`)
-
-A node's `provider` label resolves to a static, conservative compatibility descriptor. Because every upstream is genuinely reached through the same OpenAI Chat Completions wire format today, every profile reports `chat_completions: 'native'` and `responses`/`messages: 'convert'` — no profile claims a false native `/v1/messages`, `/v1/responses`, or Gemini endpoint. The profile `id` is a hint used only to label a backend in `/v1/models`. Profiles never hold credentials, circuit state, cooldowns, health, concurrency, tier, or model capability — model capability is owned by the Model Registry. A future `TransportAdapter` (openai-chat / anthropic / openai-responses / gemini) is deliberately not built in this release.
+- Validation (`index.js`): minimum contract only (`model` + `input`); field-level semantics are the upstream's job, so provider-level features (`mcp_servers`, `tools`, `reasoning`, …) pass through natively.
+- Streaming: the guarded native stream is tracked directly (`response.completed`/`incomplete` completion markers, `response.failed` failure marker); the model field is rewritten inline at `response.model`.
+- Errors (`events.js`): OpenAI Responses envelope `{ error: { message, type, param, code } }`. Terminal errors (any HTTP error other than 429/503) carry `x-should-retry: false`; 429/503 stay retryable via Retry-After.
 
 ## Model Registry (`src/config/registry.js`)
 
-The registry is the single source of truth for a logical model's policy and capability (`capabilities.tools/reasoning/vision/stream`, `reasoning_efforts`), fed from `MODELS_CONFIG`. `/v1/models` enumerates registry models served by at least one node and reports `api_backends` (or `apiBackend: "mixed"` when multiple backends serve it) — it never fabricates a single backend and never derives capability from a provider profile.
+The registry is the single source of truth for a logical model's policy and capability (`capabilities.tools/reasoning/vision/stream`, `reasoning_efforts`), fed from `MODELS_CONFIG`. `/v1/models` enumerates registry models served by at least one node, reports `api_backends` (the `provider` labels, or `apiBackend: "mixed"` when multiple providers serve it) and the union of node `surfaces` — it never fabricates a single backend and never derives capability from a provider label.
+
+## Anthropic protocol (`src/protocol/anthropic.js`)
+
+`/v1/messages` is a **native** surface: the request is forwarded verbatim to the upstream `/v1/messages` endpoint and the upstream's native Anthropic SSE lifecycle (`message_start` … `message_stop`) is relayed. `count_tokens` stays a local approximation. Errors keep the Anthropic envelope `{ type: 'error', error: { type, message } }`. Claude Code compatibility is pinned by the contract tests (text, streaming, thinking blocks, `tool_use`/`tool_result`, `stop_reason`, `anthropic-version`/`anthropic-beta` forwarding, error shapes).
 
 ## State boundaries
 
@@ -128,28 +152,31 @@ src/
 ├─ config/
 │  ├─ env.js                 env read helpers
 │  ├─ timeouts.js            ALL timeout/cooldown defaults & Retry-After parsing
-│  ├─ nodes.js               shard merge → Runtime Node + configuration status
+│  ├─ nodes.js               shard merge → Runtime Node (protocol/surfaces) + status
 │  ├─ models.js              MODELS_CONFIG (cached): policy + optional capabilities
 │  ├─ registry.js            Model Registry: logical-model capability (defaults)
 │  ├─ policies.js            POLICIES_CONFIG: max_attempts + tier_attempts (cached)
-│  └─ profiles.js            Provider compatibility descriptors (static, honest)
+│  └─ provider-quirks.js     wire-format compatibility differences (stream_options…)
 ├─ scheduler/
-│  └─ scheduler.js           dispatchable/deferred candidate selection, tier grouping
+│  └─ scheduler.js           protocol+surface+model triple filter, tier grouping
 ├─ reliability/
 │  ├─ node-state.js          isolate-local state + circuit state machine
 │  └─ classify.js            error classification → action/cooldown/counted
+├─ transport/
+│  ├─ index.js               protocol dispatch: upstream path + headers
+│  ├─ openai.js              OpenAI paths/headers + Responses first-output rule
+│  └─ anthropic.js           /v1/messages path, x-api-key headers, first-output rule
 ├─ protocol/
-│  ├─ http.js                CORS, errors, header allowlist, URL join, body reads
+│  ├─ http.js                CORS, errors, URL join, body reads
 │  ├─ openai.js              OpenAI Chat validation + helpers
 │  ├─ anthropic.js           Anthropic validation/errors/count_tokens
-│  ├─ convert.js             Anthropic↔OpenAI non-stream conversions
-│  └─ responses/             OpenAI Responses protocol (request/response/stream/
-│                            events/reasoning/tools/index) — never schedules nodes
+│  └─ responses/             OpenAI Responses (validation, SSE events, errors,
+│                            native stream↔object helpers) — never schedules nodes
 ├─ stream/
 │  ├─ guard.js               first-event guard + shared SSE scanner
-│  ├─ transform.js           OpenAI SSE → Anthropic SSE
+│  ├─ anthropic-native.js    Anthropic stream↔object assemble/synthesize
 │  ├─ assemble.js            stream → full OpenAI object (fake-stream mode)
-│  └─ track.js               stream-end telemetry + idle-timeout + node outcome tracking
+│  └─ track.js               stream telemetry + idle-timeout + model rewrite + usage scan
 ├─ request/
 │  ├─ handler.js             orchestration, attempt loop, per-route success paths
 │  ├─ auth.js                access-key digest + constant-time comparison

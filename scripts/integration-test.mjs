@@ -41,10 +41,11 @@ function installMockFetch() {
         host: url.hostname,
         url,
         authorization: init.headers.get('authorization'),
+        headers: init.headers,
         body: JSON.parse(init.body),
       });
     } else {
-      upstreamCalls.push({ host: url.hostname, url, authorization: init.headers.get('authorization'), body: null });
+      upstreamCalls.push({ host: url.hostname, url, authorization: init.headers.get('authorization'), headers: init.headers, body: null });
     }
     // `init` is passed as a third argument so handlers can honor the dispatch
     // AbortController (abort-driven hang/reject semantics for hedge tests).
@@ -73,6 +74,17 @@ const basicNode = (id, extra = {}) => ({
   provider: 'mock',
   base_url: `https://${id}.example.com/v1`,
   models: { 'general-air': 'up-model' },
+  ...extra,
+});
+
+// Anthropic-protocol node: serves /v1/messages natively.
+const anthropicNode = (id, extra = {}) => ({
+  id,
+  provider: 'mock',
+  protocol: 'anthropic',
+  surfaces: ['messages'],
+  base_url: `https://${id}.example.com`,
+  models: { 'claude-x': 'up-model' },
   ...extra,
 });
 
@@ -120,6 +132,20 @@ function sseResponse(events, headers = {}) {
   });
 }
 
+// Raw SSE lines (already complete `event:`/`data:` blocks), UTF-8 encoded.
+// Used by native-protocol mocks (Anthropic / Responses event lifecycles).
+function sseEventsResponse(lines, headers = {}) {
+  const encoder = new TextEncoder();
+  let i = 0;
+  const stream = new ReadableStream({
+    pull(controller) {
+      if (i >= lines.length) { controller.close(); return; }
+      controller.enqueue(encoder.encode(lines[i++]));
+    },
+  });
+  return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream', ...headers } });
+}
+
 const chunk = (content) => ({
   id: 'chatcmpl-1',
   object: 'chat.completion.chunk',
@@ -137,6 +163,18 @@ const okCompletion = (model = 'up-model') => ({
   model,
   choices: [{ index: 0, message: { role: 'assistant', content: 'hello' }, finish_reason: 'stop' }],
   usage: { prompt_tokens: 1, completion_tokens: 1 },
+});
+
+// Native Anthropic non-stream message (for the /v1/messages mocks).
+const okMessage = (model = 'up-model') => ({
+  id: 'msg_1',
+  type: 'message',
+  role: 'assistant',
+  model,
+  content: [{ type: 'text', text: 'hello' }],
+  stop_reason: 'end_turn',
+  stop_sequence: null,
+  usage: { input_tokens: 1, output_tokens: 1 },
 });
 
 installMockFetch();
@@ -505,7 +543,7 @@ await test('Retry-After takes the min across blocking reasons, filtered by model
 await test('anthropic-route exhaustion errors are Anthropic-shaped', async () => {
   resetMock();
   routeHandlers['anx.example.com'] = () => jsonUpstream({}, 429, { 'retry-after': '30' });
-  const env = makeEnv({ tier1: [basicNode('anx')], secrets: { anx: 'k' } });
+  const env = makeEnv({ tier1: [anthropicNode('anx', { models: { 'general-air': 'up-model' } })], secrets: { anx: 'k' } });
   // First request cools the only node; second hits the exhausted path.
   await worker.fetch(new Request('https://gateway.example.com/v1/messages', {
     method: 'POST',
@@ -828,12 +866,12 @@ await test('malformed first event rotates to healthy node', async () => {
   assert.match(text, /fine/);
 });
 
-// ---- Anthropic protocol ----------------------------------------------------
+// ---- Anthropic protocol (native /v1/messages) -------------------------------
 
-await test('anthropic non-stream conversion maps content and usage', async () => {
+await test('anthropic non-stream passthrough preserves the native message', async () => {
   resetMock();
-  routeHandlers['an.example.com'] = () => jsonUpstream(okCompletion());
-  const env = makeEnv({ tier1: [{ ...basicNode('an'), models: { 'claude-x': 'up-model' } }], secrets: { an: 'k' } });
+  routeHandlers['an.example.com'] = () => jsonUpstream(okMessage());
+  const env = makeEnv({ tier1: [anthropicNode('an')], secrets: { an: 'k' } });
   const req = new Request('https://gateway.example.com/v1/messages', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-api-key': ACCESS_KEY },
@@ -847,21 +885,31 @@ await test('anthropic non-stream conversion maps content and usage', async () =>
   assert.equal(body.content[0].type, 'text');
   assert.equal(body.content[0].text, 'hello');
   assert.equal(body.usage.input_tokens, 1);
+  // NATIVE: forwarded to /v1/messages, auth via x-api-key, body verbatim.
+  const call = upstreamCalls[0];
+  assert.equal(new URL(call.url).pathname, '/v1/messages');
+  assert.equal(call.body.model, 'up-model');
+  assert.equal(call.headers.get('x-api-key'), 'k');
+  assert.equal(call.headers.get('authorization'), null);
 });
 
-await test('anthropic stream conversion emits message lifecycle events', async () => {
+await test('anthropic stream relays the native message lifecycle', async () => {
   resetMock();
-  routeHandlers['ans.example.com'] = () => sseResponse([
-    { id: 'chatcmpl-9', choices: [{ index: 0, delta: { reasoning_content: 'thinking...' }, finish_reason: null }] },
-    chunk('answer text'),
-    {
-      id: 'chatcmpl-9',
-      choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_1', function: { name: 'get_weather', arguments: '{"city":"SF"}' } }] }, finish_reason: null }],
-    },
-    finishChunk,
-    doneEvent,
+  routeHandlers['ans.example.com'] = () => sseEventsResponse([
+    `event: message_start\ndata: ${JSON.stringify({ type: 'message_start', message: { id: 'msg_9', type: 'message', role: 'assistant', model: 'up-model', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } })}\n\n`,
+    `event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } })}\n\n`,
+    `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'thinking...' } })}\n\n`,
+    `event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`,
+    `event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } })}\n\n`,
+    `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'answer text' } })}\n\n`,
+    `event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: 1 })}\n\n`,
+    `event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: 2, content_block: { type: 'tool_use', id: 'toolu_1', name: 'get_weather', input: {} } })}\n\n`,
+    `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 2, delta: { type: 'input_json_delta', partial_json: '{"city":"SF"}' } })}\n\n`,
+    `event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: 2 })}\n\n`,
+    `event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { input_tokens: 1, output_tokens: 2 } })}\n\n`,
+    `event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`,
   ]);
-  const env = makeEnv({ tier1: [{ ...basicNode('ans'), models: { 'claude-x': 'up-model' } }], secrets: { ans: 'k' } });
+  const env = makeEnv({ tier1: [anthropicNode('ans')], secrets: { ans: 'k' } });
   const req = new Request('https://gateway.example.com/v1/messages', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-api-key': ACCESS_KEY },
@@ -873,13 +921,14 @@ await test('anthropic stream conversion emits message lifecycle events', async (
   const types = [...text.matchAll(/event: (.+)/g)].map((m) => m[1]);
   assert.equal(types[0], 'message_start');
   assert.ok(types.includes('content_block_start'));
-  assert.ok(types.includes('thinking_delta') === false); // deltas are data lines, not event names
   assert.ok(text.includes('"type":"thinking_delta"'));
   assert.ok(text.includes('"type":"text_delta"'));
+  assert.ok(text.includes('"type":"input_json_delta"'));
   assert.ok(text.includes('"name":"get_weather"'));
   assert.ok(types.includes('message_stop'));
   // Model name hidden: upstream model never leaks into the stream.
   assert.ok(!text.includes('up-model'));
+  assert.ok(text.includes('"model":"claude-x"'));
 });
 
 await test('clean close without [DONE] is accounted as node failure', async () => {
@@ -1431,7 +1480,7 @@ await test('/v1/models reports registry capabilities and mixed backends', async 
   const list = await res.json();
   const codeMax = list.data.find((m) => m.id === 'code-max');
   assert.ok(codeMax, 'registry model must be listed');
-  assert.deepEqual(codeMax.api_backends.sort(), ['anthropic-compatible', 'openai-compatible'], 'mixed backends must be listed');
+  assert.deepEqual(codeMax.api_backends.sort(), ['anthropic', 'mock'], 'mixed backends must be listed by provider label');
   assert.equal(codeMax.apiBackend, 'mixed', 'a model served by multiple backends must be mixed');
   assert.equal(codeMax.supports_tools, true);
   assert.equal(codeMax.supports_vision, false, 'capability comes from the registry, not the provider profile');

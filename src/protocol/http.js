@@ -74,20 +74,9 @@ export function htmlResponse(content) {
   });
 }
 
-// Strict upstream header allowlist. Client auth material is never forwarded;
-// the only Authorization header is the one built from the Runtime Node credential.
-export function buildUpstreamHeaders(request, credential, requestId) {
-  const headers = new Headers();
-  headers.set('Authorization', `Bearer ${credential}`);
-  headers.set('Content-Type', request.headers.get('content-type') || 'application/json');
-  headers.set('Accept', request.headers.get('accept') || 'application/json');
-  headers.set('User-Agent', 'ai-gateway');
-  headers.set('Accept-Encoding', 'identity');
-  headers.set('X-Request-ID', requestId);
-  const idempotencyKey = request.headers.get('idempotency-key');
-  if (idempotencyKey) headers.set('Idempotency-Key', idempotencyKey.slice(0, 256));
-  return headers;
-}
+// Strict upstream header construction lives in src/transport/: the protocol
+// owns its auth header shape (OpenAI -> Authorization Bearer, Anthropic ->
+// x-api-key). Client auth material is never forwarded for either protocol.
 
 // Join an upstream API path onto a configured base_url.
 // If base_url already ends with /v1, a leading /v1 on the path is stripped
@@ -101,17 +90,7 @@ export function buildTargetUrl(baseUrl, upstreamPath) {
   }
   base.pathname = joinPath(base.pathname, path);
   base.search = '';
-  // 测试开始.
-  const finalUrl = base.toString();
-
-console.log('[buildTargetUrl]', {
-  baseUrl,
-  upstreamPath,
-  finalUrl,
-});
-
-return finalUrl;
-// 测试结束.
+  return base.toString();
 }
 
 function joinPath(left, right) {

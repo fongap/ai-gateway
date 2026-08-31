@@ -22,9 +22,14 @@ export const MANAGED_VAR_PATTERN = /^TIER[123]_NODES_CONFIG_\d{2}$/;
 export const MANAGED_SECRET_PATTERN = /^(GATEWAY_ACCESS_KEY|NODE_SECRETS_\d{2})$/;
 
 const FORBIDDEN_NODE_FIELDS = ['token', 'credential', 'api_key', 'apikey', 'authorization', 'password', 'secret'];
-const ALLOWED_NODE_FIELDS = new Set(['id', 'provider', 'base_url', 'priority', 'models', 'limits']);
+const ALLOWED_NODE_FIELDS = new Set(['id', 'provider', 'protocol', 'surfaces', 'base_url', 'priority', 'models', 'limits']);
 const ALLOWED_LIMITS_FIELDS = new Set(['concurrency', 'rpm', 'rpm_mode']);
 const VALID_TIER_PATTERN = /^[123]$/;
+// protocol -> valid surfaces (mirror of src/config/nodes.js).
+const PROTOCOL_SURFACES = new Map([
+  ['openai', new Set(['chat_completions', 'responses'])],
+  ['anthropic', new Set(['messages'])],
+]);
 
 function byteLength(str) {
   return Buffer.byteLength(str, 'utf8');
@@ -100,6 +105,28 @@ export function assertNodesArray(nodes, label = 'nodes config') {
         : (typeof node.priority === 'string' && node.priority.trim() !== '' ? Number(node.priority) : NaN);
       if (!Number.isFinite(num) || num < 0) {
         throw new Error(`${label}: node "${id}" priority must be a non-negative number`);
+      }
+    }
+    // protocol: openai | anthropic. Missing = legacy implicit "openai"
+    // (deprecated default; the runtime emits a diagnostic and still serves).
+    if (node.protocol !== undefined) {
+      const proto = String(node.protocol).trim().toLowerCase();
+      if (!PROTOCOL_SURFACES.has(proto)) {
+        throw new Error(`${label}: node "${id}" protocol must be "openai" or "anthropic"`);
+      }
+    }
+    // surfaces: which endpoints the node really serves. Missing = implicit
+    // legacy default for the resolved protocol (deprecated, diagnostic-only).
+    if (node.surfaces !== undefined) {
+      const proto = String(node.protocol ?? 'openai').trim().toLowerCase();
+      const allowed = PROTOCOL_SURFACES.get(proto);
+      if (!Array.isArray(node.surfaces) || node.surfaces.length === 0) {
+        throw new Error(`${label}: node "${id}" surfaces must be a non-empty array`);
+      }
+      for (const surface of node.surfaces) {
+        if (!allowed.has(String(surface).trim().toLowerCase())) {
+          throw new Error(`${label}: node "${id}" surfaces entry "${String(surface).slice(0, 40)}" is not valid for protocol "${proto}" (allowed: ${[...allowed].join(', ')})`);
+        }
       }
     }
     // models: missing / explicit {} => wildcard. A filled-but-invalid map is a

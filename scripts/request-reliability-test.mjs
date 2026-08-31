@@ -370,13 +370,15 @@ await test('hedge defaults: 6000ms delay, 1 hedge per request, overridable', asy
 await test('dispatchable count reflects the live pool, not the policy maximum', async () => {
   const makeNode = (id) => ({
     id, models: { m: 'upstream' }, priority: 10,
+    protocol: 'openai', surfaces: ['chat_completions'],
     limits: { concurrency: 1, rpm: 0, rpmMode: 'hard' },
   });
+  const req = { model: 'm', protocol: 'openai', surface: 'chat_completions' };
   const nodes = [makeNode('live-count-a'), makeNode('live-count-b')];
-  assert.equal(countDispatchableNodes(nodes, 'm', new Set(), now), 2);
-  assert.equal(countDispatchableNodes(nodes, 'm', new Set(['live-count-a']), now), 1);
+  assert.equal(countDispatchableNodes(nodes, req, new Set(), now), 2);
+  assert.equal(countDispatchableNodes(nodes, req, new Set(['live-count-a']), now), 1);
   acquireSlot('live-count-b', now);
-  assert.equal(countDispatchableNodes(nodes, 'm', new Set(), now), 1, 'a saturated node is not live capacity');
+  assert.equal(countDispatchableNodes(nodes, req, new Set(), now), 1, 'a saturated node is not live capacity');
   recordNeutralEnd('live-count-b');
 });
 

@@ -47,10 +47,26 @@ Node schema:
 {
   "id": "nvidia-01",
   "provider": "nvidia",
+  "protocol": "openai",
+  "surfaces": ["chat_completions"],
   "base_url": "https://integrate.api.nvidia.com/v1",
   "priority": 10,
   "models": { "general-air": "model-a", "code-pro": "model-b" },
   "limits": { "concurrency": 1 }
+}
+```
+
+Anthropic 原生节点（Claude Code 等客户端直连）：
+
+```json
+{
+  "id": "anthropic-01",
+  "provider": "anthropic",
+  "protocol": "anthropic",
+  "surfaces": ["messages"],
+  "base_url": "https://api.anthropic.com",
+  "priority": 10,
+  "models": { "max": "claude-sonnet-4-5" }
 }
 ```
 
@@ -61,9 +77,12 @@ Rules enforced at load time:
 - A `tier` field is rejected; the tier comes from the variable prefix.
 - `base_url` must be an absolute URL; `https://` unless `ALLOW_INSECURE_HTTP_UPSTREAM=true`; no embedded username/password.
 - `priority`: number, smaller = higher precedence, default `100`.
-- `provider`: a free-form label used for diagnostics and to derive a Provider compatibility Profile. All upstreams are reached through the same OpenAI Chat Completions path today, so every profile reports Chat `native` and Responses/Messages `convert` — no profile claims a false `native` `/v1/messages`, `/v1/responses`, or Gemini endpoint. The profile id is only a compatibility hint for `/v1/models`. The profile never carries credentials, circuit state, cooldowns, health, concurrency or tier — and it is **not** the source of model capability (that is the Model Registry below).
+- `protocol`: `"openai"`（默认）或 `"anthropic"`。决定请求格式、上游 endpoint、认证 header（openai → `Authorization: Bearer`；anthropic → `x-api-key` + `anthropic-version`）、协议头与流式 wire format。任何提供 OpenAI-compatible 或 Anthropic-compatible API 的服务均可作为节点接入。
+- `surfaces`: 该节点真正支持的接口。`openai` 协议可选 `chat_completions` / `responses`；`anthropic` 协议只能是 `messages`。调度器按 protocol + surface + model 三重过滤：`/v1/responses` 请求只会路由到 `surfaces` 含 `responses` 的 openai 节点；`/v1/messages` 只会路由到 anthropic 节点；禁止跨协议 fallback。
+- **迁移兼容**：旧节点缺少 `protocol` 时默认 `"openai"`、缺少 `surfaces` 时默认对应协议的默认 surface，并输出 deprecated diagnostic（节点仍然可用，gateway 不会因此 invalid）。建议尽快显式声明。
+- `provider`: 自由标签，仅用于 dashboard 展示、metrics、诊断与少量 provider quirks（如 `stream_options` 兼容策略）。**不决定 transport**。
 - `models`: object mapping logical → upstream model names. Missing or explicitly-empty `{}` = wildcard (serves every registry model). A filled-but-invalid map (non-string value, bad structure) is a **config error** — the node is excluded with a diagnostic, never silently emptied into a wildcard.
-- Unknown node fields (`prioirty`) and unknown `limits` fields (`concurency`) are rejected; invalid `priority` / `limits.concurrency` / `limits.rpm` are rejected with a named diagnostic.
+- Unknown node fields (`prioirty`) and unknown `limits` fields (`concurency`) are rejected; invalid `protocol` / `surfaces` / `priority` / `limits.concurrency` / `limits.rpm` are rejected with a named diagnostic.
 - `limits.concurrency`: integer ≥ 1, default `2`.
 - `limits.rpm`: optional per-minute request quota for the key (e.g. `25`). Semantics are controlled by `limits.rpm_mode`:
   - **hard（默认，显式配置了 `rpm` 即生效）** — an isolate-local cap rather than a verified upstream/account limit: within a single Worker isolate the gateway never knowingly exceeds the configured count, an exhausted node is skipped this minute, the tier falls through, and if every candidate is exhausted the client receives `503` + `Retry-After` pointing at the RPM minute boundary.
@@ -132,9 +151,9 @@ The cleanup is idempotent and safe to run multiple times. Existing `wrangler.use
 
 #### Streaming usage hint
 
-To capture usage on OpenAI-compatible **streaming** responses (which otherwise only report usage when asked), the gateway adds `stream_options: { include_usage: true }` to the outbound request whenever the request streams and the node's Provider Profile allows it. This never changes what the client receives. It preserves an existing `stream_options` the client sent (spread first, and `include_usage` is only added when absent). Two knobs give fail-safe control without editing any node id:
+To capture usage on OpenAI-compatible **streaming** responses (which otherwise only report usage when asked), the gateway adds `stream_options: { include_usage: true }` to the outbound request whenever the request streams and the node's protocol/provider quirks allow it (only OpenAI-chat surfaces — the field does not exist on /v1/responses or /v1/messages). This never changes what the client receives. It preserves an existing `stream_options` the client sent (spread first, and `include_usage` is only added when absent). Two knobs give fail-safe control without editing any node id:
 
-- `STREAM_INCLUDE_USAGE`: `"auto"` (default, uses each provider profile capability) | `"on"` (force) | `"off"` (never add).
+- `STREAM_INCLUDE_USAGE`: `"auto"` (default, protocol + provider quirks) | `"on"` (force) | `"off"` (never add).
 - `STREAM_USAGE_INCLUDE_OFF_PROVIDERS`: a comma-separated list of `provider` labels to opt out of the hint (for an upstream that rejects the field). Non-streaming requests and responses/messages conversions are covered too — the hint is applied to the converted OpenAI-chat outbound body.
 
 > **Scope caveat**: the hourly aggregate and the streaming-usage hint are observability only. They are not billing, not per-key accounting, not quota enforcement. Token persistence is best-effort: high throughput near the free D1 write budget simply stops persisting (the gateway keeps serving); the homepage then shows the numbers that did land.
@@ -154,7 +173,7 @@ To capture usage on OpenAI-compatible **streaming** responses (which otherwise o
 { "fast": { "max_attempts": 5, "tier_attempts": { "tier1": 3, "tier2": 1, "tier3": 1 } } }
 ```
 
-The **Model Registry** is the single source of truth for a logical model's capability (`capabilities.tools/reasoning/vision/stream`) and reasoning efforts. Node mapping only says *whether a node can serve the model*; the Provider Profile only says *how to talk to the upstream*. `/v1/models` does not derive capability from the provider profile.
+The **Model Registry** is the single source of truth for a logical model's capability (`capabilities.tools/reasoning/vision/stream`) and reasoning efforts. Node mapping only says *whether a node can serve the model*; the Transport layer says *how to talk to the upstream*. `/v1/models` does not derive capability from a provider label.
 
 Tier order is fixed: tier-1 → tier-2 → tier-3. A lower tier is used only when the current tier yields no eligible candidate for the request. `max_attempts` (default 5; explicitly configured values must be an integer between 1 and 8 — anything else is rejected at load, never clamped) bounds total attempts per request across all tiers. Each tier additionally has its own attempt budget: by default `max_attempts` is split over currently-dispatchable work — a tier whose candidates are merely deferred (concurrency-saturated or hard-RPM-exhausted) reserves no budget — so every tier that actually holds a dispatchable candidate (model supported, not cooling / circuit-open) gets at least one attempt and the surplus goes to the highest (most-preferred) dispatchable tier — maximizing free/priority resource use while always keeping the paid fallback reachable and never silently starving an intermediate tier. `tier_attempts` explicitly overrides a tier's budget (`0` disables it).
 
@@ -241,3 +260,6 @@ Client aborts (neutral ends) count only in `gateway_stream_started_total`. Node-
 cp .dev.vars.example .dev.vars   # fill in values
 npm run dev
 ```
+
+
+

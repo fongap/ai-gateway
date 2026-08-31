@@ -2,10 +2,16 @@
 // Codex / OpenAI Responses contract tests.
 //
 // Black-box: run the REAL worker pipeline (auth -> scheduler -> retry ->
-// circuit -> protocol -> stream) through worker.fetch() against a mocked
+// circuit -> transport -> stream) through worker.fetch() against a mocked
 // global fetch upstream, exactly as a Codex-style client would drive
 // /v1/responses. These tests pin the customer-facing protocol contract, not
 // internal function structure.
+//
+// The Responses path is NATIVE end to end: the gateway forwards the request
+// body verbatim (model substituted) to the upstream /v1/responses endpoint
+// and relays the upstream's native Responses SSE event sequence. Every mock
+// upstream below therefore speaks the Responses wire format — no Chat
+// Completions conversion exists anywhere in this path.
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
 import { __resetAllStateForTests, getNodeState } from '../src/reliability/node-state.js';
@@ -64,9 +70,12 @@ function makeEnv({ tier1, tier2, tier3, secrets, extraEnv } = {}) {
   };
 }
 
+// OpenAI-protocol node serving /v1/responses natively.
 const node = (id, extra = {}) => ({
   id,
   provider: 'mock',
+  protocol: 'openai',
+  surfaces: ['responses'],
   base_url: `https://${id}.example.com/v1`,
   models: { 'code-max': 'up-model' },
   ...extra,
@@ -90,37 +99,90 @@ function jsonUpstream(data, status = 200, headers = {}) {
   });
 }
 
-function sseBody(events) {
+function sseBody(lines) {
   const encoder = new TextEncoder();
   let i = 0;
   return new ReadableStream({
     pull(controller) {
-      if (i >= events.length) { controller.close(); return; }
-      const e = events[i++];
-      controller.enqueue(encoder.encode(`data: ${typeof e === 'string' ? e : JSON.stringify(e)}\n\n`));
+      if (i >= lines.length) { controller.close(); return; }
+      // Upstream bodies are byte streams: every SSE line is UTF-8 encoded.
+      controller.enqueue(encoder.encode(lines[i++]));
     },
   });
 }
-
-function sseResponse(events, headers = {}) {
-  return new Response(sseBody(events), {
-    status: 200,
-    headers: { 'content-type': 'text/event-stream', ...headers },
-  });
+function sseResponse(lines, headers = {}) {
+  return new Response(sseBody(lines), { status: 200, headers: { 'content-type': 'text/event-stream', ...headers } });
 }
+const event = (name, data) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
 
-const chunk = (delta) => ({ id: 'chatcmpl-1', object: 'chat.completion.chunk', choices: [{ index: 0, delta, finish_reason: null }] });
-const reasoningChunk = (t) => chunk({ reasoning_content: t });
-const textChunk = (t) => chunk({ content: t });
-const toolChunk = (index, id, name, args) => chunk({ tool_calls: [{ index, id, function: { name, arguments: args } }] });
-const doneEvent = '[DONE]';
-const finish = (reason = 'stop') => ({ id: 'chatcmpl-1', choices: [{ index: 0, delta: {}, finish_reason: reason }] });
-const okCompletion = () => ({
-  id: 'chatcmpl-1',
-  object: 'chat.completion',
+// ---- Native Responses wire shapes -------------------------------------------
+
+let seq = 0;
+const nextSeq = () => seq++;
+const responseCreated = (model = 'up-model') => event('response.created', {
+  type: 'response.created', sequence_number: nextSeq(),
+  response: { id: 'resp_up1', object: 'response', created_at: 1, status: 'in_progress', model, output: [], usage: {} },
+});
+const itemAdded = (outputIndex, item) => event('response.output_item.added', {
+  type: 'response.output_item.added', sequence_number: nextSeq(), output_index: outputIndex, item,
+});
+const textDeltaEvent = (itemId, outputIndex, delta) => event('response.output_text.delta', {
+  type: 'response.output_text.delta', sequence_number: nextSeq(), item_id: itemId, output_index: outputIndex, content_index: 0, delta,
+});
+const textDoneEvent = (itemId, outputIndex, text) => event('response.output_text.done', {
+  type: 'response.output_text.done', sequence_number: nextSeq(), item_id: itemId, output_index: outputIndex, content_index: 0, text,
+});
+const reasoningDeltaEvent = (itemId, outputIndex, delta) => event('response.reasoning_text.delta', {
+  type: 'response.reasoning_text.delta', sequence_number: nextSeq(), item_id: itemId, output_index: outputIndex, content_index: 0, delta,
+});
+const fnArgsDeltaEvent = (itemId, outputIndex, delta) => event('response.function_call_arguments.delta', {
+  type: 'response.function_call_arguments.delta', sequence_number: nextSeq(), item_id: itemId, output_index: outputIndex, delta,
+});
+const itemDone = (outputIndex, item) => event('response.output_item.done', {
+  type: 'response.output_item.done', sequence_number: nextSeq(), output_index: outputIndex, item,
+});
+const responseCompleted = (response) => event('response.completed', { type: 'response.completed', sequence_number: nextSeq(), response });
+
+const messageItem = (id, text) => ({
+  id, type: 'message', status: 'completed', role: 'assistant',
+  content: [{ type: 'output_text', text, annotations: [] }],
+});
+const reasoningItem = (id, text) => ({
+  id, type: 'reasoning', status: 'completed',
+  content: [{ type: 'reasoning_text', text }], summary: [],
+});
+const functionCallItem = (id, callId, name, argsJson) => ({
+  id, type: 'function_call', status: 'completed', call_id: callId, name, arguments: argsJson,
+});
+
+// A complete native text-only stream lifecycle.
+const textLifecycle = (text) => {
+  seq = 0;
+  const item = messageItem('msg_1', text);
+  return [
+    responseCreated(),
+    itemAdded(0, { ...item, status: 'in_progress', content: [] }),
+    textDeltaEvent('msg_1', 0, text),
+    textDoneEvent('msg_1', 0, text),
+    itemDone(0, item),
+    responseCompleted({
+      id: 'resp_up1', object: 'response', created_at: 1, status: 'completed',
+      model: 'up-model', output: [item],
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    }),
+  ];
+};
+
+// A complete native non-stream response object.
+const okResponse = (over = {}) => ({
+  id: 'resp_up1',
+  object: 'response',
+  created_at: 1,
+  status: 'completed',
   model: 'up-model',
-  choices: [{ index: 0, message: { role: 'assistant', content: 'hello' }, finish_reason: 'stop' }],
-  usage: { prompt_tokens: 1, completion_tokens: 1 },
+  output: [messageItem('msg_1', 'hello')],
+  usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+  ...over,
 });
 
 installMockFetch();
@@ -134,9 +196,9 @@ function parseCompletedResponse(text) {
 
 // ---- Non-stream Responses ---------------------------------------------------
 
-await test('responses non-stream converts completion to a Responses object', async () => {
+await test('responses non-stream passes the native object through (model hidden)', async () => {
   resetMock();
-  routeHandlers['rns.example.com'] = () => jsonUpstream(okCompletion());
+  routeHandlers['rns.example.com'] = () => jsonUpstream(okResponse());
   const env = makeEnv({ tier1: [node('rns')], secrets: { rns: 'k' } });
   const res = await worker.fetch(responsesRequest({ model: 'code-max', input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] }] }), env, {});
   assert.equal(res.status, 200);
@@ -147,14 +209,19 @@ await test('responses non-stream converts completion to a Responses object', asy
   assert.equal(body.output[0].type, 'message');
   assert.equal(body.output[0].content[0].text, 'hello');
   assert.equal(body.usage.input_tokens, 1);
-  assert.equal(upstreamCalls[0].body.model, 'up-model'); // upstream name
+  // NATIVE chain: the request reached /v1/responses with the body forwarded
+  // verbatim (model substituted only) — never converted to chat completions.
+  const call = upstreamCalls[0];
+  assert.equal(new URL(call.url).pathname, '/v1/responses');
+  assert.equal(call.body.model, 'up-model');
+  assert.equal(call.body.input[0].content[0].text, 'hi');
 });
 
-await test('responses stream emits response.created -> output -> response.completed', async () => {
+await test('responses stream relays the native event lifecycle (model hidden)', async () => {
   resetMock();
-  routeHandlers['rss.example.com'] = () => sseResponse([textChunk('hello'), textChunk(' world'), finish(), doneEvent]);
+  routeHandlers['rss.example.com'] = () => sseResponse(textLifecycle('hello world'));
   const env = makeEnv({ tier1: [node('rss')], secrets: { rss: 'k' } });
-  const res = await worker.fetch(responsesRequest({ model: 'code-max', input: [{ type: 'message', role: 'user', content: 'hi' }], stream: true }), env, {});
+  const res = await worker.fetch(responsesRequest({ model: 'code-max', input: 'hi', stream: true }), env, {});
   assert.equal(res.status, 200);
   const text = await res.text();
   const events = [...text.matchAll(/event: ([^\n]+)/g)].map((m) => m[1]);
@@ -171,28 +238,55 @@ await test('responses stream emits response.created -> output -> response.comple
   assert.equal(state.totalSuccesses, 1);
 });
 
-await test('responses reasoning is preserved as a reasoning item, not text', async () => {
+await test('responses reasoning items pass through natively', async () => {
   resetMock();
-  routeHandlers['rsn.example.com'] = () => sseResponse([reasoningChunk('think-'), reasoningChunk('ing'), textChunk('answer'), finish(), doneEvent]);
+  seq = 0;
+  const reasoning = reasoningItem('rs_1', 'think-ing');
+  const message = messageItem('msg_1', 'answer');
+  routeHandlers['rsn.example.com'] = () => sseResponse([
+    responseCreated(),
+    itemAdded(0, { ...reasoning, status: 'in_progress', content: [] }),
+    reasoningDeltaEvent('rs_1', 0, 'think-'),
+    reasoningDeltaEvent('rs_1', 0, 'ing'),
+    itemDone(0, reasoning),
+    itemAdded(1, { ...message, status: 'in_progress', content: [] }),
+    textDeltaEvent('msg_1', 1, 'answer'),
+    itemDone(1, message),
+    responseCompleted({
+      id: 'resp_up1', object: 'response', created_at: 1, status: 'completed',
+      model: 'up-model', output: [reasoning, message],
+      usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 },
+    }),
+  ]);
   const env = makeEnv({ tier1: [node('rsn')], secrets: { rsn: 'k' } });
-  const res = await worker.fetch(responsesRequest({ model: 'code-max', input: [{ type: 'message', role: 'user', content: 'hi' }], stream: true }), env, {});
+  const res = await worker.fetch(responsesRequest({ model: 'code-max', input: 'hi', stream: true }), env, {});
   const text = await res.text();
   const completed = parseCompletedResponse(text);
   assert.deepEqual(completed.output.map((o) => o.type), ['reasoning', 'message']);
   assert.equal(completed.output[0].content[0].type, 'reasoning_text');
   assert.equal(completed.output[0].content[0].text, 'think-ing');
   assert.equal(completed.output[1].content[0].text, 'answer');
+  assert.match(text, /response\.reasoning_text\.delta/);
 });
 
-await test('responses function call: arguments deltas assemble into one call', async () => {
+await test('responses function call: arguments deltas stream natively', async () => {
   resetMock();
+  seq = 0;
+  const call = functionCallItem('fc_1', 'call_1', 'get_weather', '{"city":"SF"}');
   routeHandlers['rfn.example.com'] = () => sseResponse([
-    toolChunk(0, 'call_1', 'get_weather', '{"city":'),
-    toolChunk(0, 'call_1', '', '"SF"}'),
-    finish('tool_calls'), doneEvent,
+    responseCreated(),
+    itemAdded(0, { ...call, status: 'in_progress' }),
+    fnArgsDeltaEvent('fc_1', 0, '{"city":'),
+    fnArgsDeltaEvent('fc_1', 0, '"SF"}'),
+    itemDone(0, call),
+    responseCompleted({
+      id: 'resp_up1', object: 'response', created_at: 1, status: 'completed',
+      model: 'up-model', output: [call],
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    }),
   ]);
   const env = makeEnv({ tier1: [node('rfn')], secrets: { rfn: 'k' } });
-  const res = await worker.fetch(responsesRequest({ model: 'code-max', input: [{ type: 'message', role: 'user', content: 'hi' }], stream: true }), env, {});
+  const res = await worker.fetch(responsesRequest({ model: 'code-max', input: 'hi', stream: true }), env, {});
   const text = await res.text();
   const events = [...text.matchAll(/event: ([^\n]+)/g)].map((m) => m[1]);
   assert.ok(events.includes('response.function_call_arguments.delta'));
@@ -203,17 +297,29 @@ await test('responses function call: arguments deltas assemble into one call', a
   assert.deepEqual(JSON.parse(completed.output[0].arguments), { city: 'SF' });
 });
 
-await test('responses multiple parallel tool calls preserve call ids', async () => {
+await test('responses multiple parallel tool calls keep native call ids', async () => {
   resetMock();
+  seq = 0;
+  const callA = functionCallItem('fc_a', 'call_a', 'get_a', '{"a":1}');
+  const callB = functionCallItem('fc_b', 'call_b', 'get_b', '{"b":2}');
   routeHandlers['rmt.example.com'] = () => sseResponse([
-    toolChunk(0, 'call_a', 'get_a', '{"a":'),
-    toolChunk(1, 'call_b', 'get_b', '{"b":'),
-    toolChunk(0, 'call_a', '', '1}'),
-    toolChunk(1, 'call_b', '', '2}'),
-    finish('tool_calls'), doneEvent,
+    responseCreated(),
+    itemAdded(0, { ...callA, status: 'in_progress' }),
+    fnArgsDeltaEvent('fc_a', 0, '{"a":'),
+    itemAdded(1, { ...callB, status: 'in_progress' }),
+    fnArgsDeltaEvent('fc_b', 1, '{"b":'),
+    fnArgsDeltaEvent('fc_a', 0, '1}'),
+    fnArgsDeltaEvent('fc_b', 1, '2}'),
+    itemDone(0, callA),
+    itemDone(1, callB),
+    responseCompleted({
+      id: 'resp_up1', object: 'response', created_at: 1, status: 'completed',
+      model: 'up-model', output: [callA, callB],
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    }),
   ]);
   const env = makeEnv({ tier1: [node('rmt')], secrets: { rmt: 'k' } });
-  const res = await worker.fetch(responsesRequest({ model: 'code-max', input: [{ type: 'message', role: 'user', content: 'hi' }], stream: true }), env, {});
+  const res = await worker.fetch(responsesRequest({ model: 'code-max', input: 'hi', stream: true }), env, {});
   const text = await res.text();
   const completed = parseCompletedResponse(text);
   assert.equal(completed.output.length, 2);
@@ -223,10 +329,12 @@ await test('responses multiple parallel tool calls preserve call ids', async () 
   assert.deepEqual(JSON.parse(completed.output[1].arguments), { b: 2 });
 });
 
+// ---- failover / error semantics ---------------------------------------------
+
 await test('responses non-stream upstream 429 rotates to a healthy node', async () => {
   resetMock();
   routeHandlers['r429a.example.com'] = () => jsonUpstream({ error: { message: 'rate' } }, 429, { 'retry-after': '60' });
-  routeHandlers['r429b.example.com'] = () => jsonUpstream(okCompletion());
+  routeHandlers['r429b.example.com'] = () => jsonUpstream(okResponse());
   const env = makeEnv({ tier1: [node('r429a'), node('r429b')], secrets: { 'r429a': 'k', 'r429b': 'k' } });
   const res = await worker.fetch(responsesRequest({ model: 'code-max', input: 'hi' }), env, {});
   assert.equal(res.status, 200);
@@ -250,7 +358,7 @@ await test('responses all nodes cooling returns Responses-shaped 429 with Retry-
 await test('responses upstream 5xx rotates to a healthy node', async () => {
   resetMock();
   routeHandlers['r5xxa.example.com'] = () => jsonUpstream({}, 503);
-  routeHandlers['r5xxb.example.com'] = () => jsonUpstream(okCompletion());
+  routeHandlers['r5xxb.example.com'] = () => jsonUpstream(okResponse());
   const env = makeEnv({ tier1: [node('r5xxa'), node('r5xxb')], secrets: { 'r5xxa': 'k', 'r5xxb': 'k' } });
   const res = await worker.fetch(responsesRequest({ model: 'code-max', input: 'hi' }), env, {});
   assert.equal(res.status, 200);
@@ -260,7 +368,7 @@ await test('responses upstream 5xx rotates to a healthy node', async () => {
 await test('responses first-event failover: empty upstream rotates before any event', async () => {
   resetMock();
   routeHandlers['fe-a.example.com'] = () => sseResponse([]);
-  routeHandlers['fe-b.example.com'] = () => sseResponse([textChunk('ok'), finish(), doneEvent]);
+  routeHandlers['fe-b.example.com'] = () => sseResponse(textLifecycle('ok'));
   const env = makeEnv({ tier1: [node('fe-a'), node('fe-b')], secrets: { 'fe-a': 'k', 'fe-b': 'k' }, extraEnv: { EXPOSE_UPSTREAM_INFO: 'true' } });
   const res = await worker.fetch(responsesRequest({ model: 'code-max', input: 'hi', stream: true }), env, {});
   assert.equal(res.status, 200);
@@ -270,18 +378,29 @@ await test('responses first-event failover: empty upstream rotates before any ev
   assert.match(text, /response\.completed/);
 });
 
+// Lifecycle-only events (response.created) are NOT real output: a node that
+// announces itself and then dies can still be failed over. But once a
+// response.*.delta has committed the boundary, no transparent failover may
+// happen — the client already saw partial model output.
 await test('responses mid-stream failure never fails over after first event', async () => {
   resetMock();
   const encoder = new TextEncoder();
   let step = 0;
   routeHandlers['mid-a.example.com'] = () => new Response(new ReadableStream({
     pull(controller) {
-      if (step === 0) { controller.enqueue(encoder.encode(`data: ${JSON.stringify(textChunk('partial'))}\n\n`)); step = 1; }
-      else if (step === 1) { controller.enqueue(encoder.encode(`data: ${JSON.stringify(textChunk(' output'))}\n\n`)); step = 2; }
-      else controller.error(new Error('upstream died mid-stream'));
+      if (step === 0) {
+        controller.enqueue(encoder.encode(responseCreated()));
+        step = 1;
+      } else if (step === 1) {
+        controller.enqueue(encoder.encode(textDeltaEvent('msg_1', 0, 'partial')));
+        step = 2;
+      } else if (step === 2) {
+        controller.enqueue(encoder.encode(textDeltaEvent('msg_1', 0, ' output')));
+        step = 3;
+      } else controller.error(new Error('upstream died mid-stream'));
     },
   }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
-  routeHandlers['mid-b.example.com'] = () => sseResponse([textChunk('SHOULD NOT SERVE'), finish(), doneEvent]);
+  routeHandlers['mid-b.example.com'] = () => sseResponse(textLifecycle('SHOULD NOT SERVE'));
   const env = makeEnv({ tier1: [node('mid-a'), node('mid-b')], secrets: { 'mid-a': 'k', 'mid-b': 'k' } });
   const res = await worker.fetch(responsesRequest({ model: 'code-max', input: 'hi', stream: true }), env, {});
   assert.equal(res.status, 200);
@@ -292,42 +411,31 @@ await test('responses mid-stream failure never fails over after first event', as
     try { const { done, value } = await reader.read(); if (done) break; text += decoder.decode(value, { stream: true }); }
     catch { break; }
   }
-  assert.match(text, /partial output/);
-  assert.equal((text.match(/event: response\.failed\b/g) || []).length, 1,
-    'the Responses transformer owns the single terminal failure event');
-  assert.equal((text.match(/event: error\b/g) || []).length, 0,
-    'the outer tracker must not append a second terminal error event');
-  const failedData = text.match(/event: response\.failed\r?\ndata: ([^\r\n]+)/);
-  assert.ok(failedData, 'response.failed must include a data payload');
-  assert.ok(Number.isInteger(JSON.parse(failedData[1]).sequence_number),
-    'the terminal failure event keeps the ordered Responses sequence');
+  assert.match(text, /"delta":"partial"/, 'the first committed delta reached the client');
+  assert.match(text, /"delta":" output"/, 'the second delta reached the client');
+  assert.equal((text.match(/event: error\b/g) || []).length, 1,
+    'exactly one protocol-shaped interruption error event is emitted');
+  assert.match(text, /stream_interrupted/);
   assert.ok(!upstreamCalls.some((c) => c.host === 'mid-b.example.com'), 'must not fail over after first event');
+  assert.equal(getNodeState('mid-a').totalFailures, 1, 'a mid-stream death is a node failure');
 });
 
-await test('responses unsupported tool type returns 400 without touching upstream', async () => {
+await test('responses created-only then EOF rotates to a healthy node', async () => {
   resetMock();
-  const env = makeEnv({ tier1: [node('ut')], secrets: { ut: 'k' } });
-  const res = await worker.fetch(responsesRequest({ model: 'code-max', input: 'hi', tools: [{ type: 'web_search' }] }), env, {});
-  assert.equal(res.status, 400);
-  const body = await res.json();
-  assert.equal(body.error.type, 'invalid_request_error');
-  assert.equal(upstreamCalls.length, 0);
-});
-
-await test('responses input function_call + function_call_output round-trips as tool history', async () => {
-  resetMock();
-  routeHandlers['rt.example.com'] = () => jsonUpstream(okCompletion());
-  const env = makeEnv({ tier1: [node('rt')], secrets: { rt: 'k' } });
-  const input = [
-    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'what time' }] },
-    { type: 'function_call', call_id: 'call_0', name: 'get_time', arguments: '{}' },
-    { type: 'function_call_output', call_id: 'call_0', output: '12:00' },
-  ];
-  const res = await worker.fetch(responsesRequest({ model: 'code-max', input }), env, {});
+  const encoder = new TextEncoder();
+  routeHandlers['co-a.example.com'] = () => new Response(new ReadableStream({
+    pull(controller) {
+      controller.enqueue(encoder.encode(responseCreated()));
+      controller.close();
+    },
+  }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  routeHandlers['co-b.example.com'] = () => sseResponse(textLifecycle('served by B'));
+  const env = makeEnv({ tier1: [node('co-a'), node('co-b')], secrets: { 'co-a': 'k', 'co-b': 'k' } });
+  const res = await worker.fetch(responsesRequest({ model: 'code-max', input: 'hi', stream: true }), env, {});
   assert.equal(res.status, 200);
-  const sent = upstreamCalls[0].body;
-  assert.ok(sent.messages.some((m) => m.role === 'assistant' && m.tool_calls?.[0]?.id === 'call_0'));
-  assert.ok(sent.messages.some((m) => m.role === 'tool' && m.tool_call_id === 'call_0' && m.content === '12:00'));
+  const text = await res.text();
+  assert.match(text, /served by B/, 'B must serve after A produced no real output');
+  assert.ok(upstreamCalls.some((c) => c.host === 'co-b.example.com'), 'failover reached B');
 });
 
 await test('responses unknown model returns 404-shaped gateway error', async () => {
@@ -356,11 +464,6 @@ await test('terminal errors carry x-should-retry:false but 429 stays retryable',
   assert.equal(res502.status, 502);
   assert.equal(res502.headers.get('x-should-retry'), 'false');
 
-  // 400 (request-shape, unrecoverable) -> x-should-retry:false
-  const res400 = await worker.fetch(responsesRequest({ model: 'code-max', input: 'hi', tools: [{ type: 'web_search' }] }), env, {});
-  assert.equal(res400.status, 400);
-  assert.equal(res400.headers.get('x-should-retry'), 'false');
-
   // upstream 429 -> retryable: no x-should-retry:false header
   resetMock();
   routeHandlers['hdr2.example.com'] = () => jsonUpstream({}, 429, { 'retry-after': '60' });
@@ -370,71 +473,96 @@ await test('terminal errors carry x-should-retry:false but 429 stays retryable',
   assert.notEqual(res429.headers.get('x-should-retry'), 'false');
 });
 
-await test('unsupported Responses fields return 400 naming the field', async () => {
+// ---- native passthrough semantics -------------------------------------------
+
+await test('responses tools and host-managed features pass through natively', async () => {
   resetMock();
-  const env = makeEnv({ tier1: [node('uf')], secrets: { uf: 'k' } });
-  const cases = [
-    { mcp_servers: [{ type: 'mcp', url: 'https://x' }] },
-    { context_management: { edits: [{ type: 'custom_edit', x: 1 }] } },
-    { output_config: { effort: 'high', format: 'json' } },
-    { extra_body: { x: 1 } },
-  ];
-  for (const extra of cases) {
-    const res = await worker.fetch(responsesRequest({ model: 'code-max', input: 'hi', ...extra }), env, {});
-    assert.equal(res.status, 400, JSON.stringify(extra));
-    const body = await res.json();
-    assert.equal(body.error.type, 'invalid_request_error');
-    assert.match(body.error.message, /without data loss/);
-  }
-  assert.equal(upstreamCalls.length, 0);
+  routeHandlers['pt.example.com'] = () => jsonUpstream(okResponse());
+  const env = makeEnv({ tier1: [node('pt')], secrets: { pt: 'k' } });
+  const body = {
+    model: 'code-max',
+    input: 'hi',
+    tools: [{ type: 'function', name: 'get_weather', parameters: { type: 'object', properties: {} } }],
+    tool_choice: 'auto',
+    parallel_tool_calls: false,
+    mcp_servers: [{ type: 'mcp', server_label: 'x', server_url: 'https://x' }],
+  };
+  const res = await worker.fetch(responsesRequest(body), env, {});
+  assert.equal(res.status, 200, 'native forwarding must not reject provider-level features');
+  const sent = upstreamCalls[0].body;
+  assert.deepEqual(sent.tools, body.tools);
+  assert.deepEqual(sent.mcp_servers, body.mcp_servers);
+  assert.equal(sent.parallel_tool_calls, false);
 });
 
-await test('stop_sequences / top_k are converted, not rejected', async () => {
+await test('responses instructions / reasoning effort / metadata pass through verbatim', async () => {
   resetMock();
-  routeHandlers['stk.example.com'] = () => jsonUpstream(okCompletion());
+  routeHandlers['stk.example.com'] = () => jsonUpstream(okResponse());
   const env = makeEnv({ tier1: [node('stk')], secrets: { stk: 'k' } });
-  const res = await worker.fetch(responsesRequest({
-    model: 'code-max', input: 'hi', stop_sequences: ['STOP'], top_k: 2,
-  }), env, {});
+  const body = {
+    model: 'code-max', input: 'hi',
+    instructions: 'be terse',
+    reasoning: { effort: 'high' },
+    temperature: 0.2, top_p: 0.9,
+    stop_sequences: ['STOP'], top_k: 2,
+    metadata: { user_id: 'u1' },
+  };
+  const res = await worker.fetch(responsesRequest(body), env, {});
   assert.equal(res.status, 200);
-  assert.deepEqual(upstreamCalls[0].body.stop, ['STOP']);
-  assert.equal(upstreamCalls[0].body.top_k, 2);
+  const sent = upstreamCalls[0].body;
+  assert.equal(sent.instructions, 'be terse');
+  assert.deepEqual(sent.reasoning, { effort: 'high' });
+  assert.equal(sent.temperature, 0.2);
+  assert.deepEqual(sent.stop_sequences, ['STOP']);
+  assert.equal(sent.top_k, 2);
+  assert.deepEqual(sent.metadata, { user_id: 'u1' });
 });
 
-await test('reasoning summary facet is preserved when the upstream exposes it', async () => {
+await test('responses input function_call + function_call_output history is forwarded verbatim', async () => {
   resetMock();
-  routeHandlers['rsum.example.com'] = () => jsonUpstream({
-    id: 'chatcmpl-1', model: 'up-model',
-    choices: [{ index: 0, message: { role: 'assistant', content: 'answer', reasoning_content: 'vis think', reasoning_summary: 'the summary' }, finish_reason: 'stop' }],
-    usage: { prompt_tokens: 1, completion_tokens: 2 },
-  });
-  const env = makeEnv({ tier1: [node('rsum')], secrets: { rsum: 'k' } });
-  const res = await worker.fetch(responsesRequest({ model: 'code-max', input: 'hi' }), env, {});
-  const body = await res.json();
-  const item = body.output.find((o) => o.type === 'reasoning');
-  assert.ok(item, 'expected a reasoning item');
-  assert.equal(item.content[0].type, 'reasoning_text');
-  assert.equal(item.content[0].text, 'vis think');
-  assert.equal(item.summary[0].type, 'summary_text');
-  assert.equal(item.summary[0].text, 'the summary');
-  assert.equal(item.encrypted_content, undefined);
+  routeHandlers['rt.example.com'] = () => jsonUpstream(okResponse());
+  const env = makeEnv({ tier1: [node('rt')], secrets: { rt: 'k' } });
+  const input = [
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'what time' }] },
+    { type: 'function_call', call_id: 'call_0', name: 'get_time', arguments: '{}' },
+    { type: 'function_call_output', call_id: 'call_0', output: '12:00' },
+  ];
+  const res = await worker.fetch(responsesRequest({ model: 'code-max', input }), env, {});
+  assert.equal(res.status, 200);
+  const sent = upstreamCalls[0].body;
+  // Native: the input item array reaches the upstream EXACTLY as sent.
+  assert.deepEqual(sent.input, input);
 });
 
-await test('encrypted reasoning is preserved verbatim, never flattened to text', async () => {
+await test('responses stream request + JSON upstream synthesizes the SSE lifecycle', async () => {
   resetMock();
-  routeHandlers['renc.example.com'] = () => jsonUpstream({
-    id: 'chatcmpl-1', model: 'up-model',
-    choices: [{ index: 0, message: { role: 'assistant', content: 'answer', reasoning_encrypted_content: 'opaque-enc' }, finish_reason: 'stop' }],
-    usage: { prompt_tokens: 1, completion_tokens: 2 },
-  });
-  const env = makeEnv({ tier1: [node('renc')], secrets: { renc: 'k' } });
+  routeHandlers['rsyn.example.com'] = () => jsonUpstream(okResponse());
+  const env = makeEnv({ tier1: [node('rsyn')], secrets: { rsyn: 'k' } });
+  const res = await worker.fetch(responsesRequest({ model: 'code-max', input: 'hi', stream: true }), env, {});
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-type') || '', /text\/event-stream/);
+  const text = await res.text();
+  const events = [...text.matchAll(/event: ([^\n]+)/g)].map((m) => m[1]);
+  assert.equal(events[0], 'response.created');
+  assert.ok(events.includes('response.output_text.delta'));
+  assert.equal(events[events.length - 1], 'response.completed');
+  const completed = parseCompletedResponse(text);
+  assert.equal(completed.model, 'code-max');
+  assert.equal(completed.output[0].content[0].text, 'hello');
+});
+
+await test('responses non-stream request + streaming upstream assembles the response object', async () => {
+  resetMock();
+  routeHandlers['rasm.example.com'] = () => sseResponse(textLifecycle('assembled'));
+  const env = makeEnv({ tier1: [node('rasm')], secrets: { rasm: 'k' } });
   const res = await worker.fetch(responsesRequest({ model: 'code-max', input: 'hi' }), env, {});
+  assert.equal(res.status, 200);
   const body = await res.json();
-  const item = body.output.find((o) => o.type === 'reasoning');
-  assert.ok(item, 'expected a reasoning item');
-  assert.equal(item.encrypted_content, 'opaque-enc');
-  assert.equal(item.content, undefined, 'encrypted reasoning must not be flattened into content');
-  assert.ok(!body.output.some((o) => o.type === 'reasoning' && o.content && o.content.some((c) => c.text === 'opaque-enc')));
+  assert.equal(body.object, 'response');
+  assert.equal(body.status, 'completed');
+  assert.equal(body.model, 'code-max');
+  assert.equal(body.output[0].content[0].text, 'assembled');
+  assert.equal(body.usage.input_tokens, 1);
 });
 
 if (!process.exitCode) console.log(`\ncodex (responses) contract tests passed (${passed}).`);

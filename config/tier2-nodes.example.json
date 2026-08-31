@@ -1,7 +1,11 @@
-[
+﻿[
   {
     "id": "openrouter-01",
     "provider": "openrouter",
+    "protocol": "openai",
+    "surfaces": [
+      "chat_completions"
+    ],
     "base_url": "https://openrouter.ai/api/v1",
     "priority": 10,
     "models": {
@@ -12,3 +16,4 @@
     "limits": { "concurrency": 4, "rpm": 20 }
   }
 ]
+

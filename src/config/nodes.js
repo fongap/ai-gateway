@@ -10,12 +10,27 @@
 // Node JSON schema:
 //   {
 //     "id": "nvidia-01",                  // ^[a-z0-9][a-z0-9-]{0,63}$
-//     "provider": "nvidia",               // optional label
+//     "provider": "nvidia",               // WHO provides it (label/quirks only)
+//     "protocol": "openai",               // HOW to talk upstream: openai|anthropic
+//     "surfaces": ["chat_completions"],   // WHICH endpoints the node really serves
 //     "base_url": "https://.../v1",       // https required by default
 //     "priority": 10,                     // smaller = higher precedence
 //     "models": { "logical": "upstream" },// empty object = supports all models
 //     "limits": { "concurrency": 1 }
 //   }
+//
+// protocol decides: request format, upstream endpoint, auth header, protocol
+// headers, stream wire format. surfaces decides which client surfaces can be
+// routed to this node (openai: chat_completions|responses; anthropic: messages).
+// provider is metadata only (dashboard / metrics / diagnostics / quirks) and
+// never influences transport.
+//
+// Migration (deprecated, diagnostic-only, NOT fatal): a node without
+// `protocol` defaults to "openai" and a node without `surfaces` defaults to
+// ["chat_completions"] (openai) / ["messages"] (anthropic), because every
+// pre-protocol node talked the OpenAI Chat wire format. Each implicit default
+// emits a deprecation diagnostic so operators can make it explicit; the node
+// still builds and the gateway is not marked invalid for it.
 //
 // Tier is derived ONLY from the variable prefix. The node JSON must not carry
 // a tier field; a tier field is rejected as invalid configuration.
@@ -31,7 +46,6 @@
 // an isolate is alive.
 
 import { readEnv, getBool } from './env.js';
-import { resolveProviderProfile } from './profiles.js';
 import { loadModelsConfig, getModelsConfigDiagnostics } from './models.js';
 import { loadPoliciesConfig, getPoliciesConfigDiagnostics } from './policies.js';
 
@@ -42,9 +56,19 @@ const ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const FORBIDDEN_NODE_FIELDS = ['token', 'credential', 'api_key', 'apikey', 'authorization', 'password', 'secret'];
 // Fail-fast schema: any field outside this set is a typo/invalid and the node
 // is rejected instead of being silently accepted (or emptied into a wildcard).
-const ALLOWED_NODE_FIELDS = new Set(['id', 'provider', 'base_url', 'priority', 'models', 'limits']);
+const ALLOWED_NODE_FIELDS = new Set(['id', 'provider', 'protocol', 'surfaces', 'base_url', 'priority', 'models', 'limits']);
 const ALLOWED_LIMITS_FIELDS = new Set(['concurrency', 'rpm', 'rpm_mode']);
 const RPM_MODES = new Set(['soft', 'hard']);
+// protocol -> which client surfaces the node can expose, and the implicit
+// legacy default used when `surfaces` is omitted.
+const PROTOCOL_SURFACES = new Map([
+  ['openai', new Set(['chat_completions', 'responses'])],
+  ['anthropic', new Set(['messages'])],
+]);
+const DEFAULT_SURFACES = new Map([
+  ['openai', ['chat_completions']],
+  ['anthropic', ['messages']],
+]);
 
 let cachedEnv;
 let cachedResult;
@@ -261,24 +285,70 @@ function buildRuntimeNode(rawNode, tier, credentials, allowInsecure, sourceKey, 
   const limits = parseLimits(rawNode.limits, id, diagnostics);
   if (limits === null) return null;
 
+  const protocol = parseProtocol(rawNode.protocol, id, diagnostics);
+  if (protocol === null) return null;
+  const surfaces = parseSurfaces(rawNode.surfaces, protocol, id, diagnostics);
+  if (surfaces === null) return null;
+
   const providerLabel = typeof rawNode.provider === 'string' && rawNode.provider.trim() ? rawNode.provider.trim() : 'unknown';
-  const profile = resolveProviderProfile(providerLabel);
 
   return {
     id,
     tier,
     provider: providerLabel,
+    protocol,
+    surfaces,
     baseUrl: baseUrl.replace(/\/+$/, ''),
     credential,
     priority,
     models,
-    profile,
     limits: {
       concurrency: limits.concurrency ?? 2,
       // Soft/hard per-minute request quota; undefined = unlimited.
       ...(limits.rpm !== undefined ? { rpm: limits.rpm, rpmMode: limits.rpmMode ?? 'hard' } : {}),
     },
   };
+}
+
+// protocol: openai | anthropic. Missing = legacy implicit "openai" (deprecated,
+// diagnostic-only) because every pre-protocol node talked the OpenAI Chat wire.
+function parseProtocol(raw, nodeId, diagnostics) {
+  if (raw === undefined || raw === null) {
+    diagnostics.push(`node "${nodeId}": protocol is implicit and defaults to "openai"; please configure it explicitly`);
+    return 'openai';
+  }
+  const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  if (!PROTOCOL_SURFACES.has(value)) {
+    diagnostics.push(`node "${nodeId}": protocol must be "openai" or "anthropic"`);
+    return null;
+  }
+  return value;
+}
+
+// surfaces: which endpoints this node really serves. Missing = legacy implicit
+// default for the resolved protocol (deprecated, diagnostic-only). Explicit
+// surfaces are strictly validated against the protocol.
+function parseSurfaces(raw, protocol, nodeId, diagnostics) {
+  if (raw === undefined || raw === null) {
+    const def = DEFAULT_SURFACES.get(protocol);
+    diagnostics.push(`node "${nodeId}": surfaces is implicit and defaults to [${def.map((s) => `"${s}"`).join(', ')}]; please configure it explicitly`);
+    return def.slice();
+  }
+  if (!Array.isArray(raw) || raw.length === 0) {
+    diagnostics.push(`node "${nodeId}": surfaces must be a non-empty array`);
+    return null;
+  }
+  const allowed = PROTOCOL_SURFACES.get(protocol);
+  const out = [];
+  for (const entry of raw) {
+    const value = typeof entry === 'string' ? entry.trim().toLowerCase() : '';
+    if (!allowed.has(value)) {
+      diagnostics.push(`node "${nodeId}": surfaces entry "${String(entry).slice(0, 40)}" is not valid for protocol "${protocol}" (allowed: ${[...allowed].join(', ')})`);
+      return null;
+    }
+    if (!out.includes(value)) out.push(value);
+  }
+  return out;
 }
 
 function parsePriority(raw, nodeId, diagnostics) {

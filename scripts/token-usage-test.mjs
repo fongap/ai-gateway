@@ -15,8 +15,7 @@ import { dashboardResponse, __resetDashboardCacheForTests } from '../src/dashboa
 import { metricsResponse } from '../src/observability/diagnostic-endpoints.mjs';
 import { persistTokenUsage } from '../src/observability/token-usage-store.mjs';
 import { withUsageStreamOptions } from '../src/protocol/openai.js';
-import { transformOpenAIStreamToAnthropic } from '../src/stream/transform.js';
-import { transformOpenAIStreamToResponses } from '../src/protocol/responses/stream.js';
+import { trackStreamResponse } from '../src/stream/track.js';
 import { createMockD1 } from './mock-d1-database.mjs';
 
 let passed = 0;
@@ -451,29 +450,50 @@ async function drain(response) {
   }
 }
 
-await test('anthropic transform: interrupted WITH usage reports it exactly once (Anthropic shape)', async () => {
+// Native-stream onUsage contract: the tracked passthrough reports captured
+// usage EXACTLY ONCE per stream (success or failure alike), a client abort
+// reports nothing, and observability is optional.
+const noopTrack = { idleTimeoutMs: 0, onSuccess: () => {}, onFailure: () => {}, onNeutral: () => {} };
+
+// Native Anthropic wire shapes.
+const anthropicTextDelta = (text) => `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } })}\n\n`;
+const anthropicUsage = (input, output) => `event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { input_tokens: input, output_tokens: output } })}\n\n`;
+const anthropicStop = 'event: message_stop\ndata: {"type":"message_stop"}\n\n';
+// Native Responses wire shapes.
+const responsesTextDelta = (text) => `event: response.output_text.delta\ndata: ${JSON.stringify({ type: 'response.output_text.delta', sequence_number: 1, item_id: 'msg_1', output_index: 0, content_index: 0, delta: text })}\n\n`;
+const responsesCompleted = (usage) => `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', sequence_number: 2, response: { id: 'resp_1', object: 'response', status: 'completed', model: 'up-model', output: [], usage } })}\n\n`;
+
+await test('anthropic passthrough: interrupted WITH usage reports it exactly once (Anthropic shape)', async () => {
   const calls = [];
   const upstream = sseUpstream([
-    chatChunk('partial'),
-    chatUsage({ prompt_tokens: 6, completion_tokens: 8 }),
-    // clean EOF, no finish_reason, no [DONE] → failStream path
+    anthropicTextDelta('partial'),
+    anthropicUsage(6, 8),
+    // clean EOF, no message_stop → node-failure finalize path
   ]);
-  const res = transformOpenAIStreamToAnthropic(upstream, 'model-x', 'req-1', null, { onUsage: (u) => calls.push(u) });
+  const res = trackStreamResponse(upstream, {
+    ...noopTrack,
+    completionMarker: /event:\s*message_stop\b/,
+    onUsage: (u) => calls.push(u),
+  });
   await drain(res);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].input_tokens, 6);
   assert.equal(calls[0].output_tokens, 8);
 });
 
-await test('anthropic transform: client abort reports nothing', async () => {
+await test('anthropic passthrough: client abort reports nothing', async () => {
   const calls = [];
   const ac = new AbortController();
-  // Never-closing upstream: the transform parks in reader.read() until the
-  // client side gives up (signal abort + body cancel, as the runtime does).
+  // Never-closing upstream: the tracked stream parks in reader.read() until
+  // the client side gives up (signal abort + body cancel, as the runtime does).
   const upstream = new Response(new ReadableStream({
-    pull(c) { c.enqueue(encoder.encode(chatChunk('flowing'))); },
+    pull(c) { c.enqueue(encoder.encode(anthropicTextDelta('flowing'))); },
   }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
-  const res = transformOpenAIStreamToAnthropic(upstream, 'model-x', 'req-1', ac.signal, { onUsage: (u) => calls.push(u) });
+  const res = trackStreamResponse(upstream, {
+    ...noopTrack,
+    completionMarker: /event:\s*message_stop\b/,
+    onUsage: (u) => calls.push(u),
+  });
   const reader = res.body.getReader();
   await reader.read();
   ac.abort();
@@ -481,27 +501,33 @@ await test('anthropic transform: client abort reports nothing', async () => {
   assert.equal(calls.length, 0);
 });
 
-await test('responses transform: interrupted WITH usage reports it exactly once (verbatim openai shape)', async () => {
+await test('responses passthrough: completed stream reports usage exactly once (verbatim native shape)', async () => {
   const calls = [];
   const upstream = sseUpstream([
-    chatChunk('partial'),
-    chatUsage({ prompt_tokens: 6, completion_tokens: 8 }),
+    responsesTextDelta('hello'),
+    responsesCompleted({ input_tokens: 6, output_tokens: 8, total_tokens: 14 }),
   ]);
-  const request = new Request('https://gateway.example.com/v1/responses', { method: 'POST', body: '{}' });
-  const res = transformOpenAIStreamToResponses(upstream, 'model-x', request, 'req-1', null, { onUsage: (u) => calls.push(u) });
+  const res = trackStreamResponse(upstream, {
+    ...noopTrack,
+    completionMarker: /event:\s*response\.(?:completed|incomplete)\b/,
+    onUsage: (u) => calls.push(u),
+  });
   await drain(res);
   assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0], { prompt_tokens: 6, completion_tokens: 8 });
+  assert.deepEqual(calls[0], { input_tokens: 6, output_tokens: 8, total_tokens: 14 });
 });
 
-await test('responses transform: client abort reports nothing', async () => {
+await test('responses passthrough: client abort reports nothing', async () => {
   const calls = [];
   const ac = new AbortController();
   const upstream = new Response(new ReadableStream({
-    pull(c) { c.enqueue(encoder.encode(chatChunk('flowing'))); },
+    pull(c) { c.enqueue(encoder.encode(responsesTextDelta('flowing'))); },
   }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
-  const request = new Request('https://gateway.example.com/v1/responses', { method: 'POST', body: '{}' });
-  const res = transformOpenAIStreamToResponses(upstream, 'model-x', request, 'req-1', ac.signal, { onUsage: (u) => calls.push(u) });
+  const res = trackStreamResponse(upstream, {
+    ...noopTrack,
+    completionMarker: /event:\s*response\.(?:completed|incomplete)\b/,
+    onUsage: (u) => calls.push(u),
+  });
   const reader = res.body.getReader();
   await reader.read();
   ac.abort();
@@ -509,13 +535,16 @@ await test('responses transform: client abort reports nothing', async () => {
   assert.equal(calls.length, 0);
 });
 
-await test('transforms without onUsage stay fully functional (observability optional)', async () => {
+await test('passthrough without onUsage stays fully functional (observability optional)', async () => {
   const upstream = sseUpstream([
-    chatChunk('hello'),
-    `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n`,
-    'data: [DONE]\n\n',
+    anthropicTextDelta('hello'),
+    anthropicUsage(1, 1),
+    anthropicStop,
   ]);
-  const res = transformOpenAIStreamToAnthropic(upstream, 'model-x', 'req-1', null);
+  const res = trackStreamResponse(upstream, {
+    ...noopTrack,
+    completionMarker: /event:\s*message_stop\b/,
+  });
   const text = await res.text();
   assert.ok(text.includes('message_stop'));
 });

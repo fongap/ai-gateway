@@ -14,7 +14,7 @@ import { corsHeaders, shouldNotRetryHeaders, trimDiagnostic } from '../protocol/
 import { anthropicErrorTypeForStatus } from '../protocol/anthropic.js';
 import { responsesErrorResponse } from '../protocol/responses/index.js';
 import { getCooldownRemainingMs, getModelCooldownRemainingMs, getNodeState } from '../reliability/node-state.js';
-import { supportsModel, isHardRpmExhausted, tierHasDeferredCapacity } from '../scheduler/scheduler.js';
+import { supportsRequest, isHardRpmExhausted, tierHasDeferredCapacity } from '../scheduler/scheduler.js';
 import { TIER_ORDER } from './router.js';
 
 // Unified gateway error: Anthropic-style for Anthropic routes, OpenAI
@@ -74,7 +74,7 @@ export function buildBudgetExhaustedResponse(request, env, route, requestId, req
     `Gateway failover budget exhausted after ${state.logicalAttempts} attempt(s).`, requestId, details);
 }
 
-export function buildExhaustedResponse(request, env, route, requestId, requestedModel, state, tiers, exposeUpstreamInfo) {
+export function buildExhaustedResponse(request, env, route, requestId, requestedModel, state, tiers, exposeUpstreamInfo, reqDescriptor) {
   const last = state.attempts[state.attempts.length - 1];
   const nothingAttempted = state.attempts.length === 0;
 
@@ -95,7 +95,7 @@ export function buildExhaustedResponse(request, env, route, requestId, requested
   let retryAfterSec;
   if (nothingAttempted) {
     const deferred = TIER_ORDER.some((t) =>
-      tierHasDeferredCapacity(tiers[t], requestedModel, state.attempted, now));
+      tierHasDeferredCapacity(tiers[t], reqDescriptor, state.attempted, now));
     if (deferred) {
       status = 503;
       message = 'All eligible nodes are at capacity. Retry shortly.';
@@ -103,7 +103,7 @@ export function buildExhaustedResponse(request, env, route, requestId, requested
       status = 429;
       message = 'All eligible nodes are temporarily unavailable (cooldown or circuit open).';
     }
-    retryAfterSec = earliestBlockingRetryAfterSec(tiers, requestedModel, now);
+    retryAfterSec = earliestBlockingRetryAfterSec(tiers, reqDescriptor, now);
   } else {
     // Terminal status is driven by the aggregated failure kinds, not by whatever
     // the last attempt happened to be. Otherwise a trailing 429 would mask a
@@ -111,7 +111,7 @@ export function buildExhaustedResponse(request, env, route, requestId, requested
     status = terminalStatus(state.failureKinds) ?? (last?.status === 429 ? 429 : 502);
     message = `All nodes failed for model "${requestedModel}".`;
     if (status === 429) {
-      retryAfterSec = earliestBlockingRetryAfterSec(tiers, requestedModel, now);
+      retryAfterSec = earliestBlockingRetryAfterSec(tiers, reqDescriptor, now);
       // A distributed rate-limiter deny (rate_limit_global) leaves no node
       // cooldown — the node was never at fault. When that is what blocked
       // everything, back the client off to the next fixed-window reset instead
@@ -139,17 +139,18 @@ export function buildExhaustedResponse(request, env, route, requestId, requested
     retryAfterSec ? { 'retry-after': String(retryAfterSec) } : undefined);
 }
 
-// Earliest moment any node that serves `requestedModel` could accept the
-// request again, as a Retry-After in seconds. A node cooling for an unrelated
-// model, or a healthy idle node, never contributes — only nodes that actually
-// serve this model AND are currently blocking it. The min across blocking
-// reasons is returned so the shortest real wait wins.
-function earliestBlockingRetryAfterSec(tiers, requestedModel, now = Date.now()) {
+// Earliest moment any node that serves the request (protocol + surface +
+// model descriptor) could accept the request again, as a Retry-After in
+// seconds. A node cooling for an unrelated model, or a healthy idle node,
+// never contributes — only nodes that actually serve THIS request AND are
+// currently blocking it. The min across blocking reasons is returned so the
+// shortest real wait wins.
+function earliestBlockingRetryAfterSec(tiers, reqDescriptor, now = Date.now()) {
   let minMs = Infinity;
   for (const t of TIER_ORDER) {
     for (const node of tiers[t] ?? []) {
-      if (!supportsModel(node, requestedModel)) continue;
-      const wait = blockingWaitMs(node, requestedModel, now);
+      if (!supportsRequest(node, reqDescriptor)) continue;
+      const wait = blockingWaitMs(node, reqDescriptor.model, now);
       if (wait < minMs) minMs = wait;
     }
   }

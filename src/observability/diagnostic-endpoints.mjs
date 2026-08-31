@@ -22,10 +22,12 @@ function sanitizePrometheusLabel(value) {
 }
 
 // Logical model list with capability metadata. The Model Registry is the primary
-// source of the logical-model set AND its capabilities; provider profiles are
-// only ever used as a backend *label*, never as the model-capability truth. The
-// gateway always exposes all three wire surfaces. Fields beyond the OpenAI
-// baseline are additive and backward-compatible.
+// source of the logical-model set AND its capabilities; node `provider` labels
+// are only ever used as a backend *label*, never as the model-capability truth.
+// The gateway natively speaks OpenAI (chat_completions / responses) and
+// Anthropic (messages); the `protocols` field lists the surfaces actually
+// offered by the nodes serving each model. Fields beyond the OpenAI baseline
+// are additive and backward-compatible.
 function buildModelsList(nodes, env) {
   const registry = loadModelRegistry(env);
   const models = new Map();
@@ -47,6 +49,7 @@ function buildModelsList(nodes, env) {
         created: 0,
         owned_by: APP_META.name,
         apiBackends: new Set(),
+        surfaces: new Set(),
         reg,
       };
       models.set(logical, e);
@@ -62,7 +65,8 @@ function buildModelsList(nodes, env) {
     for (const logical of servedKeys) {
       if (!servesModel(node, logical)) continue;
       const e = entryFor(logical);
-      if (node.profile?.id) e.apiBackends.add(node.profile.id);
+      e.apiBackends.add(node.provider);
+      for (const surface of node.surfaces || []) e.surfaces.add(surface);
     }
   }
 
@@ -79,7 +83,7 @@ function buildModelsList(nodes, env) {
         owned_by: APP_META.name,
         apiBackend,
         api_backends: backends,
-        protocols: ['chat_completions', 'responses', 'messages'],
+        protocols: [...e.surfaces].sort(),
         supports_tools: e.reg.capabilities.tools,
         supports_reasoning: e.reg.capabilities.reasoning,
         supports_reasoning_effort: e.reg.capabilities.reasoning,
@@ -98,6 +102,8 @@ export function healthResponse(request, env, requestId) {
     id: n.id,
     tier: n.tier,
     provider: n.provider,
+    protocol: n.protocol,
+    surfaces: n.surfaces,
     priority: n.priority,
     models: Object.keys(n.models || {}),
     ...snapshotNode(n.id, now),

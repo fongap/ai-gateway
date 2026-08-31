@@ -24,7 +24,7 @@ import { FIRST_EVENT_MAX_SSE_LINE } from './guard.js';
 // SSE line. Same limit as the pre-first-event guard for consistency.
 const TRACK_MAX_LINE_BUFFER = FIRST_EVENT_MAX_SSE_LINE;
 
-export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFailure, onNeutral, onStreamStart, onStreamEnd, completionMarker, failureMarker, rewriteModel, onUsage, interruptionChunk, upstreamFailureReason }) {
+export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFailure, onNeutral, onStreamStart, onStreamEnd, completionMarker, failureMarker, rewriteModel, rewriteModelAt, onUsage, interruptionChunk, upstreamFailureReason }) {
   if (!response.body) {
     onSuccess();
     return response;
@@ -85,8 +85,15 @@ export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFail
       if (!raw || raw === '[DONE]') continue;
       try {
         const json = JSON.parse(raw);
-        if (json && typeof json === 'object' && json.usage !== undefined) {
-          if (normalizeTokenUsage(json.usage)) usageCandidate = json.usage;
+        // Native wire shapes that report usage:
+        //   OpenAI chat  -> data.usage on the terminal chunk
+        //   Responses    -> data.response.usage on response.completed
+        //   Anthropic    -> data.usage on message_delta (message_start's
+        //                   partial input-only report is superseded by the
+        //                   last usable report, per the last-wins rule below)
+        const reported = json?.response?.usage !== undefined ? json.response.usage : json?.usage;
+        if (reported !== undefined) {
+          if (normalizeTokenUsage(reported)) usageCandidate = reported;
         }
       } catch { /* malformed lines are ignored — passive scan */ }
     }
@@ -126,14 +133,29 @@ export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFail
   // Inline SSE model-field rewrite (same semantics as the former standalone
   // rewriteStreamModelField wrapper). Lines that cannot contain the field are
   // never parsed; malformed lines pass through untouched.
+  // `rewriteModelAt` selects where the logical model lives on the wire:
+  //   'model'          -> top-level data.model      (OpenAI chat chunks)
+  //   'response.model' -> data.response.model       (native Responses events)
+  //   'message.model'  -> data.message.model        (native Anthropic events)
+  // The field is only REWRITTEN when it already exists — unrelated lines are
+  // never given a model field they did not carry.
+  const modelPointer = rewriteModelAt || 'model';
   const processLine = (line) => {
     if (!line.startsWith('data:') || !line.includes('"model"')) return line;
     const raw = line.slice(5).trimStart();
     if (!raw || raw === '[DONE]') return line;
     try {
       const json = JSON.parse(raw);
-      if (json && typeof json === 'object' && json.model !== undefined) {
-        json.model = rewriteModel;
+      if (json && typeof json === 'object') {
+        const parts = modelPointer.split('.');
+        let holder = json;
+        for (let i = 0; i < parts.length - 1; i++) {
+          holder = holder?.[parts[i]];
+          if (!holder || typeof holder !== 'object') return line;
+        }
+        const leaf = parts[parts.length - 1];
+        if (holder[leaf] === undefined) return line;
+        holder[leaf] = rewriteModel;
         return 'data: ' + JSON.stringify(json);
       }
     } catch { /* malformed lines pass through untouched */ }
