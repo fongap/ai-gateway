@@ -11,14 +11,17 @@
 //     lastProbeFailureAt
 //   - markProbeFailure(nodeId, model) sets lastProbeFailureAt
 //   - effectiveTtft returns 0 (neutral) when:
-//       * TTFT is stale (> STALE_TTFT_MS = 10 min)
+//       * TTFT is stale (> STALE_TTFT_MS = 5 min for regular nodes,
+//         > QUALITY_TTFT_MS = 15 min for nodes with passiveSamples >= 3)
 //       * probe failure occurred after last TTFT
+//       * real first-event timeout calls markProbeFailure → immediate
+//         invalidation (handler.js)
 //       * probe-only data (passiveSamples === 0 && probeSamples > 0)
 //
 // Test matrix (FIXED behaviour):
 //   1. Single probe sample must NOT grant decisive priority
 //   2. Probe + passive validation unlocks probe-warmed EWMA
-//   3. Historical fast node degrades — stale TTFT expires after 10 min
+//   3. Historical fast node degrades — real timeout immediately invalidates TTFT
 //   4. Stale metric must NOT beat fresh
 //   5. Probe failure invalidates old TTFT
 //   6. Probe/passive conflict — probe must not dominate passive
@@ -208,10 +211,15 @@ await test('Test 3: historical 300ms ×5, timeout, then stale TTFT expires after
   console.log(`  A EWMA after 5×300 = ${aPerf.avgTtftMs.toFixed(1)}ms (passive=${aPerf.passiveSamples})`);
   console.log(`  B EWMA = ${bPerf.avgTtftMs.toFixed(1)}ms (passive=${bPerf.passiveSamples})`);
 
-  // Simulate A suddenly degrading: timeout → recordFailure (counted),
-  // NOT recordTtft. A's modelPerf TTFT stays at ~300ms.
+  // Simulate A suddenly degrading: real first-event timeout.
+  // handler.js now calls BOTH recordFailure AND markProbeFailure on
+  // first-event timeout — the stale TTFT is invalidated immediately.
+  // Use T0+1 to guarantee lastProbeFailureAt > lastTtftAt (tight loops
+  // can share a millisecond, and effectiveTtft uses strict >).
+  const timeoutAt = Date.now() + 1;
   acquireSlot('a');
-  recordFailure('a', { counted: true, cooldownMs: 0, reason: 'first_event_timeout' });
+  markProbeFailure('a', MODEL, timeoutAt);
+  recordFailure('a', { counted: true, cooldownMs: 0, reason: 'first_event_timeout' }, timeoutAt);
 
   // Immediately after failure (within TRANSIENT_FAILURE_PREFERENCE_MS = 5s):
   // A is recently-failed → B wins.
@@ -220,34 +228,37 @@ await test('Test 3: historical 300ms ×5, timeout, then stale TTFT expires after
   assert.equal(winnerImmediately, 'b',
     'B should win immediately after A timeout (transient failure preference)');
 
-  // 6s after: failure preference expired (>5s). A's TTFT is still fresh (<10min).
-  // 300 <= 1000/1.5=667 → A wins decisively.
+  // 6s after: transient failure preference expired (>5s), but
+  // markProbeFailure set lastProbeFailureAt > lastTtftAt → effectiveTtft=0.
+  // A's 300ms is no longer decisive — it may still win by LRU (which is
+  // expected: the node gets traffic to re-prove itself), but it cannot
+  // win by TTFT advantage. Verify the mechanism directly.
   const winner6s = pickWinner(nodes, new Set(), Date.now() + 6000);
-  console.log(`  Winner 6s after timeout (TTFT still fresh): ${winner6s}`);
-  assert.equal(winner6s, 'a',
-    'A should win 6s after timeout — TTFT still fresh (<10min TTL)');
+  console.log(`  Winner 6s after timeout (TTFT neutralised, LRU decides): ${winner6s}`);
+  const aPerf6s = getModelPerf('a', MODEL);
+  assert.ok(aPerf6s.lastProbeFailureAt > aPerf6s.lastTtftAt,
+    'markProbeFailure should keep lastProbeFailureAt > lastTtftAt → effectiveTtft=0');
 
-  // 11min after: A's lastTtftAt is now >10min ago → stale → effectiveTtft=0.
-  // B's lastTtftAt is also stale, so no TTFT comparison. LRU decides: B was
-  // touched at the immediate pick (older), A at the 6s pick (newer) → B wins.
-  const future11 = Date.now() + 11 * 60_000;
+  // 16min after: A's TTFT is now stale even for a quality node (passiveSamples=5
+  // >= 3 → QUALITY_TTFT_MS = 15min). Double protection: both markProbeFailure
+  // and TTL expiry keep A's effectiveTtft at 0. With B fresh and B older by
+  // LRU, B must win.
+  const future16 = Date.now() + 16 * 60_000;
   const aPerfNow = getModelPerf('a', MODEL);
-  aPerfNow.lastTtftAt = future11 - 11 * 60_000; // 11 min ago
-  // Refresh B's TTFT so it's fresh at the 11-min mark.
+  aPerfNow.lastTtftAt = future16 - 16 * 60_000; // 16 min ago → stale
+  // Refresh B's TTFT so it's fresh at the 16-min mark.
   const bPerfNow = getModelPerf('b', MODEL);
-  bPerfNow.lastTtftAt = future11 - 5 * 60_000; // 5 min ago → fresh
+  bPerfNow.lastTtftAt = future16 - 5 * 60_000; // 5 min ago → fresh
+  // B older than A by LRU so B wins the LRU tiebreak.
+  getNodeState('a').lastUsedAt = future16 - 1_000;
+  getNodeState('b').lastUsedAt = future16 - 2_000;
 
-  const aAge = future11 - aPerfNow.lastTtftAt;
-  const bAge = future11 - bPerfNow.lastTtftAt;
-  console.log(`  At 11min: A TTFT age=${(aAge / 60_000).toFixed(1)}min (stale), B TTFT age=${(bAge / 60_000).toFixed(1)}min (fresh)`);
+  const winner16min = pickWinner(nodes, new Set(), future16);
+  console.log(`  Winner 16min after timeout (TTL + markProbeFailure): ${winner16min}`);
+  assert.notEqual(winner16min, 'a',
+    `A must NOT win 16min after timeout — both TTL and markProbeFailure neutralise. got=${winner16min}`);
 
-  const winner11min = pickWinner(nodes, new Set(), future11);
-  console.log(`  Winner 11min after timeout (A TTFT stale): ${winner11min}`);
-  assert.notEqual(winner11min, 'a',
-    `A must NOT win after TTFT goes stale (>10min). got=${winner11min}`);
-  assert.ok(aAge > 10 * 60_000, 'A TTFT should be stale (>10min)');
-
-  console.log('  → Stale TTFT expires after 10 min. FIXED.');
+  console.log('  → Real timeout immediately invalidates TTFT via markProbeFailure. FIXED.');
 });
 
 // ---- Test 4: stale metric must NOT beat fresh -----------------------------

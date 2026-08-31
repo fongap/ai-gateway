@@ -26,9 +26,14 @@ import { acquireSlot, getModelPerf, getNodeState, isModelCooling, markProbeFailu
 const PROBE_INTERVAL_MS = 5 * 60_000;
 const PROBE_GLOBAL_INTERVAL_MS = 30_000;
 const PROBE_TIMEOUT_MS = 8_000;
+const STALE_TTFT_MS = 5 * 60_000;
+const QUALITY_TTFT_MS = 15 * 60_000;
+const MIN_QUALITY_SAMPLES = 3;
 
 let probesInFlight = 0;
 let lastProbeStartedAt = 0;
+let lastScheduledProbeAt = 0;
+let coldStartDone = false;
 
 export function scheduleModelProbe(ctx, { nodes, model, protocol, surface, env, logger } = {}) {
   if (!ctx || typeof ctx.waitUntil !== 'function' || !Array.isArray(nodes) || !model) return false;
@@ -42,6 +47,74 @@ export function scheduleModelProbe(ctx, { nodes, model, protocol, surface, env, 
     task.catch(() => {});
     return false;
   }
+}
+
+// Request-triggered scheduled probe: runs at most once per PROBE_INTERVAL_MS,
+// independent of request outcomes. On the first invocation per isolate (cold
+// start), one random node per provider group is probed concurrently to build a
+// baseline TTFT cheaply. On subsequent invocations, only the stalest eligible
+// node per group is probed — quality nodes (passiveSamples >= 3) are trusted
+// for QUALITY_TTFT_MS, others for STALE_TTFT_MS. The slot is acquired by the
+// caller; executeProbe releases it in finally.
+export function runScheduledProbes(ctx, { nodes, model, protocol, surface, env, logger } = {}) {
+  if (!ctx || typeof ctx.waitUntil !== 'function' || !Array.isArray(nodes) || !model) return false;
+  const now = Date.now();
+  if (now - lastScheduledProbeAt < PROBE_INTERVAL_MS) return false;
+  lastScheduledProbeAt = now;
+
+  const eligible = nodes.filter((n) =>
+    n.tier === 'tier-1' && supportsRequest(n, { model, protocol, surface }),
+  );
+  if (!eligible.length) return false;
+
+  const groups = new Map();
+  for (const node of eligible) {
+    const key = node.provider || node.id.split('-')[0] || 'default';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(node);
+  }
+
+  const isColdStart = !coldStartDone;
+  if (isColdStart) coldStartDone = true;
+
+  const targets = [];
+  for (const [, groupNodes] of groups) {
+    const target = isColdStart
+      ? groupNodes[Math.floor(Math.random() * groupNodes.length)]
+      : pickStaleNode(groupNodes, { model, now });
+    if (target && acquireSlot(target.id, now)) targets.push(target);
+  }
+  if (!targets.length) return false;
+
+  const task = Promise.allSettled(
+    targets.map((t) => executeProbe(t, { model, surface, env, logger })),
+  );
+  try {
+    ctx.waitUntil(task);
+    return true;
+  } catch {
+    task.catch(() => {});
+    return false;
+  }
+}
+
+function pickStaleNode(nodes, { model, now }) {
+  let best = null;
+  let bestAge = -1;
+  for (const node of nodes) {
+    if (peekAvailability(node.id, now) === 'no' || isModelCooling(node.id, model, now)) continue;
+    const state = getNodeState(node.id);
+    if (state.activeRequests >= Math.max(0, node.limits.concurrency - 1)) continue;
+    if (node.limits.rpm && rpmUsage(node.id, now) >= Math.max(0, node.limits.rpm - 1)) continue;
+    if (isHardRpmExhausted(node, now)) continue;
+    const perf = getModelPerf(node.id, model);
+    const ttl = (perf?.passiveSamples ?? 0) >= MIN_QUALITY_SAMPLES ? QUALITY_TTFT_MS : STALE_TTFT_MS;
+    const age = perf && perf.lastTtftAt > 0 ? now - perf.lastTtftAt : Infinity;
+    if (age < ttl || age <= bestAge) continue;
+    best = node;
+    bestAge = age;
+  }
+  return best;
 }
 
 function selectProbeTarget(nodes, request) {
@@ -78,7 +151,9 @@ function selectProbeTarget(nodes, request) {
   return best;
 }
 
-async function runModelProbe(node, { model, surface, env, logger }) {
+// Core probe execution — no probesInFlight tracking. The slot must be
+// acquired by the caller; recordNeutralEnd in finally releases it.
+async function executeProbe(node, { model, surface, env, logger }) {
   const startedAt = Date.now();
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
@@ -99,16 +174,20 @@ async function runModelProbe(node, { model, surface, env, logger }) {
     recordTtft(node.id, Date.now() - startedAt, model, { source: 'probe' });
     await first.body?.cancel().catch(() => {});
   } catch {
-    // A probe is advisory only.  Real request failures remain the sole input
-    // to health penalties, cooldowns and circuit transitions.  But a probe
-    // failure must invalidate the stale TTFT so an old fast score cannot
-    // remain decisive — the node may have degraded since it was last measured.
     markProbeFailure(node.id, model);
   } finally {
     clearTimeout(timeoutId);
     recordNeutralEnd(node.id);
-    probesInFlight = Math.max(0, probesInFlight - 1);
     try { logger?.debug?.(`model probe complete: node=${node.id} model=${model}`); } catch { /* diagnostic only */ }
+  }
+}
+
+// Wrapper for success-triggered probes: tracks probesInFlight.
+async function runModelProbe(node, opts) {
+  try {
+    await executeProbe(node, opts);
+  } finally {
+    probesInFlight = Math.max(0, probesInFlight - 1);
   }
 }
 
@@ -131,4 +210,6 @@ function realOutputPredicate(protocol, surface) {
 export function __resetModelProbesForTests() {
   probesInFlight = 0;
   lastProbeStartedAt = 0;
+  lastScheduledProbeAt = 0;
+  coldStartDone = false;
 }

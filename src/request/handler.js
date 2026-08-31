@@ -20,10 +20,10 @@ import { loadModelsConfig } from '../config/models.js';
 import { loadPoliciesConfig, getPolicy } from '../config/policies.js';
 import { getLimits, attemptHeadersTimeoutMs, attemptFirstEventTimeoutMs, attemptBudgetSliceMs } from '../config/timeouts.js';
 import { pickCandidate, supportsRequest, tierHasDispatchableNode, countDispatchableNodes } from '../scheduler/scheduler.js';
-import { scheduleModelProbe } from '../scheduler/model-probes.js';
+import { scheduleModelProbe, runScheduledProbes } from '../scheduler/model-probes.js';
 import {
   recordSuccess, recordFailure, recordNeutralEnd, rollbackRpmBucket, recordModelMissing,
-  applyHealthPenalty, recordTtft,
+  applyHealthPenalty, recordTtft, markProbeFailure,
 } from '../reliability/node-state.js';
 import {
   classifyUpstreamStatus, classifyNetworkError, classifyFirstEventFailure,
@@ -213,6 +213,17 @@ export async function handleRequest(request, env, ctx) {
   // drained (its budget spent) before the next tier is entered. Tier caps and
   // max_attempts both count LOGICAL attempts; a hedge twin charges neither.
   const tierCaps = computeTierCaps(tiers, reqDescriptor, state.attempted, policy);
+  // Trigger background scheduled probes (cold-start group sampling or
+  // stale-node refresh), independent of this request's outcome. Throttled
+  // internally to once per PROBE_INTERVAL_MS; no-ops otherwise.
+  runScheduledProbes(ctx, {
+    nodes: config.nodes,
+    model: requestedModel,
+    protocol: reqDescriptor.protocol,
+    surface: reqDescriptor.surface,
+    env,
+    logger,
+  });
   for (const tierNumber of TIER_ORDER) {
     const cap = tierCaps[tierNumber] ?? 0;
     let usedInTier = 0;
@@ -770,6 +781,11 @@ async function handleSuccess(s) {
         return { rotate: true, hedgedAway: true, kind: 'cancelled_after_peer_commit' };
       }
       const classification = classifyFirstEventFailure();
+      // A real first-event timeout means the node's TTFT has degraded since
+      // the last measurement. Invalidate the stale TTFT immediately so the
+      // old fast score cannot keep winning — the node re-learns through a
+      // probe or a later successful passive measurement.
+      markProbeFailure(node.id, state.requestedModel);
       recordOutcome(state, node, classification, c, {
         latencyMs: Date.now() - c.attemptStartMs,
         ttftWaitMs: Date.now() - guardStartMs,

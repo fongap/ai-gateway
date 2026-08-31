@@ -168,11 +168,14 @@ const HEALTH_TIE_BAND = 10;
 // sheds traffic automatically and rejoins the rotation when it recovers.
 const LATENCY_ADVANTAGE_FACTOR = 1.5;
 const TRANSIENT_FAILURE_PREFERENCE_MS = 5_000;
-const STALE_TTFT_MS = 10 * 60_000;
+const STALE_TTFT_MS = 5 * 60_000;
+const QUALITY_TTFT_MS = 15 * 60_000;
+const MIN_QUALITY_SAMPLES = 3;
 
 // Resolve the effective TTFT for scheduling, applying freshness and
 // confidence gates. Returns 0 (neutral / unmeasured) when:
-//   - the per-model metric is stale (last measured > STALE_TTFT_MS ago);
+//   - the per-model metric is stale (last measured > TTL ago; TTL is longer
+//     for quality nodes with passiveSamples >= MIN_QUALITY_SAMPLES);
 //   - a probe failure occurred after the last TTFT measurement (uncertain);
 //   - only probe data exists with no passive validation (probe-only = weak
 //     hint, not a decisive latency score — a tiny probe prompt is not a real
@@ -182,7 +185,10 @@ const STALE_TTFT_MS = 10 * 60_000;
 // not been individually measured yet).
 function effectiveTtft(perf, nodeLevelTtft, now) {
   if (!perf) return nodeLevelTtft;
-  if (perf.lastTtftAt > 0 && now - perf.lastTtftAt > STALE_TTFT_MS) return 0;
+  if (perf.lastTtftAt > 0) {
+    const ttl = perf.passiveSamples >= MIN_QUALITY_SAMPLES ? QUALITY_TTFT_MS : STALE_TTFT_MS;
+    if (now - perf.lastTtftAt > ttl) return 0;
+  }
   if (perf.lastProbeFailureAt > perf.lastTtftAt) return 0;
   if (perf.passiveSamples === 0 && perf.probeSamples > 0) return 0;
   return perf.avgTtftMs;
