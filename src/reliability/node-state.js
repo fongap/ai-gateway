@@ -23,6 +23,7 @@ const HEALTH_MAX = 100;
 const HEALTH_SUCCESS_GAIN = 3;
 const HEALTH_COOLDOWN_RECOVERY = 10;
 const LATENCY_EWMA_ALPHA = 0.3;
+const PROBE_EWMA_ALPHA = 0.15;
 const MAX_STATE_ENTRIES = 256;
 const CLEANUP_INTERVAL_MS = 30_000;
 const STALE_FAILURE_MS = 300_000; // consecutive failures older than 5 min idle no longer chain
@@ -168,12 +169,13 @@ export function recordSuccess(nodeId, latencyMs, model, now = Date.now()) {
   recoverFromHalfOpen(s);
 }
 
-export function recordTtft(nodeId, ttftMs, model) {
+export function recordTtft(nodeId, ttftMs, model, { source = 'passive' } = {}) {
   const s = getNodeState(nodeId);
+  const alpha = source === 'probe' ? PROBE_EWMA_ALPHA : LATENCY_EWMA_ALPHA;
   s.avgTtftMs = s.avgTtftMs === 0 || typeof ttftMs !== 'number' || ttftMs < 0
     ? Math.max(0, ttftMs || 0)
-    : s.avgTtftMs * (1 - LATENCY_EWMA_ALPHA) + ttftMs * LATENCY_EWMA_ALPHA;
-  if (model) updateModelPerf(s, model, { ttftMs });
+    : s.avgTtftMs * (1 - alpha) + ttftMs * alpha;
+  if (model) updateModelPerf(s, model, { ttftMs, source });
 }
 
 export function getModelPerf(nodeId, model) {
@@ -181,7 +183,7 @@ export function getModelPerf(nodeId, model) {
   return s?.modelPerf?.get(model) || null;
 }
 
-function updateModelPerf(s, model, { ttftMs, latencyMs } = {}, now = Date.now()) {
+function updateModelPerf(s, model, { ttftMs, latencyMs, source = 'passive' } = {}, now = Date.now()) {
   let entry = s.modelPerf.get(model);
   if (!entry) {
     if (s.modelPerf.size >= MODEL_PERF_MAX) {
@@ -191,20 +193,36 @@ function updateModelPerf(s, model, { ttftMs, latencyMs } = {}, now = Date.now())
       }
       if (oldestKey) s.modelPerf.delete(oldestKey);
     }
-    entry = { avgTtftMs: 0, avgLatencyMs: 0, lastUsedAt: now };
+    entry = {
+      avgTtftMs: 0, avgLatencyMs: 0, lastUsedAt: now,
+      ttftSamples: 0, passiveSamples: 0, probeSamples: 0,
+      lastTtftAt: 0, lastProbeFailureAt: 0,
+    };
     s.modelPerf.set(model, entry);
   }
   entry.lastUsedAt = now;
   if (typeof ttftMs === 'number' && ttftMs >= 0) {
+    const alpha = source === 'probe' ? PROBE_EWMA_ALPHA : LATENCY_EWMA_ALPHA;
+    entry.lastTtftAt = now;
+    entry.ttftSamples++;
+    if (source === 'probe') entry.probeSamples++;
+    else entry.passiveSamples++;
     entry.avgTtftMs = entry.avgTtftMs === 0
       ? ttftMs
-      : entry.avgTtftMs * (1 - LATENCY_EWMA_ALPHA) + ttftMs * LATENCY_EWMA_ALPHA;
+      : entry.avgTtftMs * (1 - alpha) + ttftMs * alpha;
   }
   if (typeof latencyMs === 'number' && latencyMs >= 0) {
     entry.avgLatencyMs = entry.avgLatencyMs === 0
       ? latencyMs
       : entry.avgLatencyMs * (1 - LATENCY_EWMA_ALPHA) + latencyMs * LATENCY_EWMA_ALPHA;
   }
+}
+
+export function markProbeFailure(nodeId, model, now = Date.now()) {
+  const s = getNodeState(nodeId);
+  let entry = s.modelPerf.get(model);
+  if (!entry) return;
+  entry.lastProbeFailureAt = now;
 }
 
 // Record a failure. `counted` marks transient upstream failures (5xx /

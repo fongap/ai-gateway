@@ -168,6 +168,25 @@ const HEALTH_TIE_BAND = 10;
 // sheds traffic automatically and rejoins the rotation when it recovers.
 const LATENCY_ADVANTAGE_FACTOR = 1.5;
 const TRANSIENT_FAILURE_PREFERENCE_MS = 5_000;
+const STALE_TTFT_MS = 10 * 60_000;
+
+// Resolve the effective TTFT for scheduling, applying freshness and
+// confidence gates. Returns 0 (neutral / unmeasured) when:
+//   - the per-model metric is stale (last measured > STALE_TTFT_MS ago);
+//   - a probe failure occurred after the last TTFT measurement (uncertain);
+//   - only probe data exists with no passive validation (probe-only = weak
+//     hint, not a decisive latency score — a tiny probe prompt is not a real
+//     workload, so its TTFT must not dominate a node with real-request data).
+// When no per-model entry exists, the node-level avgTtftMs is the fallback
+// (it lacks freshness metadata but is the only signal for a model that has
+// not been individually measured yet).
+function effectiveTtft(perf, nodeLevelTtft, now) {
+  if (!perf) return nodeLevelTtft;
+  if (perf.lastTtftAt > 0 && now - perf.lastTtftAt > STALE_TTFT_MS) return 0;
+  if (perf.lastProbeFailureAt > perf.lastTtftAt) return 0;
+  if (perf.passiveSamples === 0 && perf.probeSamples > 0) return 0;
+  return perf.avgTtftMs;
+}
 
 // Streaming is the dominant LLM workload, and what the client feels is when
 // tokens START, not when response headers arrive: a node can answer headers in
@@ -175,11 +194,11 @@ const TRANSIENT_FAILURE_PREFERENCE_MS = 5_000;
 // have measured a first event, TTFT decides. Header-latency EWMA stays as the
 // fallback for candidates that have not (e.g. non-stream traffic only); 0
 // remains neutral, so fresh nodes still receive traffic and learn their speed.
-function latencyPreference(a, aNode, b, bNode, model) {
+function latencyPreference(a, aNode, b, bNode, model, now) {
   const aPerf = model ? getModelPerf(aNode.id, model) : null;
   const bPerf = model ? getModelPerf(bNode.id, model) : null;
-  const aTtft = aPerf?.avgTtftMs || a.avgTtftMs;
-  const bTtft = bPerf?.avgTtftMs || b.avgTtftMs;
+  const aTtft = effectiveTtft(aPerf, a.avgTtftMs, now);
+  const bTtft = effectiveTtft(bPerf, b.avgTtftMs, now);
   if (aTtft > 0 && bTtft > 0) {
     if (aTtft <= bTtft / LATENCY_ADVANTAGE_FACTOR) return true;
     if (bTtft <= aTtft / LATENCY_ADVANTAGE_FACTOR) return false;
@@ -208,7 +227,7 @@ function betterThan(a, aNode, b, bNode, model, now) {
   if (Math.abs(a.healthScore - b.healthScore) >= HEALTH_TIE_BAND) {
     return a.healthScore > b.healthScore;
   }
-  const preference = latencyPreference(a, aNode, b, bNode, model);
+  const preference = latencyPreference(a, aNode, b, bNode, model, now);
   if (preference !== null) return preference;
   if (a.lastUsedAt !== b.lastUsedAt) return a.lastUsedAt < b.lastUsedAt;
   return a.avgLatencyMs < b.avgLatencyMs;

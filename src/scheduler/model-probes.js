@@ -21,7 +21,7 @@ import { buildTargetUrl } from '../protocol/http.js';
 import { resolveUpstreamPath, buildUpstreamHeadersFor, isAnthropicNativeRealOutput, isResponsesRealOutput } from '../transport/index.js';
 import { ensureFirstSseEvent } from '../stream/guard.js';
 import { supportsRequest, isHardRpmExhausted } from './scheduler.js';
-import { acquireSlot, getModelPerf, getNodeState, isModelCooling, peekAvailability, recordNeutralEnd, recordTtft, rpmUsage } from '../reliability/node-state.js';
+import { acquireSlot, getModelPerf, getNodeState, isModelCooling, markProbeFailure, peekAvailability, recordNeutralEnd, recordTtft, rpmUsage } from '../reliability/node-state.js';
 
 const PROBE_INTERVAL_MS = 5 * 60_000;
 const PROBE_GLOBAL_INTERVAL_MS = 30_000;
@@ -96,11 +96,14 @@ async function runModelProbe(node, { model, surface, env, logger }) {
     });
     if (!response.ok) return;
     const first = await ensureFirstSseEvent(response, PROBE_TIMEOUT_MS, controller.signal, realOutputPredicate(node.protocol, surface));
-    recordTtft(node.id, Date.now() - startedAt, model);
+    recordTtft(node.id, Date.now() - startedAt, model, { source: 'probe' });
     await first.body?.cancel().catch(() => {});
   } catch {
     // A probe is advisory only.  Real request failures remain the sole input
-    // to health penalties, cooldowns and circuit transitions.
+    // to health penalties, cooldowns and circuit transitions.  But a probe
+    // failure must invalidate the stale TTFT so an old fast score cannot
+    // remain decisive — the node may have degraded since it was last measured.
+    markProbeFailure(node.id, model);
   } finally {
     clearTimeout(timeoutId);
     recordNeutralEnd(node.id);
