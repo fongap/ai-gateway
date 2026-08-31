@@ -27,6 +27,7 @@ const MAX_STATE_ENTRIES = 256;
 const CLEANUP_INTERVAL_MS = 30_000;
 const STALE_FAILURE_MS = 300_000; // consecutive failures older than 5 min idle no longer chain
 const MODEL_MISSING_COOLDOWN_MS = 5_000; // (node,model) cooldown for a 404 mapping mismatch
+const MODEL_PERF_MAX = 16; // per-node model perf entries before LRU eviction
 
 // Per-node per-minute request counters (current UTC minute bucket only).
 // Feeds limits.rpm shaping: in hard mode (the default when rpm is configured)
@@ -98,6 +99,11 @@ function createState() {
     // stay fully dispatchable. Node-level cooldownUntil above is for real node
     // health issues (429/auth/server/circuit); model_missing never touches it.
     modelCooldowns: new Map(),
+    // Per-logical-model performance EWMA: { avgTtftMs, avgLatencyMs, lastUsedAt }.
+    // A large reasoning model's slow TTFT must not pollute the scheduling score
+    // of the same node's fast small-model service. Bounded to MODEL_PERF_MAX
+    // entries per node (LRU by lastUsedAt); 0 = never measured (neutral).
+    modelPerf: new Map(),
   };
 }
 
@@ -145,7 +151,7 @@ export function acquireSlot(nodeId, now = Date.now()) {
 
 // ---- Outcomes --------------------------------------------------------------
 
-export function recordSuccess(nodeId, latencyMs, now = Date.now()) {
+export function recordSuccess(nodeId, latencyMs, model, now = Date.now()) {
   const s = releaseAndReturn(nodeId);
   s.totalSuccesses++;
   s.healthScore = Math.min(HEALTH_MAX, s.healthScore + HEALTH_SUCCESS_GAIN);
@@ -153,20 +159,47 @@ export function recordSuccess(nodeId, latencyMs, now = Date.now()) {
   s.avgLatencyMs = s.avgLatencyMs === 0 || typeof latencyMs !== 'number'
     ? Math.max(0, latencyMs || 0)
     : s.avgLatencyMs * (1 - LATENCY_EWMA_ALPHA) + latencyMs * LATENCY_EWMA_ALPHA;
-  // Any successful upstream response proves the node is alive, so it always
-  // closes a half-open probe and never leaves a probe in flight.
+  if (model) updateModelPerf(s, model, { latencyMs }, now);
   recoverFromHalfOpen(s);
 }
 
-// Record a time-to-first-event measurement. Unlike recordSuccess this runs
-// MID-attempt — at the moment the first real stream event commits, while the
-// attempt is still in flight — so it must NOT touch concurrency slots, health
-// or the circuit breaker; those belong to the final outcome recording.
-export function recordTtft(nodeId, ttftMs) {
+export function recordTtft(nodeId, ttftMs, model) {
   const s = getNodeState(nodeId);
   s.avgTtftMs = s.avgTtftMs === 0 || typeof ttftMs !== 'number' || ttftMs < 0
     ? Math.max(0, ttftMs || 0)
     : s.avgTtftMs * (1 - LATENCY_EWMA_ALPHA) + ttftMs * LATENCY_EWMA_ALPHA;
+  if (model) updateModelPerf(s, model, { ttftMs });
+}
+
+export function getModelPerf(nodeId, model) {
+  const s = nodeState.get(nodeId);
+  return s?.modelPerf?.get(model) || null;
+}
+
+function updateModelPerf(s, model, { ttftMs, latencyMs } = {}, now = Date.now()) {
+  let entry = s.modelPerf.get(model);
+  if (!entry) {
+    if (s.modelPerf.size >= MODEL_PERF_MAX) {
+      let oldest = null, oldestKey = null;
+      for (const [k, v] of s.modelPerf) {
+        if (!oldest || v.lastUsedAt < oldest) { oldest = v.lastUsedAt; oldestKey = k; }
+      }
+      if (oldestKey) s.modelPerf.delete(oldestKey);
+    }
+    entry = { avgTtftMs: 0, avgLatencyMs: 0, lastUsedAt: now };
+    s.modelPerf.set(model, entry);
+  }
+  entry.lastUsedAt = now;
+  if (typeof ttftMs === 'number' && ttftMs >= 0) {
+    entry.avgTtftMs = entry.avgTtftMs === 0
+      ? ttftMs
+      : entry.avgTtftMs * (1 - LATENCY_EWMA_ALPHA) + ttftMs * LATENCY_EWMA_ALPHA;
+  }
+  if (typeof latencyMs === 'number' && latencyMs >= 0) {
+    entry.avgLatencyMs = entry.avgLatencyMs === 0
+      ? latencyMs
+      : entry.avgLatencyMs * (1 - LATENCY_EWMA_ALPHA) + latencyMs * LATENCY_EWMA_ALPHA;
+  }
 }
 
 // Record a failure. `counted` marks transient upstream failures (5xx /

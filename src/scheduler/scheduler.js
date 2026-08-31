@@ -26,7 +26,7 @@
 // request. There is no cross-protocol conversion and no cross-protocol
 // failover anywhere in the gateway.
 
-import { peekAvailability, acquireSlot, getNodeState, rpmUsage, isModelCooling } from '../reliability/node-state.js';
+import { peekAvailability, acquireSlot, getNodeState, rpmUsage, isModelCooling, getModelPerf } from '../reliability/node-state.js';
 import { servesModel } from '../config/registry.js';
 
 // A request descriptor: { model, protocol, surface }. Every selection helper
@@ -89,15 +89,15 @@ export function pickCandidate(tierNodes, req, attempted, now = Date.now(), exclu
     if (isModelCooling(node.id, req.model, now)) continue;
     const s = getNodeState(node.id);
     if (s.activeRequests >= node.limits.concurrency) continue;
-    if (underRpmCap(node, now)) {
-      if (!best || betterThan(s, node, bestState, best)) {
-        best = node;
-        bestState = s;
+      if (underRpmCap(node, now)) {
+        if (!best || betterThan(s, node, bestState, best, req.model)) {
+          best = node;
+          bestState = s;
+        }
       }
-    }
     // Only SOFT-capped (or uncapped) nodes may serve past their counter.
     if (!isHardRpmExhausted(node, now)) {
-      if (!bestUncapped || betterThan(s, node, bestUncappedState, bestUncapped)) {
+      if (!bestUncapped || betterThan(s, node, bestUncappedState, bestUncapped, req.model)) {
         bestUncapped = node;
         bestUncappedState = s;
       }
@@ -174,32 +174,33 @@ const LATENCY_ADVANTAGE_FACTOR = 1.5;
 // have measured a first event, TTFT decides. Header-latency EWMA stays as the
 // fallback for candidates that have not (e.g. non-stream traffic only); 0
 // remains neutral, so fresh nodes still receive traffic and learn their speed.
-function latencyPreference(a, b) {
-  if (a.avgTtftMs > 0 && b.avgTtftMs > 0) {
-    if (a.avgTtftMs <= b.avgTtftMs / LATENCY_ADVANTAGE_FACTOR) return true;
-    if (b.avgTtftMs <= a.avgTtftMs / LATENCY_ADVANTAGE_FACTOR) return false;
+function latencyPreference(a, aNode, b, bNode, model) {
+  const aPerf = model ? getModelPerf(aNode.id, model) : null;
+  const bPerf = model ? getModelPerf(bNode.id, model) : null;
+  const aTtft = aPerf?.avgTtftMs || a.avgTtftMs;
+  const bTtft = bPerf?.avgTtftMs || b.avgTtftMs;
+  if (aTtft > 0 && bTtft > 0) {
+    if (aTtft <= bTtft / LATENCY_ADVANTAGE_FACTOR) return true;
+    if (bTtft <= aTtft / LATENCY_ADVANTAGE_FACTOR) return false;
     return null;
   }
-  if (a.avgLatencyMs > 0 && b.avgLatencyMs > 0) {
-    if (a.avgLatencyMs <= b.avgLatencyMs / LATENCY_ADVANTAGE_FACTOR) return true;
-    if (b.avgLatencyMs <= a.avgLatencyMs / LATENCY_ADVANTAGE_FACTOR) return false;
+  const aLat = aPerf?.avgLatencyMs || a.avgLatencyMs;
+  const bLat = bPerf?.avgLatencyMs || b.avgLatencyMs;
+  if (aLat > 0 && bLat > 0) {
+    if (aLat <= bLat / LATENCY_ADVANTAGE_FACTOR) return true;
+    if (bLat <= aLat / LATENCY_ADVANTAGE_FACTOR) return false;
   }
   return null;
 }
 
-function betterThan(a, aNode, b, bNode) {
+function betterThan(a, aNode, b, bNode, model) {
   if (aNode.priority !== bNode.priority) return aNode.priority < bNode.priority;
   if (a.activeRequests !== b.activeRequests) return a.activeRequests < b.activeRequests;
   if (Math.abs(a.healthScore - b.healthScore) >= HEALTH_TIE_BAND) {
     return a.healthScore > b.healthScore;
   }
-  // Rolling-latency preference (EWMA, α=0.3): TTFT when measured, header
-  // latency otherwise. Unknown latency (0) is neutral.
-  const preference = latencyPreference(a, b);
+  const preference = latencyPreference(a, aNode, b, bNode, model);
   if (preference !== null) return preference;
-  // LRU: prefer the node idle longest (0 = never used). This rotates
-  // sequential traffic across free keys instead of concentrating it on one
-  // node until it rate-limits.
   if (a.lastUsedAt !== b.lastUsedAt) return a.lastUsedAt < b.lastUsedAt;
   return a.avgLatencyMs < b.avgLatencyMs;
 }

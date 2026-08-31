@@ -781,7 +781,7 @@ async function handleSuccess(s) {
     // latency preference compares THIS for streaming traffic; avgLatencyMs
     // keeps measuring headers, which says nothing about when tokens start.
     c.ttftMs = Date.now() - c.attemptStartMs;
-    recordTtft(node.id, c.ttftMs);
+    recordTtft(node.id, c.ttftMs, state.requestedModel);
     const hiddenStreamFailure = () => guardedStreamFailureReason(guarded);
 
     const headers = finalHeaders(env, request, guarded.headers, extraHeaders);
@@ -871,13 +871,13 @@ async function handleSuccess(s) {
       // and the synthesized Responses SSE).
       recordTokens(c, node, data?.usage);
       if (!clientWantsStream) {
-        recordSuccess(node.id, latencyMs);
+        recordSuccess(node.id, latencyMs, state.requestedModel);
         if (data && typeof data === 'object') data.model = requestedModel;
         return { response: jsonResponse(200, data, env, request, extraHeaders) };
       }
       // Stream requested but upstream returned a full object: synthesize a
       // well-formed Responses SSE stream in one body.
-      recordSuccess(node.id, latencyMs);
+      recordSuccess(node.id, latencyMs, state.requestedModel);
       return { response: synthesizeResponsesFromObject(data, requestedModel, { ...extraHeaders, ...corsHeaders(request, env) }) };
     } catch (error) {
       if (request.signal?.aborted) {
@@ -896,7 +896,7 @@ async function handleSuccess(s) {
       // Assemble the full object; nothing reached the client yet, so failures rotate.
       try {
         const data = await collectOpenAIStreamObject(upstream, request.signal);
-        recordSuccess(node.id, latencyMs);
+        recordSuccess(node.id, latencyMs, state.requestedModel);
         // Assembled-from-stream usage (fake-stream protection and the
         // upstream-stream / client-non-stream case): the collect helper
         // already carries the final usage chunk — record it here, exactly
@@ -961,13 +961,13 @@ async function handleSuccess(s) {
     // and the synthesized chat SSE) — nothing else parses this body.
     recordTokens(c, node, data?.usage);
     if (!clientWantsStream) {
-      recordSuccess(node.id, latencyMs);
+      recordSuccess(node.id, latencyMs, state.requestedModel);
       if (data && typeof data === 'object') data.model = requestedModel;
       return { response: jsonResponse(200, data, env, request, extraHeaders) };
     }
     // Valid completion JSON for a streaming client: synthesize a proper SSE
     // stream so SSE clients receive a well-formed event sequence.
-    recordSuccess(node.id, latencyMs);
+    recordSuccess(node.id, latencyMs, state.requestedModel);
     if (data && typeof data === 'object') data.model = requestedModel;
     return { response: synthesizeSseFromCompletion(data, env, request, extraHeaders) };
   }
@@ -997,7 +997,7 @@ async function handleSuccess(s) {
       }
       return { rotate: true, kind: classification.kind };
     }
-    recordSuccess(node.id, latencyMs);
+    recordSuccess(node.id, latencyMs, state.requestedModel);
     // Single usage capture point: this branch serves both the plain JSON body
     // and the upstream-stream-assembled object.
     recordTokens(c, node, data?.usage);
@@ -1061,7 +1061,7 @@ function scheduleD1TokenPersist(c, usage) {
 // telemetry callbacks, so stream counters count each stream exactly once.
 function makeNodeStreamTrack(c, node, latencyMs) {
   return {
-    onSuccess: () => recordSuccess(node.id, latencyMs),
+    onSuccess: () => recordSuccess(node.id, latencyMs, c.state?.requestedModel),
     // Field evidence (NVIDIA-hosted stalls mid-generation): 2s let a stalling
     // node straight back into rotation. 60s matches the rate-limit cooldown —
     // long enough to push repeat offenders out of candidate ordering without
