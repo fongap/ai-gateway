@@ -90,14 +90,14 @@ export function pickCandidate(tierNodes, req, attempted, now = Date.now(), exclu
     const s = getNodeState(node.id);
     if (s.activeRequests >= node.limits.concurrency) continue;
       if (underRpmCap(node, now)) {
-        if (!best || betterThan(s, node, bestState, best, req.model)) {
+        if (!best || betterThan(s, node, bestState, best, req.model, now)) {
           best = node;
           bestState = s;
         }
       }
     // Only SOFT-capped (or uncapped) nodes may serve past their counter.
     if (!isHardRpmExhausted(node, now)) {
-      if (!bestUncapped || betterThan(s, node, bestUncappedState, bestUncapped, req.model)) {
+      if (!bestUncapped || betterThan(s, node, bestUncappedState, bestUncapped, req.model, now)) {
         bestUncapped = node;
         bestUncappedState = s;
       }
@@ -167,6 +167,7 @@ const HEALTH_TIE_BAND = 10;
 // faster right now, it wins before LRU gets a vote — a node that slows down
 // sheds traffic automatically and rejoins the rotation when it recovers.
 const LATENCY_ADVANTAGE_FACTOR = 1.5;
+const TRANSIENT_FAILURE_PREFERENCE_MS = 5_000;
 
 // Streaming is the dominant LLM workload, and what the client feels is when
 // tokens START, not when response headers arrive: a node can answer headers in
@@ -193,7 +194,15 @@ function latencyPreference(a, aNode, b, bNode, model) {
   return null;
 }
 
-function betterThan(a, aNode, b, bNode, model) {
+function betterThan(a, aNode, b, bNode, model, now) {
+  // One real timeout / network / 5xx is enough to move traffic to a healthy
+  // peer immediately. Unlike a cooldown this is only a ranking preference:
+  // a sole node remains eligible for recovery and for circuit probing.
+  const aRecentlyFailed = a.lastTransientFailureAt > 0
+    && now - a.lastTransientFailureAt < TRANSIENT_FAILURE_PREFERENCE_MS;
+  const bRecentlyFailed = b.lastTransientFailureAt > 0
+    && now - b.lastTransientFailureAt < TRANSIENT_FAILURE_PREFERENCE_MS;
+  if (aRecentlyFailed !== bRecentlyFailed) return !aRecentlyFailed;
   if (aNode.priority !== bNode.priority) return aNode.priority < bNode.priority;
   if (a.activeRequests !== b.activeRequests) return a.activeRequests < b.activeRequests;
   if (Math.abs(a.healthScore - b.healthScore) >= HEALTH_TIE_BAND) {

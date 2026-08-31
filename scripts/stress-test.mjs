@@ -331,11 +331,13 @@ await test('S10 node isolation: a circuit-open node leaves siblings serving', as
     ],
     secrets: { 'cir-a': 'k', 'cir-b': 'k', 'cir-c': 'k' },
   });
-  // cir-a has the best priority so it is picked first and, failing every time,
-  // trips the circuit after 3 counted failures.
+  // cir-a has the best priority. A fresh failure yields traffic to its healthy
+  // peers for five seconds; simulate that short preference window expiring so
+  // the circuit path itself is still exercised after 3 counted failures.
   for (let i = 0; i < 3; i++) {
     const r = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
     assert.equal(r.status, 200);
+    if (i < 2) getNodeState('cir-a').lastTransientFailureAt = Date.now() - 6_000;
   }
   assert.equal(getNodeState('cir-a').circuitState, 'open', 'cir-a must be circuit-open');
   const aCalls = upstreamCalls.filter((c) => c.host === 'cir-a.example.com').length;

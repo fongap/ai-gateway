@@ -234,6 +234,26 @@ await test('dynamic candidate set: failed node skipped, next candidate picked', 
   assert.equal(body.model, 'general-air'); // logical model name restored
 });
 
+await test('transient failure immediately backs a node off for the next request', async () => {
+  resetMock();
+  installMockFetch();
+  routeHandlers['backoff-a.example.com'] = () => jsonUpstream({}, 503);
+  routeHandlers['backoff-b.example.com'] = () => jsonUpstream(okCompletion());
+  const env = makeEnv({
+    tier1: [basicNode('backoff-a'), basicNode('backoff-b')],
+    secrets: { 'backoff-a': 'k', 'backoff-b': 'k' },
+  });
+  const first = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(first.status, 200);
+  await first.text();
+  const second = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(second.status, 200);
+  await second.text();
+  assert.deepEqual(upstreamCalls.map((call) => call.host), [
+    'backoff-a.example.com', 'backoff-b.example.com', 'backoff-b.example.com',
+  ]);
+});
+
 await test('concurrency spreads parallel requests across equal nodes', async () => {
   resetMock();
   const ids = ['cc-a', 'cc-b', 'cc-c', 'cc-d'];
