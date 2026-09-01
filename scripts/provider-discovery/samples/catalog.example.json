@@ -1,0 +1,61 @@
+{
+  "schema_version": "1.1",
+  "providers": {
+    "nvidia": {
+      "openai": {
+        "supported": true,
+        "base_url": "https://integrate.api.nvidia.com/v1",
+        "surfaces": ["chat_completions"],
+        "evidence": "configured"
+      },
+      "anthropic": {
+        "supported": null,
+        "base_url": null,
+        "surfaces": [],
+        "evidence": "unknown"
+      }
+    },
+    "anthropic": {
+      "openai": {
+        "supported": null,
+        "base_url": null,
+        "surfaces": [],
+        "evidence": "unknown"
+      },
+      "anthropic": {
+        "supported": true,
+        "base_url": "https://api.anthropic.com",
+        "surfaces": ["messages", "count_tokens"],
+        "evidence": "official"
+      }
+    },
+    "openrouter": {
+      "openai": {
+        "supported": true,
+        "base_url": "https://openrouter.ai/api/v1",
+        "surfaces": ["chat_completions", "responses"],
+        "evidence": "official"
+      },
+      "anthropic": {
+        "supported": null,
+        "base_url": null,
+        "surfaces": [],
+        "evidence": "unknown"
+      }
+    },
+    "zhipu": {
+      "openai": {
+        "supported": true,
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "surfaces": ["chat_completions"],
+        "evidence": "configured"
+      },
+      "anthropic": {
+        "supported": null,
+        "base_url": null,
+        "surfaces": [],
+        "evidence": "unknown"
+      }
+    }
+  }
+}

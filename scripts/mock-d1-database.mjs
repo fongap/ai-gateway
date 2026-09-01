@@ -108,6 +108,24 @@ export function createMockD1({ failWrites = false, failReads = false } = {}) {
       async all() {
         reads.push({ method: 'all', sql, params: this._params });
         if (failReads) throw new Error('mock D1 read failure');
+        // queryRecentModelEvidence: SELECT model FROM ... WHERE hour >= ? AND
+        // requests > 0 GROUP BY model. The `requests > 0` predicate is what
+        // makes this the "recent-success evidence" signal. The mock applies
+        // the same filter so the dashboard's model-status path gets the
+        // right Set of model names.
+        if (/GROUP BY model/i.test(sql) && /requests\s*>\s*0/i.test(sql)) {
+          const startHour = this._params[0];
+          const out = new Map();
+          for (const [key, r] of modelRows) {
+            const parsed = parseModelKey(key);
+            if (!parsed) continue;
+            const { hour, model } = parsed;
+            if (hour < startHour) continue;
+            if ((r.requests || 0) <= 0) continue;
+            out.set(model, true);
+          }
+          return { results: [...out.keys()].map((model) => ({ model })) };
+        }
         // queryTokenModelUsage: SELECT model, SUM(...) GROUP BY model WHERE hour >= start.
         if (/GROUP BY model/i.test(sql)) {
           const startHour = this._params[0];

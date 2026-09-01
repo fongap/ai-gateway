@@ -1,0 +1,122 @@
+name: Provider Discovery
+
+# Provider Discovery v1.1 — scheduled / manual observation of Provider
+# capability, surface, and base URL state, plus Runtime-vs-Catalog
+# consistency checks.
+#
+# This workflow is OBSERVATION ONLY. It must never modify Runtime Node
+# configuration, Model Registry configuration, Worker Variables, or
+# Worker Secrets. The boundary:
+#
+#   Runtime Node Config = production fact
+#   Discovery Catalog   = external observation / auxiliary fact
+#
+# What it does:
+#   1. Reads the previous and current Catalog snapshot (PR-supplied or
+#      persisted on a schedule branch).
+#   2. Normalizes both snapshots (stable sort, secret-stripping, base
+#      URL canonicalization).
+#   3. Computes a semantic diff (added / removed / changed) with
+#      severity tagging (P0..P3).
+#   4. Runs the Runtime consistency check against a sanitized runtime
+#      view committed to the repo.
+#   5. Writes `changes.md` and a JSON artifact, and emits a short
+#      Action Summary.
+#
+# What it does NOT do:
+#   - Send generation requests (POST /v1/chat/completions, /v1/responses,
+#     /v1/messages).
+#   - Modify Runtime Node config, Model Registry, or any Worker binding.
+#   - Persist secrets (Authorization headers, API keys, etc.) in any
+#     output.
+
+on:
+  schedule:
+    - cron: '0 4 * * *' # nightly at 04:00 UTC (after the 03:00 nightly verify-full)
+  workflow_dispatch:
+    inputs:
+      catalog_before:
+        description: 'Path to previous catalog JSON (optional; defaults to scripts/provider-discovery/samples/catalog.example.json if missing)'
+        required: false
+        type: string
+        default: ''
+      catalog_after:
+        description: 'Path to current catalog JSON (optional; defaults to scripts/provider-discovery/samples/catalog.example.json if missing)'
+        required: false
+        type: string
+        default: ''
+      runtime_view:
+        description: 'Path to runtime view JSON (optional; defaults to scripts/provider-discovery/samples/runtime-view.example.json if missing)'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: provider-discovery
+  cancel-in-progress: true
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Resolve snapshot paths
+        id: paths
+        run: |
+          BEFORE='${{ inputs.catalog_before }}'
+          AFTER='${{ inputs.catalog_after }}'
+          RUNTIME='${{ inputs.runtime_view }}'
+          if [ -z "$BEFORE" ]; then BEFORE='scripts/provider-discovery/samples/catalog.example.json'; fi
+          if [ -z "$AFTER" ]; then AFTER='scripts/provider-discovery/samples/catalog.example.json'; fi
+          if [ -z "$RUNTIME" ]; then RUNTIME='scripts/provider-discovery/samples/runtime-view.example.json'; fi
+          echo "before=$BEFORE" >> "$GITHUB_OUTPUT"
+          echo "after=$AFTER" >> "$GITHUB_OUTPUT"
+          echo "runtime=$RUNTIME" >> "$GITHUB_OUTPUT"
+
+      - name: Check current snapshot
+        run: node scripts/provider-discovery.mjs check-snapshot "${{ steps.paths.outputs.after }}"
+
+      - name: Compute semantic diff
+        run: |
+          mkdir -p "$RUNNER_TEMP/discovery"
+          node scripts/provider-discovery.mjs diff \
+            "${{ steps.paths.outputs.before }}" \
+            "${{ steps.paths.outputs.after }}" \
+            --out "$RUNNER_TEMP/discovery/changes.md" \
+            --json-out "$RUNNER_TEMP/discovery/changes.json"
+
+      - name: Run Runtime consistency check
+        run: |
+          node scripts/provider-discovery.mjs runtime-check \
+            "${{ steps.paths.outputs.after }}" \
+            "${{ steps.paths.outputs.runtime }}" \
+            --json-out "$RUNNER_TEMP/discovery/runtime-warnings.json" || true
+
+      - name: Emit Action Summary
+        run: |
+          node scripts/provider-discovery.mjs summary "${{ steps.paths.outputs.after }}" \
+            > "$RUNNER_TEMP/discovery/summary.txt"
+          cat "$RUNNER_TEMP/discovery/summary.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload discovery artifact
+        uses: actions/upload-artifact@bbb15f1f4073d7ad60f7f0b6ea2a5dd5667573ad # v5.0.0
+        with:
+          name: provider-discovery
+          path: ${{ runner.temp }}/discovery/
+          if-no-files-found: warn
+          retention-days: 14

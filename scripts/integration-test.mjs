@@ -11,6 +11,7 @@ import {
 } from '../src/reliability/tier1-state.js';
 import { __resetTier1AffinityForTests } from '../src/scheduler/tier1-affinity.js';
 import { createMockD1 } from './mock-d1-database.mjs';
+import { persistTokenUsage } from '../src/observability/token-usage-store.mjs';
 
 const ACCESS_KEY = 'test-access-key';
 
@@ -1467,7 +1468,7 @@ await test('public home renders on malformed config without leaking diagnostics'
   assert.ok(!html.includes('已绑定'), 'must not leak binding state');
 });
 
-await test('public home shows degraded status when all serving nodes are cooling', async () => {
+await test('public home shows degraded status when all serving nodes are cooling with recent evidence', async () => {
   resetMock();
   const env = makeEnv({
     tier1: [basicNode('de-a', { models: { air: 'up-air' } })],
@@ -1479,6 +1480,13 @@ await test('public home shows degraded status when all serving nodes are cooling
   const t1Model = getTier1Model('de-a', 'air');
   t1Model.cooldownUntil = Date.now() + 60_000;
   t1Model.failureState = 'cooldown';
+  // Seed D1 with recent success evidence so the model shows `degraded`
+  // (recent success but currently all candidates cooling). Without this
+  // evidence the new Public Model Status layer correctly reports
+  // `unavailable` (no recent proof + every candidate explicitly down).
+  const d1 = createMockD1();
+  env.TOKEN_STATS_DB = d1;
+  await persistTokenUsage(env, { prompt_tokens: 10, completion_tokens: 5 }, Date.now(), 'air');
   const res = await worker.fetch(new Request('https://gateway.example.com/', {
     headers: { accept: 'text/html' },
   }), env, {});
@@ -1490,6 +1498,28 @@ await test('public home shows degraded status when all serving nodes are cooling
   // No model item may render the "available" state. (The panel's own
   // "统计暂不可用" scope label legitimately contains the substring 可用, so the
   // assertion targets the availability dot marker, not any occurrence of 可用.)
+  assert.ok(!html.includes('dot available'), 'must not claim a model available when cooling');
+});
+
+await test('public home shows unavailable when all serving nodes are cooling and no recent evidence', async () => {
+  resetMock();
+  const env = makeEnv({
+    tier1: [basicNode('de-b', { models: { air: 'up-air' } })],
+    secrets: { 'de-b': 'k' },
+    extraEnv: { MODELS_CONFIG: JSON.stringify({ air: { policy: 'fast' } }) },
+  });
+  // Force the serving node into cooldown with no D1 evidence at all.
+  const t1Model = getTier1Model('de-b', 'air');
+  t1Model.cooldownUntil = Date.now() + 60_000;
+  t1Model.failureState = 'cooldown';
+  const res = await worker.fetch(new Request('https://gateway.example.com/', {
+    headers: { accept: 'text/html' },
+  }), env, {});
+  assert.equal(res.status, 200);
+  const html = await res.text();
+  // No D1 binding in this env: no recent evidence + every candidate explicitly
+  // down = `unavailable` (not `degraded`, which requires recent success).
+  assert.match(html, /不可用/);
   assert.ok(!html.includes('dot available'), 'must not claim a model available when cooling');
 });
 

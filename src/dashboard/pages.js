@@ -28,13 +28,13 @@
 // 364 server-rendered <i> cells; hover uses native title attributes.
 
 import { loadGatewayConfig } from '../config/nodes.js';
-import { loadModelRegistry, servesModel } from '../config/registry.js';
-import { getRuntimeAvailability } from '../runtime/availability.js';
+import { getPublicModelStatus, MODEL_STATUS_RECENT_WINDOW_MS } from '../runtime/model-status.js';
 import { htmlResponse } from '../protocol/http.js';
 import {
   queryTokenSummary,
   queryTokenDailySeries,
   queryTokenModelUsage,
+  queryRecentModelEvidence,
   utc8DayStartUtcMs,
   isoDayUtc8,
 } from '../observability/token-usage-store.mjs';
@@ -122,18 +122,22 @@ export function __resetDashboardCacheForTests() {
 
 // Three D1 queries, run once per cache window. Each call inside still honors
 // its own fail-open contract (missing binding / read error returns the
-// dashboard's `available: false` shape).
+// dashboard's `available: false` shape). A fourth lightweight GROUP BY
+// powers Public Model Status — it reads only model names with requests > 0
+// in the recent window, and on failure returns an empty Set so model status
+// falls back to runtime-only evidence (never `unavailable` for everything).
 async function loadDashboardStats(env, now) {
   const gridStartUtc8 = utc8DayStartUtcMs(now);
   const dow = (new Date(isoDayUtc8(gridStartUtc8)).getUTCDay() + 6) % 7;
   const currentWeekStartUtc8 = gridStartUtc8 - dow * DAY_MS;
   const startIso = isoDayUtc8(currentWeekStartUtc8 - (HEATMAP_WEEKS - 1) * 7 * DAY_MS);
-  const [summary, daily, modelUsage] = await Promise.all([
+  const [summary, daily, modelUsage, recentEvidence] = await Promise.all([
     queryTokenSummary(env, now),
     queryTokenDailySeries(env, startIso, now),
     queryTokenModelUsage(env, 7, now),
+    queryRecentModelEvidence(env, MODEL_STATUS_RECENT_WINDOW_MS, now),
   ]);
-  return { summary, daily, modelUsage };
+  return { summary, daily, modelUsage, recentEvidence };
 }
 
 const STYLES = `
@@ -425,32 +429,23 @@ root.addEventListener('focusout',function(e){
 });
 })();</script>`;
 
-// Collapse node-level availability into a public-safe per-model status.
-//   available    at least one serving node is observed AND eligible right now
-//   unobserved   serving nodes exist but none has been observed yet
-//                (Tier 1 is unobserved until passive TTFT records a sample;
-//                 this is the honest default for newly-added accounts/keys)
-//   degraded     serving nodes exist and were observed, but all are currently
-//                cooling / disabled / circuit-open (temporarily unavailable)
-//   unavailable  no configured node serves this logical model at all
-// Model set = Model Registry (primary) ∪ node mappings. No node ids, providers,
+// Collapse node-level availability + cross-isolate recent-success evidence
+// into a public-safe per-model status. See src/runtime/model-status.js for
+// the full semantics. The previous implementation equated "this isolate has
+// no Tier 1 TTFT sample" with "未观测", which made every model show
+// unobserved on a fresh isolate even though D1 proved the model was just
+// serving successfully. The new layer:
+//   - Uses runtime availability as ONE input (not the only input).
+//   - Uses D1's per-model recent-success evidence (requests > 0 in the last
+//     24h) as the cross-isolate proof that the model is actually working.
+//   - Never fabricates evidence and never marks every model unavailable
+//     when D1 is missing/failing (fail-open -> empty Set -> `unobserved`).
+//   - Never feeds back into the scheduler, reliability layer or request path.
+// Model set = node mappings (a model in the registry with no serving node is
+// unreachable and is not listed on the dashboard). No node ids, providers,
 // tiers, counts or durations ever leave this function.
-function publicModelStatus(nodes, env) {
-  const names = new Set(Object.keys(loadModelRegistry(env)));
-  for (const node of nodes) for (const key of Object.keys(node.models || {})) names.add(key);
-  const list = [];
-  for (const name of [...names].sort()) {
-    const serving = nodes.filter((n) => servesModel(n, name));
-    let status = 'unavailable';
-    if (serving.length) {
-      const states = serving.map((n) => getRuntimeAvailability(n, name));
-      if (states.some((s) => s === 'available')) status = 'available';
-      else if (states.some((s) => s === 'unobserved')) status = 'unobserved';
-      else status = 'degraded';
-    }
-    list.push({ id: name, status });
-  }
-  return list;
+function publicModelStatus(nodes, env, evidence = new Set(), now = Date.now()) {
+  return getPublicModelStatus(nodes, env, evidence, now);
 }
 
 const STATE_LABEL = { available: '可用', unobserved: '未观测', degraded: '波动', unavailable: '不可用' };
@@ -583,8 +578,8 @@ function buildHeatmap(daily, now) {
 }
 
 async function usageCard(env, now) {
-  const { summary, daily, modelUsage } = await getCachedDashboardStats(env, now);
-  return { summary, daily, modelUsage };
+  const { summary, daily, modelUsage, recentEvidence } = await getCachedDashboardStats(env, now);
+  return { summary, daily, modelUsage, recentEvidence };
 }
 
 function kpiCell(value, label) {
@@ -594,9 +589,12 @@ function kpiCell(value, label) {
 }
 
 // Fail-open: a missing D1 binding or a failed query renders em dashes and an
-// error note — never a fake 0 and never a fabricated heatmap.
-async function usageSection(env, now = Date.now()) {
-  const { summary, daily, modelUsage } = await usageCard(env, now);
+// error note — never a fake 0 and never a fabricated heatmap. Accepts the
+// already-cached stats from the caller so the model-status path and the
+// usage-rendering path share ONE cache read and ONE in-flight promise.
+async function usageSection(env, now = Date.now(), stats = null) {
+  const cache = stats || await getCachedDashboardStats(env, now);
+  const { summary, daily, modelUsage } = cache;
   const summaryOk = summary && summary.available !== false;
   const dailyOk = daily && daily.available !== false;
   const available = summaryOk && dailyOk;
@@ -801,11 +799,19 @@ ${PAGE_SCRIPT}
 
 export async function dashboardResponse(request, env) {
   const config = loadGatewayConfig(env);
-  const models = publicModelStatus(config.nodes || [], env);
+  const now = Date.now();
+  // ONE cached D1 read powers both the model-status evidence and the usage
+  // card. Sharing the cache keeps the public homepage at a single D1 round
+  // trip per 45s window, regardless of how many models or nodes exist.
+  const stats = await getCachedDashboardStats(env, now);
+  const recentEvidence = stats.recentEvidence instanceof Set
+    ? stats.recentEvidence
+    : new Set();
+  const models = publicModelStatus(config.nodes || [], env, recentEvidence, now);
   const apiBase = `${new URL(request.url).origin}/v1`;
 
   const modelsResult = renderModels(models);
-  const usageHtml = await usageSection(env);
+  const usageHtml = await usageSection(env, now, stats);
   const quickHtml = quickStartSection(apiBase);
 
   const body = `

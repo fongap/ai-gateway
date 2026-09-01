@@ -343,6 +343,55 @@ export async function queryTokenModelUsage(env, days = 7, now = Date.now()) {
   }
 }
 
+// Recent-success evidence for the Public Model Status layer
+// (src/runtime/model-status.js). Returns a Set<string> of logical model
+// names that have at least one request in the per-model hourly aggregate
+// within the last `windowMs` milliseconds.
+//
+// `requests > 0` is the success-evidence signal: the per-model table is
+// written exactly once per delivered response (success or
+// interrupted-with-usage) by persistTokenUsage(), so a row with requests > 0
+// in the recent window means the model successfully completed at least one
+// real request in that hour. A failed upstream that never delivered a
+// response never reaches persistTokenUsage() and therefore never increments
+// the counter — exactly the "recent successful evidence" signal we want.
+//
+// One single GROUP BY query reads every model in the window. The result is
+// aggregated in-memory into a Set so the caller's per-model lookup is O(1).
+//
+// Fail-open contract (same as every other query in this module):
+//   * Missing binding → empty Set (Public Model Status falls back to
+//     runtime-only evidence; a fresh isolate then reports `unobserved`,
+//     never `unavailable` for every model).
+//   * Query failure → empty Set + the error is swallowed (the dashboard
+//     keeps serving 200).
+//   * NEVER fabricates evidence — an empty Set is "no evidence", not
+//     "evidence of failure".
+export async function queryRecentModelEvidence(env, windowMs = 24 * HOUR_MS, now = Date.now()) {
+  const d1 = tokenStatsD1(env);
+  if (!d1) return new Set();
+  const startHour = normalizeHour(now - windowMs);
+  try {
+    const res = await d1.prepare(
+      `SELECT model
+       FROM ${TABLE_MODEL}
+       WHERE hour >= ? AND requests > 0
+       GROUP BY model`,
+    ).bind(startHour).all();
+    const rows = Array.isArray(res?.results) ? res.results : [];
+    const out = new Set();
+    for (const r of rows) {
+      if (r && typeof r.model === 'string' && r.model.length > 0) out.add(r.model);
+    }
+    return out;
+  } catch (e) {
+    // Fail-open: no evidence. Public Model Status then falls back to the
+    // runtime-only signal; a fresh isolate with no runtime state reports
+    // `unobserved`, never `unavailable` for every model.
+    return new Set();
+  }
+}
+
 // Retention period for per-model stats (matches the dashboard's 7-day query window).
 // The global token_usage_hourly table is NEVER pruned — it powers the cumulative
 // KPIs on the public homepage and must retain all historical data.
