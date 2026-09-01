@@ -1,0 +1,23 @@
+[
+  {
+    "id": "nvidia-01",
+    "provider": "nvidia",
+    "protocol": "openai",
+    "surfaces": ["chat_completions"],
+    "base_url": "https://integrate.api.nvidia.com/v1"
+  },
+  {
+    "id": "openrouter-01",
+    "provider": "openrouter",
+    "protocol": "openai",
+    "surfaces": ["chat_completions", "responses"],
+    "base_url": "https://openrouter.ai/api/v1"
+  },
+  {
+    "id": "anthropic-01",
+    "provider": "anthropic",
+    "protocol": "anthropic",
+    "surfaces": ["messages"],
+    "base_url": "https://api.anthropic.com"
+  }
+]

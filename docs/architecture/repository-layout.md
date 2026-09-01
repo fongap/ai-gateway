@@ -12,11 +12,13 @@ src/                          Worker 代码：所有运行时逻辑
 ├─ stream/                    流处理：First-Event Guard、SSE 扫描、流追踪与改写
 ├─ request/                   请求处理：鉴权、路由、错误构建、编排
 ├─ observability/             可观测性：日志、指标、D1 聚合、诊断端点
+├─ runtime/                   Runtime availability 抽象：调度态可观测 + Public Model Status（只读投影，绝不反向影响调度）
 └─ dashboard/                 浏览器页面
 
 scripts/                      工具脚本：部署、测试、配置检查、CI 桥接
 ├─ *.mjs                      核心工具（deploy、config、health-check 等）
 ├─ *-test.mjs                 测试套件
+├─ provider-discovery/        Provider Discovery v1.1：catalog schema、normalize、report、samples（只读观察，不进入 Runtime 热路径）
 └─ *.sh / *.ps1               跨平台部署脚本
 
 config/                       示例配置文件（*.example.json）

@@ -38,3 +38,5 @@ npm run check:deploy  # wrangler dry-run bundle
 - 配置参考：[docs/operations/configuration.md](docs/operations/configuration.md)
 - 部署指南：[docs/operations/deployment.md](docs/operations/deployment.md)
 - 故障排查：[docs/operations/troubleshooting.md](docs/operations/troubleshooting.md)
+- Provider Discovery：[docs/operations/provider-discovery.md](docs/operations/provider-discovery.md)
+- 公开 Model Status：[docs/operations/public-model-status.md](docs/operations/public-model-status.md)

@@ -562,9 +562,9 @@ await test('dashboard D1 cache coalesces concurrent requests within TTL', async 
     pageText(anonRequest(), env),
   ]);
   assert.equal(html1, html2, 'concurrent requests share cached D1 result');
-  assert.equal(d1._reads.length, 3, 'two concurrent pages issue one summary + two series queries');
+  assert.equal(d1._reads.length, 4, 'two concurrent pages issue one summary + two series + one evidence query');
   await pageText(anonRequest(), env);
-  assert.equal(d1._reads.length, 3, 'a later request inside the TTL performs no additional reads');
+  assert.equal(d1._reads.length, 4, 'a later request inside the TTL performs no additional reads');
 });
 
 await test('dashboard D1 cache refreshes after TTL expires', async () => {
@@ -580,17 +580,17 @@ await test('dashboard D1 cache refreshes after TTL expires', async () => {
   try {
     const html1 = await pageText(anonRequest(), env);
     assert.ok(html1.includes('code-max'), 'initial data present');
-    assert.equal(d1._reads.length, 3);
+    assert.equal(d1._reads.length, 4);
     await persistTokenUsage(env, { prompt_tokens: 200, completion_tokens: 0 }, h0, 'ultra');
     fakeNow += 44_000;
     const cached = await pageText(anonRequest(), env);
     assert.ok(!cached.includes('ultra'), 'new data stays hidden before TTL expiry');
-    assert.equal(d1._reads.length, 3, 'no refresh before TTL expiry');
+    assert.equal(d1._reads.length, 4, 'no refresh before TTL expiry');
     fakeNow += 2_000;
     const refreshed = await pageText(anonRequest(), env);
     assert.ok(refreshed.includes('ultra'), 'new model appears after TTL expiry');
     assert.ok(refreshed.includes('code-max'), 'old model remains after refresh');
-    assert.equal(d1._reads.length, 6, 'TTL expiry performs exactly one new query set');
+    assert.equal(d1._reads.length, 8, 'TTL expiry performs exactly one new query set');
   } finally {
     Date.now = realNow;
   }
@@ -613,8 +613,8 @@ await test('dashboard cache does not leak across different D1 bindings', async (
   const htmlB = await pageText(anonRequest(), envB);
   assert.ok(htmlB.includes('model-b'));
   assert.ok(!htmlB.includes('model-a'));
-  assert.equal(d1a._reads.length, 3);
-  assert.equal(d1b._reads.length, 3);
+  assert.equal(d1a._reads.length, 4);
+  assert.equal(d1b._reads.length, 4);
 });
 
 // P2-5: public homepage must never leak raw D1 errors (table names, SQL,

@@ -45,6 +45,47 @@ Reliability (src/reliability)             →  whether a node is currently usabl
 - 所有短期运行时状态（Tier 1 TTFT/inFlight/cooldown，Tier 2/3 health/circuit/concurrency/RPM）均为 isolate-local best-effort，随 isolate 重启丢失
 - D1 仅用于可选的 token-usage 聚合，不在 AI 请求热路径上
 
+## Provider Discovery（v1.1，运维观察）
+
+```text
+Provider Capability
+        ↓
+Discovery Catalog
+        ↓
+Semantic Diff
+        ↓
+GitHub Report
+        ↓
+Human Review
+        ↓
+Node / Model Registry Config
+```
+
+`scripts/provider-discovery/` 是一个**只读观察**子系统：维护 Provider 的协议能力、Surface 与 Base URL 信息，并与 Runtime Node 配置做一致性校验。详见 [operations/provider-discovery.md](../operations/provider-discovery.md)。
+
+边界约束：
+
+- Discovery **从不**修改 Runtime Node、Model Registry、Worker Variables 或 Worker Secrets
+- Discovery **从不**主动发送模型生成请求（`/v1/chat/completions`、`/v1/responses`、`/v1/messages`）
+- Discovery **从不**进入 Runtime 请求热路径
+- Discovery 故障 **不会**导致 Runtime 请求链路失效
+
+## 公开 Model Status（只读投影）
+
+公开首页的"模型状态"是**跨隔离区**的投影，而不是当前 isolate 的 Runtime Availability：
+
+```text
+Runtime Availability (当前 isolate)
+        ↓
++  持久化 D1 近期成功证据
+        ↓
+Public Model Status (跨 isolate 投影)
+        ↓
+公开首页 HTML
+```
+
+`src/runtime/model-status.js` 是一个**只读**投影层，**永不**反向影响 Scheduler / Reliability / Transport / Request / Hedge / Failover / Cooldown。它仅在 `dashboardResponse` 渲染时被调用，请求热路径完全不引用它。详见 [operations/public-model-status.md](../operations/public-model-status.md)。
+
 ## 协议边界
 
 网关原生支持以下端点：
