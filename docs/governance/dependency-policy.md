@@ -52,7 +52,7 @@ Dependabot PR 在以下条件下可自动合并：
 ## CI 要求
 
 所有依赖更新 PR 必须通过：
-- `npm run verify`
+- `npm run validate:merge`
 - `npm run check:deploy`
 - 安全扫描
 

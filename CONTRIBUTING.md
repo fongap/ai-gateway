@@ -5,14 +5,14 @@
 ```bash
 git clone https://github.com/fongap/ai-gateway.git && cd ai-gateway
 npm ci
-npm run verify        # syntax + version + config checks + tests + secret scan
+npm run validate:merge   # syntax + version + config checks + tests + secret scan
 npm run check:deploy  # wrangler dry-run bundle
 ```
 
 ## 提交 PR
 
 1. 创建分支（`feat/`、`fix/`、`refactor/`、`docs/`、`test/`、`chore/`）
-2. 确保 `npm run verify` 和 `npm run check:deploy` 通过
+2. 确保 `npm run validate:merge` 和 `npm run check:deploy` 通过
 3. 使用仓库 Pull Request 模板
 4. 等待 CI 通过后请求 review
 

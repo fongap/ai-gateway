@@ -94,7 +94,7 @@ Public Model Status 的输出是 `[{ id, status }]`。**绝不**携带：
 | `scripts/model-status-test.mjs` | 新增：24 个单元测试 |
 | `scripts/token-usage-test.mjs` | 更新：cache-coalesce 断言从 3 reads 调整为 4 reads（新查询）|
 | `scripts/integration-test.mjs` | 更新：degraded 测试拆分为"有近期证据→degraded"和"无证据→unavailable"两个场景 |
-| `package.json` | `test:required` 加入 `model-status-test.mjs` |
+| `package.json` | `test:unit` 加入 `model-status-test.mjs` |
 
 ## 不影响的事
 

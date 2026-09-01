@@ -136,8 +136,8 @@ jobs:
       - name: Preflight deployment configuration
         run: node scripts/github-deployment-config.mjs preflight
 
-      - name: Verify project
-        run: npm run verify
+      - name: Validate project
+        run: npm run validate:merge
 
       - name: Validate runtime configuration
         run: |

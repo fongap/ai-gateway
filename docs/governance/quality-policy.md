@@ -6,7 +6,7 @@
 
 ```bash
 npm ci
-npm run verify          # check + check:version + check:deployment-config + test + security:scan
+npm run validate:merge    # check + check:version + check:deployment-config + test + security:scan
 npm run check:deploy    # wrangler dry-run bundle
 ```
 

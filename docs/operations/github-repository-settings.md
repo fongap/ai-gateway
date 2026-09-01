@@ -32,7 +32,7 @@ CI 在 `main` 和 Pull Request 上运行：
 
 | Check | Workflow | 内容 |
 |---|---|---|
-| `verify` | CI | `npm run verify`（syntax + version + config + tests + security scan） |
+| `validate:merge` | CI | `npm run validate:merge`（syntax + version + config + tests + security scan） |
 | `Deploy` | Deploy | 完整部署流程 + health check |
 
 ## Actions Permissions
