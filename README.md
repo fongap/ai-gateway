@@ -66,7 +66,7 @@ sh scripts/install.sh     # Windows: powershell scripts/install.ps1
 git push origin main
 ```
 
-将 KV namespace ID 配置为 GitHub Variable `TIER1_AFFINITY_KV_ID`。工作流会自动校验配置、生成 KV binding、同步 Worker 文本变量和 Worker 密钥、执行 D1 数据库迁移、部署 Worker，并对 `/health`、`/v1/models` 和 Claude `count_tokens` 执行线上健康检查。部署不会保留 Cloudflare 控制台中的旧文本变量。一次性初始化步骤见 **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**。
+将 KV namespace ID 配置为 GitHub Variable `TIER1_AFFINITY_KV_ID`。工作流会自动校验配置、生成 KV binding、同步 Worker 文本变量和 Worker 密钥、执行 D1 数据库迁移、部署 Worker，并对 `/health`、`/v1/models` 和 Claude `count_tokens` 执行线上健康检查。部署不会保留 Cloudflare 控制台中的旧文本变量。一次性初始化步骤见 **[docs/operations/deployment.md](docs/operations/deployment.md)**。
 
 ## 配置
 
@@ -86,7 +86,9 @@ git push origin main
 | `GATEWAY_ACCESS_KEY` | 网关访问密钥 |
 | `TIER1_AFFINITY` | 必需的 Cloudflare KV binding；保存哈希 session key → Tier 1 account |
 
-> 完整字段、运行参数、Model Registry 和部署配置示例见 **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)**。
+`priority` 保留在共享节点 schema 中用于 Tier 2/3 兼容性，但 Tier 1 P2C 有意忽略它。
+
+> 完整字段、运行参数、Model Registry 和部署配置示例见 **[docs/operations/configuration.md](docs/operations/configuration.md)**。
 
 ## 端点
 
@@ -97,6 +99,8 @@ git push origin main
 | POST | `/v1/messages` · `/count_tokens` | Anthropic Messages |
 | GET | `/` · `/version` | 入口页 · 版本 |
 | GET | `/health` `/metrics` `/v1/models` | 诊断（需鉴权） |
+
+客户端可通过 `x-session-id`（8–128 字符）启用 Tier 1 session affinity。原始值在成为 KV key 前经 SHA-256 哈希，从不记录日志。
 
 ## 安全
 
@@ -110,6 +114,6 @@ git push origin main
 
 **ai-gateway** · 多 Key · 多模型 · 一个稳定端点 · [MIT](LICENSE)
 
-[架构](docs/ARCHITECTURE.md) · [配置](docs/CONFIGURATION.md) · [部署](docs/DEPLOYMENT.md)
+[架构](docs/architecture/overview.md) · [配置](docs/operations/configuration.md) · [部署](docs/operations/deployment.md)
 
 </div>

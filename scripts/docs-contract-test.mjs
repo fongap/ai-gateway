@@ -18,9 +18,12 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DOCS = [
   'README.md',
   'README_EN.md',
-  'docs/ARCHITECTURE.md',
-  'docs/CONFIGURATION.md',
-  'docs/DEPLOYMENT.md',
+  'docs/architecture/overview.md',
+  'docs/architecture/protocol-model.md',
+  'docs/architecture/routing-model.md',
+  'docs/architecture/reliability-model.md',
+  'docs/operations/configuration.md',
+  'docs/operations/deployment.md',
 ];
 
 let passed = 0;
@@ -62,8 +65,8 @@ for (const file of DOCS) {
 }
 
 // CONFIGURATION.md must NOT present GATEWAY_CONFIG / GATEWAY_SECRETS_CONFIG
-// as the recommended production source (it is deprecated per DEPLOYMENT.md).
-const configText = readDoc('docs/CONFIGURATION.md');
+// as the recommended production source (it is deprecated per deployment.md).
+const configText = readDoc('docs/operations/configuration.md');
 assert.ok(
   !/deliver.*through.*GATEWAY_CONFIG/i.test(configText) || /deprecated/i.test(configText),
   'CONFIGURATION.md must not present GATEWAY_CONFIG as the production path without marking it deprecated',
