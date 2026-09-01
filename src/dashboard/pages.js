@@ -807,23 +807,24 @@ ${PAGE_SCRIPT}
 }
 
 export async function dashboardResponse(request, env) {
-  const config = loadGatewayConfig(env);
-  const now = Date.now();
-  // ONE cached D1 read powers both the model-status evidence and the usage
-  // card. Sharing the cache keeps the public homepage at a single D1 round
-  // trip per 45s window, regardless of how many models or nodes exist.
-  const stats = await getCachedDashboardStats(env, now);
-  const recentEvidence = stats.recentEvidence instanceof Set
-    ? stats.recentEvidence
-    : new Set();
-  const models = publicModelStatus(config.nodes || [], env, recentEvidence, now);
-  const apiBase = `${new URL(request.url).origin}/v1`;
+  try {
+    const config = loadGatewayConfig(env);
+    const now = Date.now();
+    // ONE cached D1 read powers both the model-status evidence and the usage
+    // card. Sharing the cache keeps the public homepage at a single D1 round
+    // trip per 45s window, regardless of how many models or nodes exist.
+    const stats = await getCachedDashboardStats(env, now);
+    const recentEvidence = stats.recentEvidence instanceof Set
+      ? stats.recentEvidence
+      : new Set();
+    const models = publicModelStatus(config.nodes || [], env, recentEvidence, now);
+    const apiBase = `${new URL(request.url).origin}/v1`;
 
-  const modelsResult = renderModels(models, stats.ttft);
-  const usageHtml = await usageSection(env, now, stats);
-  const quickHtml = quickStartSection(apiBase);
+    const modelsResult = renderModels(models, stats.ttft);
+    const usageHtml = await usageSection(env, now, stats);
+    const quickHtml = quickStartSection(apiBase);
 
-  const body = `
+    const body = `
 <section class="hero">
   <h1>一个入口，应对所有变化</h1>
   <p class="desc">模型、供应商、Key 与节点随时调整，自动轮换、切换与恢复，对外始终保持同一个端点。</p>
@@ -837,7 +838,22 @@ export async function dashboardResponse(request, env) {
 ${usageHtml}
 ${quickHtml}`;
 
-  return htmlResponse(shell({ title: 'AI Gateway · API 服务入口', body }));
+    return htmlResponse(shell({ title: 'AI Gateway · API 服务入口', body }));
+  } catch (e) {
+    // Graceful degradation: return a minimal HTML page instead of a 500 JSON error
+    // This ensures the public homepage never returns {"error":{"message":"Internal gateway error."}}
+    const body = `
+<section class="hero">
+  <h1>AI Gateway</h1>
+  <p>服务暂时不可用，请稍后重试。</p>
+</section>
+<section class="section">
+  <div class="section-title">模型状态</div>
+  <div class="empty">模型映射配置后在此显示。</div>
+</section>`;
+
+    return htmlResponse(shell({ title: 'AI Gateway · 错误', body }), 500);
+  }
 }
 
 function escapeHtml(s) {

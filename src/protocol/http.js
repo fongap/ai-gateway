@@ -60,9 +60,9 @@ export function jsonError(request, env, status, message, details, requestId, ext
   });
 }
 
-export function htmlResponse(content) {
+export function htmlResponse(content, init?) {
   return new Response(content, {
-    status: 200,
+    status: init?.status ?? 200,
     headers: {
       'content-type': 'text/html;charset=UTF-8',
       'cache-control': 'no-store',
@@ -71,6 +71,7 @@ export function htmlResponse(content) {
       'referrer-policy': 'no-referrer',
       'x-frame-options': 'DENY',
     },
+    ...init?.headers,
   });
 }
 
