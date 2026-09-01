@@ -40,6 +40,31 @@ const TABLE_MODEL = 'token_usage_model_hourly';
 const HOUR_MS = 3600_000;
 const DAY_MS = 86400_000;
 
+// TTFT histogram bucket boundaries (milliseconds).
+// Only successful requests produce TTFT samples — failures enter failure
+// statistics only. Bucket index 0-6 maps to columns ttft_b0..ttft_b6.
+//   b0: < 100ms       (very fast / cached)
+//   b1: 100–500ms     (fast)
+//   b2: 500ms–1s      (medium)
+//   b3: 1–2s          (slow)
+//   b4: 2–5s          (very slow)
+//   b5: 5–10s         (extremely slow)
+//   b6: ≥ 10s         (timeout territory)
+export const TTFT_BUCKET_BOUNDARIES_MS = [100, 500, 1000, 2000, 5000, 10000];
+const TTFT_BUCKET_COUNT = 7;
+
+// Map a TTFT value (ms) to a histogram bucket index [0..6].
+// Returns -1 for invalid/negative values (should not be recorded).
+// Infinity maps to the last bucket (timeout territory).
+export function ttftBucketIndex(ttftMs) {
+  if (ttftMs === Infinity) return TTFT_BUCKET_COUNT - 1;
+  if (!Number.isFinite(ttftMs) || ttftMs < 0) return -1;
+  for (let i = 0; i < TTFT_BUCKET_BOUNDARIES_MS.length; i++) {
+    if (ttftMs < TTFT_BUCKET_BOUNDARIES_MS[i]) return i;
+  }
+  return TTFT_BUCKET_COUNT - 1;
+}
+
 // Centralized display timezone offset (UTC+8) for natural-day boundaries.
 // All UTC+8 day calculations MUST use this constant to avoid scattered "+8h" logic.
 export const DISPLAY_TIMEZONE_OFFSET_MS = 8 * 60 * 60 * 1000;
@@ -109,7 +134,13 @@ export function tokenStatsD1(env) {
 // binding); a single classified rejection surfaces through the catch in the
 // caller, which guarantees at most one log entry per delivered response.
 // May reject — the caller is responsible for fail-open handling.
-export function persistTokenUsage(env, usage, now = Date.now(), model = null) {
+//
+// `ttftMs` (optional) — successful TTFT in milliseconds. Only meaningful
+// requests (success + meaningful output) should pass a value; failures MUST
+// pass null/undefined so they never produce a TTFT sample. The value is
+// bucketed into a coarse histogram (ttft_b0..ttft_b6) for percentile
+// calculation without storing raw samples.
+export function persistTokenUsage(env, usage, now = Date.now(), model = null, ttftMs = null) {
   const d1 = tokenStatsD1(env);
   if (!d1) return Promise.resolve();
   const hour = normalizeHour(now);
@@ -153,26 +184,50 @@ export function persistTokenUsage(env, usage, now = Date.now(), model = null) {
   if (typeof model !== 'string' || model.length === 0) {
     return globalTask.catch((cause) => { throw persistFailure('global', cause); });
   }
+  // Compute TTFT histogram bucket counts for this single sample.
+  // Only successful requests with meaningful output pass a valid ttftMs;
+  // failures pass null so they never produce a TTFT sample.
+  const buckets = Array.from({ length: TTFT_BUCKET_COUNT }, () => 0);
+  let successTtftCount = 0;
+  if (ttftMs != null) {
+    const bi = ttftBucketIndex(ttftMs);
+    if (bi >= 0) {
+      buckets[bi] = 1;
+      successTtftCount = 1;
+    }
+  }
   let modelTask;
   try {
     modelTask = Promise.resolve(d1.prepare(
       `INSERT INTO ${TABLE_MODEL} (
         hour, model,
         input_tokens, output_tokens, total_tokens,
-        requests, usage_reports, usage_missing
+        requests, usage_reports, usage_missing,
+        successful_ttft_count,
+        ttft_b0, ttft_b1, ttft_b2, ttft_b3, ttft_b4, ttft_b5, ttft_b6
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(hour, model) DO UPDATE SET
         input_tokens = ${TABLE_MODEL}.input_tokens + excluded.input_tokens,
         output_tokens = ${TABLE_MODEL}.output_tokens + excluded.output_tokens,
         total_tokens = ${TABLE_MODEL}.total_tokens + excluded.total_tokens,
         requests = ${TABLE_MODEL}.requests + excluded.requests,
         usage_reports = ${TABLE_MODEL}.usage_reports + excluded.usage_reports,
-        usage_missing = ${TABLE_MODEL}.usage_missing + excluded.usage_missing`,
+        usage_missing = ${TABLE_MODEL}.usage_missing + excluded.usage_missing,
+        successful_ttft_count = ${TABLE_MODEL}.successful_ttft_count + excluded.successful_ttft_count,
+        ttft_b0 = ${TABLE_MODEL}.ttft_b0 + excluded.ttft_b0,
+        ttft_b1 = ${TABLE_MODEL}.ttft_b1 + excluded.ttft_b1,
+        ttft_b2 = ${TABLE_MODEL}.ttft_b2 + excluded.ttft_b2,
+        ttft_b3 = ${TABLE_MODEL}.ttft_b3 + excluded.ttft_b3,
+        ttft_b4 = ${TABLE_MODEL}.ttft_b4 + excluded.ttft_b4,
+        ttft_b5 = ${TABLE_MODEL}.ttft_b5 + excluded.ttft_b5,
+        ttft_b6 = ${TABLE_MODEL}.ttft_b6 + excluded.ttft_b6`,
     ).bind(
       hour, model,
       p.input, p.output, p.total,
       p.requests, p.reports, p.missing,
+      successTtftCount,
+      buckets[0], buckets[1], buckets[2], buckets[3], buckets[4], buckets[5], buckets[6],
     ).run());
   } catch (cause) {
     modelTask = Promise.reject(cause);
@@ -389,6 +444,121 @@ export async function queryRecentModelEvidence(env, windowMs = 24 * HOUR_MS, now
     // runtime-only signal; a fresh isolate with no runtime state reports
     // `unobserved`, never `unavailable` for every model.
     return new Set();
+  }
+}
+
+// Query TTFT percentiles from the histogram buckets for a given model.
+// Returns:
+//   { available: true, p50: <bucket upper bound ms>, p95: <bucket upper bound ms>,
+//     sampleCount: <number>, insufficient: <boolean> }
+// or { available: false, error } when the binding is missing or the query fails.
+//
+// Percentiles are computed from coarse-grained histogram buckets (b0..b6).
+// The returned value is the UPPER BOUND of the bucket containing the percentile.
+// For example, if P50 falls in the 1–2s bucket, p50 is reported as 2000 (not
+// a fake precise value like 1.382s). This matches the bucket precision contract.
+//
+// Minimum sample threshold: 5 successful TTFT samples are needed for meaningful
+// percentiles. Below that, `insufficient: true` is returned so the dashboard
+// can display "样本不足" instead of misleading numbers.
+export async function queryModelTtftPercentiles(env, model, days = 7, now = Date.now()) {
+  const d1 = tokenStatsD1(env);
+  if (!d1) return { available: false, error: 'TOKEN_STATS_DB binding missing' };
+  if (typeof model !== 'string' || model.length === 0) return { available: false, error: 'model required' };
+  const startHour = normalizeHour(now - days * DAY_MS);
+  try {
+    const res = await d1.prepare(
+      `SELECT
+        COALESCE(SUM(successful_ttft_count), 0) AS total_ttft,
+        COALESCE(SUM(ttft_b0), 0) AS b0,
+        COALESCE(SUM(ttft_b1), 0) AS b1,
+        COALESCE(SUM(ttft_b2), 0) AS b2,
+        COALESCE(SUM(ttft_b3), 0) AS b3,
+        COALESCE(SUM(ttft_b4), 0) AS b4,
+        COALESCE(SUM(ttft_b5), 0) AS b5,
+        COALESCE(SUM(ttft_b6), 0) AS b6
+       FROM ${TABLE_MODEL}
+       WHERE hour >= ? AND model = ?`,
+    ).bind(startHour, model).first();
+    if (!res || typeof res !== 'object') return { available: false, error: 'no data' };
+    const total = Number(res.total_ttft) || 0;
+    if (total < 5) return { available: true, p50: null, p95: null, sampleCount: total, insufficient: true };
+    const buckets = [
+      Number(res.b0) || 0,
+      Number(res.b1) || 0,
+      Number(res.b2) || 0,
+      Number(res.b3) || 0,
+      Number(res.b4) || 0,
+      Number(res.b5) || 0,
+      Number(res.b6) || 0,
+    ];
+    const p50 = percentileFromBuckets(buckets, total, 0.5);
+    const p95 = percentileFromBuckets(buckets, total, 0.95);
+    return { available: true, p50, p95, sampleCount: total, insufficient: false };
+  } catch (e) {
+    return { available: false, error: `queryModelTtftPercentiles: ${e?.message || e}` };
+  }
+}
+
+// Compute a percentile value from coarse histogram buckets.
+// Returns the UPPER BOUND of the bucket containing the requested percentile.
+// This matches the bucket precision contract — no fake precise values.
+function percentileFromBuckets(buckets, total, pct) {
+  const threshold = Math.ceil(total * pct);
+  let cumulative = 0;
+  for (let i = 0; i < buckets.length; i++) {
+    cumulative += buckets[i];
+    if (cumulative >= threshold) {
+      // Return upper bound of this bucket (or ∞ for the last bucket)
+      return i < TTFT_BUCKET_BOUNDARIES_MS.length ? TTFT_BUCKET_BOUNDARIES_MS[i] : Infinity;
+    }
+  }
+  return Infinity;
+}
+
+// Query per-provider reliability stats (success rate) from token_usage_model_hourly.
+// Returns per-model stats: { model, requests, reports, missing, reliability }.
+// `reliability` = reports / (reports + missing), null when no attributable requests.
+//
+// Provider-agnostic: this query does not filter by provider — it returns aggregate
+// per-model stats that the dashboard can display. Provider-specific filtering is
+// NOT done here (the D1 schema has no provider dimension).
+export async function queryModelReliability(env, days = 7, now = Date.now()) {
+  const d1 = tokenStatsD1(env);
+  if (!d1) return { available: false, error: 'TOKEN_STATS_DB binding missing' };
+  const startHour = normalizeHour(now - days * DAY_MS);
+  try {
+    const res = await d1.prepare(
+      `SELECT model,
+              COALESCE(SUM(requests), 0) AS requests,
+              COALESCE(SUM(usage_reports), 0) AS reports,
+              COALESCE(SUM(usage_missing), 0) AS missing
+       FROM ${TABLE_MODEL}
+       WHERE hour >= ?
+       GROUP BY model
+       ORDER BY requests DESC`,
+    ).bind(startHour).all();
+    const rows = Array.isArray(res?.results) ? res.results : [];
+    return {
+      available: true,
+      rows: rows
+        .filter((r) => r && typeof r.model === 'string' && r.model.length > 0)
+        .map((r) => {
+          const requests = Number(r.requests) || 0;
+          const reports = Number(r.reports) || 0;
+          const missing = Number(r.missing) || 0;
+          const denominator = reports + missing;
+          return {
+            model: r.model,
+            requests,
+            reports,
+            missing,
+            reliability: denominator === 0 ? null : reports / denominator,
+          };
+        }),
+    };
+  } catch (e) {
+    return { available: false, error: `queryModelReliability: ${e?.message || e}` };
   }
 }
 
