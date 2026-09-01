@@ -192,7 +192,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           echo "::warning::Post-deploy health check failed — rolling back Worker code to the previous version."
-          echo "Worker variables, secrets and D1 migrations are NOT rolled back (see docs/DEPLOYMENT.md)."
+           echo "Worker variables, secrets and D1 migrations are NOT rolled back (see docs/operations/deployment.md)."
           npx --yes wrangler@4.114.0 rollback -c "$RUNNER_TEMP/wrangler.github.json"
 
       - name: Verify rolled-back gateway

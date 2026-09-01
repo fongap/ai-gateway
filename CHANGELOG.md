@@ -29,30 +29,6 @@
 - **协议矩阵测试 `scripts/protocol-matrix-test.mjs` ×16**(已纳入 `npm test`):OpenAI Chat 成功/failover/hedge;Responses 原生链路(不经 Chat 转换、chat-only 节点被排除);Anthropic 原生链路(native 路径、`x-api-key`、`anthropic-version`、无 Bearer);**跨协议禁止 fallback**双向断言;hedge 同协议同 surface 断言;旧配置(无 `protocol`/`surfaces`)端到端迁移与 deprecated diagnostic 断言。
 - Claude / Codex 契约测试重写为**原生上游 mock**(Anthropic SSE 生命周期 / Responses SSE 事件序列),新增 `anthropic-version`/`anthropic-beta` 透传、tool_use 流式 `input_json_delta`、原生 stream↔object 防御路径等断言;`gateway-configuration-test` 新增 protocol/surfaces schema 与迁移用例;`node-config-shards-test` 新增 CLI 侧 protocol/surfaces 校验用例。
 
-## Unreleased (previous)
-
-### Fixed
-
-- **P1 — 修复 `elapsedSinceStart` 引用错误对象导致 client-abort 延迟记录为 NaN。** `handleSuccess` 中误读 `s.attemptStartMs`(undefined)而非 `c.attemptStartMs`,两条 client-abort 路径传给 `recordOutcome` 的延迟为 NaN(被 `latency_ms` 判定静默丢弃)。改为正确引用。
-- **修复:hedge loser 在 first-event 阶段被取消时可能被误记为真实失败。** 此前仅当 guard 错误码为 ABORTED 才走 neutral 路径;twin 赢家提交后 abort 导致的 body reader 异常(无 ABORTED 码)会落到 first-event 失败,降低节点健康分。现在先判 client abort,再判 `hedgeAbort` 已中止(与错误码无关)即按 neutral `cancelled_after_peer_commit` 处理;twin 自身真实 timeout / 5xx 仍正常计入。
-- **修复:成功 dispatch 从不入账。** 成功路径此前从不递增 attempt 计数(成功即返回,旧语义下不可见);拆分计数器后,成功 dispatch 在 `attemptNode` 中恰好入账一次 `dispatches`(twin 不入账 `logicalAttempts`),保证日志与统计中的序号连续。
-- (本条已被下方"Changed"的解耦语义取代,不再适用:旧"twin 启动要求 已完成 + 在飞 + twin <= max_attempts 且 tier 剩余预算 >= 2"的预算收费模型已整体移除,twin 改为不消耗逻辑 attempt / tier 预算,由 `MAX_HEDGES_PER_REQUEST` 与 `max_dispatches = max_attempts + max_hedges_per_request` 硬上限约束。)
-
-### Changed
-
-- **P0 — 调度器的延迟感知改为 TTFT(time-to-first-event)优先。** 修复前 `avgLatencyMs` 记录的是 `fetch()` 返回(收到 HTTP 响应头)的延迟,对 LLM 流式请求而言 headers 延迟 ≠ 首 Token 延迟:一个 headers 100ms 但首字 8s 的节点会战胜 headers 300ms 首字 1.5s 的节点。现在流式路径在 first-event guard 提交点测量 TTFT,`node-state` 新增 `avgTtftMs` EWMA(α=0.3,与延迟同参)并经 `snapshotNode` 暴露 `avg_ttft_ms`;`scheduler` 的 `betterThan` 在双方都测得 TTFT 时以 TTFT(1.5x 判定)决定胜者,未测得时回退 headers 延迟 EWMA,0 仍为中性(新节点照常获得流量)。非流式路径不产生 TTFT 测量,继续依赖 headers 延迟。
-- **Hedge 与逻辑 attempt 彻底解耦(语义重定义)。** 此前 hedge twin 会消耗正式 `max_attempts` 配额与 tier 槽位:primary + twin 双失败会把剩余 fallback 次数从 4 直接压成 3。现在 `max_attempts` 表示**逻辑 attempt** 数——一个逻辑 attempt 由 primary + 最多 1 个 hedge twin 组成;twin 不再消耗 `max_attempts` 与 tier 预算,改由独立硬上限 `MAX_HEDGES_PER_REQUEST`(默认 1,环境变量可覆盖)约束,并新增总 dispatch 硬上限 `max_dispatches = max_attempts + max_hedges_per_request`(默认 5+1=6,不硬编码)。请求状态由单一 `totalAttempts` 拆分为三个独立计数器:`logicalAttempts` / `dispatches` / `hedges`;客户端错误的 `details` 中 `attempts` 继续表示逻辑 attempt 数,新增 `dispatches`(真实上游请求数)与 `hedges`(hedge twin 数)字段——只增不删,错误 envelope 与 OpenAI / Anthropic / Responses 兼容性不变。
-- **primary 与 hedge 共用同一逻辑 attempt deadline。** 此前 twin 启动后会重新切分一份自己的预算切片(约再获得一份 48s);现在 twin 继承 primary 创建的绝对 `attemptDeadline`,按 `deadline - now` 计算剩余 header / first-event 超时——一个逻辑 attempt 可以有两个执行者,但只有一个时间预算。
-- **超时分类改名:`timeout` → `headers_timeout`,`first_event` → `first_event_timeout`。** 内部 failure kind、`failure_kinds` 聚合与日志不再需要人工推断"是响应头超时还是首事件超时";`first_event_timeout` 记录携带 `status=200` 与独立的 `headers_ms` / `ttft_wait_ms` 计时。
-- **`HEDGE_DELAY_MS` 默认 4000 → 6000。** 4s 对大模型 / 长上下文 / Coding Agent 略激进,10–15s 又会让救援过迟;仍允许环境变量覆盖。代码结构保留未来按 `avgHeaderLatency` / `avgTtftMs` 自适应计算的扩展空间,本次不引入。
-- **dispatch 日志增强。** 每次 upstream dispatch(成功为 debug,失败为 info)输出一行:`request` / `logical_attempt=n/max` / `dispatch` / `node` / `tier` / `model=逻辑->上游` / `hedged` / `kind` / `status` / `headers_ms` / `ttft_wait_ms` / `latency_ms` / `counted`;hedge 生命周期分别输出 `hedge:`(触发,含 `deadline_remaining_ms`)、`hedge winner:`(含 `winner_ttft_ms`)、`hedge loser:`(`neutral=true`)、`hedge failed:`(双方 kind)。节点拓扑仍仅在 Worker 内部日志,客户端响应默认不暴露。
-
-### Added
-
-- **Hedge / attempt / dispatch 语义测试 ×13**(集成):`MAX_HEDGES_PER_REQUEST=0` 禁用 hedge;全失败时恰好 5 逻辑 attempt / 6 dispatch / 1 hedge;twin 赢时 primary neutral(不计失败、不进熔断、无 cooldown,覆盖 fetch 阶段与 first-event 阶段两条 loser 路径);primary 赢时挂起的 twin neutral;双失败只消耗 1 个逻辑 attempt 且下一 attempt 正常执行;twin 继承共享 deadline(约 300ms 启动、约 1000ms 终止,而非再拿一份独立 1s 预算);`headers_timeout`(status=0)与 `first_event_timeout`(status=200 + `ttft_wait_ms`)分类;client abort 为 neutral 不误记为超时;twin 自身 5xx 计真实失败;tier cap=1 仍允许 twin(反语义回归)。3 个旧语义 hedge 测试(twin 消耗 tier 槽位 / `max_attempts=2` 拒绝 twin / tier cap=1 禁 twin)按新语义重写。单元测试新增 timeout kind 改名与 hedge 默认值(6000ms / 1 次 / 覆盖与钳位)断言。
-- **`MAX_HEDGES_PER_REQUEST` 运行时变量**加入 GitHub 部署桥白名单(`github-deployment-config.mjs`)与 `docs/CONFIGURATION.md` 运行时参数表;`HEDGE_DELAY_MS` 一并补入参数表。
-- **Hedge / TTFT 边界集成测试 ×4**(此前 hedge 仅有"twin 赢"与"单候选不 hedge"两个用例):双失败仍按 tier cap 收敛 dispatch 数(`tier_attempts tier1=2` + 三节点,恰好 2 次而非 3 次);`max_attempts=2` 时在飞 primary 独占预算、不启动 twin;tier cap=1 无 twin 空间;TTFT 实测值(而非手写状态)驱动调度——headers 快但首字慢的节点让位于 headers 慢但首字快的节点。4 个用例在修复前的 `main` 上全部失败,具备回归判别力。(注:其中"双失败收 dispatch"与"max_attempts=2"、"tier cap=1"三条已按上方解耦语义重写,断言新语义。)
-
 ## 1.2.4 - 2026-08-29
 
 ### Fixed
