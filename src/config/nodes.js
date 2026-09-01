@@ -58,7 +58,11 @@ const FORBIDDEN_NODE_FIELDS = ['token', 'credential', 'api_key', 'apikey', 'auth
 // is rejected instead of being silently accepted (or emptied into a wildcard).
 const ALLOWED_NODE_FIELDS = new Set(['id', 'provider', 'protocol', 'surfaces', 'base_url', 'priority', 'models', 'limits']);
 const ALLOWED_LIMITS_FIELDS = new Set(['concurrency', 'rpm', 'rpm_mode']);
-const RPM_MODES = new Set(['soft', 'hard']);
+// "hard" is kept as an alias for "local_hard" for backward compatibility.
+// Both mean the same thing: isolate-local best-effort cap, NOT a global quota.
+// Use a distributed quota binding (future `quota_mode: distributed`) if you
+// need a real account-wide cap across isolates.
+const RPM_MODES = new Set(['soft', 'hard', 'local_hard']);
 // protocol -> which client surfaces the node can expose, and the implicit
 // legacy default used when `surfaces` is omitted.
 const PROTOCOL_SURFACES = new Map([
@@ -305,6 +309,8 @@ function buildRuntimeNode(rawNode, tier, credentials, allowInsecure, sourceKey, 
     limits: {
       concurrency: limits.concurrency ?? 2,
       // Soft/hard per-minute request quota; undefined = unlimited.
+      // "local_hard" and "hard" are stored as the internal 'hard' value
+      // (both mean isolate-local best-effort cap, not a global quota).
       ...(limits.rpm !== undefined ? { rpm: limits.rpm, rpmMode: limits.rpmMode ?? 'hard' } : {}),
     },
   };
@@ -394,17 +400,18 @@ function parseLimits(raw, nodeId, diagnostics) {
     }
     out.rpm = r;
     // An explicitly configured RPM is treated as a real upstream/account quota:
-    // default to HARD (never exceed it locally). Opt back into the old
-    // best-effort behavior with "rpm_mode": "soft".
-    out.rpmMode = 'hard';
+    // default to local_hard (never exceed it in this isolate). Opt back into
+    // the old best-effort behavior with "rpm_mode": "soft".
+    out.rpmMode = 'local_hard';
   }
   if ('rpm_mode' in raw) {
     const mode = typeof raw.rpm_mode === 'string' ? raw.rpm_mode.trim().toLowerCase() : '';
     if (!RPM_MODES.has(mode)) {
-      diagnostics.push(`node "${nodeId}": limits.rpm_mode must be "soft" or "hard"`);
+      diagnostics.push(`node "${nodeId}": limits.rpm_mode must be "soft", "hard", or "local_hard"`);
       return null;
     }
-    out.rpmMode = mode;
+    // Normalize "hard" and "local_hard" to the same internal value.
+    out.rpmMode = mode === 'soft' ? 'soft' : 'hard';
   }
   return out;
 }

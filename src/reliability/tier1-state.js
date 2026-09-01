@@ -24,6 +24,13 @@ export const TIER1_TIMEOUT_BASE_MS = 5_000;
 export const TIER1_TIMEOUT_MAX_MS = 120_000;
 export const TIER1_5XX_BASE_MS = 1_000;
 export const TIER1_5XX_MAX_MS = 300_000;
+// Auth (401/403) and model_missing (404 heuristic) are NOT permanent
+// disables anymore. They get a long cooldown (default 1h) so the same
+// isolate can recover on its own if the key is rotated, the model is
+// re-added upstream, or the heuristic was a false positive. To force a
+// permanent block, set this to 0.
+export const TIER1_AUTH_DISABLED_COOLDOWN_MS = 3_600_000;
+export const TIER1_MODEL_MISSING_DISABLED_COOLDOWN_MS = 3_600_000;
 export const TIER1_429_BASE_MS = 30_000;
 export const TIER1_429_MAX_MS = 1_800_000;
 
@@ -304,6 +311,30 @@ export function applyTier1Outcome(accountId, modelId, outcome, now = Date.now())
   if (!outcome || outcome.action === 'neutral' || outcome.scope === 'none') return;
   const account = getTier1Account(accountId);
   if (outcome.action === 'disable') {
+    // 'disable' (auth / model_missing) is no longer permanent. We apply a
+    // long cooldown so the node self-recovers when the key is rotated, the
+    // model is re-added, or the 404 heuristic was a false positive. To
+    // opt out, set TIER1_AUTH_DISABLED_COOLDOWN_MS=0 and
+    // TIER1_MODEL_MISSING_DISABLED_COOLDOWN_MS=0 to restore the old
+    // "disabled until isolate restart" behavior.
+    const ms = outcome.reason === 'auth' ? TIER1_AUTH_DISABLED_COOLDOWN_MS
+      : outcome.reason === 'model_missing' ? TIER1_MODEL_MISSING_DISABLED_COOLDOWN_MS
+      : 0;
+    if (ms > 0) {
+      if (outcome.scope === 'account') {
+        account.accountDisabled = false;
+        account.accountCooldownUntil = Math.max(account.accountCooldownUntil, now + ms);
+        account.accountCooldownReason = outcome.reason;
+      } else {
+        const model = getTier1Model(accountId, modelId);
+        model.disabled = false;
+        model.failureState = FAILURE_STATE.COOLDOWN;
+        model.cooldownUntil = Math.max(model.cooldownUntil, now + ms);
+        model.cooldownReason = outcome.reason;
+      }
+      return;
+    }
+    // Legacy permanent-disable path (cooldown = 0 means operator wants hard disable).
     if (outcome.scope === 'account') {
       account.accountDisabled = true;
       account.accountCooldownReason = outcome.reason;
