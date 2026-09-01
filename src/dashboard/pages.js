@@ -195,9 +195,11 @@ a{color:var(--blue);text-decoration:none}
 .model-item .dot{width:6px;height:6px;border-radius:50%;flex:none}
 .model-item .state.available{color:var(--green)}
 .model-item .state.unobserved{color:var(--orange)}
+.model-item .state.degraded{color:var(--orange)}
 .model-item .state.unavailable{color:var(--faint)}
 .model-item .dot.available{background:var(--green)}
 .model-item .dot.unobserved{background:var(--orange)}
+.model-item .dot.degraded{background:var(--orange)}
 .model-item .dot.unavailable{background:var(--faint)}
 .empty{padding:16px;font-size:13px;color:var(--faint)}
 
@@ -428,7 +430,9 @@ root.addEventListener('focusout',function(e){
 //   unobserved   serving nodes exist but none has been observed yet
 //                (Tier 1 is unobserved until passive TTFT records a sample;
 //                 this is the honest default for newly-added accounts/keys)
-//   unavailable  no serving node can dispatch this model right now
+//   degraded     serving nodes exist and were observed, but all are currently
+//                cooling / disabled / circuit-open (temporarily unavailable)
+//   unavailable  no configured node serves this logical model at all
 // Model set = Model Registry (primary) ∪ node mappings. No node ids, providers,
 // tiers, counts or durations ever leave this function.
 function publicModelStatus(nodes, env) {
@@ -442,14 +446,14 @@ function publicModelStatus(nodes, env) {
       const states = serving.map((n) => getRuntimeAvailability(n, name));
       if (states.some((s) => s === 'available')) status = 'available';
       else if (states.some((s) => s === 'unobserved')) status = 'unobserved';
-      else status = 'unavailable';
+      else status = 'degraded';
     }
     list.push({ id: name, status });
   }
   return list;
 }
 
-const STATE_LABEL = { available: '可用', unobserved: '未观测', unavailable: '不可用' };
+const STATE_LABEL = { available: '可用', unobserved: '未观测', degraded: '波动', unavailable: '不可用' };
 // Tier hierarchy: Ultra > Max > Pro > Air — display order follows it.
 const MODEL_RANK = { ultra: 1, max: 2, pro: 3, air: 4 };
 const CODE_PREFIX = 'code-';

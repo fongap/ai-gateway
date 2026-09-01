@@ -414,8 +414,8 @@ test('valid boundary attempts survive strict validation and defaults stay intact
     POLICIES_CONFIG: JSON.stringify({ loose: {} }),
   } }));
   // User-defined policy with omitted max_attempts falls back to the built-in
-  // 'default' policy's maxAttempts (=2 after the speed-first tightening).
-  assert.equal(pol.loose.maxAttempts, 2, 'an omitted max_attempts falls back to built-in default');
+  // 'default' policy's maxAttempts (=5, the balanced default).
+  assert.equal(pol.loose.maxAttempts, 5, 'an omitted max_attempts falls back to built-in default');
   assert.equal(pol.loose.tierAttempts, null, 'an omitted tier_attempts stays null');
 });
 

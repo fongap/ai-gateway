@@ -475,23 +475,31 @@ await test('15-account simulation: P2C disperses, avoids cooldowns, explores UNK
 
 // ---- Failure state machine -------------------------------------------------
 
-await test('Failure: 401/403 disables the account, not just the model', () => {
+await test('Failure: 401/403 applies long cooldown, not permanent disable', () => {
   const a = node('a', { models: { m1: 'up-a', m2: 'up-b' } });
   applyTier1Outcome('a', 'm1', classifyTier1Failure({ kind: 'auth' }));
   const acct = getTier1Account('a');
-  assert.equal(acct.accountDisabled, true);
-  // Account-scope disable makes EVERY model on this account ineligible, even
-  // ones that were never individually disabled.
-  assert.equal(isTier1Eligible(a, REQ), false, 'm1 blocked by account disable');
+  // Auth failure applies a long cooldown (TIER1_AUTH_DISABLED_COOLDOWN_MS) so
+  // the node can self-recover when the key is rotated. Not permanently disabled.
+  assert.equal(acct.accountDisabled, false, 'account is NOT permanently disabled');
+  assert.ok(acct.accountCooldownUntil > Date.now(), 'account has a cooldown active');
+  assert.equal(acct.accountCooldownReason, 'auth');
+  // Account-scope cooldown makes EVERY model on this account ineligible
+  assert.equal(isTier1Eligible(a, REQ), false, 'm1 blocked by account cooldown');
   assert.equal(isTier1Eligible(a, { ...REQ, model: 'm2' }), false, 'm2 also blocked');
 });
 
-await test('Failure: model_not_found disables only the (account, model) pair', () => {
+await test('Failure: model_not_found applies long cooldown, not permanent disable', () => {
   const a = node('a');
   applyTier1Outcome('a', 'm1', classifyTier1Failure({ kind: 'model_missing' }));
   const m1 = getTier1Account('a').models.get('m1');
-  assert.equal(m1.disabled, true);
-  assert.equal(getTier1Account('a').accountDisabled, false);
+  // model_missing applies a long cooldown (TIER1_MODEL_MISSING_DISABLED_COOLDOWN_MS)
+  // so the node can self-recover when the model is re-added upstream.
+  assert.equal(m1.disabled, false, 'model is NOT permanently disabled');
+  assert.equal(m1.failureState, TIER1_FAILURE_STATES.COOLDOWN, 'model is in COOLDOWN state');
+  assert.ok(m1.cooldownUntil > Date.now(), 'model has a cooldown active');
+  assert.equal(m1.cooldownReason, 'model_missing');
+  assert.equal(getTier1Account('a').accountDisabled, false, 'account is NOT disabled');
 });
 
 await test('Failure: single transient failure does NOT trip cooldown (hysteresis)', () => {
