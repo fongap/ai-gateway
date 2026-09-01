@@ -630,13 +630,16 @@ await test('404 model_missing disables only the (account, model) pair', async ()
     tier1: [{ ...basicNode('mm1'), models: { 'code-pro': 'up-code', 'general-air': 'up-air' } }],
     secrets: { mm1: 'k' },
   });
-  // 1. code-pro -> upstream 404 -> (mm1, code-pro) is disabled, while the
+  // 1. code-pro -> upstream 404 -> (mm1, code-pro) cools down, while the
   // account remains enabled for its other model.
   const r1 = await worker.fetch(chatRequest({ model: 'code-pro', messages: [] }), env, {});
   assert.equal(r1.status, 502, 'lone code-pro node 404ing yields 502 (no fallback)');
   assert.equal(getTier1Account('mm1').accountDisabled, false);
-  assert.equal(getTier1Model('mm1', 'code-pro').disabled, true);
-  assert.equal(getTier1Model('mm1', 'code-pro').failureState, 'disabled');
+  // model_missing applies a long cooldown (not permanent disable) so the
+  // node can self-recover when the model is re-added upstream.
+  assert.equal(getTier1Model('mm1', 'code-pro').disabled, false);
+  assert.equal(getTier1Model('mm1', 'code-pro').failureState, 'cooldown');
+  assert.ok(getTier1Model('mm1', 'code-pro').cooldownUntil > Date.now(), 'model has active cooldown');
 
   // 2. general-air on the SAME node must still serve immediately — the 404 on
   //    code-pro did not take the node down.
@@ -1471,9 +1474,11 @@ await test('public home shows degraded status when all serving nodes are cooling
     secrets: { 'de-a': 'k' },
     extraEnv: { MODELS_CONFIG: JSON.stringify({ air: { policy: 'fast' } }) },
   });
-  // Force the serving node into cooldown so availability is 'no'.
-  const state = getNodeState('de-a');
-  state.cooldownUntil = Date.now() + 60_000;
+  // Force the serving node into cooldown so availability is unavailable.
+  // Tier 1 state lives in tier1-state.js (per-account,model), not node-state.js.
+  const t1Model = getTier1Model('de-a', 'air');
+  t1Model.cooldownUntil = Date.now() + 60_000;
+  t1Model.failureState = 'cooldown';
   const res = await worker.fetch(new Request('https://gateway.example.com/', {
     headers: { accept: 'text/html' },
   }), env, {});
@@ -1718,7 +1723,7 @@ await test('public home: brand & GitHub once, 通用/编程 grouped, no protocol
   assert.ok(!html.includes('智能边缘网关'), 'must not carry the old brand');
   // Accessibility and responsive structure: status is not color-only, tabs
   // expose their selected panel, and the dense heatmap has one concise label.
-  assert.match(html, /class="sr-only">状态：可用/);
+  assert.match(html, /class="sr-only">状态：未观测/);
   assert.match(html, /role="tab" aria-controls="pane-openai" aria-selected="true"/);
   assert.match(html, /id="pane-anthropic" role="tabpanel" aria-labelledby="tab-anthropic" hidden/);
   assert.match(html, /ArrowLeft/);

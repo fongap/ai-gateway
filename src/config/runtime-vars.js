@@ -15,14 +15,14 @@
 // separately via REQUIRED_VARS / REQUIRED_SECRETS.
 
 export const RUNTIME_TUNABLES = [
-  { name: 'UPSTREAM_HEADERS_TIMEOUT_MS', type: 'int', min: 5_000, max: 600_000, def: 60_000 },
-  { name: 'FIRST_EVENT_TIMEOUT_MS', type: 'int', min: 5_000, max: 600_000, def: 120_000 },
-  { name: 'STREAM_IDLE_TIMEOUT_MS', type: 'int', min: 10_000, max: 600_000, def: 240_000 },
-  { name: 'RATE_LIMIT_COOLDOWN_MS', type: 'int', min: 1_000, max: 600_000, def: 60_000 },
+  { name: 'UPSTREAM_HEADERS_TIMEOUT_MS', type: 'int', min: 5_000, max: 600_000, def: 15_000 },
+  { name: 'FIRST_EVENT_TIMEOUT_MS', type: 'int', min: 5_000, max: 600_000, def: 30_000 },
+  { name: 'STREAM_IDLE_TIMEOUT_MS', type: 'int', min: 10_000, max: 600_000, def: 120_000 },
+  { name: 'RATE_LIMIT_COOLDOWN_MS', type: 'int', min: 1_000, max: 600_000, def: 30_000 },
   { name: 'AUTH_FAIL_COOLDOWN_MS', type: 'int', min: 60_000, max: 7 * 86_400_000, def: 3_600_000 },
   { name: 'MAX_BODY_BYTES', type: 'int', min: 1024, max: 100 * 1024 * 1024, def: 20 * 1024 * 1024 },
-  { name: 'FAILOVER_BUDGET_MS', type: 'int', min: 1_000, max: 900_000, def: 240_000 },
-  { name: 'HEDGE_DELAY_MS', type: 'int', min: 0, max: 600_000, def: 6_000 },
+  { name: 'FAILOVER_BUDGET_MS', type: 'int', min: 1_000, max: 900_000, def: 60_000 },
+  { name: 'HEDGE_DELAY_MS', type: 'int', min: 0, max: 600_000, def: 3_000 },
   { name: 'MAX_HEDGES_PER_REQUEST', type: 'int', min: 0, max: 3, def: 1 },
 ];
 

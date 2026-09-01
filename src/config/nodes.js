@@ -48,6 +48,7 @@
 import { readEnv, getBool } from './env.js';
 import { loadModelsConfig, getModelsConfigDiagnostics } from './models.js';
 import { loadPoliciesConfig, getPoliciesConfigDiagnostics } from './policies.js';
+import { getProtocolFallbacksDiagnostics } from './protocol-fallbacks.js';
 
 const SHARD_MAX_BYTES = 4500; // official variable size limit is 5 KB; keep margin
 export const TIER_SHARD_PATTERN = /^TIER([123])_NODES_CONFIG_(\d{2})$/;
@@ -58,7 +59,11 @@ const FORBIDDEN_NODE_FIELDS = ['token', 'credential', 'api_key', 'apikey', 'auth
 // is rejected instead of being silently accepted (or emptied into a wildcard).
 const ALLOWED_NODE_FIELDS = new Set(['id', 'provider', 'protocol', 'surfaces', 'base_url', 'priority', 'models', 'limits']);
 const ALLOWED_LIMITS_FIELDS = new Set(['concurrency', 'rpm', 'rpm_mode']);
-const RPM_MODES = new Set(['soft', 'hard']);
+// "hard" is kept as an alias for "local_hard" for backward compatibility.
+// Both mean the same thing: isolate-local best-effort cap, NOT a global quota.
+// Use a distributed quota binding (future `quota_mode: distributed`) if you
+// need a real account-wide cap across isolates.
+const RPM_MODES = new Set(['soft', 'hard', 'local_hard']);
 // protocol -> which client surfaces the node can expose, and the implicit
 // legacy default used when `surfaces` is omitted.
 const PROTOCOL_SURFACES = new Map([
@@ -106,6 +111,11 @@ function buildConfig(env) {
   // makes the gateway 'invalid' (ready=false) instead of guessing at intent.
   const auxDiagnostics = collectAuxConfigDiagnostics(env);
   diagnostics.push(...auxDiagnostics);
+  // PROTOCOL_FALLBACKS is best-effort: a typo here degrades to an empty
+  // fallback map (the request still serves its native pool), so its
+  // diagnostics are warnings only and never flip status to 'invalid'. They
+  // still surface on /health for operator visibility.
+  for (const msg of getProtocolFallbacksDiagnostics(env)) diagnostics.push(msg);
   const accessKeyBound = Boolean(readEnv(env, 'GATEWAY_ACCESS_KEY'));
 
   const tierShards = collectShards(env, TIER_SHARD_PATTERN, 'TIER1_NODES_CONFIG_', 'TIER1_NODES_CONFIG_01', 2, diagnostics);
@@ -305,6 +315,8 @@ function buildRuntimeNode(rawNode, tier, credentials, allowInsecure, sourceKey, 
     limits: {
       concurrency: limits.concurrency ?? 2,
       // Soft/hard per-minute request quota; undefined = unlimited.
+      // "local_hard" and "hard" are stored as the internal 'hard' value
+      // (both mean isolate-local best-effort cap, not a global quota).
       ...(limits.rpm !== undefined ? { rpm: limits.rpm, rpmMode: limits.rpmMode ?? 'hard' } : {}),
     },
   };
@@ -394,17 +406,20 @@ function parseLimits(raw, nodeId, diagnostics) {
     }
     out.rpm = r;
     // An explicitly configured RPM is treated as a real upstream/account quota:
-    // default to HARD (never exceed it locally). Opt back into the old
-    // best-effort behavior with "rpm_mode": "soft".
+    // default to hard (local_hard in user-facing config semantics; never exceed
+    // it in this isolate). Opt back into the old best-effort behavior with
+    // "rpm_mode": "soft". The user-facing config key accepts both "hard" and
+    // "local_hard" — both normalize to the internal 'hard' value.
     out.rpmMode = 'hard';
   }
   if ('rpm_mode' in raw) {
     const mode = typeof raw.rpm_mode === 'string' ? raw.rpm_mode.trim().toLowerCase() : '';
     if (!RPM_MODES.has(mode)) {
-      diagnostics.push(`node "${nodeId}": limits.rpm_mode must be "soft" or "hard"`);
+      diagnostics.push(`node "${nodeId}": limits.rpm_mode must be "soft", "hard", or "local_hard"`);
       return null;
     }
-    out.rpmMode = mode;
+    // Normalize "hard" and "local_hard" to the same internal value.
+    out.rpmMode = mode === 'soft' ? 'soft' : 'hard';
   }
   return out;
 }

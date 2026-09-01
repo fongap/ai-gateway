@@ -353,9 +353,12 @@ await test('timeout failures are classified as headers_timeout / first_event_tim
   assert.equal(abort.counted, false);
 });
 
-await test('hedge defaults: 6000ms delay, 1 hedge per request, overridable', async () => {
+await test('hedge defaults: 3000ms delay, 1 hedge per request, overridable', async () => {
   const defaults = getLimits(ENV);
-  assert.equal(defaults.hedgeDelayMs, 6_000, 'HEDGE_DELAY_MS default is 6000');
+  // Speed-first tightening: HEDGE_DELAY_MS default dropped 6000 -> 3000.
+  // Hedge is also disabled by default through the built-in 'default' policy
+  // (hedge.enabled=false); the raw env-var default is still 3000.
+  assert.equal(defaults.hedgeDelayMs, 3_000, 'HEDGE_DELAY_MS default is 3000');
   assert.equal(defaults.maxHedgesPerRequest, 1, 'MAX_HEDGES_PER_REQUEST default is 1');
   const overridden = getLimits({ HEDGE_DELAY_MS: '8000', MAX_HEDGES_PER_REQUEST: '2' });
   assert.equal(overridden.hedgeDelayMs, 8_000);
