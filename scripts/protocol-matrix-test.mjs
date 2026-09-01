@@ -193,7 +193,16 @@ await test('OpenAI Chat: hedge twin wins, primary is neutral-cancelled', async (
   const env = makeEnv({
     tier1: [openaiChatNode('oc-hang'), openaiChatNode('oc-twin')],
     secrets: { 'oc-hang': 'k', 'oc-twin': 'k' },
-    extraEnv: { HEDGE_DELAY_MS: '120', FAILOVER_BUDGET_MS: '30000' },
+    extraEnv: {
+      HEDGE_DELAY_MS: '120',
+      FAILOVER_BUDGET_MS: '30000',
+      // The built-in 'default' policy disables hedge; override it for this
+      // test so hedge is enabled on tier1 (same as the pre-tightening default).
+      POLICIES_CONFIG: JSON.stringify({
+        default: { max_attempts: 5, hedge: { enabled: true, tiers: ['tier1'] } },
+      }),
+      MODELS_CONFIG: JSON.stringify({ max: { policy: 'default' } }),
+    },
   });
   const res = await worker.fetch(chatRequest({}), env, {});
   assert.equal(res.status, 200);

@@ -413,7 +413,9 @@ test('valid boundary attempts survive strict validation and defaults stay intact
   const pol = loadPoliciesConfig(makeEnv({ extraEnv: {
     POLICIES_CONFIG: JSON.stringify({ loose: {} }),
   } }));
-  assert.equal(pol.loose.maxAttempts, 5, 'an omitted max_attempts keeps the default of 5');
+  // User-defined policy with omitted max_attempts falls back to the built-in
+  // 'default' policy's maxAttempts (=2 after the speed-first tightening).
+  assert.equal(pol.loose.maxAttempts, 2, 'an omitted max_attempts falls back to built-in default');
   assert.equal(pol.loose.tierAttempts, null, 'an omitted tier_attempts stays null');
 });
 

@@ -48,6 +48,7 @@
 import { readEnv, getBool } from './env.js';
 import { loadModelsConfig, getModelsConfigDiagnostics } from './models.js';
 import { loadPoliciesConfig, getPoliciesConfigDiagnostics } from './policies.js';
+import { getProtocolFallbacksDiagnostics } from './protocol-fallbacks.js';
 
 const SHARD_MAX_BYTES = 4500; // official variable size limit is 5 KB; keep margin
 export const TIER_SHARD_PATTERN = /^TIER([123])_NODES_CONFIG_(\d{2})$/;
@@ -110,6 +111,11 @@ function buildConfig(env) {
   // makes the gateway 'invalid' (ready=false) instead of guessing at intent.
   const auxDiagnostics = collectAuxConfigDiagnostics(env);
   diagnostics.push(...auxDiagnostics);
+  // PROTOCOL_FALLBACKS is best-effort: a typo here degrades to an empty
+  // fallback map (the request still serves its native pool), so its
+  // diagnostics are warnings only and never flip status to 'invalid'. They
+  // still surface on /health for operator visibility.
+  for (const msg of getProtocolFallbacksDiagnostics(env)) diagnostics.push(msg);
   const accessKeyBound = Boolean(readEnv(env, 'GATEWAY_ACCESS_KEY'));
 
   const tierShards = collectShards(env, TIER_SHARD_PATTERN, 'TIER1_NODES_CONFIG_', 'TIER1_NODES_CONFIG_01', 2, diagnostics);
@@ -400,9 +406,11 @@ function parseLimits(raw, nodeId, diagnostics) {
     }
     out.rpm = r;
     // An explicitly configured RPM is treated as a real upstream/account quota:
-    // default to local_hard (never exceed it in this isolate). Opt back into
-    // the old best-effort behavior with "rpm_mode": "soft".
-    out.rpmMode = 'local_hard';
+    // default to hard (local_hard in user-facing config semantics; never exceed
+    // it in this isolate). Opt back into the old best-effort behavior with
+    // "rpm_mode": "soft". The user-facing config key accepts both "hard" and
+    // "local_hard" — both normalize to the internal 'hard' value.
+    out.rpmMode = 'hard';
   }
   if ('rpm_mode' in raw) {
     const mode = typeof raw.rpm_mode === 'string' ? raw.rpm_mode.trim().toLowerCase() : '';

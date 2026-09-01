@@ -17,6 +17,7 @@
     "test:full": "npm run test:required && node scripts/scheduler-stability-test.mjs && node scripts/integration-test.mjs && node scripts/stress-test.mjs && node scripts/codex-contract-test.mjs && node scripts/claude-contract-test.mjs",
     "test": "npm run test:required",
     "test:integration": "node scripts/integration-test.mjs",
+    "test:conversion": "node scripts/conversion-test.mjs",
     "bench": "node benchmark/benchmark.mjs --quick",
     "bench:full": "node benchmark/benchmark.mjs",
     "security:scan": "node scripts/secret-scan.mjs",
