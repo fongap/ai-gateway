@@ -14,7 +14,7 @@
     "check:version": "node scripts/version-check.mjs",
     "check:links": "node scripts/link-check.mjs",
     "check:docs": "node scripts/docs-check.mjs",
-    "test:required": "node scripts/node-config-shards-test.mjs && node scripts/github-deployment-config-test.mjs && node scripts/gateway-configuration-test.mjs && node scripts/request-reliability-test.mjs && node scripts/stream-completion-test.mjs && node scripts/token-usage-store-test.mjs && node scripts/token-usage-test.mjs && node scripts/protocol-matrix-test.mjs && node scripts/config-cli-test.mjs && node scripts/docs-contract-test.mjs && node scripts/provider-discovery-test.mjs && node scripts/model-status-test.mjs",
+    "test:required": "node scripts/node-config-shards-test.mjs && node scripts/github-deployment-config-test.mjs && node scripts/gateway-configuration-test.mjs && node scripts/request-reliability-test.mjs && node scripts/stream-completion-test.mjs && node scripts/token-usage-store-test.mjs && node scripts/token-usage-test.mjs && node scripts/protocol-matrix-test.mjs && node scripts/config-cli-test.mjs && node scripts/docs-contract-test.mjs && node scripts/provider-discovery-test.mjs && node scripts/model-status-test.mjs && node scripts/reliability-performance-test.mjs",
     "test:full": "npm run test:required && node scripts/scheduler-stability-test.mjs && node scripts/integration-test.mjs && node scripts/stress-test.mjs && node scripts/codex-contract-test.mjs && node scripts/claude-contract-test.mjs",
     "test": "npm run test:required",
     "test:integration": "node scripts/integration-test.mjs",

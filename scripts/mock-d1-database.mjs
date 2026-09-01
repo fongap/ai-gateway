@@ -54,10 +54,13 @@ export function createMockD1({ failWrites = false, failReads = false } = {}) {
           return { success: true, meta: { changes } };
         }
         if (/token_usage_model_hourly/i.test(sql)) {
-          const [hour, model, input, output, total, req, reports, missing] = this._params;
+          const [hour, model, input, output, total, req, reports, missing,
+            successTtftCount, b0, b1, b2, b3, b4, b5, b6] = this._params;
           const key = modelKey(hour, model);
           const cur = modelRows.get(key)
-            || { input: 0, output: 0, total: 0, requests: 0, reports: 0, missing: 0 };
+            || { input: 0, output: 0, total: 0, requests: 0, reports: 0, missing: 0,
+                 successful_ttft_count: 0, ttft_b0: 0, ttft_b1: 0, ttft_b2: 0,
+                 ttft_b3: 0, ttft_b4: 0, ttft_b5: 0, ttft_b6: 0 };
           modelRows.set(key, {
             input: cur.input + (input || 0),
             output: cur.output + (output || 0),
@@ -65,6 +68,14 @@ export function createMockD1({ failWrites = false, failReads = false } = {}) {
             requests: cur.requests + (req || 0),
             reports: cur.reports + (reports || 0),
             missing: cur.missing + (missing || 0),
+            successful_ttft_count: cur.successful_ttft_count + (successTtftCount || 0),
+            ttft_b0: cur.ttft_b0 + (b0 || 0),
+            ttft_b1: cur.ttft_b1 + (b1 || 0),
+            ttft_b2: cur.ttft_b2 + (b2 || 0),
+            ttft_b3: cur.ttft_b3 + (b3 || 0),
+            ttft_b4: cur.ttft_b4 + (b4 || 0),
+            ttft_b5: cur.ttft_b5 + (b5 || 0),
+            ttft_b6: cur.ttft_b6 + (b6 || 0),
           });
         } else {
           const [hour, input, output, total, req, reports, missing] = this._params;
@@ -84,6 +95,51 @@ export function createMockD1({ failWrites = false, failReads = false } = {}) {
       async first() {
         reads.push({ method: 'first', sql, params: this._params });
         if (failReads) throw new Error('mock D1 read failure');
+        // queryModelTtftPercentiles: SELECT SUM(successful_ttft_count), SUM(ttft_b0..b6)
+        // WHERE hour >= ? AND model = ?
+        if (/successful_ttft_count/i.test(sql) && /ttft_b0/i.test(sql)) {
+          const [startHour, model] = this._params;
+          let total_ttft = 0, b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
+          let found = false;
+          for (const [key, r] of modelRows) {
+            const parsed = parseModelKey(key);
+            if (!parsed) continue;
+            if (parsed.hour < startHour) continue;
+            if (parsed.model !== model) continue;
+            found = true;
+            total_ttft += r.successful_ttft_count || 0;
+            b0 += r.ttft_b0 || 0;
+            b1 += r.ttft_b1 || 0;
+            b2 += r.ttft_b2 || 0;
+            b3 += r.ttft_b3 || 0;
+            b4 += r.ttft_b4 || 0;
+            b5 += r.ttft_b5 || 0;
+            b6 += r.ttft_b6 || 0;
+          }
+          if (!found) return null;
+          return { total_ttft, b0, b1, b2, b3, b4, b5, b6 };
+        }
+        // queryModelReliability: SELECT model, SUM(requests), SUM(usage_reports), SUM(usage_missing)
+        // GROUP BY model WHERE hour >= ?
+        if (/usage_reports/i.test(sql) && /usage_missing/i.test(sql) && /GROUP BY model/i.test(sql)) {
+          const startHour = this._params[0];
+          const byModel = new Map();
+          for (const [key, r] of modelRows) {
+            const parsed = parseModelKey(key);
+            if (!parsed) continue;
+            if (parsed.hour < startHour) continue;
+            const cur = byModel.get(parsed.model) || { requests: 0, reports: 0, missing: 0 };
+            byModel.set(parsed.model, {
+              requests: cur.requests + (r.requests || 0),
+              reports: cur.reports + (r.reports || 0),
+              missing: cur.missing + (r.missing || 0),
+            });
+          }
+          const results = [...byModel.entries()]
+            .sort((a, b) => b[1].requests - a[1].requests)
+            .map(([model, r]) => ({ model, requests: r.requests, reports: r.reports, missing: r.missing }));
+          return { results };
+        }
         // queryTokenSummary binds (todayStart, todayStart, h24Start, h24Start,
         // d7Start, d7Start).
         const [todayStart, , h24Start, , d7Start] = this._params;
@@ -125,6 +181,27 @@ export function createMockD1({ failWrites = false, failReads = false } = {}) {
             out.set(model, true);
           }
           return { results: [...out.keys()].map((model) => ({ model })) };
+        }
+        // queryModelReliability (all): SELECT model, SUM(requests), SUM(usage_reports), SUM(usage_missing)
+        // GROUP BY model WHERE hour >= ?
+        if (/usage_reports/i.test(sql) && /usage_missing/i.test(sql) && /GROUP BY model/i.test(sql)) {
+          const startHour = this._params[0];
+          const byModel = new Map();
+          for (const [key, r] of modelRows) {
+            const parsed = parseModelKey(key);
+            if (!parsed) continue;
+            if (parsed.hour < startHour) continue;
+            const cur = byModel.get(parsed.model) || { requests: 0, reports: 0, missing: 0 };
+            byModel.set(parsed.model, {
+              requests: cur.requests + (r.requests || 0),
+              reports: cur.reports + (r.reports || 0),
+              missing: cur.missing + (r.missing || 0),
+            });
+          }
+          const results = [...byModel.entries()]
+            .sort((a, b) => b[1].requests - a[1].requests)
+            .map(([model, r]) => ({ model, requests: r.requests, reports: r.reports, missing: r.missing }));
+          return { results };
         }
         // queryTokenModelUsage: SELECT model, SUM(...) GROUP BY model WHERE hour >= start.
         if (/GROUP BY model/i.test(sql)) {

@@ -1332,8 +1332,11 @@ function recordTokens(c, node, usage) {
 //   * ctx.waitUntil is the ONLY mechanism used — never `await` before a
 //     response, never a synchronous D1 call;
 //   * every rejection is caught and logged at most once.
+//
+// TTFT is passed only for successful requests with meaningful output.
+// Failures MUST NOT pass a TTFT value — they enter failure statistics only.
 function scheduleD1TokenPersist(c, usage) {
-  const task = persistTokenUsage(c.env, usage, Date.now(), c.requestedModel).catch((err) => {
+  const task = persistTokenUsage(c.env, usage, Date.now(), c.requestedModel, c.ttftMs ?? null).catch((err) => {
     const scope = err?.scope === 'per-model' ? 'per-model' : 'global';
     try { c.logger?.error?.(`token-stats D1 ${scope} persist failed: ${err?.message || err}`); } catch { /* never throw */ }
   });
