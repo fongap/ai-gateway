@@ -26,7 +26,14 @@ function Get-D1DatabaseName {
     return $db.database_name
 }
 
+function Test-HasAffinityKvBinding {
+    if (-not (Test-Path $userConfig)) { return $false }
+    $config = Get-Content $userConfig -Raw | Convert-FromJson
+    return @($config.kv_namespaces | Where-Object { $_.binding -eq 'TIER1_AFFINITY' -and $_.id }).Count -gt 0
+}
+
 if (Test-Path $userConfig) {
+    if (-not (Test-HasAffinityKvBinding)) { throw 'Required TIER1_AFFINITY KV binding is missing from wrangler.user.jsonc.' }
     if (Test-HasD1Binding) {
         $dbName = Get-D1DatabaseName
         Write-Host "applying D1 migrations to '$dbName' (remote)..."
@@ -36,5 +43,5 @@ if (Test-Path $userConfig) {
     }
     Invoke-Wrangler @('deploy', '-c', 'wrangler.user.jsonc', '--keep-vars')
 } else {
-    Invoke-Wrangler @('deploy', '--keep-vars')
+    throw 'wrangler.user.jsonc is required and must contain the TIER1_AFFINITY KV binding.'
 }

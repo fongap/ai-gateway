@@ -76,7 +76,7 @@ Rules enforced at load time:
 - Credential fields (`token`, `api_key`, `apikey`, `authorization`, `password`, `secret`, `credential`) are **rejected** — credentials belong in `NODE_SECRETS_*`.
 - A `tier` field is rejected; the tier comes from the variable prefix.
 - `base_url` must be an absolute URL; `https://` unless `ALLOW_INSECURE_HTTP_UPSTREAM=true`; no embedded username/password.
-- `priority`: number, smaller = higher precedence, default `100`.
+- `priority`: number, default `100`. It remains active for Tier 2/3 compatibility. Tier 1 P2C intentionally ignores it.
 - `protocol`: `"openai"`（默认）或 `"anthropic"`。决定请求格式、上游 endpoint、认证 header（openai → `Authorization: Bearer`；anthropic → `x-api-key` + `anthropic-version`）、协议头与流式 wire format。任何提供 OpenAI-compatible 或 Anthropic-compatible API 的服务均可作为节点接入。
 - `surfaces`: 该节点真正支持的接口。`openai` 协议可选 `chat_completions` / `responses`；`anthropic` 协议只能是 `messages`。调度器按 protocol + surface + model 三重过滤：`/v1/responses` 请求只会路由到 `surfaces` 含 `responses` 的 openai 节点；`/v1/messages` 只会路由到 anthropic 节点；禁止跨协议 fallback。
 - **迁移兼容**：旧节点缺少 `protocol` 时默认 `"openai"`、缺少 `surfaces` 时默认对应协议的默认 surface，并输出 deprecated diagnostic（节点仍然可用，gateway 不会因此 invalid）。建议尽快显式声明。
@@ -89,7 +89,7 @@ Rules enforced at load time:
   - **soft** — the legacy best-effort behavior: exhausted nodes remain last-resort candidates so a lone capped node still serves instead of failing.
 - `limits.rpm_mode`: `"hard"`(default) | `"soft"`. Any other value is rejected.
 
-> **Scope of `limits.*` and reliability state**: `limits.concurrency`, `limits.rpm`, cooldowns, circuit/health and RPM counters are **isolate-local** — per Cloudflare Worker isolate, best-effort shaping. They are **not** global hard limits and **not** provider-wide or cluster-accurate quotas. They are reset whenever an isolate restarts and must not be relied on for billing or per-key accounting.
+> **Scope of `limits.*` and reliability state**: `limits.concurrency`, `limits.rpm`, Tier 1 passive TTFT/in-flight/cooldown/half-open state, and Tier 2/3 circuit/health/RPM counters are **isolate-local** best-effort shaping. They are not global hard limits or billing/accounting state and reset with the isolate. Tier 1 session affinity is the exception: it uses KV as described below.
 
 ### Optional distributed rate shaping (per-location)
 
@@ -98,6 +98,20 @@ For keys that are rate-limited at the account level you can add a Cloudflare Wor
 > **Scope caveat**: Cloudflare Rate Limiting is counted per location, permissive and eventually consistent — it is **not** a strict global/account quota and should not be relied on for accurate accounting. Its threshold is fixed at the binding (`limit=N`, `period=60`), so it cannot express a different `limits.rpm` per node; the local hard/soft semantics remain the exact per-node source of truth. Treat it as approximate distributed shaping, and use `limits.rpm` (hard mode) for exact per-node counts.
 
 Concurrency cannot be coordinated globally without Durable Objects, which this project deliberately does not use: `limits.concurrency` stays isolate-local by design.
+
+### Required Tier 1 session-affinity KV
+
+The deployed Worker has no confirmed session-sticky isolate routing, so Tier 1 affinity uses a Cloudflare KV binding named `TIER1_AFFINITY`. Create a namespace and add it to `wrangler.user.jsonc`:
+
+```jsonc
+"kv_namespaces": [
+  { "binding": "TIER1_AFFINITY", "id": "<32-character-kv-namespace-id>" }
+]
+```
+
+For GitHub deployment, set repository Variable `TIER1_AFFINITY_KV_ID`; preflight rejects Tier 1 deployments without it. The local installer asks for the same ID, and local real-deploy commands refuse a config without the binding.
+
+Clients opt into affinity with `x-session-id` (8–128 characters). The raw session ID is not logged or used as a KV key: the gateway stores `affinity:v1:<sha256>` → Tier 1 account with a 30-minute TTL. KV is written only after a cold-session Tier 1 success or a successful affinity escape. Tier 2/3 fallback never changes it. Affinity is advisory and eventually consistent; a transient KV error falls back to ordinary P2C without blocking the AI request.
 
 ### Optional token-usage persistence (Cloudflare D1)
 
@@ -175,12 +189,12 @@ To capture usage on OpenAI-compatible **streaming** responses (which otherwise o
 
 The **Model Registry** is the single source of truth for a logical model's capability (`capabilities.tools/reasoning/vision/stream`) and reasoning efforts. Node mapping only says *whether a node can serve the model*; the Transport layer says *how to talk to the upstream*. `/v1/models` does not derive capability from a provider label.
 
-Tier order is fixed: tier-1 → tier-2 → tier-3. A lower tier is used only when the current tier yields no eligible candidate for the request. `max_attempts` (default 5; explicitly configured values must be an integer between 1 and 8 — anything else is rejected at load, never clamped) bounds total attempts per request across all tiers. Each tier additionally has its own attempt budget: by default `max_attempts` is split over currently-dispatchable work — a tier whose candidates are merely deferred (concurrency-saturated or hard-RPM-exhausted) reserves no budget — so every tier that actually holds a dispatchable candidate (model supported, not cooling / circuit-open) gets at least one attempt and the surplus goes to the highest (most-preferred) dispatchable tier — maximizing free/priority resource use while always keeping the paid fallback reachable and never silently starving an intermediate tier. `tier_attempts` explicitly overrides a tier's budget (`0` disables it).
+Tier order is fixed: tier-1 → tier-2 → tier-3. A lower tier is used only when the current tier yields no eligible candidate or spends its tier budget. `max_attempts` (default 5; configured values 1–8) bounds the whole request, while Tier 1 additionally has a hard maximum of three logical attempts and checks the shared wall-clock deadline before retries. Per-tier budgets are still allocated over currently dispatchable work and `tier_attempts` can override them (`0` disables a tier). Tier 2/3 preserve the existing reliability and fallback behavior.
 
 ### Recommended multi-key / multi-account layout
 
 ```jsonc
-// TIER1_NODES_CONFIG_01 — same provider, two accounts, SAME priority:
+// TIER1_NODES_CONFIG_01 — three free accounts; priority is ignored in Tier 1:
 [
   { "id": "nvidia-01", "base_url": "https://integrate.api.nvidia.com/v1", "priority": 10,
     "models": { "general-air": "deepseek-ai/deepseek-v3.1", "code-pro": "qwen/qwen3-coder-480b" },
@@ -188,7 +202,7 @@ Tier order is fixed: tier-1 → tier-2 → tier-3. A lower tier is used only whe
   { "id": "nvidia-02", "base_url": "https://integrate.api.nvidia.com/v1", "priority": 10,
     "models": { "general-air": "deepseek-ai/deepseek-v3.1", "code-pro": "qwen/qwen3-coder-480b" },
     "limits": { "concurrency": 3, "rpm": 40 } },
-  // different provider in the same tier, slightly lower preference:
+  // different provider in the same Tier 1 P2C pool:
   { "id": "glm-01", "base_url": "https://open.bigmodel.cn/api/paas/v4", "priority": 20,
     "models": { "general-air": "glm-4.7", "code-max": "glm-4.7" }, "limits": { "concurrency": 2 } }
 ]
@@ -197,9 +211,9 @@ Tier order is fixed: tier-1 → tier-2 → tier-3. A lower tier is used only whe
 { "nvidia-01": "nvapi-...", "nvidia-02": "nvapi-...", "glm-01": "..." }
 ```
 
-- Same priority within a tier = LRU rotation: sequential traffic spreads across all keys, so the first 429 appears only after the *combined* quota is spent.
-- Different priority = strict order; larger values take over only when smaller ones are busy/cooling/circuit-open.
-- Keys you want to conserve (paid, shared) belong in a lower tier, not a higher priority number.
+- Tier 1 uses Eligibility + soft session affinity + P2C + passive per-model TTFT. It performs no LRU or priority ordering and does not promise a globally fastest account on every request.
+- `priority` continues to order Tier 2/3 nodes. It is retained in the shared schema so those tiers are unchanged.
+- Keys you want to conserve (paid, shared) belong in a lower resource tier, not behind a larger Tier 1 priority number.
 
 ### Runtime knobs
 
@@ -236,6 +250,8 @@ Computed at config-load time and exposed on the auth-protected `/health`:
 | `ready` | All declared nodes usable |
 
 `ready` is `true` only for `ready`/`degraded`; `invalid`/`unconfigured` refuse service (`/health` returns 503, API requests return 500). `/health` also reports `nodes_total` (declared), `nodes_usable` and `nodes_active` separately.
+
+For Tier 1, authenticated `/health` reports account/model states as `configured`, `unknown`, `observed_healthy`, `cooldown`, `half_open`, or `disabled`, plus in-flight count, passive `ttft_ewma_ms` (`null` while UNKNOWN), sample count, cooldown/quota state, last observation, ambiguous-429 scope, and safe aggregate affinity-KV statistics. It never fabricates an UNKNOWN TTFT and never exposes credentials or raw session IDs. Tier 2/3 keep their existing health/circuit diagnostics.
 
 ## /metrics
 

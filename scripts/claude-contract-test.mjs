@@ -14,6 +14,8 @@
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
 import { __resetAllStateForTests, getNodeState } from '../src/reliability/node-state.js';
+import { __resetTier1StateForTests, recordTier1Ttft } from '../src/reliability/tier1-state.js';
+import { __resetTier1AffinityForTests } from '../src/scheduler/tier1-affinity.js';
 
 const ACCESS_KEY = 'test-access-key';
 
@@ -21,6 +23,8 @@ let passed = 0;
 async function test(name, fn) {
   try {
     __resetAllStateForTests();
+    __resetTier1StateForTests();
+    __resetTier1AffinityForTests();
     await fn();
     passed++;
     console.log(`ok - ${name}`);
@@ -56,6 +60,7 @@ function resetMock() {
 function makeEnv({ tier1, tier2, secrets, extraEnv } = {}) {
   return {
     GATEWAY_ACCESS_KEY: ACCESS_KEY,
+    TIER1_SCHEDULER_SEED: 'claude-contract-test',
     ...(tier1 ? { TIER1_NODES_CONFIG_01: JSON.stringify(tier1) } : {}),
     ...(tier2 ? { TIER2_NODES_CONFIG_01: JSON.stringify(tier2) } : {}),
     ...(secrets ? { NODE_SECRETS_01: JSON.stringify(secrets) } : {}),
@@ -433,6 +438,8 @@ await test('claude: message_start-only first event then EOF must fail over to a 
     },
   }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
   routeHandlers['rob.example.com'] = () => sseResponse(textLifecycle('served by B'));
+  recordTier1Ttft('roa', 'claude-x', 10);
+  recordTier1Ttft('rob', 'claude-x', 1000);
   const env = makeEnv({ tier1: [node('roa'), node('rob')], secrets: { roa: 'k', rob: 'k' } });
   const res = await worker.fetch(messagesRequest({ model: 'claude-x', max_tokens: 64, stream: true, messages: [{ role: 'user', content: 'hi' }] }), env, {});
   assert.equal(res.status, 200, 'must fail over to B and serve');
@@ -455,6 +462,8 @@ await test('claude: text delta first event then EOF must NOT fail over to anothe
     },
   }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
   routeHandlers['tob.example.com'] = () => sseResponse(textLifecycle('should not serve'));
+  recordTier1Ttft('toa', 'claude-x', 10);
+  recordTier1Ttft('tob', 'claude-x', 1000);
   const env = makeEnv({ tier1: [node('toa'), node('tob')], secrets: { toa: 'k', tob: 'k' } });
   const res = await worker.fetch(messagesRequest({ model: 'claude-x', max_tokens: 64, stream: true, messages: [{ role: 'user', content: 'hi' }] }), env, {});
   assert.equal(res.status, 200);

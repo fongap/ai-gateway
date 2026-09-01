@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Protocol matrix tests â€?the cross-protocol guarantees of the gateway.
+// Protocol matrix tests â€” the cross-protocol guarantees of the gateway.
 //
 // The gateway natively speaks exactly TWO protocol families:
 //   openai    -> /v1/chat/completions (chat_completions), /v1/responses (responses)
@@ -14,6 +14,8 @@
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
 import { __resetAllStateForTests, getNodeState } from '../src/reliability/node-state.js';
+import { __resetTier1StateForTests } from '../src/reliability/tier1-state.js';
+import { __resetTier1AffinityForTests } from '../src/scheduler/tier1-affinity.js';
 
 const ACCESS_KEY = 'test-access-key';
 
@@ -21,6 +23,8 @@ let passed = 0;
 async function test(name, fn) {
   try {
     __resetAllStateForTests();
+    __resetTier1StateForTests();
+    __resetTier1AffinityForTests();
     await fn();
     passed++;
     console.log(`ok - ${name}`);
@@ -57,6 +61,7 @@ function resetMock() {
 function makeEnv({ tier1, tier2, secrets, extraEnv } = {}) {
   return {
     GATEWAY_ACCESS_KEY: ACCESS_KEY,
+    TIER1_SCHEDULER_SEED: 'protocol-matrix-test',
     ...(tier1 ? { TIER1_NODES_CONFIG_01: JSON.stringify(tier1) } : {}),
     ...(tier2 ? { TIER2_NODES_CONFIG_01: JSON.stringify(tier2) } : {}),
     ...(secrets ? { NODE_SECRETS_01: JSON.stringify(secrets) } : {}),
@@ -97,7 +102,7 @@ const jsonUpstream = (data, status = 200, headers = {}) =>
   new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json', ...headers } });
 
 // A mock upstream that never answers on its own but honors the dispatch
-// AbortController â€?like a real fetch hanging until the gateway aborts it.
+// AbortController â€” like a real fetch hanging until the gateway aborts it.
 const hangUntilAbort = () => async (req, url, init) => new Promise((_, reject) => {
   if (init?.signal?.aborted) { reject(new Error('aborted')); return; }
   init?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
@@ -328,7 +333,7 @@ await test('in-tier failover: openai chat node A -> openai chat node B -> openai
 await test('hedge twin is same-protocol same-surface: no eligible twin -> no hedge', async () => {
   resetMock();
   // The only other candidate is an anthropic node; the primary hangs. No twin
-  // may be launched against a different protocol â€?the request waits on the
+  // may be launched against a different protocol â€” the request waits on the
   // primary (and eventually hits the failover budget).
   routeHandlers['hp.example.com'] = hangUntilAbort();
   routeHandlers['h-an.example.com'] = () => jsonUpstream(okMessage());
@@ -397,7 +402,7 @@ await test('legacy anthropic-labeled node defaults to openai protocol (explicit 
   const res = await worker.fetch(chatRequest({}), env, {});
   assert.equal(res.status, 200);
   assert.equal(upstreamCalls[0].path, '/v1/chat/completions');
-  // A /v1/messages request can NOT be served by this legacy node â€?the
+  // A /v1/messages request can NOT be served by this legacy node â€” the
   // operator must explicitly declare protocol=anthropic to unlock it.
   resetMock();
   const messagesRes = await worker.fetch(messagesRequest({}), env, {});

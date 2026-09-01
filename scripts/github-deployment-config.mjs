@@ -7,7 +7,8 @@
 //
 //   1. Individual GitHub Repository Variables / Secrets (long-term target):
 //        Variables: TIER{1,2,3}_NODES_CONFIG_01.., MODELS_CONFIG, POLICIES_CONFIG,
-//                    CLOUDFLARE_ACCOUNT_ID, TOKEN_STATS_D1_ID, GATEWAY_PUBLIC_BASE_URL
+//                    CLOUDFLARE_ACCOUNT_ID, TOKEN_STATS_D1_ID,
+//                    TIER1_AFFINITY_KV_ID, GATEWAY_PUBLIC_BASE_URL
 //        Secrets:    GATEWAY_ACCESS_KEY, NODE_SECRETS_01.., CLOUDFLARE_API_TOKEN
 //      The workflow injects these into the process environment; this script
 //      collects the non-empty ones. A single node change only touches the
@@ -196,6 +197,7 @@ export function preflight(env) {
   const v = collectVarsFromEnv(env);
   const s = collectSecretsFromEnv(env);
   const tierShards = Object.keys(v.vars).filter((n) => NODE_VAR.test(n)).length;
+  const tier1Shards = Object.keys(v.vars).filter((n) => /^TIER1_NODES_CONFIG_\d{2}$/.test(n)).length;
   const secretShards = Object.keys(s.secrets).filter((n) => NODE_SECRET.test(n)).length;
   // Cloudflare Workers imposes a platform limit on the total number of
   // environment variables + bindings. The _01..99 shard namespace is a
@@ -207,6 +209,9 @@ export function preflight(env) {
   }
   if (!tierShards) {
     errors.push('No TIER{1,2,3}_NODES_CONFIG_XX Variable is configured. Set at least one node-config shard.');
+  }
+  if (tier1Shards && (!env.TIER1_AFFINITY_KV_ID || String(env.TIER1_AFFINITY_KV_ID).trim() === '')) {
+    errors.push('TIER1_AFFINITY_KV_ID is required when Tier 1 nodes are configured (session routing is not isolate-sticky).');
   }
   if (!Object.keys(s.secrets).some((n) => NODE_SECRET.test(n))) {
     errors.push('No NODE_SECRETS_XX Secret is configured. Set at least one credential shard.');
@@ -226,7 +231,7 @@ export function preflight(env) {
 // Deployment summary (§26): safe counts and statuses only — never credential
 // material, URLs of upstreams, or node credentials. Written by the prepare
 // command and echoed to the GitHub Actions step summary by the workflow.
-export function buildDeploymentSummary({ config, runtime, d1Configured, removedSecretShards = 0 }) {
+export function buildDeploymentSummary({ config, runtime, d1Configured, affinityKvConfigured, removedSecretShards = 0 }) {
   const modelsCount = (() => {
     try {
       const parsed = JSON.parse(runtime.vars.MODELS_CONFIG || '{}');
@@ -248,6 +253,9 @@ export function buildDeploymentSummary({ config, runtime, d1Configured, removedS
     '',
     'D1',
     `  Status: ${String(d1Configured || '').trim() ? 'ready' : 'disabled (TOKEN_STATS_D1_ID is not configured)'}`,
+    '',
+    'Tier 1 affinity KV',
+    `  Status: ${String(affinityKvConfigured || '').trim() ? 'ready' : 'missing (TIER1_AFFINITY_KV_ID is not configured)'}`,
     '',
     'Health',
     '  /health                    OK',
@@ -279,7 +287,7 @@ export function validateGatewayRuntime(runtime) {
   return config;
 }
 
-export function buildWranglerConfig(vars, d1DatabaseId = '') {
+export function buildWranglerConfig(vars, d1DatabaseId = '', affinityKvId = '') {
   // Wrangler resolves config paths relative to the config FILE's directory, and
   // the generated config lives in the runner's temp dir. Use absolute paths so
   // the entry point and migrations resolve back to the checked-out repository.
@@ -300,6 +308,12 @@ export function buildWranglerConfig(vars, d1DatabaseId = '') {
       database_name: 'ai-gateway-stats',
       database_id: String(d1DatabaseId).trim(),
       migrations_dir: path.resolve(root, 'migrations'),
+    }];
+  }
+  if (String(affinityKvId || '').trim()) {
+    out.kv_namespaces = [{
+      binding: 'TIER1_AFFINITY',
+      id: String(affinityKvId).trim(),
     }];
   }
   return out;
@@ -388,13 +402,20 @@ async function main() {
     const bulkSecrets = existingSecretsFile
       ? withStaleNodeSecretsRemoved(runtime.secrets, readSecretList(existingSecretsFile))
       : runtime.secrets;
-    fs.writeFileSync(wrangler, JSON.stringify(buildWranglerConfig(runtime.vars, process.env.TOKEN_STATS_D1_ID), null, 2));
+    fs.writeFileSync(wrangler, JSON.stringify(buildWranglerConfig(
+      runtime.vars,
+      process.env.TOKEN_STATS_D1_ID,
+      process.env.TIER1_AFFINITY_KV_ID,
+    ), null, 2));
     fs.writeFileSync(secretsOut, JSON.stringify(bulkSecrets));
     const removed = Object.values(bulkSecrets).filter((value) => value === null).length;
     const summaryOut = argValue(argv, '--summary');
     if (summaryOut) {
       fs.writeFileSync(summaryOut, buildDeploymentSummary({
-        config, runtime, d1Configured: process.env.TOKEN_STATS_D1_ID, removedSecretShards: removed,
+        config, runtime,
+        d1Configured: process.env.TOKEN_STATS_D1_ID,
+        affinityKvConfigured: process.env.TIER1_AFFINITY_KV_ID,
+        removedSecretShards: removed,
       }) + '\n');
     }
     console.log(`Runtime configuration package is valid: ${config.nodesUsable}/${config.nodesTotal} usable node(s), ${Object.keys(runtime.vars).length} Worker text variable(s), ${Object.keys(runtime.secrets).length} Worker Secret(s), ${removed} obsolete node-secret shard(s) removed.`);

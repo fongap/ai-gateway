@@ -44,6 +44,7 @@ jobs:
       # --- Non-sensitive GitHub Variables (fixed range; unset => empty) ---
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       TOKEN_STATS_D1_ID: ${{ vars.TOKEN_STATS_D1_ID }}
+      TIER1_AFFINITY_KV_ID: ${{ vars.TIER1_AFFINITY_KV_ID }}
       GATEWAY_PUBLIC_BASE_URL: ${{ vars.GATEWAY_PUBLIC_BASE_URL }}
       MODELS_CONFIG: ${{ vars.MODELS_CONFIG }}
       POLICIES_CONFIG: ${{ vars.POLICIES_CONFIG }}

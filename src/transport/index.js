@@ -14,12 +14,12 @@
 //   openai    -> chat_completions, responses
 //   anthropic -> messages
 
-import { resolveOpenAIPath, buildOpenAIHeaders, isResponsesRealOutput, OPENAI_SURFACE_PATH } from './openai.js';
-import { resolveAnthropicPath, buildAnthropicHeaders, isAnthropicNativeRealOutput, ANTHROPIC_SURFACE_PATH } from './anthropic.js';
+import { resolveOpenAIPath, buildOpenAIHeaders, isResponsesRealOutput, isOpenAIChatRealOutput, isOpenAIChatCompletionMeaningful, isOpenAIResponsesObjectMeaningful, OPENAI_SURFACE_PATH } from './openai.js';
+import { resolveAnthropicPath, buildAnthropicHeaders, isAnthropicNativeRealOutput, isAnthropicMessageMeaningful, ANTHROPIC_SURFACE_PATH } from './anthropic.js';
 
 export { isOpenAIStreamingResponse, withUsageStreamOptions } from '../protocol/openai.js';
-export { OPENAI_SURFACE_PATH, resolveOpenAIPath, buildOpenAIHeaders, isResponsesRealOutput };
-export { ANTHROPIC_SURFACE_PATH, resolveAnthropicPath, buildAnthropicHeaders, isAnthropicNativeRealOutput };
+export { OPENAI_SURFACE_PATH, resolveOpenAIPath, buildOpenAIHeaders, isResponsesRealOutput, isOpenAIChatRealOutput, isOpenAIChatCompletionMeaningful, isOpenAIResponsesObjectMeaningful };
+export { ANTHROPIC_SURFACE_PATH, resolveAnthropicPath, buildAnthropicHeaders, isAnthropicNativeRealOutput, isAnthropicMessageMeaningful };
 
 // The upstream path for a (protocol, surface) pair. Both must be valid: the
 // config layer already validated node.protocol / node.surfaces, and the

@@ -6,6 +6,8 @@
 
 import { loadGatewayConfig } from '../config/nodes.js';
 import { snapshotNode } from '../reliability/node-state.js';
+import { snapshotTier1AccountRuntime } from '../reliability/tier1-state.js';
+import { snapshotTier1Affinity } from '../scheduler/tier1-affinity.js';
 import { gatewayStats, streamStats } from './gateway-stats.mjs';
 import { tokenStats, summarizeTokenStats, tokenMetricSeries } from './token-usage.mjs';
 import { corsHeaders, jsonError } from '../protocol/http.js';
@@ -98,17 +100,32 @@ function buildModelsList(nodes, env) {
 export function healthResponse(request, env, requestId) {
   const config = loadGatewayConfig(env);
   const now = Date.now();
-  const endpoints = config.nodes.map((n) => ({
-    id: n.id,
-    tier: n.tier,
-    provider: n.provider,
-    protocol: n.protocol,
-    surfaces: n.surfaces,
-    priority: n.priority,
-    models: Object.keys(n.models || {}),
-    ...snapshotNode(n.id, now),
-  }));
-  const cooling = endpoints.filter((e) => e.status === 'cooling_down').length;
+  const registryModels = Object.keys(loadModelRegistry(env));
+  const endpoints = config.nodes.map((n) => {
+    const configuredModels = Object.keys(n.models || {});
+    const models = configuredModels.length ? configuredModels : registryModels;
+    const base = {
+      id: n.id, tier: n.tier, provider: n.provider, protocol: n.protocol,
+      surfaces: n.surfaces, priority: n.priority, models: configuredModels,
+    };
+    if (n.tier !== 'tier-1') return { ...base, ...snapshotNode(n.id, now) };
+    const runtime = snapshotTier1AccountRuntime(n.id, models, now);
+    const totals = snapshotNode(n.id, now);
+    return {
+      ...base,
+      status: runtime.state,
+      active_requests: runtime.in_flight,
+      total_requests: totals.total_requests,
+      total_successes: totals.total_successes,
+      total_failures: totals.total_failures,
+      scheduler: 'eligibility_affinity_p2c_passive_ttft',
+      runtime,
+    };
+  });
+  const cooling = endpoints.filter((e) => e.status === 'cooldown' || e.status === 'cooling_down').length;
+  const disabled = endpoints.filter((e) => e.status === 'disabled').length;
+  const observedHealthy = endpoints.filter((e) => e.status === 'observed_healthy' || e.status === 'active').length;
+  const unknown = endpoints.filter((e) => e.status === 'configured' || e.status === 'unknown').length;
   // A fully invalid or unconfigured gateway is not "healthy": fail with 503 so
   // probe clients stop polling, while degraded/ready (some usable node) stay 200.
   const statusCode = config.status === 'invalid' || config.status === 'unconfigured' ? 503 : 200;
@@ -117,14 +134,18 @@ export function healthResponse(request, env, requestId) {
     ready: config.ready,
     nodes_total: config.nodesTotal,
     nodes_usable: config.nodesUsable,
-    nodes_active: config.nodesUsable - cooling,
+    nodes_active: config.nodesUsable - cooling - disabled,
+    nodes_observed_healthy: observedHealthy,
+    nodes_unknown_or_configured: unknown,
     nodes_cooling_down: cooling,
+    nodes_disabled: disabled,
     tiers: {
       'tier-1': config.nodes.filter((n) => n.tier === 'tier-1').length,
       'tier-2': config.nodes.filter((n) => n.tier === 'tier-2').length,
       'tier-3': config.nodes.filter((n) => n.tier === 'tier-3').length,
     },
     note: "Isolate-local best-effort state; not a cluster-wide snapshot.",
+    tier1_affinity: snapshotTier1Affinity(env),
     client_stats: {
       started_at: new Date(gatewayStats.startedAt).toISOString(),
       requests_total: gatewayStats.requests,
@@ -226,15 +247,32 @@ export function metricsResponse(request, env) {
   emit('gateway_node_requests_total', 'counter', 'Total upstream attempts per node.');
   emit('gateway_node_successes_total', 'counter', 'Total successful upstream attempts per node.');
   emit('gateway_node_failures_total', 'counter', 'Total failed upstream attempts per node.');
+  emit('gateway_tier1_model_ttft_ewma_ms', 'gauge', 'Passive real-request TTFT EWMA for known Tier 1 account/model pairs. Unknown pairs have no series.');
+  emit('gateway_tier1_model_ttft_samples', 'gauge', 'Number of passive real-request TTFT samples for each Tier 1 account/model pair.');
+  emit('gateway_tier1_model_cooldown_remaining_ms', 'gauge', 'Remaining Tier 1 account/model cooldown in ms.');
 
   for (const node of config.nodes) {
     const s = snapshotNode(node.id, now);
     const label = `node_id="${sanitizePrometheusLabel(node.id)}",tier="${node.tier}",provider="${sanitizePrometheusLabel(node.provider)}"`;
-    counter('gateway_node_health_score', s.health_score, label);
-    counter('gateway_node_circuit_state', ({ closed: 0, 'half-open': 1, open: 2 })[s.circuit_state] ?? 0, `node_id="${sanitizePrometheusLabel(node.id)}"`);
-    counter('gateway_node_active_requests', s.active_requests, label);
-    counter('gateway_node_cooldown_remaining_ms', s.cooldown_remaining_ms, label);
-    counter('gateway_node_avg_latency_ms', s.avg_latency_ms, label);
+    if (node.tier === 'tier-1') {
+      const configured = Object.keys(node.models || {});
+      const modelIds = configured.length ? configured : Object.keys(loadModelRegistry(env));
+      const runtime = snapshotTier1AccountRuntime(node.id, modelIds, now);
+      counter('gateway_node_active_requests', runtime.in_flight, label);
+      counter('gateway_node_cooldown_remaining_ms', runtime.account_cooldown_remaining_ms, label);
+      for (const model of runtime.models) {
+        const modelLabel = `${label},model="${sanitizePrometheusLabel(model.model)}"`;
+        if (model.ttft_ewma_ms != null) counter('gateway_tier1_model_ttft_ewma_ms', model.ttft_ewma_ms, modelLabel);
+        counter('gateway_tier1_model_ttft_samples', model.sample_count, modelLabel);
+        counter('gateway_tier1_model_cooldown_remaining_ms', model.cooldown_remaining_ms, modelLabel);
+      }
+    } else {
+      counter('gateway_node_health_score', s.health_score, label);
+      counter('gateway_node_circuit_state', ({ closed: 0, 'half-open': 1, open: 2 })[s.circuit_state] ?? 0, `node_id="${sanitizePrometheusLabel(node.id)}"`);
+      counter('gateway_node_active_requests', s.active_requests, label);
+      counter('gateway_node_cooldown_remaining_ms', s.cooldown_remaining_ms, label);
+      counter('gateway_node_avg_latency_ms', s.avg_latency_ms, label);
+    }
     counter('gateway_node_requests_total', s.total_requests, label);
     counter('gateway_node_successes_total', s.total_successes, label);
     counter('gateway_node_failures_total', s.total_failures, label);

@@ -37,8 +37,17 @@ const CLIENT_STOP_STATUSES = new Set([400, 413, 415, 422]);
 export function classifyUpstreamStatus(status, headers, env, now = Date.now(), body = '') {
   const limits = getLimits(env);
   if (status === 429) {
-    const retryAfter = parseRetryAfterMs(headers, now) || limits.rateLimitCooldownMs;
-    return { kind: KIND.RATE_LIMIT, action: 'rotate', cooldownMs: retryAfter, counted: false };
+    const retryAfterMs = parseRetryAfterMs(headers, now);
+    // Tier 2/3 retain the configured fixed fallback through cooldownMs. Tier 1
+    // reads retryAfterMs separately so an absent header can drive its own
+    // repeated-429 exponential backoff instead of looking explicit.
+    return {
+      kind: KIND.RATE_LIMIT,
+      action: 'rotate',
+      cooldownMs: retryAfterMs || limits.rateLimitCooldownMs,
+      retryAfterMs,
+      counted: false,
+    };
   }
   if (status === 401 || status === 403) {
     return { kind: KIND.AUTH, action: 'rotate', cooldownMs: limits.authFailCooldownMs, counted: false };

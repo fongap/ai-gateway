@@ -38,13 +38,30 @@ PLAN_ARGS="$PLAN_ARGS --out $TMP_PLAN"
 # shellcheck disable=SC2086
 node scripts/plan-node-configuration.mjs $PLAN_ARGS
 
-node -e '
+AFFINITY_KV_ID=""
+if ! node -e '
+const fs = require("fs");
+const c = fs.existsSync("wrangler.user.jsonc") ? JSON.parse(fs.readFileSync("wrangler.user.jsonc", "utf8")) : {};
+process.exit((c.kv_namespaces || []).some((entry) => entry.binding === "TIER1_AFFINITY" && /^[a-fA-F0-9]{32}$/.test(entry.id || "")) ? 0 : 1);
+'; then
+  printf "Tier 1 affinity KV namespace ID (required): "
+  read -r AFFINITY_KV_ID
+fi
+
+AFFINITY_KV_ID="$AFFINITY_KV_ID" node -e '
 const fs = require("fs");
 const base = fs.existsSync("wrangler.user.jsonc")
   ? JSON.parse(fs.readFileSync("wrangler.user.jsonc", "utf8"))
   : JSON.parse(fs.readFileSync("wrangler.jsonc", "utf8"));
 const plan = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
 base.vars = plan.vars;
+if (!(base.kv_namespaces || []).some((entry) => entry.binding === "TIER1_AFFINITY")) {
+  if (!/^[a-fA-F0-9]{32}$/.test(process.env.AFFINITY_KV_ID || "")) {
+    console.error("Tier 1 affinity KV namespace ID must be 32 hexadecimal characters");
+    process.exit(1);
+  }
+  base.kv_namespaces = [...(base.kv_namespaces || []), { binding: "TIER1_AFFINITY", id: process.env.AFFINITY_KV_ID }];
+}
 fs.writeFileSync("wrangler.user.jsonc", JSON.stringify(base, null, 2) + "\n");
 ' "$TMP_PLAN"
 

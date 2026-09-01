@@ -14,6 +14,7 @@ import { corsHeaders, shouldNotRetryHeaders, trimDiagnostic } from '../protocol/
 import { anthropicErrorTypeForStatus } from '../protocol/anthropic.js';
 import { responsesErrorResponse } from '../protocol/responses/index.js';
 import { getCooldownRemainingMs, getModelCooldownRemainingMs, getNodeState } from '../reliability/node-state.js';
+import { tier1BlockingWaitMs, tier1HasDeferredCapacity } from '../reliability/tier1-state.js';
 import { supportsRequest, isHardRpmExhausted, tierHasDeferredCapacity } from '../scheduler/scheduler.js';
 import { TIER_ORDER } from './router.js';
 
@@ -94,16 +95,24 @@ export function buildExhaustedResponse(request, env, route, requestId, requested
   let message;
   let retryAfterSec;
   if (nothingAttempted) {
-    const deferred = TIER_ORDER.some((t) =>
-      tierHasDeferredCapacity(tiers[t], reqDescriptor, state.attempted, now));
-    if (deferred) {
+    if (state.tier1ExhaustionReason === 'deadline_too_small') {
       status = 503;
-      message = 'All eligible nodes are at capacity. Retry shortly.';
+      message = 'The remaining request deadline is too short for another safe upstream attempt.';
+      retryAfterSec = 1;
     } else {
-      status = 429;
-      message = 'All eligible nodes are temporarily unavailable (cooldown or circuit open).';
+      const deferred = TIER_ORDER.some((t) =>
+        t === 1
+          ? tier1HasDeferredCapacity(tiers[t], reqDescriptor, state.attempted, now)
+          : tierHasDeferredCapacity(tiers[t], reqDescriptor, state.attempted, now));
+      if (deferred) {
+        status = 503;
+        message = 'All eligible nodes are at capacity. Retry shortly.';
+      } else {
+        status = 429;
+        message = 'All eligible nodes are temporarily unavailable (cooldown or circuit open).';
+      }
+      retryAfterSec = earliestBlockingRetryAfterSec(tiers, reqDescriptor, now);
     }
-    retryAfterSec = earliestBlockingRetryAfterSec(tiers, reqDescriptor, now);
   } else {
     // Terminal status is driven by the aggregated failure kinds, not by whatever
     // the last attempt happened to be. Otherwise a trailing 429 would mask a
@@ -165,6 +174,7 @@ function earliestBlockingRetryAfterSec(tiers, reqDescriptor, now = Date.now()) {
 // saturation has no timer so it estimates ~1s (slots free as in-flight
 // requests complete).
 function blockingWaitMs(node, requestedModel, now) {
+  if (node.tier === 'tier-1') return tier1BlockingWaitMs(node, requestedModel, now);
   const nodeCd = getCooldownRemainingMs(node.id, now);
   if (nodeCd > 0) return nodeCd;
   const modelCd = getModelCooldownRemainingMs(node.id, requestedModel, now);

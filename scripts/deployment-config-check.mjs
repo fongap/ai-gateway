@@ -38,15 +38,20 @@ for (const file of ['scripts/install.sh', 'scripts/install.ps1']) {
   assert.match(source, /secret['", ]+bulk|secret bulk/, `${file} must deploy secrets via secret bulk`);
   assert.match(source, /keep-vars/, `${file} must preserve remote vars`);
   assert.match(source, /plan-node-configuration\.mjs/, `${file} must shard node configs via the shared planner`);
+  assert.match(source, /TIER1_AFFINITY/, `${file} must configure the required Tier 1 affinity KV binding`);
 }
 for (const file of ['scripts/reconfigure.sh', 'scripts/reconfigure.ps1']) {
   const source = read(file);
   assert.match(source, /secret['", ]+bulk|secret bulk/, `${file} must update runtime secrets without code changes`);
   assert.match(source, /plan-node-configuration\.mjs/, `${file} must shard node configs via the shared planner`);
+  assert.match(source, /TIER1_AFFINITY/, `${file} must preserve or configure the Tier 1 affinity KV binding`);
 }
 for (const file of ['scripts/update.sh', 'scripts/update.ps1', 'scripts/deploy.sh', 'scripts/deploy.ps1']) {
   const source = read(file);
   assert.match(source, /keep-vars|scripts\/deploy\.sh|deploy\.ps1/, `${file} must preserve remote vars (directly or via deploy script)`);
+}
+for (const file of ['scripts/deploy.sh', 'scripts/deploy.ps1']) {
+  assert.match(read(file), /TIER1_AFFINITY/, `${file} must refuse a deploy without the required affinity KV binding`);
 }
 
 // Deploy scripts must apply D1 migrations when the operator config has a
@@ -67,6 +72,7 @@ const runWranglerSource = read('scripts/cloudflare-wrangler.mjs');
 for (const token of ['migrations', 'apply', 'TOKEN_STATS_DB', '--remote', '--dry-run']) {
   assert.ok(runWranglerSource.includes(token), `cloudflare-wrangler.mjs must include ${token} migration/deploy handling`);
 }
+assert.match(runWranglerSource, /TIER1_AFFINITY/, 'cloudflare-wrangler.mjs must enforce the affinity KV binding on real deploys');
 
 const workflowSource = read('.github/workflows/deploy.yml');
 assert.match(workflowSource, /github\.repository\s*==\s*'fongap\/ai-gateway'\s*\|\|\s*vars\.DEPLOY_ENABLED\s*==\s*'true'/, 'deploy job must run for the main repo or forks opted in via DEPLOY_ENABLED');
@@ -75,6 +81,7 @@ assert.match(workflowSource, /node scripts\/github-deployment-config\.mjs prefli
 assert.match(workflowSource, /prepare --from-env/, 'deploy workflow must read individual GitHub Variables / Secrets from the environment');
 assert.match(workflowSource, /NODE_SECRETS_01:/, 'deploy workflow must inject individual credential shards via a fixed range');
 assert.match(workflowSource, /TIER1_NODES_CONFIG_01:/, 'deploy workflow must inject individual node-config shards via a fixed range');
+assert.match(workflowSource, /TIER1_AFFINITY_KV_ID:/, 'deploy workflow must inject the Tier 1 affinity KV namespace id');
 assert.match(workflowSource, /GATEWAY_CONFIG:/, 'deploy workflow must keep the legacy GATEWAY_CONFIG blob as a deprecated fallback');
 assert.match(workflowSource, /GATEWAY_SECRETS_CONFIG:/, 'deploy workflow must keep the legacy GATEWAY_SECRETS_CONFIG blob as a deprecated fallback');
 assert.match(workflowSource, /secret bulk/, 'deploy workflow must synchronize Worker Secrets');

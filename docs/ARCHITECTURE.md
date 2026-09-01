@@ -16,8 +16,8 @@ Request pipeline (src/request/handler.js)
 Config Layer (src/config)          ← parses env shards ONCE per isolate
    ↓  Runtime Node { id, tier, provider, protocol, surfaces, baseUrl, credential, priority, models, limits }
 Scheduler (src/scheduler)
-   ↓  protocol + surface + model triple filter, dynamic eligible set per attempt
-Reliability (src/reliability)      ← node-local state: cooldowns, circuit, health
+   ↓  Tier 1: Eligibility → Affinity → P2C; Tier 2/3: existing selector
+Reliability (src/reliability)      ← Tier 1 account/model state; legacy Tier 2/3 node state
 Transport (src/transport)          ← openai.js / anthropic.js: native path, headers, stream semantics
    ↓
 Upstream providers (native endpoint of the SAME protocol + surface)
@@ -48,18 +48,35 @@ Reliability (src/reliability)             →  whether a node is currently usabl
 - Fail-fast node schema: unknown node/limits fields, invalid `protocol`/`surfaces`/`priority`/`concurrency`/`rpm`, and a filled-but-invalid `models` map are rejected with a named diagnostic (a bad `models` map is **never** silently emptied into a wildcard). Only a missing or explicitly-empty `models` is a wildcard.
 - The result is cached for the isolate lifetime; env vars never change while an isolate is alive.
 
-## Scheduler: dynamic eligible candidate set
+## Scheduler
 
-There is no static retry index. Before every attempt the eligible set is recomputed from current node state:
+Protocol, surface, model, and tier are always hard gates. An OpenAI request never reaches an Anthropic node, and Tier 2/3 never enters the Tier 1 scheduler.
 
+### Tier 1: Eligibility → Affinity → P2C
+
+Tier 1 has one deliberately small decision path:
+
+```text
+Eligibility → soft session affinity → sample two eligible accounts
+→ compare simple scores → real upstream request → passive TTFT/failure update
+→ retry within Tier 1 → existing Tier Router → Tier 2 → Tier 3
 ```
-current tier → valid config → protocol matches → surface supported → model supported
-→ circuit available → cooldown expired → concurrency available → not already attempted (request-scoped Set)
-```
 
-then one O(n) pass picks the best candidate: `priority ASC → activeRequests ASC → health (band ≥10) DESC → lastUsedAt ASC (LRU) → avg latency ASC`. Health differences inside the band are treated as noise so the LRU tiebreak can rotate sequential traffic across equal-priority keys — spreading load prevents 429s instead of reacting to them. A failed node can never be retried within the same request, and a node that becomes eligible mid-request is never skipped. **Protocol/surface isolation is a hard scheduler gate**: an OpenAI request is never routed to an Anthropic node and vice versa, and a node whose `surfaces` exclude the request surface never receives it — there is no cross-protocol conversion and no cross-protocol failover anywhere in the pipeline.
+Eligibility is network-free and requires the account to serve the protocol/surface/model, be enabled, be outside account/model cooldown, have isolate-local concurrency and hard-RPM capacity, and not have a known exhausted quota. Cooldown is strict: there is no fail-open selection of a blocked account.
 
-**Rotation vs fallback + per-tier budget**: staying in the same tier is *node rotation*; moving to tier N+1 happens only when tier N yields no candidate left OR spends its per-tier attempt budget. Tiers are hard precedence — the higher-preference pool is always exhausted first and is never skipped in favour of a lower tier that has no dispatchable candidate. Each tier gets its own attempt budget: by default `max_attempts` is split over **dispatchable** work only: every tier with a currently-dispatchable candidate (model supported, not cooling / circuit-open / model-cooling) receives at least one attempt, and the surplus goes to the highest-priority dispatchable tier; a tier whose candidates are merely **deferred** (concurrency-saturated or hard-RPM-exhausted this minute) reserves no budget by default — deferral feeds Retry-After / saturated diagnostics instead. Budget is only ever given to a tier that can genuinely be dispatched — an unavailable tier (all candidates cooling / circuit-open) is not reserved an attempt, so a wide failing Tier 1 never eats the whole budget while a healthy Tier 1 is never held back for an unusable fallback. `tier_attempts` in `POLICIES_CONFIG` overrides a tier's budget explicitly (`0` disables it). `max_attempts` caps LOGICAL attempts — a primary plus its optional hedge twin are one logical attempt — and `FAILOVER_BUDGET_MS` caps the wall clock.
+P2C samples two distinct eligible accounts and chooses the lower score; one candidate is selected directly. There is no full-pool performance ordering. The score contains only passive per-`(account, model)` TTFT, capacity-relative current load, recovery/quota factors, a soft affinity factor, and a small UNKNOWN exploration factor. Tier 1 ignores static `priority`, legacy health score, LRU, node-level latency/TTFT, and probe freshness. It therefore does **not** promise the globally fastest account on every request.
+
+The client may supply `x-session-id` (8–128 characters). Because this deployment has no evidence of isolate-sticky session routing, affinity is stored in the required `TIER1_AFFINITY` Cloudflare KV binding with a 30-minute TTL. The raw session ID is SHA-256 hashed before it becomes a key. KV is read once per client request and written only after the first successful Tier 1 request or an approved successful migration; Tier 2/3 success never changes it. Affinity is a `0.85` score multiplier, not a hard binding. Every 10 requests or 5 minutes, the affinity account may be compared with that round's P2C winner; it migrates only when the affinity score is over `1.5×` worse and the winner completes the real request successfully. No shadow request is sent.
+
+Passive TTFT starts at upstream attempt dispatch and ends at the first meaningful model output. OpenAI Chat requires non-empty content/reasoning/tool-call output, Responses requires a non-empty supported output delta, and Anthropic requires non-empty text/thinking/tool-input delta. Headers, heartbeats, lifecycle events, metadata, role-only deltas, empty output, and failed attempts do not create samples. State starts as `ttftEwma=null, sampleCount=0`; the median known TTFT (or a neutral default) is used only during score calculation and is never written back. The first observation is assigned directly; later samples use EWMA alpha `0.25`. One value over `4×` EWMA is clamped, while the second consecutive high value is accepted raw so real degradation becomes visible.
+
+Tier 1 attempts share the request's existing wall-clock deadline and are hard-capped at three. Before a retry, a conservative remaining-time check may exhaust Tier 1 early and hand control back to the Tier Router. Tier 2/3 keep the existing selector, reliability state, per-tier budgets, and fallback behavior.
+
+### Tier 2 / Tier 3
+
+Tier 2 and Tier 3 continue to use the legacy dynamic candidate selector and `node-state.js`: priority, active requests, health band, LRU, latency preference, cooldown, and circuit breaker. They are intentionally not trained by Tier 1 TTFT and never read or write Tier 1 affinity.
+
+**Rotation vs fallback + per-tier budget**: staying in the same tier is rotation; moving to tier N+1 happens only when the current tier yields no candidate or spends its per-tier budget. Tiers remain hard precedence. Budgets are allocated over currently dispatchable tiers, `tier_attempts` can override them, and the global `max_attempts` and `FAILOVER_BUDGET_MS` still cap the whole request. Independently, Tier 1 never exceeds three logical attempts.
 
 **RPM semantics**: `limits.rpm` defaults to **hard** — an exhausted node is not a fallback candidate and, within a single Worker isolate, the gateway never knowingly exceeds the configured quota; full exhaustion yields 503 + Retry-After at the RPM minute boundary. `"rpm_mode":"soft"` restores best-effort behavior. When a `QUOTA_RATE_LIMITER` Rate Limiting binding is bound, hard-RPM dispatches additionally pass a distributed (per-Cloudflare-location) fixed-window check (denied → rotate, no node penalty). That check is approximate and per-location, not a strict global/account quota. Concurrency remains isolate-local shaping.
 
@@ -69,9 +86,15 @@ then one O(n) pass picks the best candidate: `priority ASC → activeRequests AS
 
 ## Reliability model (src/reliability)
 
-All node runtime state lives in one isolate-local Map (`node-state.js`) — health score, EWMA latency, active-request slots, cooldown window, and the circuit state machine.
+Tier 1 uses `tier1-state.js`; Tier 2/3 continue using `node-state.js`. The two state systems are intentionally separate.
 
-Error classification (`classify.js`) maps every upstream outcome to exactly one action:
+Tier 1 account scope contains in-flight count, account disable/cooldown, and explicit quota state. Model scope contains disable/cooldown, `normal → cooldown → half_open → disabled` recovery, consecutive failures/outliers/rate limits, and passive TTFT. A 401/403 disables the account; `model_not_found` disables only that account/model pair. An ambiguous 429 defaults to model scope and records `scope_ambiguous_429`, avoiding accidental loss of the same account's other models. `Retry-After` is honored; a missing header uses model-scoped exponential backoff. Ordinary timeout/5xx failures use three-failure hysteresis; an expired cooldown becomes half-open on a real request, requires two successes to return to normal, and one half-open failure immediately re-enters cooldown. There are no active recovery probes.
+
+Streaming holds the Tier 1 in-flight slot after headers, after the first token, and for the complete stream. Completion, cancellation, reader error, or idle timeout releases it through an idempotent token exactly once. Short-lived Tier 1 runtime state is isolate-local and best-effort. Cross-isolate strong consistency is deliberately not added to the hot path; only session affinity uses KV.
+
+Tier 2/3 retain the legacy node-local health, latency, active-request slots, cooldown, and circuit state machine:
+
+Error classification (`classify.js`) is shared. The table below is the retained Tier 2/3 mapping; Tier 1 maps those kinds into the account/model state described above:
 
 | Outcome | Action | Cooldown | Counts toward circuit |
 |---|---|---|---|
@@ -82,13 +105,13 @@ Error classification (`classify.js`) maps every upstream outcome to exactly one 
 | 5xx, network, headers/first-event timeout | rotate | none | **yes** |
 | client abort, hedge-loser cancellation | neutral | none | no |
 
-Circuit breaker: consecutive-failure state machine (CLOSED → OPEN after 3 counted failures → HALF_OPEN after the open period → single probe → CLOSED on success / OPEN on failure). Only transient failures count; any success resets the counter and closes the circuit. Probe completion is centralized: a half-open probe ending in 429/401/403/404, client abort, or any neutral end is *recovered* (never left `probeInFlight=true`), closing the circuit and preserving any node-local cooldown — the node becomes dispatchable again. Counters are also time-bounded: a node idle for more than 5 minutes starts fresh, so incidents days apart cannot chain into a trip.
+Tier 2/3 circuit breaker: consecutive-failure state machine (CLOSED → OPEN after 3 counted failures → HALF_OPEN after the open period → single probe → CLOSED on success / OPEN on failure). Only transient failures count; any success resets the counter and closes the circuit. Counters are time-bounded so incidents days apart cannot chain into a trip.
 
 Mid-stream truncation counts as a transient failure (it drives the 3-consecutive circuit counter) and additionally applies a health penalty under the `stream` key (same tier as a network failure), so a node that keeps truncating degrades in candidate ordering before the circuit opens.
 
 Concurrency slots are claimed in `acquireSlot` (atomic with eligibility checks) and released exactly once on every path via success/failure/neutral outcome recording.
 
-All node-runtime state (health, EWMA latency, cooldowns, circuit, concurrency, RPM counters) is **isolate-local** and best-effort; it is shared per worker isolate only, resets on restart, and is not a global or provider-wide quota.
+All short-lived runtime state (Tier 1 passive TTFT/in-flight/cooldown and Tier 2/3 health/circuit/concurrency/RPM) is **isolate-local** and best-effort; it resets on isolate restart and is not a global or provider-wide quota.
 
 Failed attempts are aggregated into `failure_kinds` (kind counts only, no node ids). The exhausted response derives its terminal status from the dominant kind — `rate_limit` → 429, `headers_timeout`/`first_event_timeout` → 504, otherwise 502 — instead of from whatever the last attempt happened to be, and exposes the aggregate map so operators can tell how a request failed without enabling full topology exposure.
 
@@ -98,7 +121,7 @@ Local Anthropic `count_tokens` is a script-aware conservative approximation (ASC
 
 `guard.js` implements the single first-event guard: it consumes the upstream SSE stream until a committing event — with a **per-protocol "first real output" judgment** — or timeout, abort, malformed data, or a JSON **error envelope** (`{"error":{...}}` counts as a failure, so a zero-output HTTP-200 stream still rotates), and returns a replayable response. The two protocol families deliberately do not share one judgment:
 
-- **OpenAI Chat** commits on any parseable non-error SSE event (original rule).
+- **OpenAI Chat Tier 1** commits only on non-empty content, reasoning, or tool-call output. Tier 2/3 retain the original parseable-event boundary.
 - **OpenAI Responses** commits only on `response.*.delta` events — lifecycle events (`response.created`, `output_item.added`, …) are NOT commit points.
 - **Anthropic Messages** commits only on native content deltas (`text_delta` / `thinking_delta` / `input_json_delta`) — `message_start`, block start/stop, `ping` and `message_delta` never commit.
 

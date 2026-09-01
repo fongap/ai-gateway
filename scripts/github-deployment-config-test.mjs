@@ -42,10 +42,11 @@ assert.throws(
   /references unknown policy/,
 );
 
-const wrangler = buildWranglerConfig(runtime.vars, 'd1-id');
+const wrangler = buildWranglerConfig(runtime.vars, 'd1-id', 'kv-id');
 assert.equal(wrangler.keep_vars, false);
 assert.equal(wrangler.vars.TIER1_NODES_CONFIG_01, runtime.vars.TIER1_NODES_CONFIG_01);
 assert.equal(wrangler.d1_databases[0].database_id, 'd1-id');
+assert.deepEqual(wrangler.kv_namespaces, [{ binding: 'TIER1_AFFINITY', id: 'kv-id' }]);
 assert.ok(path.isAbsolute(wrangler.main), 'entry point must be absolute (config lives in RUNNER_TEMP)');
 assert.ok(path.isAbsolute(wrangler.d1_databases[0].migrations_dir), 'migrations_dir must be absolute');
 
@@ -60,6 +61,7 @@ function envFixture({ legacy = false } = {}) {
   const env = {
     CLOUDFLARE_ACCOUNT_ID: 'acct',
     TOKEN_STATS_D1_ID: 'd1-id',
+    TIER1_AFFINITY_KV_ID: 'kv-id',
     GATEWAY_PUBLIC_BASE_URL: 'https://gw.example.com',
     RATE_LIMIT_COOLDOWN_MS: '15000',
     FIRST_EVENT_TIMEOUT_MS: '15000',
@@ -199,6 +201,7 @@ assert.throws(
     config: cfg,
     runtime,
     d1Configured: 'd1-id',
+    affinityKvConfigured: 'kv-id',
     removedSecretShards: 1,
   });
   for (const fragment of ['Deployment completed', 'Nodes: 1/1 usable', 'Models: 1', 'Node secret shards: 1', 'Status: ready', 'OK']) {
@@ -207,9 +210,8 @@ assert.throws(
   for (const forbidden of ['upstream-key', 'gateway-key', 'Bearer', 'authorization']) {
     assert.ok(!summary.includes(forbidden), `summary never contains "${forbidden}"`);
   }
-  const disabled = buildDeploymentSummary({ config: cfg, runtime, d1Configured: '' });
+  const disabled = buildDeploymentSummary({ config: cfg, runtime, d1Configured: '', affinityKvConfigured: '' });
   assert.ok(disabled.includes('disabled'), 'D1 disabled is stated explicitly');
 }
 
 console.log('github deployment config tests passed.');
-

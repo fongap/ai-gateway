@@ -52,6 +52,18 @@ export function buildAnthropicHeaders(request, credential, requestId) {
 // commit points — a node that streams them before dying can still fail over.
 export function isAnthropicNativeRealOutput(json) {
   if (json?.type !== 'content_block_delta') return false;
-  const deltaType = json?.delta?.type;
-  return deltaType === 'text_delta' || deltaType === 'thinking_delta' || deltaType === 'input_json_delta';
+  const delta = json?.delta;
+  if (delta?.type === 'text_delta') return typeof delta.text === 'string' && delta.text.trim().length > 0;
+  if (delta?.type === 'thinking_delta') return typeof delta.thinking === 'string' && delta.thinking.trim().length > 0;
+  if (delta?.type === 'input_json_delta') return typeof delta.partial_json === 'string' && delta.partial_json.trim().length > 0;
+  return false;
+}
+
+export function isAnthropicMessageMeaningful(json) {
+  for (const block of json?.content ?? []) {
+    if ((block?.type === 'text' && typeof block.text === 'string' && block.text.trim().length > 0)
+      || (block?.type === 'thinking' && typeof block.thinking === 'string' && block.thinking.trim().length > 0)) return true;
+    if (block?.type === 'tool_use' && typeof block.name === 'string' && block.name.trim().length > 0) return true;
+  }
+  return false;
 }
