@@ -18,7 +18,7 @@ ai-gateway 通过 GitHub Actions 部署。推送到 `main`（或手动运行工�
 ```
 checkout → setup Node → npm ci
   → Preflight deployment configuration
-  → npm run verify
+  → npm run validate:merge
   → Validate runtime configuration
   → Wrangler deploy --dry-run
   → Cloudflare authentication check
