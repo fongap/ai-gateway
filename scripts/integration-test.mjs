@@ -4,7 +4,12 @@
 // worker.fetch() against a mocked global fetch upstream.
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
-import { __resetAllStateForTests, getNodeState, getCooldownRemainingMs, noteRpmRequest, rpmUsage, peekAvailability } from '../src/reliability/node-state.js';
+import { __resetAllStateForTests, getNodeState, noteRpmRequest } from '../src/reliability/node-state.js';
+import {
+  __resetTier1StateForTests, tier1AccountInFlight,
+  getTier1Account, getTier1Model, snapshotTier1Runtime, recordTier1Ttft, tier1RpmUsage,
+} from '../src/reliability/tier1-state.js';
+import { __resetTier1AffinityForTests } from '../src/scheduler/tier1-affinity.js';
 import { createMockD1 } from './mock-d1-database.mjs';
 
 const ACCESS_KEY = 'test-access-key';
@@ -13,6 +18,8 @@ let passed = 0;
 async function test(name, fn) {
   try {
     __resetAllStateForTests();
+    __resetTier1StateForTests();
+    __resetTier1AffinityForTests();
     await fn();
     passed++;
     console.log(`ok - ${name}`);
@@ -61,6 +68,10 @@ function resetMock() {
 function makeEnv({ tier1, tier2, tier3, secrets, extraEnv } = {}) {
   return {
     GATEWAY_ACCESS_KEY: ACCESS_KEY,
+    // Deterministic P2C sampling in tests: a fixed seed makes the random
+    // two-choice picks reproducible so order-sensitive assertions stay stable.
+    // Production never sets this; P2C uses Math.random there.
+    TIER1_SCHEDULER_SEED: 'integration-test',
     ...(tier1 ? { TIER1_NODES_CONFIG_01: JSON.stringify(tier1) } : {}),
     ...(tier2 ? { TIER2_NODES_CONFIG_01: JSON.stringify(tier2) } : {}),
     ...(tier3 ? { TIER3_NODES_CONFIG_01: JSON.stringify(tier3) } : {}),
@@ -197,13 +208,13 @@ await test('wrong gateway key returns 401', async () => {
   assert.equal(res.status, 401);
 });
 
-// ---- Priority & rotation ---------------------------------------------------
+// ---- Tier 1 P2C, capacity and RPM -----------------------------------------
 
-await test('priority ASC ordering: 10 -> 50 -> 100', async () => {
+await test('Tier 1 P2C ignores static priority ordering', async () => {
   resetMock();
-  routeHandlers['a10.example.com'] = () => jsonUpstream({}, 503);
-  routeHandlers['a50.example.com'] = () => jsonUpstream({}, 503);
-  routeHandlers['a100.example.com'] = () => jsonUpstream(okCompletion());
+  for (const id of ['a10', 'a50', 'a100']) {
+    routeHandlers[`${id}.example.com`] = () => jsonUpstream(okCompletion());
+  }
   const env = makeEnv({
     tier1: [
       basicNode('a100', { base_url: 'https://a100.example.com/v1', priority: 100 }),
@@ -214,7 +225,9 @@ await test('priority ASC ordering: 10 -> 50 -> 100', async () => {
   });
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.equal(res.status, 200);
-  assert.deepEqual(upstreamCalls.map((c) => c.host), ['a10.example.com', 'a50.example.com', 'a100.example.com']);
+  assert.equal(upstreamCalls.length, 1, 'P2C dispatches one account, not a priority-ordered scan');
+  assert.notEqual(upstreamCalls[0].host, 'a10.example.com',
+    'the lowest numeric priority is not a privileged Tier 1 choice');
 });
 
 await test('dynamic candidate set: failed node skipped, next candidate picked', async () => {
@@ -234,7 +247,7 @@ await test('dynamic candidate set: failed node skipped, next candidate picked', 
   assert.equal(body.model, 'general-air'); // logical model name restored
 });
 
-await test('transient failure immediately backs a node off for the next request', async () => {
+await test('single transient failure has hysteresis and does not immediately cooldown', async () => {
   resetMock();
   installMockFetch();
   routeHandlers['backoff-a.example.com'] = () => jsonUpstream({}, 503);
@@ -250,8 +263,13 @@ await test('transient failure immediately backs a node off for the next request'
   assert.equal(second.status, 200);
   await second.text();
   assert.deepEqual(upstreamCalls.map((call) => call.host), [
-    'backoff-a.example.com', 'backoff-b.example.com', 'backoff-b.example.com',
+    'backoff-a.example.com', 'backoff-b.example.com',
+    'backoff-a.example.com', 'backoff-b.example.com',
   ]);
+  const runtime = snapshotTier1Runtime('backoff-a', 'general-air');
+  assert.equal(runtime.failure_state, 'normal');
+  assert.equal(runtime.consecutive_failures, 2);
+  assert.equal(runtime.cooldown_remaining_ms, 0);
 });
 
 await test('concurrency spreads parallel requests across equal nodes', async () => {
@@ -273,7 +291,7 @@ await test('concurrency spreads parallel requests across equal nodes', async () 
   assert.equal(new Set(responses).size, 4, `expected 4 distinct nodes, got ${responses.join(',')}`);
 });
 
-await test('LRU tiebreak rotates sequential requests across equal-priority nodes', async () => {
+await test('Tier 1 sequential selection has no LRU rotation contract', async () => {
   resetMock();
   for (const id of ['lru-a', 'lru-b', 'lru-c']) {
     routeHandlers[`${id}.example.com`] = () => jsonUpstream(okCompletion());
@@ -284,15 +302,14 @@ await test('LRU tiebreak rotates sequential requests across equal-priority nodes
     secrets: Object.fromEntries(ids.map((id) => [id, 'k'])),
     extraEnv: { EXPOSE_UPSTREAM_INFO: 'true' },
   });
-  // Sequential (not concurrent) requests must rotate instead of hammering lru-a.
   const served = [];
   for (let i = 0; i < 3; i++) {
     const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
     assert.equal(res.status, 200);
-    served.push(await res.text(), res.headers.get('x-gateway-node'));
+    await res.text();
+    served.push(res.headers.get('x-gateway-node'));
   }
-  const nodes = [served[1], served[3], served[5]];
-  assert.equal(new Set(nodes).size, 3, `expected rotation across 3 nodes, got ${nodes.join(',')}`);
+  assert.ok(served.every((id) => ids.includes(id)), `P2C returned only eligible accounts: ${served.join(',')}`);
 });
 
 await test('RPM cap rotates to sibling keys before exhausting a single key', async () => {
@@ -366,7 +383,7 @@ await test('global QUOTA_RATE_LIMITER deny rotates without counting a node failu
   assert.deepEqual(upstreamCalls.map((c) => c.host), ['gb-b.example.com'],
     'globally denied node must not receive the request');
   assert.equal(getNodeState('gb-a').totalFailures, 0, 'global deny is not a node failure');
-  assert.equal(rpmUsage('gb-a'), 0, 'pre-dispatch deny must roll back the RPM reservation');
+  assert.equal(tier1RpmUsage('gb-a'), 0, 'pre-dispatch deny must roll back the RPM reservation');
 });
 
 await test('all nodes denied by distributed limiter returns 429 with a window-based Retry-After', async () => {
@@ -423,15 +440,15 @@ await test('pre-dispatch denies charge no budget: Tier1 drain continues, Tier2 n
   assert.deepEqual(upstreamCalls.map((c) => c.host), ['db-ok.example.com'],
     'the dispatchable Tier1 node must be reached and lower Tier2 must never be entered');
   assert.equal(getNodeState('db1').totalFailures, 0, 'global deny is not a node failure');
-  assert.equal(rpmUsage('db1'), 0, 'pre-dispatch deny rolls back the RPM reservation');
+  assert.equal(tier1RpmUsage('db1'), 0, 'pre-dispatch deny rolls back the RPM reservation');
 });
 
-await test('hard-RPM-exhausted fallback tier reserves no budget: primary keeps full attempts', async () => {
+await test('hard-RPM-exhausted fallback tier is skipped and Tier 1 honors its three-attempt cap', async () => {
   resetMock();
   // Tier2's single node is hard-RPM exhausted for this minute -> deferred
   // capacity, not dispatchable. It must not reserve a budget slot that
-  // shortchanges Tier1: max_attempts=5 yields exactly five Tier1 attempts.
-  // Counting the exhausted tier as schedulable left Tier1 with four.
+  // shortchanges Tier1. Tier 1 still has its dedicated hard cap of three,
+  // even when the model policy permits five total attempts.
   for (let i = 1; i <= 6; i++) routeHandlers[`rp${i}.example.com`] = () => jsonUpstream({}, 502);
   routeHandlers['rpmex-t2.example.com'] = () => jsonUpstream(okCompletion());
   noteRpmRequest('rpmex-t2', Date.now()); // burn its whole minute window (rpm=1)
@@ -447,14 +464,14 @@ await test('hard-RPM-exhausted fallback tier reserves no budget: primary keeps f
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.equal(res.status, 502);
   const body = await res.json();
-  assert.equal(body.error.details.attempts, 5, 'Tier1 spends the full max_attempts budget');
+  assert.equal(body.error.details.attempts, 3, 'Tier1 is hard-capped at three attempts');
   const hosts = upstreamCalls.map((c) => c.host);
-  assert.equal(hosts.length, 5);
+  assert.equal(hosts.length, 3);
   assert.ok(hosts.every((h) => /^rp[1-6]\.example\.com$/.test(h)), 'every attempt stays in Tier1');
   assert.ok(!hosts.includes('rpmex-t2.example.com'), 'the deferred tier is never dispatched');
 });
 
-await test('concurrency-saturated fallback tier reserves no budget', async () => {
+await test('concurrency-saturated fallback tier is skipped while Tier 1 keeps its own cap', async () => {
   resetMock();
   // Tier2's lone node serves sat-model AND general-air at concurrency=1; the
   // first request parks itself in that slot behind a gate. A second request
@@ -490,9 +507,9 @@ await test('concurrency-saturated fallback tier reserves no budget', async () =>
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.equal(res.status, 502);
   const body = await res.json();
-  assert.equal(body.error.details.attempts, 5, 'Tier1 spends the full budget while Tier2 is saturated');
+  assert.equal(body.error.details.attempts, 3, 'Tier1 keeps its dedicated three-attempt cap');
   const hosts = upstreamCalls.slice(baseline).map((c) => c.host);
-  assert.equal(hosts.length, 5);
+  assert.equal(hosts.length, 3);
   assert.ok(hosts.every((h) => /^cs[1-6]\.example\.com$/.test(h)), 'every new attempt stays in Tier1');
 
   releaseSat();
@@ -598,7 +615,7 @@ await test('429 isolates the node; same-tier B serves; tier-2 untouched', async 
   assert.deepEqual(upstreamCalls.map((c) => c.host), ['r-a.example.com', 'r-b.example.com']);
 });
 
-await test('404 model_missing cools only the (node, model) pair, not the whole node', async () => {
+await test('404 model_missing disables only the (account, model) pair', async () => {
   resetMock();
   // One node serving TWO logical models. 'code-pro' is mis-mapped upstream
   // (returns 404); 'general-air' is healthy. A 404 on code-pro must cool the
@@ -613,16 +630,13 @@ await test('404 model_missing cools only the (node, model) pair, not the whole n
     tier1: [{ ...basicNode('mm1'), models: { 'code-pro': 'up-code', 'general-air': 'up-air' } }],
     secrets: { mm1: 'k' },
   });
-  const { getCooldownRemainingMs, getModelCooldownRemainingMs, getNodeState } = await import('../src/reliability/node-state.js');
-
-  // 1. code-pro -> upstream 404 -> (mm1, code-pro) pair cools, request fails
-  //    (no other code-pro node). The node itself is NOT cooled.
-  const healthBefore = getNodeState('mm1').healthScore;
+  // 1. code-pro -> upstream 404 -> (mm1, code-pro) is disabled, while the
+  // account remains enabled for its other model.
   const r1 = await worker.fetch(chatRequest({ model: 'code-pro', messages: [] }), env, {});
   assert.equal(r1.status, 502, 'lone code-pro node 404ing yields 502 (no fallback)');
-  assert.equal(getCooldownRemainingMs('mm1'), 0, 'node-level cooldown must NOT be set by a model_missing 404');
-  assert.ok(getModelCooldownRemainingMs('mm1', 'code-pro') > 0, '(mm1, code-pro) pair must be cooling');
-  assert.equal(getNodeState('mm1').healthScore, healthBefore, 'model_missing must not penalize node health');
+  assert.equal(getTier1Account('mm1').accountDisabled, false);
+  assert.equal(getTier1Model('mm1', 'code-pro').disabled, true);
+  assert.equal(getTier1Model('mm1', 'code-pro').failureState, 'disabled');
 
   // 2. general-air on the SAME node must still serve immediately — the 404 on
   //    code-pro did not take the node down.
@@ -638,7 +652,7 @@ await test('404 model_missing cools only the (node, model) pair, not the whole n
   assert.equal(upstreamCalls.length, callsBefore, 'model-cooling (node, model) pair must not be re-dispatched');
 });
 
-await test('404 endpoint not found cools the whole node (config error, not model_missing)', async () => {
+await test('404 endpoint not found cools the whole Tier 1 account', async () => {
   resetMock();
   // An empty-body / generic 404 means the ENDPOINT is missing (wrong base_url
   // or path), not a model-mapping issue. It must cool the WHOLE node briefly
@@ -649,38 +663,37 @@ await test('404 endpoint not found cools the whole node (config error, not model
     tier1: [{ ...basicNode('ep1'), models: { 'code-pro': 'up-c', 'general-air': 'up-a' } }],
     secrets: { ep1: 'k' },
   });
-  const { getCooldownRemainingMs, getModelCooldownRemainingMs } = await import('../src/reliability/node-state.js');
   const r1 = await worker.fetch(chatRequest({ model: 'code-pro', messages: [] }), env, {});
   assert.equal(r1.status, 502);
-  assert.ok(getCooldownRemainingMs('ep1') > 0, 'endpoint 404 must set a NODE-level cooldown');
-  assert.equal(getModelCooldownRemainingMs('ep1', 'code-pro'), 0, 'endpoint 404 must NOT set a model-scoped cooldown');
+  assert.ok(getTier1Account('ep1').accountCooldownUntil > Date.now(),
+    'endpoint 404 must set an account-level cooldown');
+  assert.equal(getTier1Model('ep1', 'code-pro').cooldownUntil, 0,
+    'endpoint 404 must not set a model-scoped cooldown');
   // general-air on the same node is also blocked during the node cooldown.
   const r2 = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.notEqual(r2.status, 200, 'general-air must not serve while the node is cooling from an endpoint 404');
 });
 
-await test('Retry-After seconds sets node cooldown window', async () => {
+await test('Retry-After seconds sets model cooldown window', async () => {
   resetMock();
   routeHandlers['ra.example.com'] = () => jsonUpstream({}, 429, { 'retry-after': '90' });
   const env = makeEnv({ tier1: [basicNode('ra')], secrets: { ra: 'k' } });
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.equal(res.status, 429);
-  const { getCooldownRemainingMs } = await import('../src/reliability/node-state.js');
-  const remaining = getCooldownRemainingMs('ra');
+  const remaining = getTier1Model('ra', 'general-air').cooldownUntil - Date.now();
   assert.ok(remaining > 80_000 && remaining <= 90_000, `remaining=${remaining}`);
   // Gateway surfaces its own Retry-After when everything is cooling (LiteLLM #27823 lesson).
   assert.equal(res.headers.get('retry-after') !== null || true, true);
 });
 
-await test('Retry-After HTTP-date parsed', async () => {
+await test('Retry-After HTTP-date sets model cooldown', async () => {
   resetMock();
   const date = new Date(Date.now() + 45_000).toUTCString();
   routeHandlers['rd.example.com'] = () => jsonUpstream({}, 429, { 'retry-after': date });
   const env = makeEnv({ tier1: [basicNode('rd')], secrets: { rd: 'k' } });
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.equal(res.status, 429);
-  const { getCooldownRemainingMs } = await import('../src/reliability/node-state.js');
-  const remaining = getCooldownRemainingMs('rd');
+  const remaining = getTier1Model('rd', 'general-air').cooldownUntil - Date.now();
   assert.ok(remaining > 35_000 && remaining <= 46_000, `remaining=${remaining}`);
 });
 
@@ -727,6 +740,45 @@ await test('tier-2 is never touched while any tier-1 node remains eligible', asy
   assert.ok(!upstreamCalls.some((c) => c.host === 'never.example.com'));
 });
 
+await test('Tier 2 fallback never overwrites the cross-isolate Tier 1 affinity binding', async () => {
+  resetMock();
+  const stored = new Map();
+  const kv = {
+    get: async (key) => stored.get(key) ?? null,
+    put: async (key, value) => { stored.set(key, value); },
+  };
+  let tier1Healthy = true;
+  routeHandlers['aff-t1.example.com'] = () => tier1Healthy
+    ? jsonUpstream(okCompletion())
+    : jsonUpstream({}, 429, { 'retry-after': '60' });
+  routeHandlers['aff-t2.example.com'] = () => jsonUpstream(okCompletion());
+  const env = makeEnv({
+    tier1: [basicNode('aff-t1')],
+    tier2: [basicNode('aff-t2')],
+    secrets: { 'aff-t1': 'k', 'aff-t2': 'k' },
+    extraEnv: { TIER1_AFFINITY: kv, EXPOSE_UPSTREAM_INFO: 'true' },
+  });
+  const request = () => chatRequest(
+    { model: 'general-air', messages: [] }, ACCESS_KEY,
+    { headers: { 'x-session-id': 'affinity-session-123' } },
+  );
+  const pending = [];
+  const first = await worker.fetch(request(), env, { waitUntil: (p) => pending.push(p) });
+  assert.equal(first.status, 200);
+  await first.text();
+  await Promise.all(pending);
+  assert.equal([...stored.values()][0], 'aff-t1', 'cold-session success creates the Tier 1 binding');
+
+  // Simulate another isolate by clearing only process-local affinity cache.
+  __resetTier1AffinityForTests();
+  tier1Healthy = false;
+  const second = await worker.fetch(request(), env, {});
+  assert.equal(second.status, 200);
+  assert.equal(second.headers.get('x-gateway-node'), 'aff-t2');
+  await second.text();
+  assert.equal([...stored.values()][0], 'aff-t1', 'Tier 2 success cannot replace Tier 1 affinity');
+});
+
 // ---- Client errors ---------------------------------------------------------
 
 await test('400 from upstream stops immediately without rotating', async () => {
@@ -763,9 +815,9 @@ await test('client abort is neutral: no failure recorded, no cooldown', async ()
   assert.equal(s.circuitState, 'closed');
 });
 
-// ---- Circuit breaker -------------------------------------------------------
+// ---- Tier 1 failure recovery ----------------------------------------------
 
-await test('circuit opens after threshold, blocks requests, recovers via half-open probe', async () => {
+await test('failure threshold enters cooldown and real requests recover through half-open', async () => {
   resetMock();
   let failMode = true;
   routeHandlers['cb.example.com'] = () => (failMode ? jsonUpstream({}, 503) : jsonUpstream(okCompletion()));
@@ -775,39 +827,106 @@ await test('circuit opens after threshold, blocks requests, recovers via half-op
     const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
     assert.equal(res.status, 502);
   }
-  assert.equal(getNodeState('cb').circuitState, 'open');
+  assert.equal(getTier1Model('cb', 'general-air').failureState, 'cooldown');
 
   // Circuit OPEN: request short-circuits without hitting upstream.
   const blocked = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.equal(blocked.status, 429);
   assert.equal(upstreamCalls.length, 3);
 
-  // Simulate open-period expiry -> HALF_OPEN single probe.
-  getNodeState('cb').cooldownUntil = Date.now() - 1;
-
-  // Concurrent burst: only ONE probe reaches upstream.
+  // Simulate cooldown expiry. Recovery is driven only by real business
+  // requests; two successes are required before NORMAL.
+  getTier1Model('cb', 'general-air').cooldownUntil = Date.now() - 1;
   failMode = false;
-  const results = await Promise.all(Array.from({ length: 5 }, () =>
-    worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {}).then(async (r) => ({ status: r.status, body: r.ok }))));
-
-  // Probe success -> CLOSED; remaining requests also succeed afterwards.
-  assert.equal(getNodeState('cb').circuitState, 'closed');
-  for (const r of results) assert.equal(r.status, 200);
+  const firstRecovery = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(firstRecovery.status, 200);
+  assert.equal(getTier1Model('cb', 'general-air').failureState, 'half_open');
+  const secondRecovery = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(secondRecovery.status, 200);
+  assert.equal(getTier1Model('cb', 'general-air').failureState, 'normal');
 });
 
-await test('half-open probe failure reopens the circuit', async () => {
+await test('half-open real-request failure immediately re-enters cooldown', async () => {
   resetMock();
   routeHandlers['cf.example.com'] = () => jsonUpstream({}, 503);
   const env = makeEnv({ tier1: [basicNode('cf')], secrets: { cf: 'k' } });
   for (let i = 0; i < 3; i++) await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-  assert.equal(getNodeState('cf').circuitState, 'open');
-  getNodeState('cf').cooldownUntil = Date.now() - 1;
+  assert.equal(getTier1Model('cf', 'general-air').failureState, 'cooldown');
+  getTier1Model('cf', 'general-air').cooldownUntil = Date.now() - 1;
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.notEqual(res.status, 200);
-  assert.equal(getNodeState('cf').circuitState, 'open'); // probe failed -> reopened
+  assert.equal(getTier1Model('cf', 'general-air').failureState, 'cooldown');
 });
 
 // ---- Streaming -------------------------------------------------------------
+
+function controlledTier1Stream() {
+  const encoder = new TextEncoder();
+  let controller;
+  const body = new ReadableStream({ start(c) { controller = c; } });
+  return {
+    response: () => new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    meaningful: () => controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk('first'))}\n\n`)),
+    complete: () => {
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify(finishChunk)}\n\ndata: [DONE]\n\n`));
+      controller.close();
+    },
+    fail: () => controller.error(new Error('controlled upstream failure')),
+  };
+}
+
+await test('Tier 1 streaming inFlight stays claimed through headers/body and releases once on completion', async () => {
+  resetMock();
+  const controlled = controlledTier1Stream();
+  routeHandlers['life-ok.example.com'] = () => {
+    queueMicrotask(controlled.meaningful);
+    return controlled.response();
+  };
+  const env = makeEnv({ tier1: [basicNode('life-ok')], secrets: { 'life-ok': 'k' } });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
+  assert.equal(tier1AccountInFlight('life-ok'), 1, 'slot stays held after response headers/first output');
+  const reader = res.body.getReader();
+  await reader.read();
+  assert.equal(tier1AccountInFlight('life-ok'), 1, 'slot stays held while the stream is active');
+  controlled.complete();
+  while (!(await reader.read()).done) { /* drain */ }
+  assert.equal(tier1AccountInFlight('life-ok'), 0);
+  assert.equal(tier1AccountInFlight('life-ok'), 0, 'terminal callbacks cannot double-decrement');
+});
+
+await test('Tier 1 streaming inFlight releases on client cancellation', async () => {
+  resetMock();
+  const controlled = controlledTier1Stream();
+  routeHandlers['life-cancel.example.com'] = () => {
+    queueMicrotask(controlled.meaningful);
+    return controlled.response();
+  };
+  const env = makeEnv({ tier1: [basicNode('life-cancel')], secrets: { 'life-cancel': 'k' } });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
+  assert.equal(tier1AccountInFlight('life-cancel'), 1);
+  const reader = res.body.getReader();
+  await reader.read();
+  await reader.cancel();
+  assert.equal(tier1AccountInFlight('life-cancel'), 0);
+});
+
+await test('Tier 1 streaming inFlight releases on upstream stream error', async () => {
+  resetMock();
+  const controlled = controlledTier1Stream();
+  routeHandlers['life-error.example.com'] = () => {
+    queueMicrotask(controlled.meaningful);
+    return controlled.response();
+  };
+  const env = makeEnv({ tier1: [basicNode('life-error')], secrets: { 'life-error': 'k' } });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
+  const reader = res.body.getReader();
+  await reader.read();
+  controlled.fail();
+  for (;;) {
+    try { if ((await reader.read()).done) break; } catch { break; }
+  }
+  assert.equal(tier1AccountInFlight('life-error'), 0);
+});
 
 await test('first-event failure rotates to another node', async () => {
   resetMock();
@@ -1078,7 +1197,7 @@ await test('mid-stream upstream crash preserves reader_error through the replay 
   assert.equal(getNodeState('rerr').totalFailures, 1, 'mid-stream crash must count as node failure');
 });
 
-await test('three consecutive mid-stream EOFs open the circuit', async () => {
+await test('three consecutive mid-stream EOFs enter Tier 1 cooldown', async () => {
   resetMock();
   eofUpstream('eof3');
   const env = makeEnv({ tier1: [basicNode('eof3')], secrets: { eof3: 'k' } });
@@ -1087,13 +1206,10 @@ await test('three consecutive mid-stream EOFs open the circuit', async () => {
     const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
     assert.equal(res.status, 200);
     await res.text();
-    // Each stream failure sets a node cooldown; clear it so the next
-    // request actually reaches upstream instead of short-circuiting with 429.
-    getNodeState('eof3').cooldownUntil = Date.now() - 1;
   }
-  const s = getNodeState('eof3');
-  assert.equal(s.circuitState, 'open', 'three stream truncations must open the circuit');
-  assert.equal(s.totalFailures, 3);
+  const s = getTier1Model('eof3', 'general-air');
+  assert.equal(s.failureState, 'cooldown', 'three stream truncations must enter cooldown');
+  assert.equal(s.consecutiveFailures, 3);
   const d = await deltaSince();
   assert.equal(d.gateway_stream_interrupted_total, 3);
   assert.equal(d.gateway_stream_missing_completion_marker_total, 3);
@@ -1238,6 +1354,49 @@ await test('diagnostic endpoints expose no credentials', async () => {
   }
   const versionRes = await worker.fetch(new Request('https://gateway.example.com/version'), env, {});
   assert.equal(versionRes.status, 200);
+});
+
+await test('Tier 1 diagnostics expose UNKNOWN/observed passive state without legacy health or fake TTFT', async () => {
+  resetMock();
+  routeHandlers['diag.example.com'] = () => jsonUpstream(okCompletion());
+  const kv = { get: async () => null, put: async () => {} };
+  const env = makeEnv({
+    tier1: [basicNode('diag')],
+    secrets: { diag: 'k' },
+    extraEnv: { TIER1_AFFINITY: kv },
+  });
+  const authHeaders = { authorization: `Bearer ${ACCESS_KEY}` };
+  const cold = await worker.fetch(new Request('https://gateway.example.com/health', { headers: authHeaders }), env, {});
+  const coldBody = await cold.json();
+  const coldNode = coldBody.endpoints.find((entry) => entry.id === 'diag');
+  assert.equal(coldNode.scheduler, 'eligibility_affinity_p2c_passive_ttft');
+  assert.equal(coldNode.runtime.models[0].state, 'configured');
+  assert.equal(coldNode.runtime.models[0].ttft_ewma_ms, null);
+  assert.equal(coldNode.runtime.models[0].sample_count, 0);
+  assert.equal('health_score' in coldNode, false, 'Tier 1 must not expose legacy health as scheduler state');
+  assert.equal(coldBody.tier1_affinity.available, true);
+
+  const sessionId = 'diagnostic-session-private';
+  const response = await worker.fetch(chatRequest(
+    { model: 'general-air', messages: [] }, ACCESS_KEY,
+    { headers: { 'x-session-id': sessionId } },
+  ), env, {});
+  assert.equal(response.status, 200);
+  await response.text();
+
+  const observed = await worker.fetch(new Request('https://gateway.example.com/health', { headers: authHeaders }), env, {});
+  const observedText = await observed.text();
+  assert.ok(!observedText.includes(sessionId), 'diagnostics must never expose the raw session id');
+  const observedNode = JSON.parse(observedText).endpoints.find((entry) => entry.id === 'diag');
+  assert.equal(observedNode.runtime.models[0].state, 'observed_healthy');
+  assert.equal(observedNode.runtime.models[0].sample_count, 1);
+  assert.notEqual(observedNode.runtime.models[0].ttft_ewma_ms, null);
+
+  const metrics = await worker.fetch(new Request('https://gateway.example.com/metrics', { headers: authHeaders }), env, {});
+  const metricText = await metrics.text();
+  assert.match(metricText, /gateway_tier1_model_ttft_samples\{[^\n]*node_id="diag"[^\n]*model="general-air"[^\n]*\} 1/);
+  assert.doesNotMatch(metricText, /gateway_node_health_score\{[^\n]*node_id="diag"/,
+    'Tier 1 must not publish a legacy health-score series');
 });
 
 await test('upstream receives only the allowlisted Authorization header', async () => {
@@ -1846,7 +2005,7 @@ const streamText = async (res) => {
   return text;
 };
 
-await test('scheduler prefers the currently-faster node as measured latency drifts', async () => {
+await test('scheduler score follows passive per-model TTFT as performance drifts', async () => {
   resetMock();
   installMockFetch();
   routeHandlers['lat-a.example.com'] = () => sseResponse([chunk('ok'), 'data: [DONE]']);
@@ -1855,19 +2014,10 @@ await test('scheduler prefers the currently-faster node as measured latency drif
     tier1: [basicNode('lat-a'), basicNode('lat-b')],
     secrets: { 'lat-a': 'k', 'lat-b': 'k' },
   });
-  const setMeasuredLatency = (nodeId, latencyMs) => {
-    const state = getNodeState(nodeId);
-    state.avgLatencyMs = latencyMs;
-    state.modelPerf.set('general-air', {
-      avgTtftMs: 0,
-      avgLatencyMs: latencyMs,
-      lastUsedAt: Date.now(),
-    });
-  };
-  // lat-a measured slow, lat-b measured fast: latency preference must override
-  // LRU so every request lands on the fast node.
-  setMeasuredLatency('lat-a', 3000);
-  setMeasuredLatency('lat-b', 50);
+  // Seed only the new passive (account, model) measurements. Legacy
+  // node-level latency/health/LRU state is intentionally irrelevant.
+  recordTier1Ttft('lat-a', 'general-air', 3000);
+  recordTier1Ttft('lat-b', 'general-air', 50);
   for (let i = 0; i < 3; i++) {
     const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
     assert.equal(res.status, 200);
@@ -1876,10 +2026,11 @@ await test('scheduler prefers the currently-faster node as measured latency drif
   const hosts = upstreamCalls.map((c) => c.host);
   assert.deepEqual(hosts, ['lat-b.example.com', 'lat-b.example.com', 'lat-b.example.com'],
     'decisively faster node wins all three requests');
-  // Speeds drift: lat-a recovers, lat-b degrades. The next request must follow
-  // the new per-model measurement instead of a stale snapshot.
-  setMeasuredLatency('lat-a', 10);
-  setMeasuredLatency('lat-b', 2000);
+  // Speeds drift: update passive observations until the EWMAs cross.
+  for (let i = 0; i < 12; i++) {
+    recordTier1Ttft('lat-a', 'general-air', 10);
+    recordTier1Ttft('lat-b', 'general-air', 2000);
+  }
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
   await streamText(res);
   assert.equal(upstreamCalls[3].host, 'lat-a.example.com', 'preference follows the new latency measurements');
@@ -1947,12 +2098,11 @@ await test('hedge: a twin is not a logical attempt; the tier cap funds logical a
   // hedge twin df-fast (the twin charges NO attempt slot), logical attempt 2 =
   // df-third. The twin being extra means the tier still dispatches its third
   // node — total upstream calls = maxAttempts-in-tier + hedges.
-  routeHandlers['df-slow.example.com'] = async () => {
+  const delayedFailure = async () => {
     await new Promise((r) => setTimeout(r, 400));
     return jsonUpstream({}, 500);
   };
-  routeHandlers['df-fast.example.com'] = () => jsonUpstream({}, 500);
-  routeHandlers['df-third.example.com'] = () => jsonUpstream({}, 500);
+  for (const id of ['df-slow', 'df-fast', 'df-third']) routeHandlers[`${id}.example.com`] = delayedFailure;
   const env = makeEnv({
     tier1: [basicNode('df-slow'), basicNode('df-fast'), basicNode('df-third')],
     secrets: { 'df-slow': 'k', 'df-fast': 'k', 'df-third': 'k' },
@@ -1966,8 +2116,9 @@ await test('hedge: a twin is not a logical attempt; the tier cap funds logical a
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.equal(res.status, 502);
   const hosts = upstreamCalls.map((c) => c.host);
-  assert.deepEqual(hosts, ['df-slow.example.com', 'df-fast.example.com', 'df-third.example.com'],
-    `logical attempt 1 = slow primary + twin, logical attempt 2 = third node (got ${hosts.join(', ')})`);
+  assert.equal(hosts.length, 3);
+  assert.equal(new Set(hosts).size, 3,
+    `a hedge pair plus the second logical attempt dispatch all three accounts (got ${hosts.join(', ')})`);
   const body = await res.json();
   assert.equal(body.error.details.attempts, 2, 'attempts counts LOGICAL attempts');
   assert.equal(body.error.details.dispatches, 3, 'dispatches counts real upstream calls');
@@ -1982,12 +2133,17 @@ await test('hedge: twin is decoupled from max_attempts but bounded by max_dispat
   // attempt 1), mb2 is the in-flight logical attempt 2 and STILL gets a twin
   // (the twin is not an attempt); the third upstream dispatch is exactly the
   // max_dispatches ceiling, and mb2 winning returns the response.
-  routeHandlers['mb1.example.com'] = () => jsonUpstream({}, 500);
-  routeHandlers['mb2.example.com'] = async () => {
-    await new Promise((r) => setTimeout(r, 400));
-    return jsonUpstream(okCompletion());
+  let mbDispatch = 0;
+  const maxDispatchHandler = async () => {
+    mbDispatch++;
+    if (mbDispatch === 1) return jsonUpstream({}, 500);
+    if (mbDispatch === 2) {
+      await new Promise((r) => setTimeout(r, 400));
+      return jsonUpstream(okCompletion());
+    }
+    return jsonUpstream({}, 500);
   };
-  routeHandlers['mb3.example.com'] = () => jsonUpstream({}, 500);
+  for (const id of ['mb1', 'mb2', 'mb3']) routeHandlers[`${id}.example.com`] = maxDispatchHandler;
   const env = makeEnv({
     tier1: [basicNode('mb1'), basicNode('mb2'), basicNode('mb3')],
     secrets: { mb1: 'k', mb2: 'k', mb3: 'k' },
@@ -2001,9 +2157,9 @@ await test('hedge: twin is decoupled from max_attempts but bounded by max_dispat
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.equal(res.status, 200);
   assert.equal((await res.json()).choices?.[0]?.message?.content, 'hello');
-  assert.deepEqual(upstreamCalls.map((c) => c.host),
-    ['mb1.example.com', 'mb2.example.com', 'mb3.example.com'],
+  assert.equal(upstreamCalls.length, 3,
     'max_attempts=2 allows exactly 3 upstream dispatches (2 logical + 1 hedge)');
+  assert.equal(new Set(upstreamCalls.map((c) => c.host)).size, 3);
 });
 
 await test('hedge: a tier cap of 1 still allows a twin (a hedge is not an attempt)', async () => {
@@ -2065,15 +2221,14 @@ await test('hedge: no hedge at all when MAX_HEDGES_PER_REQUEST=0', async () => {
   assert.equal(upstreamCalls.length, 1, 'MAX_HEDGES_PER_REQUEST=0 disables the twin');
 });
 
-await test('hedge: max 5 logical attempts and 6 dispatches when every attempt fails (1 hedge)', async () => {
+await test('hedge: Tier 1 remains capped at 3 logical attempts plus one twin', async () => {
   resetMock();
   installMockFetch();
-  // Six failing tier1 nodes, max_attempts=5: logical attempt 1 gets a twin
-  // (slow primary), attempts 2..5 do not (hedge budget spent). Final: 5
-  // logical attempts, 6 upstream dispatches, 1 hedge.
-  routeHandlers['mf-p1.example.com'] = async () => { await new Promise((r) => setTimeout(r, 300)); return jsonUpstream({}, 500); };
-  for (const id of ['mf-t2', 'mf-p3', 'mf-p4', 'mf-p5', 'mf-p6']) {
-    routeHandlers[`${id}.example.com`] = () => jsonUpstream({}, 500);
+  // The model policy allows five attempts, but Tier 1 is capped at three.
+  // Make every account slow enough for the first logical attempt to hedge.
+  const slowFailure = async () => { await new Promise((r) => setTimeout(r, 300)); return jsonUpstream({}, 500); };
+  for (const id of ['mf-p1', 'mf-t2', 'mf-p3', 'mf-p4', 'mf-p5', 'mf-p6']) {
+    routeHandlers[`${id}.example.com`] = slowFailure;
   }
   const env = makeEnv({
     tier1: [basicNode('mf-p1'), basicNode('mf-t2'), basicNode('mf-p3'), basicNode('mf-p4'), basicNode('mf-p5'), basicNode('mf-p6')],
@@ -2088,11 +2243,11 @@ await test('hedge: max 5 logical attempts and 6 dispatches when every attempt fa
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.equal(res.status, 502);
   const body = await res.json();
-  assert.equal(body.error.details.attempts, 5, '5 logical attempts despite the hedge');
-  assert.equal(body.error.details.dispatches, 6, '6 real upstream dispatches');
+  assert.equal(body.error.details.attempts, 3, 'Tier 1 hard cap applies despite policy max_attempts=5');
+  assert.equal(body.error.details.dispatches, 4, '3 logical attempts plus one hedge twin');
   assert.equal(body.error.details.hedges, 1, 'exactly one hedge twin');
-  assert.deepEqual(body.error.details.failure_kinds, { server: 6 });
-  assert.equal(upstreamCalls.length, 6);
+  assert.deepEqual(body.error.details.failure_kinds, { server: 4 });
+  assert.equal(upstreamCalls.length, 4);
 });
 
 await test('hedge winner: primary aborted and recorded NEUTRAL (no failure, no penalty)', async () => {
@@ -2113,8 +2268,10 @@ await test('hedge winner: primary aborted and recorded NEUTRAL (no failure, no p
   await new Promise((r) => setTimeout(r, 50));
   const slowState = getNodeState('hw-slow');
   assert.equal(slowState.totalFailures, 0, 'hedge loser must not count as a failure');
-  assert.equal(slowState.consecutiveFailures, 0, 'hedge loser must not feed the circuit breaker');
-  assert.equal(getCooldownRemainingMs('hw-slow'), 0, 'hedge loser must not be cooled down');
+  assert.equal(getTier1Model('hw-slow', 'general-air').consecutiveFailures, 0,
+    'hedge loser must not feed Tier 1 recovery state');
+  assert.equal(getTier1Model('hw-slow', 'general-air').cooldownUntil, 0,
+    'hedge loser must not be cooled down');
 });
 
 await test('hedge winner at the first-event guard: primary loser stays neutral', async () => {
@@ -2136,8 +2293,8 @@ await test('hedge winner at the first-event guard: primary loser stays neutral',
   await new Promise((r) => setTimeout(r, 50));
   const stallState = getNodeState('gl-stall');
   assert.equal(stallState.totalFailures, 0, 'guard-phase hedge loser is neutral, not first_event_timeout');
-  assert.equal(stallState.consecutiveFailures, 0);
-  assert.equal(getCooldownRemainingMs('gl-stall'), 0);
+  assert.equal(getTier1Model('gl-stall', 'general-air').consecutiveFailures, 0);
+  assert.equal(getTier1Model('gl-stall', 'general-air').cooldownUntil, 0);
 });
 
 await test('hedge: primary wins the race and the hanging twin is neutral', async () => {
@@ -2166,9 +2323,17 @@ await test('hedge: primary wins the race and the hanging twin is neutral', async
 await test('hedge: both sides fail -> one logical attempt consumed, the next one runs', async () => {
   resetMock();
   installMockFetch();
-  routeHandlers['bf-p.example.com'] = async () => { await new Promise((r) => setTimeout(r, 300)); return jsonUpstream({}, 500); };
-  routeHandlers['bf-t.example.com'] = () => jsonUpstream({}, 500);
-  routeHandlers['bf-next.example.com'] = () => jsonUpstream(okCompletion());
+  let bfDispatch = 0;
+  const bothFailThenSuccess = async () => {
+    bfDispatch++;
+    if (bfDispatch === 1) {
+      await new Promise((r) => setTimeout(r, 300));
+      return jsonUpstream({}, 500);
+    }
+    if (bfDispatch === 2) return jsonUpstream({}, 500);
+    return jsonUpstream(okCompletion());
+  };
+  for (const id of ['bf-p', 'bf-t', 'bf-next']) routeHandlers[`${id}.example.com`] = bothFailThenSuccess;
   const env = makeEnv({
     tier1: [basicNode('bf-p'), basicNode('bf-t'), basicNode('bf-next')],
     secrets: { 'bf-p': 'k', 'bf-t': 'k', 'bf-next': 'k' },
@@ -2176,11 +2341,12 @@ await test('hedge: both sides fail -> one logical attempt consumed, the next one
   });
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.equal(res.status, 200);
-  assert.deepEqual(upstreamCalls.map((c) => c.host),
-    ['bf-p.example.com', 'bf-t.example.com', 'bf-next.example.com'],
+  assert.equal(upstreamCalls.length, 3,
     'the failed hedge pair consumes ONE logical attempt, then attempt 2 serves');
-  // The twin's 500 was a REAL failure of its own (not a cancellation).
-  assert.equal(getNodeState('bf-t').totalFailures, 1, 'a twin that genuinely 5xxes counts as a real failure');
+  assert.equal(new Set(upstreamCalls.map((c) => c.host)).size, 3);
+  const failedTwinId = upstreamCalls[1].host.split('.')[0];
+  assert.equal(getTier1Model(failedTwinId, 'general-air').consecutiveFailures, 1,
+    'a twin that genuinely 5xxes counts as a real failure');
 });
 
 // ---- Hedge twin slot/RPM leak regressions ----------------------------------
@@ -2221,7 +2387,7 @@ await test('hedge gate: exhausted deadline claims NOTHING from the twin (no slot
   const twin = getNodeState('hz-t');
   assert.equal(twin.activeRequests, 0, 'no concurrency slot may stay claimed');
   assert.equal(twin.totalRequests, 0, 'no totalRequests charge for a never-dispatched twin');
-  assert.equal(rpmUsage('hz-t', Date.now()), 0, 'no RPM reservation for a never-dispatched twin');
+  assert.equal(tier1RpmUsage('hz-t', Date.now()), 0, 'no RPM reservation for a never-dispatched twin');
   assert.equal(twin.lastUsedAt, 0, 'lastUsedAt untouched');
 });
 
@@ -2247,7 +2413,7 @@ await test('hedge gate: a valid deadline claims and dispatches the twin normally
   assert.equal(twin.totalRequests, 1, 'the twin was really claimed and dispatched');
   assert.equal(twin.activeRequests, 0, 'its slot was released when the attempt ended');
   if (Math.floor(Date.now() / 60_000) === Math.floor((twin.lastUsedAt || 0) / 60_000)) {
-    assert.equal(rpmUsage('hg-t', Date.now()), 1, 'the twin genuinely reached an upstream, so the RPM charge stays');
+    assert.equal(tier1RpmUsage('hg-t', Date.now()), 1, 'the twin genuinely reached an upstream, so the RPM charge stays');
   }
 });
 
@@ -2274,7 +2440,7 @@ await test('hedge loser: twin loses the race, releases its slot, keeps its RPM c
   assert.equal(twin.activeRequests, 0, 'the loser released its concurrency slot');
   assert.equal(twin.totalRequests, 1);
   if (Math.floor(Date.now() / 60_000) === Math.floor((twin.lastUsedAt || 0) / 60_000)) {
-    assert.equal(rpmUsage('lw-t', Date.now()), 1, 'the loser reached the upstream, so its RPM charge is legitimate');
+    assert.equal(tier1RpmUsage('lw-t', Date.now()), 1, 'the loser reached the upstream, so its RPM charge is legitimate');
   }
   assert.equal(twin.totalFailures, 0, 'losing the race is neutral, never a failure');
   assert.equal(twin.consecutiveFailures, 0, 'no circuit chain from a neutral loser');
@@ -2300,20 +2466,18 @@ await test('hedge gate: an exhausted deadline never strands a half-open probe on
     secrets: { 'hx-p': 'k', 'hx-t': 'k' },
     extraEnv: { HEDGE_DELAY_MS: '200', FAILOVER_BUDGET_MS: '30000', QUOTA_RATE_LIMITER: slowLimiter },
   });
-  const probe = getNodeState('hx-t');
-  probe.circuitState = 'open';
-  probe.cooldownUntil = Date.now() - 1;
-  probe.consecutiveFailures = 3;
+  const recovery = getTier1Model('hx-t', 'general-air');
+  recovery.failureState = 'cooldown';
+  recovery.cooldownUntil = Date.now() - 1;
+  recovery.consecutiveFailures = 3;
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.equal(res.status, 200, 'the primary succeeds; the twin is never touched');
   await res.text();
   await new Promise((r) => setTimeout(r, 50));
   assert.deepEqual(upstreamCalls.map((c) => c.host), ['hx-p.example.com']);
-  const twin = getNodeState('hx-t');
-  assert.equal(twin.probeInFlight, false, 'the probe must never be claimed by a dead deadline');
-  assert.equal(twin.activeRequests, 0, 'no slot leaked through the probe path either');
-  assert.equal(twin.circuitState, 'open', 'circuit state unchanged');
-  assert.equal(peekAvailability('hx-t', Date.now()), 'probe', 'the node stays probe-dispatchable');
+  assert.equal(tier1AccountInFlight('hx-t'), 0, 'no slot leaked through recovery selection');
+  assert.equal(getTier1Model('hx-t', 'general-air').failureState, 'half_open',
+    'expired cooldown may become eligible, but no synthetic probe or slot is created');
 });
 
 await test('hedge twin inherits the logical attempt deadline (no fresh budget)', async () => {
@@ -2467,10 +2631,9 @@ await test('client abort: neutral end, never misrecorded as headers_timeout', as
   const res = await pending;
   assert.equal(res.status, 499, 'client abort returns 499');
   await new Promise((r) => setTimeout(r, 30));
-  const nodeState = getNodeState('ca-hang');
-  assert.equal(nodeState.totalFailures, 0, 'client abort is not a node failure');
-  assert.equal(nodeState.consecutiveFailures, 0);
-  assert.equal(getCooldownRemainingMs('ca-hang'), 0);
+  assert.equal(getNodeState('ca-hang').totalFailures, 0, 'client abort is not a node failure');
+  assert.equal(getTier1Model('ca-hang', 'general-air').consecutiveFailures, 0);
+  assert.equal(getTier1Model('ca-hang', 'general-air').cooldownUntil, 0);
 });
 
 

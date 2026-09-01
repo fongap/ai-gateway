@@ -20,11 +20,21 @@ import { loadModelsConfig } from '../config/models.js';
 import { loadPoliciesConfig, getPolicy } from '../config/policies.js';
 import { getLimits, attemptHeadersTimeoutMs, attemptFirstEventTimeoutMs, attemptBudgetSliceMs } from '../config/timeouts.js';
 import { pickCandidate, supportsRequest, tierHasDispatchableNode, countDispatchableNodes } from '../scheduler/scheduler.js';
-import { scheduleModelProbe, runScheduledProbes } from '../scheduler/model-probes.js';
+import { pickTier1Candidate, tier1DeadlineTooSmall } from '../scheduler/tier1-scheduler.js';
+import {
+  resolveTier1SessionId, readTier1Affinity, writeTier1Affinity,
+  shouldEvaluateAffinity, recordTier1AffinityDecision,
+} from '../scheduler/tier1-affinity.js';
 import {
   recordSuccess, recordFailure, recordNeutralEnd, rollbackRpmBucket, recordModelMissing,
-  applyHealthPenalty, recordTtft, markProbeFailure,
+  applyHealthPenalty, recordTtft, bumpNodeCounters, markProbeFailure,
 } from '../reliability/node-state.js';
+import {
+  releaseTier1Slot,
+  recordTier1Ttft, recordTier1Success, applyTier1Outcome, classifyTier1Failure,
+  tier1CountDispatchableNodes, tier1HasDispatchableNode, rollbackTier1Rpm,
+  TIER1_MAX_ATTEMPTS,
+} from '../reliability/tier1-state.js';
 import {
   classifyUpstreamStatus, classifyNetworkError, classifyFirstEventFailure,
   classifyClientAbort,
@@ -47,7 +57,9 @@ import {
 } from '../protocol/responses/index.js';
 import {
   resolveUpstreamPath, buildUpstreamHeadersFor,
-  isAnthropicNativeRealOutput, isResponsesRealOutput,
+  isAnthropicNativeRealOutput, isResponsesRealOutput, isOpenAIChatRealOutput,
+  isOpenAIChatCompletionMeaningful, isOpenAIResponsesObjectMeaningful,
+  isAnthropicMessageMeaningful,
 } from '../transport/index.js';
 import {
   collectAnthropicMessageObject, synthesizeAnthropicFromMessage,
@@ -213,17 +225,12 @@ export async function handleRequest(request, env, ctx) {
   // drained (its budget spent) before the next tier is entered. Tier caps and
   // max_attempts both count LOGICAL attempts; a hedge twin charges neither.
   const tierCaps = computeTierCaps(tiers, reqDescriptor, state.attempted, policy);
-  // Trigger background scheduled probes (cold-start group sampling or
-  // stale-node refresh), independent of this request's outcome. Throttled
-  // internally to once per PROBE_INTERVAL_MS; no-ops otherwise.
-  runScheduledProbes(ctx, {
-    nodes: config.nodes,
-    model: requestedModel,
-    protocol: reqDescriptor.protocol,
-    surface: reqDescriptor.surface,
-    env,
-    logger,
-  });
+  // Tier 1 session affinity is a SOFT bias, read once before the loop. A cold
+  // session (no client-supplied id, or no KV binding) degrades to no bias.
+  const tier1Session = resolveTier1SessionId(request);
+  const tier1Affinity = tier1Session ? await readTier1Affinity(env, tier1Session) : null;
+  const tier1EvaluateAffinity = shouldEvaluateAffinity(tier1Session);
+  const tier1Rng = makeTier1Rng(env);
   for (const tierNumber of TIER_ORDER) {
     const cap = tierCaps[tierNumber] ?? 0;
     let usedInTier = 0;
@@ -235,18 +242,48 @@ export async function handleRequest(request, env, ctx) {
       if (remainingBudgetMs <= 0) {
         return buildBudgetExhaustedResponse(request, env, route, requestId, requestedModel, state, exposeUpstreamInfo);
       }
+      // Tier 1 checks the SHARED deadline (not a separate counter) before each
+      // P2C attempt: if the remaining budget cannot fit one more upstream
+      // attempt, Tier 1 yields to the Tier Router immediately rather than
+      // burning budget on a doomed attempt. Tier 2/3 keep their existing path.
+      if (tierNumber === 1 && usedInTier > 0 && tier1DeadlineTooSmall(remainingBudgetMs)) {
+        state.tier1ExhaustionReason = 'deadline_too_small';
+        break;
+      }
       const remainingDispatchableAttempts = countRemainingDispatchableAttempts(
         tiers, reqDescriptor, state.attempted, tierCaps,
         tierNumber, usedInTier, policy.maxAttempts - state.logicalAttempts,
       );
-      const node = pickCandidate(tiers[tierNumber], reqDescriptor, state.attempted);
-      if (!node) break; // tier exhausted -> fallback to next tier
+      const pick = pickForTier(tierNumber, tiers[tierNumber], reqDescriptor, state.attempted, {
+        affinityAccountId: tierNumber === 1 ? tier1Affinity : null,
+        evaluateAffinity: tierNumber === 1 && tier1EvaluateAffinity,
+        rng: tier1Rng,
+      });
+      if (!pick || pick.raceLost) break; // tier exhausted -> fallback to next tier
+      const node = pick.node;
+      if (tierNumber === 1) {
+        recordTier1AffinityDecision({
+          affinityHit: pick.tier1AffinityHit,
+          escaped: pick.tier1EscapedFromAffinity,
+        });
+      }
       const outcome = await dispatchWithHedge({
         request, env, ctx, logger, requestId, route, node, requestedModel,
         clientWantsStream, fakeStream, bodyJson, limits, exposeUpstreamInfo, state,
         failoverBudgetMs, requestStartMs, reqDescriptor,
         remainingDispatchableAttempts, policy, tierNumber,
+        tier1ReleaseToken: pick.tier1ReleaseToken || null,
+        tier1EscapedFromAffinity: !!pick.tier1EscapedFromAffinity,
+        tier1UpdateAffinity: !!pick.tier1UpdateAffinity,
+        tier1AffinityAccountId: tier1Affinity,
+        tier1EvaluateAffinity,
+        tier1Session,
+        rng: tier1Rng,
       }, tiers[tierNumber]);
+      // Failures never update affinity — the old account stays preferred
+      // across retries (read once before the loop). Affinity moves to a
+      // escaped P2C winner only on that winner's real success, written
+      // directly inside recordNodeSuccess (stream and non-stream alike).
       // A pre-dispatch outcome that never reached an upstream (distributed
       // rate-limiter deny, invalid base URL) carries budgetCharged:false and
       // consumes NOTHING: neither the logical-attempt budget nor this tier's
@@ -262,6 +299,49 @@ export async function handleRequest(request, env, ctx) {
       if (outcome.stop) break;
     }
   }
+
+// Tier-aware picker. Tier 1 uses P2C + affinity + tier1-state eligibility;
+// Tier 2/3 use the existing node-state pickCandidate unchanged. Returns
+// { node, tier1ReleaseToken?, tier1EscapedFromAffinity? } or { raceLost } or null.
+// An optional deterministic RNG (from TIER1_SCHEDULER_SEED) makes P2C sampling
+// reproducible in tests without adding a production env knob — when the seed
+// is absent (production), Math.random is used and behaviour stays random.
+function pickForTier(tierNumber, tierNodes, req, attempted, opts = {}) {
+  if (tierNumber !== 1) {
+    const node = pickCandidate(tierNodes, req, attempted);
+    return node ? { node } : null;
+  }
+  const r = pickTier1Candidate(tierNodes, req, attempted, opts);
+  if (!r) return null;
+  if (r.raceLost) return { raceLost: true };
+  return {
+    node: r.node,
+    tier1ReleaseToken: r.releaseToken,
+    tier1EscapedFromAffinity: r.escapedFromAffinity,
+    tier1UpdateAffinity: r.updateAffinity,
+    tier1AffinityHit: r.affinityHit,
+  };
+}
+
+// Mulberry32 — a tiny deterministic PRNG for test reproducibility only. It is
+// only wired in when env.TIER1_SCHEDULER_SEED is a non-empty string; production
+// leaves it unset and P2C uses Math.random.
+function makeTier1Rng(env) {
+  const seedRaw = String(env?.TIER1_SCHEDULER_SEED ?? '').trim();
+  if (!seedRaw) return Math.random;
+  let h = 1779033703 ^ seedRaw.length;
+  for (let i = 0; i < seedRaw.length; i++) {
+    h = Math.imul(h ^ seedRaw.charCodeAt(i), 3432918353);
+    h = (h << 13) | (h >>> 19);
+  }
+  let a = h >>> 0;
+  return () => {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
   return buildExhaustedResponse(request, env, route, requestId, requestedModel, state, tiers, exposeUpstreamInfo, reqDescriptor);
 }
@@ -291,7 +371,9 @@ function computeTierCaps(tiers, reqDescriptor, attempted, policy) {
   const caps = {};
   for (const t of TIER_ORDER) caps[t] = 0;
   const dispatchable = TIER_ORDER.filter((t) =>
-    tierHasDispatchableNode(tiers[t], reqDescriptor, attempted, now));
+    t === 1
+      ? tier1HasDispatchableNode(tiers[t], reqDescriptor, attempted, now)
+      : tierHasDispatchableNode(tiers[t], reqDescriptor, attempted, now));
   if (dispatchable.length === 0) return caps;
   const max = policy.maxAttempts;
   const surplus = Math.max(0, max - dispatchable.length);
@@ -299,6 +381,7 @@ function computeTierCaps(tiers, reqDescriptor, attempted, policy) {
     // `t` is numeric (1/2/3); POLICIES_CONFIG tier_attempts uses string keys
     // ('tier1'/'tier2'/'tier3').
     caps[t] = policy.tierAttempts?.[`tier${t}`] ?? (i === 0 ? 1 + surplus : 1);
+    if (t === 1) caps[t] = Math.min(caps[t], TIER1_MAX_ATTEMPTS);
   });
   return caps;
 }
@@ -317,7 +400,9 @@ function countRemainingDispatchableAttempts(tiers, reqDescriptor, attempted, tie
     const capRemaining = Math.max(0,
       (tierCaps[tierNumber] ?? 0) - (tierNumber === currentTier ? usedInTier : 0));
     if (capRemaining === 0) continue;
-    const live = countDispatchableNodes(tiers[tierNumber], reqDescriptor, attempted, now);
+    const live = tierNumber === 1
+      ? tier1CountDispatchableNodes(tiers[tierNumber], reqDescriptor, attempted, now)
+      : countDispatchableNodes(tiers[tierNumber], reqDescriptor, attempted, now);
     total += Math.min(capRemaining, live);
   }
   return Math.max(1, Math.min(Math.max(1, sharedRemaining), total || 1));
@@ -429,8 +514,19 @@ async function dispatchWithHedge(args, tierNodes) {
   // the twin's slot atomically (re-checked inside acquireSlot), and the
   // deadline gate above guarantees the claim is always followed by a real
   // dispatch or a legitimate loser lifecycle.
-  const twinNode = pickCandidate(tierNodes, args.reqDescriptor, args.state.attempted, Date.now(), args.node.id);
-  if (!twinNode) return primary;
+  const legacyTwin = args.tierNumber === 1
+    ? null : pickCandidate(tierNodes, args.reqDescriptor, args.state.attempted, Date.now(), args.node.id);
+  const twinPick = args.tierNumber === 1
+    ? pickTier1Candidate(tierNodes, args.reqDescriptor, args.state.attempted, {
+      excludeId: args.node.id,
+      now: Date.now(),
+      rng: args.rng ?? Math.random,
+      affinityAccountId: args.tier1AffinityAccountId,
+      evaluateAffinity: args.tier1EvaluateAffinity,
+    })
+    : legacyTwin ? { node: legacyTwin } : null;
+  if (!twinPick || twinPick.raceLost) return primary;
+  const twinNode = twinPick.node;
 
   args.state.hedges++;
   primaryArgs.hedgedWithTwin = true;
@@ -447,6 +543,9 @@ async function dispatchWithHedge(args, tierNodes) {
     ...args, node: twinNode, hedgeAbort: new AbortController(), hedgedAttempt: true,
     // THE shared logical attempt deadline (absolute; not re-sliced).
     attemptDeadlineMs: primaryArgs.attemptDeadlineMs,
+    tier1ReleaseToken: twinPick.releaseToken || null,
+    tier1EscapedFromAffinity: !!twinPick.escapedFromAffinity,
+    tier1UpdateAffinity: !!twinPick.updateAffinity,
   };
   const twin = attemptNode(twinArgs).then(undefined, (error) => {
     args.logger.debug(`hedge: twin ${twinNode.id} error ${error?.message || error}`);
@@ -573,8 +672,13 @@ async function dispatchAttempt(c) {
         // not re-picked this request; the tier drains via `attempted` rather
         // than the budgets.
         state.attempted.add(node.id);
-        recordNeutralEnd(node.id);
-        rollbackRpmBucket(node.id);
+        if (node.tier === 'tier-1') {
+          releaseTier1Slot(node.id, c.tier1ReleaseToken);
+          rollbackTier1Rpm(node.id);
+        } else {
+          recordNeutralEnd(node.id);
+          rollbackRpmBucket(node.id);
+        }
         noteFailure(state, 'rate_limit_global');
         state.logger.info(
           `dispatch request=${requestId} logical_attempt=${state.logicalAttempts + 1}/${state.maxAttempts}`
@@ -668,7 +772,10 @@ async function dispatchAttempt(c) {
       state.attempted.add(node.id);
       state.dispatches++;
       if (!c.hedgedAttempt) state.logicalAttempts++;
-      recordNeutralEnd(node.id);
+      if (node.tier === 'tier-1') {
+        releaseTier1Slot(node.id, c.tier1ReleaseToken);
+        bumpNodeCounters(node.id, { requests: 1 });
+      } else recordNeutralEnd(node.id);
       logger.info(
         `hedge loser: request=${requestId} node=${node.id} phase=headers`
         + ` reason=cancelled_after_peer_commit neutral=true latency_ms=${latencyMs}`,
@@ -713,8 +820,8 @@ async function dispatchAttempt(c) {
 // so a node that streams lifecycle events before dying can still fail over.
 // Defined by the Anthropic transport (src/transport/anthropic.js) — the two
 // protocol families deliberately do NOT share a first-real-output judgment.
-// OpenAI Chat keeps the original "any parseable non-error event commits";
-// OpenAI Responses commits on response.*.delta events (isResponsesRealOutput).
+// OpenAI Chat Tier 1 uses its meaningful-output predicate while Tier 2/3 keep
+// the original parseable-event boundary. Responses uses response.*.delta.
 
 async function handleSuccess(s) {
   const { upstream, c, latencyMs, detach, upstreamWasStreaming } = s;
@@ -748,10 +855,16 @@ async function handleSuccess(s) {
       // commits only when genuine model output is observed:
       //   anthropic messages -> native content deltas (transport predicate)
       //   openai responses   -> response.*.delta events (transport predicate)
-      //   openai chat        -> any parseable non-error event (original rule)
+      //   openai chat tier1  -> meaningful text/reasoning/tool delta (so a
+      //     role-only or empty delta does NOT close the boundary and is NOT
+      //     recorded as passive TTFT — Tier 1 learns only from real output)
+      //   openai chat tier2/3 -> any parseable non-error event (original rule,
+      //     unchanged — Tier 2/3 are not redesigned here)
       const isRealOutput = surface === 'messages'
         ? isAnthropicNativeRealOutput
-        : surface === 'responses' ? isResponsesRealOutput : undefined;
+        : surface === 'responses' ? isResponsesRealOutput
+        : (surface === 'chat_completions' && node.tier === 'tier-1') ? isOpenAIChatRealOutput
+        : undefined;
       guarded = await ensureFirstSseEvent(upstream, firstEventTimeout, request.signal, isRealOutput);
     } catch (e) {
       detach();
@@ -773,7 +886,10 @@ async function handleSuccess(s) {
         state.attempted.add(node.id);
         state.dispatches++;
         if (!c.hedgedAttempt) state.logicalAttempts++;
-        recordNeutralEnd(node.id);
+        if (node.tier === 'tier-1') {
+          releaseTier1Slot(node.id, c.tier1ReleaseToken);
+          bumpNodeCounters(node.id, { requests: 1 });
+        } else recordNeutralEnd(node.id);
         logger.info(
           `hedge loser: request=${requestId} node=${node.id} phase=first_event`
           + ` reason=cancelled_after_peer_commit neutral=true latency_ms=${Date.now() - c.attemptStartMs}`,
@@ -781,11 +897,9 @@ async function handleSuccess(s) {
         return { rotate: true, hedgedAway: true, kind: 'cancelled_after_peer_commit' };
       }
       const classification = classifyFirstEventFailure();
-      // A real first-event timeout means the node's TTFT has degraded since
-      // the last measurement. Invalidate the stale TTFT immediately so the
-      // old fast score cannot keep winning — the node re-learns through a
-      // probe or a later successful passive measurement.
-      markProbeFailure(node.id, state.requestedModel);
+      // Latest main invalidates stale Tier 2/3 TTFT after a real first-event
+      // failure. Tier 1 has a separate passive metric and never writes here.
+      if (node.tier !== 'tier-1') markProbeFailure(node.id, state.requestedModel);
       recordOutcome(state, node, classification, c, {
         latencyMs: Date.now() - c.attemptStartMs,
         ttftWaitMs: Date.now() - guardStartMs,
@@ -795,11 +909,18 @@ async function handleSuccess(s) {
       return { rotate: true, kind: classification.kind };
     }
     detach();
-    // TTFT: dispatch start -> first committed stream event. The scheduler's
-    // latency preference compares THIS for streaming traffic; avgLatencyMs
-    // keeps measuring headers, which says nothing about when tokens start.
+    // TTFT: dispatch start -> first committed meaningful stream event. For
+    // Tier 1 this is the ONLY performance signal (passive, real-request), so
+    // it is recorded against the (account, model) pair in tier1-state; a
+    // failed request that produced no meaningful output never reaches here
+    // (it rotates through the failure pipeline instead). Tier 2/3 keep the
+    // node-level EWMA in node-state for their existing latency preference.
     c.ttftMs = Date.now() - c.attemptStartMs;
-    recordTtft(node.id, c.ttftMs, state.requestedModel);
+    if (node.tier === 'tier-1') {
+      recordTier1Ttft(node.id, state.requestedModel, c.ttftMs);
+    } else {
+      recordTtft(node.id, c.ttftMs, state.requestedModel);
+    }
     const hiddenStreamFailure = () => guardedStreamFailureReason(guarded);
 
     const headers = finalHeaders(env, request, guarded.headers, extraHeaders);
@@ -885,6 +1006,7 @@ async function handleSuccess(s) {
         }
         return { rotate: true, kind: classification.kind };
       }
+      recordTier1NonStreamTtft(c, node, data, isOpenAIResponsesObjectMeaningful);
       // Single usage capture point for BOTH delivered forms below (plain JSON
       // and the synthesized Responses SSE).
       recordTokens(c, node, data?.usage);
@@ -914,6 +1036,7 @@ async function handleSuccess(s) {
       // Assemble the full object; nothing reached the client yet, so failures rotate.
       try {
         const data = await collectOpenAIStreamObject(upstream, request.signal);
+        recordTier1NonStreamTtft(c, node, data, isOpenAIChatCompletionMeaningful);
         recordNodeSuccess(c, node, latencyMs);
         // Assembled-from-stream usage (fake-stream protection and the
         // upstream-stream / client-non-stream case): the collect helper
@@ -975,6 +1098,7 @@ async function handleSuccess(s) {
       }
       return { rotate: true, kind: classification.kind };
     }
+    recordTier1NonStreamTtft(c, node, data, isOpenAIChatCompletionMeaningful);
     // Single usage capture point for BOTH delivered forms below (plain JSON
     // and the synthesized chat SSE) — nothing else parses this body.
     recordTokens(c, node, data?.usage);
@@ -1015,6 +1139,7 @@ async function handleSuccess(s) {
       }
       return { rotate: true, kind: classification.kind };
     }
+    recordTier1NonStreamTtft(c, node, data, isAnthropicMessageMeaningful);
     recordNodeSuccess(c, node, latencyMs);
     // Single usage capture point: this branch serves both the plain JSON body
     // and the upstream-stream-assembled object.
@@ -1035,6 +1160,12 @@ async function handleSuccess(s) {
     recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: error.message });
     return { rotate: true, kind: classification.kind };
   }
+}
+
+function recordTier1NonStreamTtft(c, node, data, isMeaningful) {
+  if (node.tier !== 'tier-1' || !isMeaningful(data)) return;
+  c.ttftMs = Date.now() - c.attemptStartMs;
+  recordTier1Ttft(node.id, c.state.requestedModel, c.ttftMs);
 }
 
 // Token observability: called EXACTLY ONCE per delivered response — from the
@@ -1074,39 +1205,59 @@ function scheduleD1TokenPersist(c, usage) {
   }
 }
 
-// Record the real request outcome first.  The optional background probe is
-// queued only after a completed response (or stream) releases its slot, and
-// never participates in the client request's latency or error semantics.
+// Record the real request outcome first. Tier 1 learns ONLY from real business
+// requests: success drives half-open recovery and (on an affinity escape) moves
+// the session to the winning account. Tier 2/3 keep their node-state path.
+// There is NO background probe anymore — probes were Tier-1-only and have been
+// removed entirely from the scheduling path.
 function recordNodeSuccess(c, node, latencyMs) {
+  if (node.tier === 'tier-1') {
+    recordTier1Success(node.id, c.state?.requestedModel);
+    releaseTier1Slot(node.id, c.tier1ReleaseToken);
+    bumpNodeCounters(node.id, { requests: 1, successes: 1 });
+    // KV writes happen only for a cold session or an approved migration, and
+    // only after the selected account completed a real request successfully.
+    if (c.tier1UpdateAffinity && c.tier1Session) {
+      writeTier1Affinity(c.env, c.ctx, c.tier1Session, node.id);
+    }
+    return;
+  }
   recordSuccess(node.id, latencyMs, c.state?.requestedModel);
-  scheduleModelProbe(c.ctx, {
-    nodes: c.state?.nodes,
-    model: c.state?.requestedModel,
-    protocol: node.protocol,
-    surface: c.surface,
-    env: c.env,
-    logger: c.logger,
-  });
 }
 
 // Node-layer stream tracking: node outcome recording + stream-end telemetry.
 // The client-facing layer (gateway-stats.mjs trackClientResponse) never passes the
 // telemetry callbacks, so stream counters count each stream exactly once.
 function makeNodeStreamTrack(c, node, latencyMs) {
+  const tier1 = node.tier === 'tier-1';
   return {
     onSuccess: () => recordNodeSuccess(c, node, latencyMs),
     // Field evidence (NVIDIA-hosted stalls mid-generation): 2s let a stalling
     // node straight back into rotation. 60s matches the rate-limit cooldown —
     // long enough to push repeat offenders out of candidate ordering without
     // permanently discarding a node that had one transient blip.
-    onFailure: () => recordFailure(node.id, { counted: true, cooldownMs: 60_000, reason: 'stream_interrupted' }),
-    onNeutral: () => recordNeutralEnd(node.id),
+    // Tier 1 needs the concrete interruption reason supplied to onStreamEnd,
+    // so its failure state and release happen there. Tier 2/3 keep the existing
+    // recordFailure path unchanged.
+    onFailure: () => {
+      if (!tier1) recordFailure(node.id, { counted: true, cooldownMs: 60_000, reason: 'stream_interrupted' });
+    },
+    onNeutral: () => tier1
+      ? releaseTier1Slot(node.id, c.tier1ReleaseToken)
+      : recordNeutralEnd(node.id),
     onStreamStart: () => recordStreamStart(),
     onStreamEnd: (outcome, d) => {
       if (outcome === 'completed') { recordStreamCompleted(); return; }
       if (outcome !== 'interrupted') return; // neutral (client abort) is not counted
       recordStreamInterrupted(d.reason);
-      applyHealthPenalty(node.id, 'stream');
+      if (tier1) {
+        applyTier1Outcome(node.id, c.state?.requestedModel,
+          classifyTier1Failure({ kind: 'stream_interrupted', streamReason: d.reason }));
+        releaseTier1Slot(node.id, c.tier1ReleaseToken);
+        bumpNodeCounters(node.id, { requests: 1, failures: 1 });
+      } else {
+        applyHealthPenalty(node.id, 'stream');
+      }
       c.logger.info(
         `[stream-interrupted] node=${node.id} provider=${node.provider}`
         + ` protocol=${node.protocol} surface=${node.surfaces?.[0] ?? ''}`
@@ -1150,13 +1301,19 @@ function rotateWithNeutralEnd(state, node, reason, c = {}, preDispatch = false) 
     state.dispatches++;
     if (!c.hedgedAttempt) state.logicalAttempts++;
   }
-  recordNeutralEnd(node.id);
-  // Pre-dispatch neutrals also never touched the network, so the RPM reservation
-  // acquireSlot made must be returned to the bucket — otherwise a structurally
-  // broken node silently burns its own per-minute RPM quota on traffic it never
-  // sent. Post-dispatch neutrals (200-with-non-json) keep the charge: the
-  // upstream WAS contacted.
-  if (preDispatch) rollbackRpmBucket(node.id);
+  if (node.tier === 'tier-1') {
+    releaseTier1Slot(node.id, c.tier1ReleaseToken);
+    if (preDispatch) rollbackTier1Rpm(node.id);
+    else bumpNodeCounters(node.id, { requests: 1 });
+  } else {
+    recordNeutralEnd(node.id);
+    // Pre-dispatch neutrals also never touched the network, so the RPM reservation
+    // acquireSlot made must be returned to the bucket — otherwise a structurally
+    // broken node silently burns its own per-minute RPM quota on traffic it never
+    // sent. Post-dispatch neutrals (200-with-non-json) keep the charge: the
+    // upstream WAS contacted.
+    if (preDispatch) rollbackRpmBucket(node.id);
+  }
   noteFailure(state, reason);
   state.logger.info(
     `dispatch request=${c.requestId ?? state.requestId} logical_attempt=${preDispatch ? state.logicalAttempts + 1 : state.logicalAttempts}/${state.maxAttempts}`
@@ -1189,7 +1346,20 @@ function recordOutcome(state, node, classification, c, { latencyMs = -1, ttftWai
   const hedged = !!(c?.hedgedAttempt || c?.hedgedWithTwin);
   const headersMs = c?.headersMs ?? (latencyMs >= 0 ? latencyMs : undefined);
 
-  if (classification.modelScoped) {
+  if (node.tier === 'tier-1') {
+    // Tier 1 owns its own per-(account,model) failure state machine. The
+    // shared classify.js outcome is mapped to a Tier 1 scope/cooldown; 429
+    // defaults to MODEL scope with a scope_ambiguous diagnostic flag when no
+    // provider-specific rule disambiguated it.
+    releaseTier1Slot(node.id, c.tier1ReleaseToken);
+    if (classification.action === 'neutral') {
+      bumpNodeCounters(node.id, { requests: 1 });
+    } else {
+      const t1Class = classifyTier1Failure(classification, { retryAfterMs: classification.retryAfterMs || 0 });
+      applyTier1Outcome(node.id, state.requestedModel, t1Class);
+      bumpNodeCounters(node.id, { requests: 1, failures: 1 });
+    }
+  } else if (classification.modelScoped) {
     // A 404 "model not found" is a (node, model) mapping mismatch, not a node
     // health issue: cool the PAIR only, leave the node healthy for its other
     // models, do not penalize health, do not feed the circuit.

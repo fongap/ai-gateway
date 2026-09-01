@@ -22,28 +22,35 @@
 flowchart TB
     A[请求] --> B[鉴权 / 路由]
     B --> C[Model Registry]
-    C --> D[选节点]
-    D --> E[健康 / 熔断]
-    E --> F[上游]
-    F --> G{结果}
-    G -- 成功 --> H[返回]
-    G -- 429 / 5xx --> D
-    G -- 全失败 --> I[502 / 503 / 504]
+    C --> D{资源层级}
+    D -- Tier 1 --> E[Eligibility + Affinity + P2C]
+    D -- Tier 2 / 3 --> F[原有稳定调度]
+    E --> G[真实业务请求 + 被动 TTFT]
+    F --> G
+    G --> H{结果}
+    H -- 成功 --> I[返回]
+    H -- 429 / 5xx --> D
+    H -- 全失败 --> J[502 / 503 / 504]
 ```
 
 ## 核心能力
 
-| 轮转摊流 | 429 隔离 | 熔断自愈 | 分层兜底 |
+| Tier 1 自适应 | 429 隔离 | 被动恢复 | 分层兜底 |
 |---|---|---|---|
-| priority + LRU | Retry-After 冷却 | HALF_OPEN 单探测 | tier 硬优先级 |
+| Affinity + P2C | Retry-After 冷却 | 真实请求 HALF_OPEN | tier 硬优先级 |
 
 - 多协议：OpenAI Chat / Responses、Anthropic Messages / count_tokens
 - 原生协议转发：Chat → 上游 `/v1/chat/completions`，Responses → 上游 `/v1/responses`，Messages → 上游 `/v1/messages`；节点通过 `protocol` + `surfaces` 显式声明，任何提供 OpenAI-compatible 或 Anthropic-compatible API 的服务均可接入
 - 不做 OpenAI ↔ Anthropic 跨协议转换，也不做跨协议 fallback
 - `limits.rpm` 默认 hard，单 Worker isolate 内不主动越配额
 - 整请求 failover budget，超时即停
+- Tier 1 只从真实业务输出学习 `(account, model)` TTFT：不主动测速，不用 health、LRU 或静态 priority 排序；它不承诺每次选到全局最快账户，而是追求低成本、快速避障、自然均衡和会话连续
+- Tier 1 会话亲和通过跨 isolate 的 Cloudflare KV 保存；其余短期 TTFT、inFlight、cooldown 与 half-open 状态仍是 isolate-local best-effort 状态
+- Tier 2 / Tier 3 保持原有稳定 fallback 与 circuit 行为
 
 ## 本地安装
+
+先创建 Cloudflare KV namespace；安装脚本会要求输入其 32 位 ID，并生成必需的 `TIER1_AFFINITY` binding。
 
 ```bash
 git clone https://github.com/fongap/ai-gateway.git && cd ai-gateway
@@ -59,7 +66,7 @@ sh scripts/install.sh     # Windows: powershell scripts/install.ps1
 git push origin main
 ```
 
-工作流会自动校验配置、同步 Worker 文本变量和 Worker 密钥、执行 D1 数据库迁移、部署 Worker，并对 `/health`、`/v1/models` 和 Claude `count_tokens` 执行线上健康检查。部署不会保留 Cloudflare 控制台中的旧文本变量。一次性初始化步骤见 **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**。
+将 KV namespace ID 配置为 GitHub Variable `TIER1_AFFINITY_KV_ID`。工作流会自动校验配置、生成 KV binding、同步 Worker 文本变量和 Worker 密钥、执行 D1 数据库迁移、部署 Worker，并对 `/health`、`/v1/models` 和 Claude `count_tokens` 执行线上健康检查。部署不会保留 Cloudflare 控制台中的旧文本变量。一次性初始化步骤见 **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**。
 
 ## 配置
 
@@ -77,6 +84,7 @@ git push origin main
 | `TIER{1,2,3}_NODES_CONFIG_01..` | 各层节点池 |
 | `NODE_SECRETS_01..` | `{ node-id: credential }` |
 | `GATEWAY_ACCESS_KEY` | 网关访问密钥 |
+| `TIER1_AFFINITY` | 必需的 Cloudflare KV binding；保存哈希 session key → Tier 1 account |
 
 > 完整字段、运行参数、Model Registry 和部署配置示例见 **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)**。
 

@@ -21,8 +21,11 @@ apply_d1_migrations() {
 }
 
 if [ -f wrangler.user.jsonc ]; then
+  node -e "const c=JSON.parse(require('fs').readFileSync('wrangler.user.jsonc','utf8'));if(!(c.kv_namespaces||[]).some(b=>b.binding==='TIER1_AFFINITY'&&b.id))process.exit(1)" \
+    || { echo "required TIER1_AFFINITY KV binding is missing from wrangler.user.jsonc" >&2; exit 1; }
   apply_d1_migrations
   $WRANGLER deploy -c wrangler.user.jsonc --keep-vars
 else
-  $WRANGLER deploy --keep-vars
+  echo "wrangler.user.jsonc is required and must contain the TIER1_AFFINITY KV binding" >&2
+  exit 1
 fi

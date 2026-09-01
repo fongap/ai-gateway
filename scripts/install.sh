@@ -11,14 +11,17 @@ DEFAULT_NAME="$(node -e 'console.log(JSON.parse(require("fs").readFileSync("wran
 printf "Worker name [%s]: " "$DEFAULT_NAME"
 read -r WORKER_NAME
 WORKER_NAME="${WORKER_NAME:-$DEFAULT_NAME}"
+printf "Tier 1 affinity KV namespace ID (required): "
+read -r AFFINITY_KV_ID
 node -e '
 const fs = require("fs");
 const name = process.argv[1];
 if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) { console.error("invalid worker name"); process.exit(1); }
+if (!/^[a-fA-F0-9]{32}$/.test(process.argv[2])) { console.error("Tier 1 affinity KV namespace ID must be 32 hexadecimal characters"); process.exit(1); }
 const c = JSON.parse(fs.readFileSync("wrangler.jsonc", "utf8"));
 c.name = name;
 fs.writeFileSync("wrangler.jsonc", JSON.stringify(c, null, 2) + "\n");
-' "$WORKER_NAME"
+' "$WORKER_NAME" "$AFFINITY_KV_ID"
 
 echo "==> Installing dependencies and verifying project"
 npm ci
@@ -54,11 +57,12 @@ SHARD_ARGS="plan --secrets $SECRETS_FILE --out $TMP_PLAN"
 # shellcheck disable=SC2086
 node scripts/plan-node-configuration.mjs $SHARD_ARGS
 
-node -e '
+AFFINITY_KV_ID="$AFFINITY_KV_ID" node -e '
 const fs = require("fs");
 const base = JSON.parse(fs.readFileSync("wrangler.jsonc", "utf8"));
 const plan = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
 base.vars = plan.vars;
+base.kv_namespaces = [{ binding: "TIER1_AFFINITY", id: process.env.AFFINITY_KV_ID }];
 fs.writeFileSync("wrangler.user.jsonc", JSON.stringify(base, null, 2) + "\n");
 ' "$TMP_PLAN"
 

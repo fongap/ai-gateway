@@ -15,6 +15,8 @@
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
 import { __resetAllStateForTests, getNodeState } from '../src/reliability/node-state.js';
+import { __resetTier1StateForTests } from '../src/reliability/tier1-state.js';
+import { __resetTier1AffinityForTests } from '../src/scheduler/tier1-affinity.js';
 
 const ACCESS_KEY = 'test-access-key';
 
@@ -22,6 +24,8 @@ let passed = 0;
 async function test(name, fn) {
   try {
     __resetAllStateForTests();
+    __resetTier1StateForTests();
+    __resetTier1AffinityForTests();
     await fn();
     passed++;
     console.log(`ok - ${name}`);
@@ -62,6 +66,7 @@ function resetMock() {
 function makeEnv({ tier1, tier2, tier3, secrets, extraEnv } = {}) {
   return {
     GATEWAY_ACCESS_KEY: ACCESS_KEY,
+    TIER1_SCHEDULER_SEED: 'codex-contract-test',
     ...(tier1 ? { TIER1_NODES_CONFIG_01: JSON.stringify(tier1) } : {}),
     ...(tier2 ? { TIER2_NODES_CONFIG_01: JSON.stringify(tier2) } : {}),
     ...(tier3 ? { TIER3_NODES_CONFIG_01: JSON.stringify(tier3) } : {}),

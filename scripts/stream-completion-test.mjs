@@ -14,6 +14,10 @@ import {
   FIRST_EVENT_MAX_SSE_LINE,
   GUARD_ERROR,
 } from '../src/stream/guard.js';
+import {
+  __resetTier1StateForTests, claimTier1Slot, makeTier1ReleaseToken,
+  releaseTier1Slot, tier1AccountInFlight,
+} from '../src/reliability/tier1-state.js';
 
 let passed = 0;
 async function test(name, fn) {
@@ -229,6 +233,39 @@ await test('text → stalled stream is interrupted with idle_timeout', async () 
   assertCommonShape(r.calls.ends[0], 'interrupted', 'idle_timeout');
   assert.equal(r.calls.ends[0].chunkCount, 1);
   assert.ok(r.calls.ends[0].durationMs >= 30, `durationMs=${r.calls.ends[0].durationMs}`);
+});
+
+await test('Tier 1 inFlight remains claimed until stream idle timeout and releases exactly once', async () => {
+  __resetTier1StateForTests();
+  const node = {
+    id: 'idle-account',
+    limits: { concurrency: 1, rpm: 100, rpmMode: 'hard' },
+  };
+  assert.equal(claimTier1Slot(node), true);
+  const token = makeTier1ReleaseToken(node.id);
+  let sent = false;
+  const tracked = trackStreamResponse(upstreamStream(async (c) => {
+    if (!sent) {
+      sent = true;
+      c.enqueue(encoder.encode(sseChunk('first')));
+      await new Promise(() => {});
+    }
+  }), {
+    idleTimeoutMs: 40,
+    completionMarker: MARKER,
+    onSuccess: () => releaseTier1Slot(node.id, token),
+    onFailure: () => {},
+    onNeutral: () => releaseTier1Slot(node.id, token),
+    onStreamEnd: (outcome) => {
+      if (outcome === 'interrupted') releaseTier1Slot(node.id, token);
+    },
+  });
+  const reader = tracked.body.getReader();
+  await reader.read();
+  assert.equal(tier1AccountInFlight(node.id), 1, 'first streamed output does not release the slot');
+  while (!(await reader.read()).done) { /* drain until idle timeout closes wrapper */ }
+  assert.equal(tier1AccountInFlight(node.id), 0);
+  assert.equal(releaseTier1Slot(node.id, token), false, 'terminal release guard is idempotent');
 });
 
 await test('client cancel is neutral and reports no reason', async () => {

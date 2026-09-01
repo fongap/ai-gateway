@@ -28,6 +28,8 @@ $defaultWorkerName = ((Get-Content (Join-Path $Root 'wrangler.jsonc') -Raw -Enco
 $workerName = (Read-Host "Worker name [$defaultWorkerName]").Trim()
 if (!$workerName) { $workerName = $defaultWorkerName }
 if ($workerName -notmatch '^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$') { throw 'Worker name must be 1-63 chars: lowercase letters, digits, hyphens.' }
+$affinityKvId = (Read-Host 'Tier 1 affinity KV namespace ID (required)').Trim()
+if ($affinityKvId -notmatch '^[a-fA-F0-9]{32}$') { throw 'Tier 1 affinity KV namespace ID must be 32 hexadecimal characters.' }
 $configPath = Join-Path $Root 'wrangler.jsonc'
 $config = Get-Content $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $config.name = $workerName
@@ -68,6 +70,9 @@ try {
   $varsMap = [ordered]@{}
   foreach ($prop in $plan.vars.PSObject.Properties) { $varsMap[$prop.Name] = $prop.Value }
   $userConfig | Add-Member -NotePropertyName vars -NotePropertyValue $varsMap -Force
+  $userConfig | Add-Member -NotePropertyName kv_namespaces -NotePropertyValue @(
+    [ordered]@{ binding = 'TIER1_AFFINITY'; id = $affinityKvId }
+  ) -Force
   [IO.File]::WriteAllText($userConfigPath, ($userConfig | ConvertTo-Json -Depth 30) + "`n", [Text.UTF8Encoding]::new($false))
 
   # Secrets bulk file: GATEWAY_ACCESS_KEY + NODE_SECRETS_xx

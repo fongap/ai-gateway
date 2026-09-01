@@ -21,6 +21,14 @@ export const OPENAI_SURFACE_PATH = Object.freeze({
   responses: '/v1/responses',
 });
 
+const RESPONSES_MEANINGFUL_DELTA_TYPES = new Set([
+  'response.output_text.delta',
+  'response.reasoning_text.delta',
+  'response.reasoning_summary_text.delta',
+  'response.function_call_arguments.delta',
+  'response.refusal.delta',
+]);
+
 export function resolveOpenAIPath(surface) {
   const path = OPENAI_SURFACE_PATH[surface];
   if (!path) throw new Error(`unknown OpenAI surface: ${surface}`);
@@ -51,5 +59,64 @@ export function buildOpenAIHeaders(request, credential, requestId) {
 // rotated away from.
 export function isResponsesRealOutput(json) {
   const type = json?.type;
-  return typeof type === 'string' && type.startsWith('response.') && type.endsWith('.delta');
+  if (!RESPONSES_MEANINGFUL_DELTA_TYPES.has(type)) return false;
+  return typeof json?.delta === 'string' && json.delta.trim().length > 0;
+}
+
+// OpenAI Chat meaningful-output predicate for the Tier 1 first-event guard.
+// The original Chat guard committed on ANY parseable non-error event — a bare
+// role-only delta ({"delta":{"role":"assistant"}}) closed the failover boundary
+// and was recorded as TTFT, even though no real token had flowed. For Tier 1's
+// passive TTFT learning this is only used when the node is tier-1, so Tier 2/3
+// keep the original lax boundary. Real output = non-empty text, a reasoning
+// increment, or a tool-call increment; role-only / empty / usage-only deltas do
+// NOT commit, so a node that announces itself and then dies can still rotate.
+export function isOpenAIChatRealOutput(json) {
+  const choices = json?.choices;
+  if (!Array.isArray(choices) || choices.length === 0) return false;
+  for (const c of choices) {
+    const delta = c?.delta;
+    if (!delta || typeof delta !== 'object') continue;
+    if (typeof delta.content === 'string' && delta.content.trim().length > 0) return true;
+    const reasoning = delta.reasoning ?? delta.reasoning_content;
+    if (typeof reasoning === 'string' && reasoning.trim().length > 0) return true;
+    if (Array.isArray(delta.tool_calls) && delta.tool_calls.some(isMeaningfulToolCall)) return true;
+  }
+  return false;
+}
+
+function isMeaningfulToolCall(call) {
+  if (!call || typeof call !== 'object') return false;
+  if (typeof call.id === 'string' && call.id.trim().length > 0) return true;
+  const fn = call.function;
+  return Boolean(fn && (
+    (typeof fn.name === 'string' && fn.name.trim().length > 0)
+    || (typeof fn.arguments === 'string' && fn.arguments.trim().length > 0)
+  ));
+}
+
+export function isOpenAIChatCompletionMeaningful(json) {
+  for (const choice of json?.choices ?? []) {
+    const message = choice?.message;
+    if (!message || typeof message !== 'object') continue;
+    if (typeof message.content === 'string' && message.content.trim().length > 0) return true;
+    const reasoning = message.reasoning ?? message.reasoning_content;
+    if (typeof reasoning === 'string' && reasoning.trim().length > 0) return true;
+    if (Array.isArray(message.tool_calls) && message.tool_calls.some(isMeaningfulToolCall)) return true;
+  }
+  return false;
+}
+
+export function isOpenAIResponsesObjectMeaningful(json) {
+  for (const item of json?.output ?? []) {
+    if (item?.type === 'function_call' && (
+      (typeof item.name === 'string' && item.name.trim().length > 0)
+      || (typeof item.arguments === 'string' && item.arguments.trim().length > 0)
+    )) return true;
+    for (const part of [...(item?.content ?? []), ...(item?.summary ?? [])]) {
+      const text = part?.text ?? part?.content;
+      if (typeof text === 'string' && text.trim().length > 0) return true;
+    }
+  }
+  return false;
 }

@@ -62,6 +62,14 @@ try {
   } else {
     Get-Content (Join-Path $Root 'wrangler.jsonc') -Raw -Encoding UTF8 | ConvertFrom-Json
   }
+  $existingAffinity = @($userConfig.kv_namespaces | Where-Object { $_.binding -eq 'TIER1_AFFINITY' }) | Select-Object -First 1
+  if (-not $existingAffinity) {
+    $affinityKvId = (Read-Host 'Tier 1 affinity KV namespace ID (required)').Trim()
+    if ($affinityKvId -notmatch '^[a-fA-F0-9]{32}$') { throw 'Tier 1 affinity KV namespace ID must be 32 hexadecimal characters.' }
+    $userConfig | Add-Member -NotePropertyName kv_namespaces -NotePropertyValue @(
+      [ordered]@{ binding = 'TIER1_AFFINITY'; id = $affinityKvId }
+    ) -Force
+  }
   $varsMap = [ordered]@{}
   foreach ($prop in $plan.vars.PSObject.Properties) { $varsMap[$prop.Name] = $prop.Value }
   $userConfig | Add-Member -NotePropertyName vars -NotePropertyValue $varsMap -Force

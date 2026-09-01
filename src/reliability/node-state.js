@@ -339,6 +339,22 @@ export function applyHealthPenalty(nodeId, kind) {
   s.healthScore = Math.max(HEALTH_MIN, s.healthScore - amount);
 }
 
+// Diagnostic counter mirror for Tier 1 nodes. Tier 1 scheduling state lives in
+// tier1-state.js (cooldown / failure machine / TTFT / affinity); this ONLY
+// keeps the node-level totals (totalRequests / totalSuccesses /
+// totalFailures / lastUsedAt) observable through the same snapshotNode()
+// surface that /health, /metrics and the existing tests read. It deliberately
+// does NOT touch activeRequests, healthScore, circuitState or cooldown — those
+// stay driven by the real outcome path for Tier 2/3 and stay neutral for
+// Tier 1 (whose slot/concurrency is owned by tier1-state). Mirroring business
+// stats here is explicitly allowed: "D1/KV 中与业务统计相关的现有能力" stays.
+export function bumpNodeCounters(nodeId, { requests = 0, successes = 0, failures = 0 } = {}, now = Date.now()) {
+  const s = getNodeState(nodeId);
+  if (requests) { s.totalRequests += requests; s.lastUsedAt = now; }
+  if (successes) s.totalSuccesses += successes;
+  if (failures) s.totalFailures += failures;
+}
+
 // ---- Maintenance & snapshots ----------------------------------------------
 
 function maybeCleanup(now) {

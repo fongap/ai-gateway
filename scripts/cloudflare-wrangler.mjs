@@ -79,6 +79,15 @@ if (passthrough[0] === 'deploy' && !passthrough.includes('--dry-run')) {
   const configSource = resolvedConfig && fs.existsSync(resolvedConfig)
     ? fs.readFileSync(resolvedConfig, 'utf8')
     : '';
+  let deployConfig;
+  try { deployConfig = JSON.parse(configSource); } catch { deployConfig = null; }
+  const hasAffinityKv = deployConfig?.kv_namespaces?.some((entry) =>
+    entry?.binding === 'TIER1_AFFINITY' && typeof entry.id === 'string' && entry.id.length > 0);
+  if (!hasAffinityKv) {
+    console.error('Refusing deploy: configure the required TIER1_AFFINITY KV binding in wrangler.user.jsonc.');
+    process.exitCode = 1;
+    process.exit();
+  }
   const dbName = databaseNameForBinding(configSource, 'TOKEN_STATS_DB');
   if (dbName) {
     const migrationArgs = [

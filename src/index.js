@@ -9,7 +9,7 @@
  *        ↓
  *   node selection / load spreading (priority + concurrency)
  *   429 isolation with Retry-After cooldowns
- *   same-tier rotation, tier fallback, circuit breaker w/ half-open probe
+ *   Tier 1 affinity/P2C/passive learning, tier fallback, Tier 2/3 circuit recovery
  *   first-event streaming guard
  *        ↓
  *   the client sees a single stable endpoint

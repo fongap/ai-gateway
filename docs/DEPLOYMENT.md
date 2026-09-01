@@ -9,8 +9,9 @@ The configuration source is the GitHub repository's **Variables** (non-sensitive
 ## 1. First-time deployment
 
 1. In the GitHub repository, open **Settings → Secrets and variables → Actions**.
-2. Create the **Variables** and **Secrets** listed in §2 and §3.
-3. Push to `main` (or run the **Deploy** workflow from the Actions tab).
+2. Create a Cloudflare KV namespace for Tier 1 session affinity and copy its 32-character namespace ID.
+3. Create the **Variables** and **Secrets** listed in §2 and §3, including `TIER1_AFFINITY_KV_ID`.
+4. Push to `main` (or run the **Deploy** workflow from the Actions tab).
 
 The deploy job runs a **preflight** check first. If any required Variable or Secret is missing, the workflow **fails** with a clear `ERROR:` line naming the exact missing item — it never silently skips.
 
@@ -43,6 +44,7 @@ Variables hold non-sensitive configuration. Create them under **Settings → Sec
 | `CLOUDFLARE_ACCOUNT_ID` | yes | Resource identifier, not a credential. |
 | `GATEWAY_PUBLIC_BASE_URL` | yes | `https://` URL of the deployed Worker (no trailing `/v1`). |
 | `TOKEN_STATS_D1_ID` | optional | D1 database ID. When set, D1 migrations are applied automatically. |
+| `TIER1_AFFINITY_KV_ID` | yes when Tier 1 is configured | Cloudflare KV namespace ID used by the required `TIER1_AFFINITY` binding. Affinity must work across Worker isolates; preflight fails if this is missing. |
 | `TIER1_NODES_CONFIG_01` … `TIER1_NODES_CONFIG_10` | at least one tier variable total | JSON array of node configs for tier 1. The fixed range goes to `_10`; raise it in `.github/workflows/deploy.yml` if you need more. |
 | `TIER2_NODES_CONFIG_01` … `TIER2_NODES_CONFIG_10` | optional | Same shape, tier 2. |
 | `TIER3_NODES_CONFIG_01` … `TIER3_NODES_CONFIG_10` | optional | Same shape, tier 3. |
@@ -77,6 +79,16 @@ Sharding rules:
 ```json
 { "fast": { "max_attempts": 5 }, "stable": { "max_attempts": 3 } }
 ```
+
+The generated Wrangler config binds the namespace as:
+
+```jsonc
+"kv_namespaces": [
+  { "binding": "TIER1_AFFINITY", "id": "<TIER1_AFFINITY_KV_ID>" }
+]
+```
+
+Affinity keys contain a SHA-256 digest of the client-supplied `x-session-id`, never the raw session value. Values contain only the safe Tier 1 account ID and expire after 30 minutes.
 
 ---
 
@@ -117,7 +129,7 @@ Nothing else needs to change. No other Variable, Secret, or shard is touched.
 Modify the matching `TIER*_NODES_CONFIG_XX` Variable. Common changes:
 
 - **URL or model mapping** → edit the node JSON, push.
-- **Priority / limits** → edit the node JSON, push.
+- **Priority / limits** → edit the node JSON, push. Priority affects Tier 2/3 only; Tier 1 P2C ignores it.
 
 The Secret is untouched unless the credential itself is being rotated (see §6).
 
