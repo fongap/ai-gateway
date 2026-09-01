@@ -114,7 +114,7 @@ jobs:
           cat "$RUNNER_TEMP/discovery/summary.txt" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Upload discovery artifact
-        uses: actions/upload-artifact@bbb15f1f4073d7ad60f7f0b6ea2a5dd5667573ad # v5.0.0
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: provider-discovery
           path: ${{ runner.temp }}/discovery/

@@ -41,7 +41,7 @@ flowchart TB
 
 - 多协议：OpenAI Chat / Responses、Anthropic Messages / count_tokens
 - 原生协议转发：Chat → 上游 `/v1/chat/completions`，Responses → 上游 `/v1/responses`，Messages → 上游 `/v1/messages`；节点通过 `protocol` + `surfaces` 显式声明，任何提供 OpenAI-compatible 或 Anthropic-compatible API 的服务均可接入
-- 不做 OpenAI ↔ Anthropic 跨协议转换，也不做跨协议 fallback
+- Native First：OpenAI Chat / Responses 只走原生路径；Anthropic Messages 优先原生，原生池耗尽后可选转换到 OpenAI Chat（通过 `PROTOCOL_FALLBACKS` 显式配置，仅支持 Anthropic → OpenAI Chat 单向转换）
 - `limits.rpm` 默认 hard，单 Worker isolate 内不主动越配额
 - 整请求 failover budget，超时即停
 - Tier 1 只从真实业务输出学习 `(account, model)` TTFT：不主动测速，不用 health、LRU 或静态 priority 排序；它不承诺每次选到全局最快账户，而是追求低成本、快速避障、自然均衡和会话连续

@@ -6,8 +6,8 @@
 // Single-screen-first status entry in a light, flat, Flyme-3-like design:
 //   Header     — δ Smart AI Gateway | GitHub (brand & GitHub each appear once)
 //   Hero       — 一个入口，应对所有变化 (compact)
-//   模型状态   — 通用 / 编程 rows inside ONE card, light chips + status dot
-//   使用情况   — ONE card: 5-column KPI strip + 52×7 Token 活动 heatmap
+//   模型状态   — ONE card: status + TTFT P50/P95 + sample count per model
+//   使用情况   — ONE card: 4-column KPI strip + 52×7 Token 活动 heatmap
 //   快速开始 — OpenAI / Anthropic 协议 tabs (no stacked code blocks)
 //   Footer     — © 2026 Fongap Studio
 //
@@ -35,7 +35,6 @@ import {
   queryTokenDailySeries,
   queryTokenModelUsage,
   queryRecentModelEvidence,
-  queryModelReliability,
   queryModelTtftPercentiles,
   utc8DayStartUtcMs,
   isoDayUtc8,
@@ -128,23 +127,22 @@ export function __resetDashboardCacheForTests() {
 // powers Public Model Status — it reads only model names with requests > 0
 // in the recent window, and on failure returns an empty Set so model status
 // falls back to runtime-only evidence (never `unavailable` for everything).
-// Two additional queries provide reliability (success rate) and performance
-// (TTFT percentiles) metrics for the dashboard.
+// TTFT percentiles are fetched for the top models to display in the model
+// status section alongside current availability.
 async function loadDashboardStats(env, now) {
   const gridStartUtc8 = utc8DayStartUtcMs(now);
   const dow = (new Date(isoDayUtc8(gridStartUtc8)).getUTCDay() + 6) % 7;
   const currentWeekStartUtc8 = gridStartUtc8 - dow * DAY_MS;
   const startIso = isoDayUtc8(currentWeekStartUtc8 - (HEATMAP_WEEKS - 1) * 7 * DAY_MS);
-  const [summary, daily, modelUsage, recentEvidence, reliability] = await Promise.all([
+  const [summary, daily, modelUsage, recentEvidence] = await Promise.all([
     queryTokenSummary(env, now),
     queryTokenDailySeries(env, startIso, now),
     queryTokenModelUsage(env, 7, now),
     queryRecentModelEvidence(env, MODEL_STATUS_RECENT_WINDOW_MS, now),
-    queryModelReliability(env, 7, now),
   ]);
   // Fetch TTFT percentiles for top models (up to 4) in parallel.
   // Only models with sufficient samples get meaningful percentiles;
-  // others show "样本不足".
+  // others show "--".
   const topModels = Array.isArray(modelUsage?.rows)
     ? modelUsage.rows.slice(0, 4).map((r) => r.model)
     : [];
@@ -155,7 +153,7 @@ async function loadDashboardStats(env, now) {
   for (let i = 0; i < topModels.length; i++) {
     ttft.set(topModels[i], ttftResults[i]);
   }
-  return { summary, daily, modelUsage, recentEvidence, reliability, ttft };
+  return { summary, daily, modelUsage, recentEvidence, ttft };
 }
 
 const STYLES = `
@@ -200,29 +198,30 @@ a{color:var(--blue);text-decoration:none}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
   box-shadow:0 1px 2px rgba(27,31,36,.025)}
 
-/* Models — one card, two rows, lightweight items (no heavy chips) */
+/* Model status — one card, flat list with status + TTFT columns */
 .models-card{overflow:hidden}
-.model-line{min-height:52px;padding:0 16px;display:flex;align-items:center;gap:14px}
-.model-line + .model-line{border-top:1px solid var(--line)}
-.model-kind{width:90px;flex:none;font-size:12px;color:var(--muted)}
-.model-list{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;flex:1;
-  padding:9px 0}
-.model-item{display:flex;align-items:center;justify-content:space-between;gap:8px;
-  padding:6px 10px;border-radius:8px;font-size:12px;color:#4a525d;
+.models-head{display:grid;grid-template-columns:minmax(100px,1fr) 80px 72px 72px 56px;gap:10px;
+  padding:10px 16px;border-bottom:1px solid var(--line);font-size:11px;color:var(--muted);font-weight:600}
+.models-head span{text-align:right}
+.models-body{padding:4px 0}
+.model-item{display:grid;grid-template-columns:minmax(100px,1fr) 80px 72px 72px 56px;gap:10px;
+  align-items:center;padding:7px 16px;font-size:12px;
   font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;
   transition:background .15s}
 .model-item:hover{background:rgba(0,0,0,.02)}
-.model-item .name{word-break:break-all;flex:1;min-width:0}
-.model-item .state{display:flex;align-items:center;gap:5px;white-space:nowrap;font-size:11px}
-.model-item .dot{width:6px;height:6px;border-radius:50%;flex:none}
-.model-item .state.available{color:var(--green)}
-.model-item .state.unobserved{color:var(--orange)}
-.model-item .state.degraded{color:var(--orange)}
-.model-item .state.unavailable{color:var(--faint)}
-.model-item .dot.available{background:var(--green)}
-.model-item .dot.unobserved{background:var(--orange)}
-.model-item .dot.degraded{background:var(--orange)}
-.model-item .dot.unavailable{background:var(--faint)}
+.model-name{color:#4a525d;word-break:break-all;min-width:0}
+.model-status{display:flex;align-items:center;gap:5px;white-space:nowrap;font-size:11px}
+.model-status.available{color:var(--green)}
+.model-status.unobserved{color:var(--orange)}
+.model-status.degraded{color:var(--orange)}
+.model-status.unavailable{color:var(--faint)}
+.dot{width:6px;height:6px;border-radius:50%;flex:none}
+.dot.available{background:var(--green)}
+.dot.unobserved{background:var(--orange)}
+.dot.degraded{background:var(--orange)}
+.dot.unavailable{background:var(--faint)}
+.model-perf{color:var(--text);text-align:right;font-variant-numeric:tabular-nums}
+.model-samples{color:var(--muted);text-align:right;font-size:11px;font-variant-numeric:tabular-nums}
 .empty{padding:16px;font-size:13px;color:var(--faint)}
 
 /* Usage — ONE card: KPI strip on top, activity heatmap below */
@@ -298,23 +297,6 @@ a{color:var(--blue);text-decoration:none}
 .donut-svg{width:100%;height:100%;display:block}
 .donut-seg{transition:opacity 120ms ease,stroke-width 120ms ease;cursor:default}
 
-/* Performance section: reliability (success rate) + TTFT percentiles */
-.perf-section{border-top:1px solid var(--line);padding:18px 24px}
-.perf-head{min-height:22px;display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:12px}
-.perf-head b{font-size:13px;font-weight:600;color:#606872}
-.perf-empty{padding:14px 0 10px;text-align:center;font-size:12.5px;color:var(--faint)}
-.perf-list{list-style:none;display:grid;grid-template-columns:1fr;gap:8px;margin:0;padding:0}
-.perf-row{display:grid;grid-template-columns:minmax(108px,200px) 80px 100px 100px max-content;align-items:center;
-  gap:10px;padding:5px 6px;border-radius:6px;font-size:12px;
-  font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;
-  transition:background 120ms ease,outline-color 120ms ease;
-  outline:1px solid transparent;outline-offset:0}
-.perf-row:hover,.perf-row:focus-visible{background:rgba(0,0,0,.025);outline-color:rgba(0,0,0,.06)}
-.perf-row:focus-visible{outline:2px solid var(--blue);outline-offset:0}
-.perf-model{color:#4a525d;word-break:break-all}
-.perf-rate{color:var(--text);font-variant-numeric:tabular-nums}
-.perf-ttft{color:var(--text);font-variant-numeric:tabular-nums}
-.perf-samples{color:var(--muted);font-size:11px;white-space:nowrap}
 .donut-seg:hover,.donut-seg:focus-visible{opacity:.85;stroke-width:19}
 .donut-seg:focus-visible{outline:none}
 .donut-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
@@ -356,8 +338,10 @@ button.copy:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
    .wrap{width:calc(100% - 32px)}
    .hero{padding:24px 0 20px}
   .hero h1{font-size:28px}
-  .model-kind{width:72px}
-  .model-list{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .models-head{grid-template-columns:minmax(80px,1fr) 64px 60px 60px;font-size:10px;padding:8px 12px}
+  .models-head .model-samples{display:none}
+  .model-item{grid-template-columns:minmax(80px,1fr) 64px 60px 60px;font-size:11px;padding:6px 12px}
+  .model-samples{display:none}
   .kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
   .kpi{height:72px}
   .kpi::after{display:none}
@@ -374,15 +358,12 @@ button.copy:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
    .activity{padding:16px}
    .model-usage-body{flex-direction:column;align-items:stretch}
    .model-usage-donut{width:148px;height:148px;margin:0 auto 8px}
-   .perf-section{padding:16px}
-   .perf-row{grid-template-columns:minmax(84px,1fr) 72px 88px 88px;gap:8px}
-   .perf-samples{display:none}
   .snippet pre{white-space:pre-wrap;word-break:break-all;padding-right:17px}
   .snippet .copy{position:static;margin:8px 12px 0}
   .site-footer{flex-direction:column;align-items:flex-start;gap:4px}
 }
 @media (prefers-reduced-motion:reduce){.tab,button.copy,.hd,.tooltip{transition:none}.hd:hover,.hd:focus-visible{transform:none}}
-@media (forced-colors:active){.dot,.hd,.model-item .dot{border:1px solid CanvasText}}
+@media (forced-colors:active){.dot,.hd{border:1px solid CanvasText}}
 `;
 
 const GH_ICON = `<a class="github" href="${GITHUB_URL}" target="_blank" rel="noopener noreferrer" aria-label="GitHub · ai-gateway 仓库" title="GitHub · ai-gateway">
@@ -488,52 +469,41 @@ function publicModelStatus(nodes, env, evidence = new Set(), now = Date.now()) {
 }
 
 const STATE_LABEL = { available: '可用', unobserved: '未观测', degraded: '波动', unavailable: '不可用' };
-// Tier hierarchy: Ultra > Max > Pro > Air — display order follows it.
-const MODEL_RANK = { ultra: 1, max: 2, pro: 3, air: 4 };
-const CODE_PREFIX = 'code-';
 const GENERAL_PREFIX = 'general-';
 
-// Split flat model statuses into 通用 / 编程 with a fixed Ultra → Max → Pro →
-// Air order inside each group (top tier first). Models prefixed with 'general-'
-// are excluded from display. A `code-` prefix places a model in 编程,
-// everything else in 通用. Unknown suffixes sort last.
-function groupModels(models) {
-  const groups = { general: [], program: [] };
+function fmtModelTtft(modelTtft) {
+  if (!modelTtft || modelTtft.available === false) return { p50: '--', p95: '--', samples: 0, insufficient: true };
+  if (modelTtft.insufficient) return { p50: '--', p95: '--', samples: modelTtft.sampleCount || 0, insufficient: true };
+  return {
+    p50: modelTtft.p50 != null ? fmtTtft(modelTtft.p50) : '--',
+    p95: modelTtft.p95 != null ? fmtTtft(modelTtft.p95) : '--',
+    samples: modelTtft.sampleCount || 0,
+    insufficient: false,
+  };
+}
+
+function renderModels(models, ttft) {
+  const allModels = [];
   for (const m of models) {
-    // Skip general-* models from public display
     if (m.id.toLowerCase().startsWith(GENERAL_PREFIX)) continue;
-    const isCode = m.id.toLowerCase().startsWith(CODE_PREFIX);
-    const base = isCode ? m.id.slice(CODE_PREFIX.length).toLowerCase() : m.id.toLowerCase();
-    const rank = MODEL_RANK[base] ?? Number.MAX_SAFE_INTEGER;
-    groups[isCode ? 'program' : 'general'].push({ id: m.id, status: m.status, rank });
+    allModels.push(m);
   }
-  for (const key of Object.keys(groups)) {
-    groups[key].sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id));
+  if (!allModels.length) {
+    return { html: `<div class="card models-card"><div class="empty">模型映射配置后在此显示。</div></div>` };
   }
-  return groups;
-}
-
-function modelItem(m) {
-  const label = STATE_LABEL[m.status] || '不可用';
-  const statusClass = m.status;
-  return `<div class="model-item" title="状态：${label}">` +
-    `<span class="name">${escapeHtml(m.id)}</span>` +
-    `<span class="state ${statusClass}"><i class="dot ${statusClass}" aria-hidden="true"></i>${label}</span>` +
-    `<span class="sr-only">状态：${label}</span></div>`;
-}
-
-function modelRow(kind, list) {
-  return `<div class="model-line"><div class="model-kind">${kind}</div>` +
-    `<div class="model-list">${list.map(modelItem).join('')}</div></div>`;
-}
-
-function renderModels(models) {
-  const groups = groupModels(models);
-  const rows = [];
-  if (groups.general.length) rows.push(modelRow('通用 / General', groups.general));
-  if (groups.program.length) rows.push(modelRow('编程 / Coding', groups.program));
-  if (!rows.length) return { html: `<div class="card models-card"><div class="empty">模型映射配置后在此显示。</div></div>` };
-  return { html: `<div class="card models-card">${rows.join('')}</div>` };
+  const items = allModels.map((m) => {
+    const label = STATE_LABEL[m.status] || '不可用';
+    const t = fmtModelTtft(ttft?.get?.(m.id));
+    const sampleTitle = t.insufficient ? 'TTFT 样本不足' : `${t.samples} 个 TTFT 样本`;
+    return `<div class="model-item">` +
+      `<span class="model-name">${escapeHtml(m.id)}</span>` +
+      `<span class="model-status ${m.status}"><i class="dot ${m.status}" aria-hidden="true"></i>${label}</span>` +
+      `<span class="model-perf">P50 ${t.p50}</span>` +
+      `<span class="model-perf">P95 ${t.p95}</span>` +
+      `<span class="model-samples" title="${escapeHtml(sampleTitle)}">${t.samples}</span>` +
+      `<span class="sr-only">状态：${label}，TTFT P50 ${t.p50}，P95 ${t.p95}</span></div>`;
+  }).join('');
+  return { html: `<div class="card models-card"><div class="models-head"><b>模型</b><span>状态</span><span>P50</span><span>P95</span><span>样本</span></div><div class="models-body">${items}</div></div>` };
 }
 
 // ---- 使用情况 (KPI strip + Token 活动 heatmap, one card) --------------------
@@ -617,8 +587,8 @@ function buildHeatmap(daily, now) {
 }
 
 async function usageCard(env, now) {
-  const { summary, daily, modelUsage, recentEvidence, reliability, ttft } = await getCachedDashboardStats(env, now);
-  return { summary, daily, modelUsage, recentEvidence, reliability, ttft };
+  const { summary, daily, modelUsage, recentEvidence, ttft } = await getCachedDashboardStats(env, now);
+  return { summary, daily, modelUsage, recentEvidence, ttft };
 }
 
 function kpiCell(value, label) {
@@ -633,7 +603,7 @@ function kpiCell(value, label) {
 // usage-rendering path share ONE cache read and ONE in-flight promise.
 async function usageSection(env, now = Date.now(), stats = null) {
   const cache = stats || await getCachedDashboardStats(env, now);
-  const { summary, daily, modelUsage, reliability, ttft } = cache;
+  const { summary, daily, modelUsage } = cache;
   const summaryOk = summary && summary.available !== false;
   const dailyOk = daily && daily.available !== false;
   const available = summaryOk && dailyOk;
@@ -681,8 +651,6 @@ async function usageSection(env, now = Date.now(), stats = null) {
   // ordered by total tokens desc. Degrades independently of the heatmap/KPIs
   // so a per-model query failure never blanks the whole card.
   const modelSection = renderModelUsage(modelUsage);
-  // Reliability & performance section: success rate + TTFT percentiles per model.
-  const perfSection = renderPerformanceSection(reliability, ttft);
   return `<section class="section">
   <div class="section-title">使用情况</div>
   <div class="card">
@@ -691,7 +659,6 @@ async function usageSection(env, now = Date.now(), stats = null) {
       <div class="activity-head"><b>Token 活动 · 52 周</b><span>${fmtInt(totalRequests)} 次请求</span></div>
       ${activity}
     </div>
-    ${perfSection}
     ${modelSection}
   </div>
 </section>`;
@@ -739,61 +706,6 @@ function renderModelUsage(modelUsage) {
       `<span class="sr-only">${escapeHtml(exactTitle)}</span></li>`;
   }).join('');
   return `<div class="model-usage">${head}<div class="model-usage-body">${donut}<ul class="model-usage-list">${items}</ul></div></div>`;
-}
-
-// Render reliability (success rate) and performance (TTFT P50/P95) for top models.
-// Shows one row per model with: model name, success rate, TTFT P50, TTFT P95.
-// When insufficient data: displays "样本不足" instead of fake values.
-// Provider-agnostic: no provider-specific logic, thresholds, or filtering.
-function renderPerformanceSection(reliability, ttft) {
-  if (!reliability || reliability.available === false) {
-    return `<div class="perf-section"><div class="perf-head"><b>可靠性 · 性能</b></div>` +
-      `<div class="perf-empty">统计暂不可用</div></div>`;
-  }
-  const rows = Array.isArray(reliability.rows) ? reliability.rows : [];
-  if (!rows.length) {
-    return `<div class="perf-section"><div class="perf-head"><b>可靠性 · 性能</b></div>` +
-      `<div class="perf-empty">近 7 天暂无数据</div></div>`;
-  }
-  // Show top 4 models by request count (most data = most meaningful stats).
-  const TOP_N = 4;
-  const topRows = rows.slice(0, TOP_N);
-  const items = topRows.map((r) => {
-    const modelTtft = ttft?.get?.(r.model);
-    const successRate = r.reliability != null ? `${(r.reliability * 100).toFixed(1)}%` : '—';
-    const sampleLabel = `${fmtInt(r.requests)} 次请求`;
-    let ttftP50 = '—';
-    let ttftP95 = '—';
-    if (modelTtft && modelTtft.available !== false) {
-      if (modelTtft.insufficient) {
-        ttftP50 = '样本不足';
-        ttftP95 = '样本不足';
-      } else {
-        ttftP50 = modelTtft.p50 != null ? fmtTtft(modelTtft.p50) : '—';
-        ttftP95 = modelTtft.p95 != null ? fmtTtft(modelTtft.p95) : '—';
-      }
-    }
-    const exactTitle = `${r.model}\n成功率 ${successRate} · ${sampleLabel}\n首字 P50 ${ttftP50} · P95 ${ttftP95}`;
-    return `<li class="perf-row" data-tooltip="${escapeHtml(exactTitle)}" tabindex="0" aria-label="${escapeHtml(exactTitle)}">` +
-      `<span class="perf-model">${escapeHtml(r.model)}</span>` +
-      `<span class="perf-rate">${successRate}</span>` +
-      `<span class="perf-ttft">P50 ${ttftP50}</span>` +
-      `<span class="perf-ttft">P95 ${ttftP95}</span>` +
-      `<span class="perf-samples">${sampleLabel}</span></li>`;
-  }).join('');
-  return `<div class="perf-section"><div class="perf-head"><b>可靠性 · 性能</b></div>` +
-    `<ul class="perf-list">${items}</ul></div>`;
-}
-
-// Format TTFT milliseconds to human-readable string.
-// < 1000ms: "XXXms"; >= 1000ms: "X.Xs" (1 decimal); >= 10000ms: "XXs" (integer).
-// Infinity (last bucket) displays as ">10s".
-function fmtTtft(ms) {
-  if (!Number.isFinite(ms)) return '—';
-  if (ms === Infinity) return '>10s';
-  if (ms < 1000) return `${Math.round(ms)}ms`;
-  if (ms < 10000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.round(ms / 1000)}s`;
 }
 
 // Monochrome blue ramp shared by the donut ring and the bar list (matches the
@@ -907,7 +819,7 @@ export async function dashboardResponse(request, env) {
   const models = publicModelStatus(config.nodes || [], env, recentEvidence, now);
   const apiBase = `${new URL(request.url).origin}/v1`;
 
-  const modelsResult = renderModels(models);
+  const modelsResult = renderModels(models, stats.ttft);
   const usageHtml = await usageSection(env, now, stats);
   const quickHtml = quickStartSection(apiBase);
 

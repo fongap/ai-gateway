@@ -8,7 +8,7 @@
 // Tier order is fixed (tier-1 -> tier-2 -> tier-3, hard precedence).
 //
 // Built-in policies (always present, user config merges on top):
-//   default        - balanced: maxAttempts=5, hedge=false
+//   default        - balanced: maxAttempts=5, hedge=true (tier1+tier2; tier3 opt-in)
 //   fast           - speed-first: maxAttempts=1, hedge=false
 //   stable         - reliability: maxAttempts=5, hedge={enabled:true, tiers:['tier1']}
 //   long-reasoning - extended first-event: maxAttempts=3, hedge=false, firstEventTimeoutMs=120000
@@ -26,15 +26,12 @@ const ALLOWED_FIELDS = new Set(['max_attempts', 'tier_attempts', 'hedge', 'first
 
 // Built-in policies — always present, user config merges on top.
 // These are the single source of truth; no runtime fallback needed.
-// `hedge` stays undefined on built-ins so models without a model-level
-// `policy:` keep the legacy behavior: HEDGE_DELAY_MS / MAX_HEDGES_PER_REQUEST
-// from env govern hedging. `stable` opts in explicitly. A user-supplied
-// `hedge: { enabled: false }` still disables hedging for that policy.
+// All built-ins now explicitly declare hedge behavior (no undefined).
 const BUILTIN_POLICIES = Object.freeze({
   default: {
     maxAttempts: 5,
     tierAttempts: null,
-    hedge: undefined,
+    hedge: { enabled: true },
     firstEventTimeoutMs: null,
   },
   fast: {
@@ -132,8 +129,9 @@ function analyzePolicies(env) {
 //   delay_ms  — integer >= 0; overrides HEDGE_DELAY_MS for this policy.
 //   tiers     — array of "tier1"/"tier2"/"tier3"; if present, only those
 //               tiers may launch hedge twins. Absent = all tiers.
-// When the field is absent entirely, null is returned and the handler
-// falls back to the legacy global behavior (hedge enabled everywhere).
+// When the field is absent entirely (user config omits hedge), null is returned
+// and the handler falls back to the legacy global behavior (hedge enabled
+// everywhere except tier3). Built-in policies always declare hedge explicitly.
 function parseHedge(value, policyName, errors) {
   if (value === undefined || value === null) return null;
   if (typeof value !== 'object' || Array.isArray(value)) {

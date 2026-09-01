@@ -32,6 +32,7 @@ export const RUNTIME_STRING_VARS = [
   { name: 'STREAM_USAGE_INCLUDE_OFF_PROVIDERS', def: '' },
   { name: 'ANTHROPIC_COUNT_TOKENS_MODE', def: 'approximate' },
   { name: 'LOG_LEVEL', def: 'info' },
+  { name: 'PROTOCOL_FALLBACKS', def: '' },
 ];
 
 export const RUNTIME_BOOL_VARS = [

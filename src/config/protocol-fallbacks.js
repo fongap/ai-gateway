@@ -5,8 +5,7 @@
 //
 // Shape:
 //   {
-//     "anthropic:messages": ["openai:chat_completions"],
-//     "openai:chat_completions": ["anthropic:messages"]
+//     "anthropic:messages": ["openai:chat_completions"]
 //   }
 //
 // Keys are "protocol:surface" pairs of the CLIENT route that the fallback
@@ -17,9 +16,10 @@
 // matching fallback chain is consumed in order: each entry is attempted via
 // the same scheduling / reliability / hedging / budget machinery as a native
 // node, with cross-protocol request/response conversion applied at the
-// boundary. Like POLICIES_CONFIG, parse errors and unknown surfaces are
-// collected as warnings and the empty config is used in their place; the
-// gateway is never marked invalid solely because of a typo here.
+// boundary.
+//
+// Only explicitly supported conversions are allowed. Unsupported conversions
+// produce blocking configuration errors (not warnings).
 
 import { readEnv } from './env.js';
 
@@ -27,6 +27,12 @@ const PROTOCOL_SURFACES = new Map([
   ['openai', new Set(['chat_completions', 'responses'])],
   ['anthropic', new Set(['messages'])],
 ]);
+
+// Single source of truth for supported cross-protocol conversions.
+// Key: client route (protocol:surface), Value: array of allowed fallback targets.
+export const SUPPORTED_CONVERSIONS = Object.freeze({
+  'anthropic:messages': ['openai:chat_completions'],
+});
 
 const ROUTE_PROTOCOL_SURFACE = Object.freeze({
   openai_chat: 'openai:chat_completions',
@@ -75,7 +81,21 @@ function analyzeProtocolFallbacks(env) {
           const parsedEntry = parseSurfaceKey(entry, errors, key);
           if (parsedEntry) targets.push(parsedEntry);
         }
-        if (targets.length > 0) config[parsedKey] = targets;
+        if (targets.length > 0) {
+          const allowed = SUPPORTED_CONVERSIONS[parsedKey];
+          if (!allowed) {
+            errors.push(`PROTOCOL_FALLBACKS: "${parsedKey}" is not a supported conversion source (supported: ${Object.keys(SUPPORTED_CONVERSIONS).join(', ')})`);
+          } else {
+            for (const target of targets) {
+              if (!allowed.includes(target)) {
+                errors.push(`PROTOCOL_FALLBACKS: "${parsedKey}" -> "${target}" is not a supported conversion (allowed: ${allowed.join(', ')})`);
+              }
+            }
+          }
+          // Only add valid targets (those that pass SUPPORTED_CONVERSIONS check)
+          const validTargets = targets.filter((t) => allowed?.includes(t));
+          if (validTargets.length > 0) config[parsedKey] = validTargets;
+        }
       }
     }
   }

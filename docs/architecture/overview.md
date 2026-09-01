@@ -6,7 +6,7 @@
 
 ## 概览
 
-网关原生支持两种协议族——OpenAI 和 Anthropic。任何提供 OpenAI-compatible 或 Anthropic-compatible API 的服务均可作为节点接入。网关不做跨协议转换，不做跨协议路由，也不做跨协议 fallback。
+网关原生支持两种协议族——OpenAI 和 Anthropic。任何提供 OpenAI-compatible 或 Anthropic-compatible API 的服务均可作为节点接入。网关采用 Native First 策略：OpenAI Chat / Responses 只走原生路径；Anthropic Messages 优先原生，原生池耗尽后可选转换到 OpenAI Chat（通过 `PROTOCOL_FALLBACKS` 显式配置，仅支持 Anthropic → OpenAI Chat 单向转换）。
 
 ```text
 Client (OpenAI / Anthropic SDK)
@@ -39,7 +39,7 @@ Reliability (src/reliability)             →  whether a node is currently usabl
 ## 不变量
 
 - 原生协议转发：Chat → 上游 `/v1/chat/completions`，Responses → 上游 `/v1/responses`，Messages → 上游 `/v1/messages`
-- 不做 OpenAI ↔ Anthropic 跨协议转换，不做跨协议 fallback
+- Native First：OpenAI Chat / Responses 只走原生路径；Anthropic Messages 优先原生，原生池耗尽后可选转换到 OpenAI Chat（`PROTOCOL_FALLBACKS` 显式配置）
 - `limits.rpm` 默认 hard，单 Worker isolate 内不主动越配额
 - 整请求 failover budget，超时即停
 - 所有短期运行时状态（Tier 1 TTFT/inFlight/cooldown，Tier 2/3 health/circuit/concurrency/RPM）均为 isolate-local best-effort，随 isolate 重启丢失
@@ -96,4 +96,4 @@ Public Model Status (跨 isolate 投影)
 | `/v1/responses` | OpenAI Responses | 上游 `/v1/responses` |
 | `/v1/messages` | Anthropic Messages | 上游 `/v1/messages` |
 
-每个客户端 surface 映射到 (protocol, surface) 对，转发到同一对的原生上游 endpoint——不存在跨协议或跨 surface 的转换。
+每个客户端 surface 映射到 (protocol, surface) 对，转发到同一对的原生上游 endpoint。跨协议 fallback 是可选的：仅 `PROTOCOL_FALLBACKS` 显式声明的转换（当前只支持 Anthropic Messages → OpenAI Chat Completions）才会在原生池耗尽后尝试。

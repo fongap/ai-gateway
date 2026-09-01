@@ -91,6 +91,7 @@ Anthropic 原生节点：
 | `ANTHROPIC_COUNT_TOKENS_MODE` | approximate | approximate/disabled | 本地 token 计数 |
 | `LOG_LEVEL` | info | none/error/info/debug | 日志级别 |
 | `PROJECT_REPOSITORY_URL` | — | https URL | Dashboard 显示 |
+| `PROTOCOL_FALLBACKS` | *(unset)* | JSON object | 跨协议 fallback 链，仅支持 `{"anthropic:messages":["openai:chat_completions"]}` |
 
 运行时参数的唯一事实来源是 `src/config/runtime-vars.js`。超时/冷却默认值的唯一事实来源是 `src/config/timeouts.js`。
 

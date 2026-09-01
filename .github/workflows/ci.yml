@@ -1,11 +1,11 @@
 name: CI
 
 # Two-tier CI:
-#   verify (required): syntax + config + unit tests + protocol contract + docs + secret scan
-#   verify-full:       everything in verify + scheduler-stability + integration + stress + codex/claude contract
+#   validate-merge (required): syntax + config + unit tests + protocol contract + docs + secret scan
+#   validate-deploy:           everything in validate-merge + scheduler-stability + integration + stress + codex/claude contract
 #
-# verify-full runs on push to main, on nightly, and via manual workflow_dispatch.
-# verify runs on every push and PR — it is the merge gate.
+# validate-deploy runs on push to main, on nightly, and via manual workflow_dispatch.
+# validate-merge runs on every push and PR — it is the merge gate.
 on:
   push:
     branches:
@@ -25,7 +25,7 @@ concurrency:
 jobs:
   # Required CI — every PR must pass this. Fast feedback loop.
   # Skips scheduler-stability / integration / stress / benchmark.
-  verify:
+  validate-merge:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
@@ -48,16 +48,16 @@ jobs:
         run: npm run check:deploy
 
   # Full CI — push to main, nightly, or manual trigger. Includes the slow stuff.
-  verify-full:
+  validate-deploy:
     if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Node.js
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm

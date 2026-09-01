@@ -111,11 +111,16 @@ function buildConfig(env) {
   // makes the gateway 'invalid' (ready=false) instead of guessing at intent.
   const auxDiagnostics = collectAuxConfigDiagnostics(env);
   diagnostics.push(...auxDiagnostics);
-  // PROTOCOL_FALLBACKS is best-effort: a typo here degrades to an empty
-  // fallback map (the request still serves its native pool), so its
-  // diagnostics are warnings only and never flip status to 'invalid'. They
-  // still surface on /health for operator visibility.
-  for (const msg of getProtocolFallbacksDiagnostics(env)) diagnostics.push(msg);
+  // PROTOCOL_FALLBACKS: unsupported conversions are FATAL (blocking config),
+  // other parse issues are warnings only.
+  const fallbackDiags = getProtocolFallbacksDiagnostics(env);
+  for (const msg of fallbackDiags) {
+    if (/is not a supported conversion/i.test(msg)) {
+      auxDiagnostics.push(msg);
+    } else {
+      diagnostics.push(msg);
+    }
+  }
   const accessKeyBound = Boolean(readEnv(env, 'GATEWAY_ACCESS_KEY'));
 
   const tierShards = collectShards(env, TIER_SHARD_PATTERN, 'TIER1_NODES_CONFIG_', 'TIER1_NODES_CONFIG_01', 2, diagnostics);
