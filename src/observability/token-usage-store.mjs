@@ -517,13 +517,14 @@ function percentileFromBuckets(buckets, total, pct) {
 }
 
 // Query per-provider reliability stats (success rate) from token_usage_model_hourly.
-// Returns per-model stats: { model, requests, reports, missing, reliability }.
-// `reliability` = reports / (reports + missing), null when no attributable requests.
+// Returns per-model usage coverage: { model, requests, reports, missing, usageCoverage }.
+// `usageCoverage` = reports / (reports + missing), null when no attributable requests.
+// `reports` = delivered responses where upstream returned usage.
+// `missing` = delivered responses where upstream did NOT return usage.
 //
 // Provider-agnostic: this query does not filter by provider — it returns aggregate
-// per-model stats that the dashboard can display. Provider-specific filtering is
-// NOT done here (the D1 schema has no provider dimension).
-export async function queryModelReliability(env, days = 7, now = Date.now()) {
+// per-model stats. Provider-specific filtering is NOT done here.
+export async function queryModelUsageCoverage(env, days = 7, now = Date.now()) {
   const d1 = tokenStatsD1(env);
   if (!d1) return { available: false, error: 'TOKEN_STATS_DB binding missing' };
   const startHour = normalizeHour(now - days * DAY_MS);
@@ -553,12 +554,12 @@ export async function queryModelReliability(env, days = 7, now = Date.now()) {
             requests,
             reports,
             missing,
-            reliability: denominator === 0 ? null : reports / denominator,
+            usageCoverage: denominator === 0 ? null : reports / denominator,
           };
         }),
     };
   } catch (e) {
-    return { available: false, error: `queryModelReliability: ${e?.message || e}` };
+    return { available: false, error: `queryModelUsageCoverage: ${e?.message || e}` };
   }
 }
 

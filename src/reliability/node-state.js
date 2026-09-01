@@ -435,6 +435,15 @@ export function snapshotNode(nodeId, now = Date.now()) {
   };
 }
 
+// Whether a node has ever successfully served a real request on this isolate.
+// Used by availability.js to distinguish 'unobserved' from 'available' for
+// Tier 2/3 — a fresh isolate's default circuitState==='closed' must NOT be
+// reported as 'available' without at least one observed success.
+export function hasBeenObserved(nodeId) {
+  const s = nodeState.get(nodeId);
+  return Boolean(s && s.totalSuccesses > 0);
+}
+
 // Test hook: wipe all isolate-local state between test cases.
 export function __resetAllStateForTests() {
   nodeState.clear();

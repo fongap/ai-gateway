@@ -1697,7 +1697,7 @@ await test('/version is public and exposes only branding, no node/config topolog
   assert.equal(res.status, 200);
   const body = await res.json();
   assert.equal(body.name, 'ai-gateway');
-  assert.equal(body.version, '1.2.4');
+  assert.equal(body.version, '1.2.6');
   assert.equal(body.runtime, 'Cloudflare Workers');
   assert.ok(Array.isArray(body.protocols));
   const serialized = JSON.stringify(body);
@@ -1706,7 +1706,7 @@ await test('/version is public and exposes only branding, no node/config topolog
   'public /version must not expose configuration/topology');
 });
 
-await test('public home: brand & GitHub once, 通用/编程 grouped, no protocol or version leak', async () => {
+await test('public home: brand & GitHub once, model status flat list, no protocol or version leak', async () => {
   resetMock();
   const env = makeEnv({
     tier1: [basicNode('g1', { models: {} })], // wildcard serves all registry models
@@ -1732,21 +1732,11 @@ await test('public home: brand & GitHub once, 通用/编程 grouped, no protocol
   // GitHub icon is SVG-only, no "GitHub" text label.
   assert.match(html, /aria-label="GitHub · ai-gateway 仓库"/);
   assert.match(html, /title="GitHub · ai-gateway"/);
-  // Structure: hero -> 模型状态 (通用 then 编程) -> 使用情况 -> 快速开始.
+  // Structure: hero -> 模型状态 -> 使用情况 -> 快速开始.
   assert.ok(html.indexOf('一个入口，应对所有变化') < html.indexOf('模型状态'));
   assert.ok(html.indexOf('模型状态') < html.indexOf('使用情况'));
-  assert.ok(html.indexOf('通用') < html.indexOf('编程'), '通用 group must precede 编程');
-  assert.ok(html.indexOf('编程') < html.indexOf('快速开始'));
+  assert.ok(html.indexOf('使用情况') < html.indexOf('快速开始'));
   assert.ok(!html.includes('API 地址'), 'the API-address block was removed');
-  // Group placement: air/max under 通用, code-air/code-max under 编程, never mixed.
-  const generalBlock = html.slice(html.indexOf('通用'), html.indexOf('编程'));
-  const programBlock = html.slice(html.indexOf('编程'), html.indexOf('快速开始'));
-  assert.match(generalBlock, /air/);
-  assert.match(generalBlock, /max/);
-  assert.ok(!generalBlock.includes('code-air'), 'code- models must not leak into 通用');
-  assert.match(programBlock, /code-air/);
-  assert.match(programBlock, /code-max/);
-  assert.ok(!programBlock.includes('>air<'), 'non-code models must not leak into 编程');
   // No protocol note, no version, no old brand in the body.
   assert.ok(!html.includes('OpenAI 兼容协议'), 'must not show protocol note');
   assert.ok(!html.includes('v1.2.0'), 'must not show the version');
@@ -1768,6 +1758,12 @@ await test('public home: brand & GitHub once, 通用/编程 grouped, no protocol
   assert.ok(!html.includes('正常</span>'), 'availability count removed');
   // No general-* models in display.
   assert.ok(!html.includes('general-air'), 'general-* models filtered from display');
+  // No reliability/success-rate section (renamed to Usage Coverage, not shown on public homepage).
+  assert.ok(!html.includes('可靠性'), 'reliability section removed');
+  assert.ok(!html.includes('成功率'), 'success rate label removed');
+  // Model status has TTFT columns (P50, P95, samples).
+  assert.ok(html.includes('P50'), 'TTFT P50 column present');
+  assert.ok(html.includes('P95'), 'TTFT P95 column present');
 });
 
 await test('streaming relay delivers every chunk and terminates cleanly (torn [DONE], model rewrite)', async () => {

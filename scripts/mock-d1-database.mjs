@@ -119,7 +119,7 @@ export function createMockD1({ failWrites = false, failReads = false } = {}) {
           if (!found) return null;
           return { total_ttft, b0, b1, b2, b3, b4, b5, b6 };
         }
-        // queryModelReliability: SELECT model, SUM(requests), SUM(usage_reports), SUM(usage_missing)
+        // queryModelUsageCoverage: SELECT model, SUM(requests), SUM(usage_reports), SUM(usage_missing)
         // GROUP BY model WHERE hour >= ?
         if (/usage_reports/i.test(sql) && /usage_missing/i.test(sql) && /GROUP BY model/i.test(sql)) {
           const startHour = this._params[0];
@@ -182,7 +182,7 @@ export function createMockD1({ failWrites = false, failReads = false } = {}) {
           }
           return { results: [...out.keys()].map((model) => ({ model })) };
         }
-        // queryModelReliability (all): SELECT model, SUM(requests), SUM(usage_reports), SUM(usage_missing)
+        // queryModelUsageCoverage (all): SELECT model, SUM(requests), SUM(usage_reports), SUM(usage_missing)
         // GROUP BY model WHERE hour >= ?
         if (/usage_reports/i.test(sql) && /usage_missing/i.test(sql) && /GROUP BY model/i.test(sql)) {
           const startHour = this._params[0];

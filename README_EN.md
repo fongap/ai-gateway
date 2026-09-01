@@ -41,7 +41,7 @@ flowchart TB
 
 - Multi-protocol: OpenAI Chat / Responses, Anthropic Messages / count_tokens
 - Native protocol forwarding: Chat → upstream `/v1/chat/completions`, Responses → upstream `/v1/responses`, Messages → upstream `/v1/messages`; nodes declare `protocol` + `surfaces` explicitly
-- No OpenAI ↔ Anthropic conversion and no cross-protocol failover
+- Native First: OpenAI Chat / Responses are native-only; Anthropic Messages is native first, with optional conversion fallback to OpenAI Chat (via `PROTOCOL_FALLBACKS`, only Anthropic → OpenAI Chat is supported)
 - `limits.rpm` defaults hard and is enforced best-effort within one Worker isolate
 - One whole-request failover budget shared by Tier 1, Tier 2, and Tier 3
 - Tier 1 learns per-`(account, model)` TTFT only from meaningful output in real requests. It uses no active probes, health score, LRU, or static-priority ordering. It does not promise the globally fastest account on every request; it targets stability, low cost, fast avoidance, natural balance, and session continuity.

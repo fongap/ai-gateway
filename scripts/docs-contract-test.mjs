@@ -90,4 +90,25 @@ for (const name of RUNTIME_VAR_NAMES) {
 passed++;
 console.log(`ok - deploy.yml injects all ${RUNTIME_VAR_NAMES.length} runtime variables`);
 
-console.log(`\ndocs contract tests passed (${passed}).`);
+  // .dev.vars.example comments must match runtime-vars.js defaults.
+  // This ensures the example config doesn't silently override defaults with stale values.
+  const devVarsExample = readDoc('.dev.vars.example');
+  const { RUNTIME_TUNABLES } = await import('../src/config/runtime-vars.js');
+  for (const tunable of RUNTIME_TUNABLES) {
+    const name = tunable.name;
+    const expectedDefault = String(tunable.def);
+    // Check that the comment contains the expected default
+    const commentPattern = new RegExp(`#\\s+${name}=.*#\\s+default:\\s+${expectedDefault}\\s*\\(`);
+    const match = devVarsExample.match(commentPattern);
+    if (!match) {
+      // More flexible: look for the default value in a comment near the variable name
+      const flexiblePattern = new RegExp(`${name}[^\\n]*#.*default:\\s*${expectedDefault}`);
+      if (!flexiblePattern.test(devVarsExample)) {
+        assert.fail(`.dev.vars.example: missing or mismatched default for ${name} (expected ${expectedDefault})`);
+      }
+    }
+    passed++;
+    console.log(`ok - .dev.vars.example default for ${name} matches runtime-vars.js`);
+  }
+
+  console.log(`\ndocs contract tests passed (${passed}).`);

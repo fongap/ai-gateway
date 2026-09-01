@@ -562,9 +562,9 @@ await test('dashboard D1 cache coalesces concurrent requests within TTL', async 
     pageText(anonRequest(), env),
   ]);
   assert.equal(html1, html2, 'concurrent requests share cached D1 result');
-  assert.equal(d1._reads.length, 6, 'two concurrent pages issue summary + series + evidence + reliability + ttft queries');
+  assert.equal(d1._reads.length, 5, 'two concurrent pages issue summary + series + evidence + ttft queries');
   await pageText(anonRequest(), env);
-  assert.equal(d1._reads.length, 6, 'a later request inside the TTL performs no additional reads');
+  assert.equal(d1._reads.length, 5, 'a later request inside the TTL performs no additional reads');
 });
 
 await test('dashboard D1 cache refreshes after TTL expires', async () => {
@@ -580,17 +580,17 @@ await test('dashboard D1 cache refreshes after TTL expires', async () => {
   try {
     const html1 = await pageText(anonRequest(), env);
     assert.ok(html1.includes('code-max'), 'initial data present');
-    assert.equal(d1._reads.length, 6);
+    assert.equal(d1._reads.length, 5);
     await persistTokenUsage(env, { prompt_tokens: 200, completion_tokens: 0 }, h0, 'ultra');
     fakeNow += 44_000;
     const cached = await pageText(anonRequest(), env);
     assert.ok(!cached.includes('ultra'), 'new data stays hidden before TTL expiry');
-    assert.equal(d1._reads.length, 6, 'no refresh before TTL expiry');
+    assert.equal(d1._reads.length, 5, 'no refresh before TTL expiry');
     fakeNow += 2_000;
     const refreshed = await pageText(anonRequest(), env);
     assert.ok(refreshed.includes('ultra'), 'new model appears after TTL expiry');
     assert.ok(refreshed.includes('code-max'), 'old model remains after refresh');
-    assert.equal(d1._reads.length, 13, 'TTL expiry performs exactly one new query set');
+    assert.equal(d1._reads.length, 11, 'TTL expiry performs exactly one new query set');
   } finally {
     Date.now = realNow;
   }
@@ -613,8 +613,8 @@ await test('dashboard cache does not leak across different D1 bindings', async (
   const htmlB = await pageText(anonRequest(), envB);
   assert.ok(htmlB.includes('model-b'));
   assert.ok(!htmlB.includes('model-a'));
-  assert.equal(d1a._reads.length, 6);
-  assert.equal(d1b._reads.length, 6);
+  assert.equal(d1a._reads.length, 5);
+  assert.equal(d1b._reads.length, 5);
 });
 
 // P2-5: public homepage must never leak raw D1 errors (table names, SQL,
@@ -653,6 +653,83 @@ await test('model usage panel does not leak raw D1 errors in degraded state', as
   assert.ok(!html.includes('mock D1 read failure'), 'exception text not leaked');
   assert.ok(!html.includes('SELECT'), 'SQL not leaked');
   assert.ok(!html.includes('FROM'), 'SQL not leaked');
+});
+
+// ---- Dashboard structure: 模型状态 + 使用情况 semantic boundaries ----------------
+
+await test('模型状态 section has column headers for status, P50, P95, sample count', async () => {
+  __resetDashboardCacheForTests();
+  const d1 = createMockD1();
+  const env = deepClone(ENV);
+  env.TOKEN_STATS_DB = d1;
+  // Provide node config so models appear in the status section
+  env.TIER1_NODES_CONFIG_01 = JSON.stringify([
+    { id: 'node-a', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], base_url: 'https://a.example.com/v1', models: { 'code-max': 'up-max' }, limits: { concurrency: 1 } },
+  ]);
+  env.NODE_SECRETS_01 = JSON.stringify({ 'node-a': 'test-key' });
+  const html = await pageText(anonRequest(), env);
+  // Model status section must have column headers
+  assert.ok(html.includes('models-head'), 'models-head div present');
+  assert.ok(html.includes('>P50<'), 'P50 column header');
+  assert.ok(html.includes('>P95<'), 'P95 column header');
+  assert.ok(html.includes('>样本<'), 'sample column header');
+  assert.ok(html.includes('>状态<'), 'status column header');
+  assert.ok(html.includes('code-max'), 'model name present');
+  assert.ok(html.includes('model-status'), 'status class present');
+});
+
+await test('使用情况 section does NOT contain success rate, reliability, TTFT P50, TTFT P95', async () => {
+  __resetDashboardCacheForTests();
+  const d1 = createMockD1();
+  const env = deepClone(ENV);
+  env.TOKEN_STATS_DB = d1;
+  const html = await pageText(anonRequest(), env);
+  // Usage section must NOT contain performance metrics
+  assert.ok(!html.includes('perf-section'), 'no performance section');
+  assert.ok(!html.includes('成功率'), 'no success rate text');
+  assert.ok(!html.includes('reliability'), 'no reliability text');
+  assert.ok(!html.includes('Reliability'), 'no Reliability text');
+  assert.ok(!html.includes('Model Reliability'), 'no Model Reliability text');
+  assert.ok(!html.includes('Provider Reliability'), 'no Provider Reliability text');
+  assert.ok(!html.includes('可靠性'), 'no reliability Chinese text');
+  // Usage section should contain expected content
+  assert.ok(html.includes('使用情况'), 'usage section title present');
+  assert.ok(html.includes('Token 活动'), 'heatmap present');
+});
+
+await test('public dashboard does not leak provider, node id, tier, credential, key', async () => {
+  __resetDashboardCacheForTests();
+  const d1 = createMockD1();
+  const env = deepClone(ENV);
+  env.TOKEN_STATS_DB = d1;
+  const html = await pageText(anonRequest(), env);
+  // Must NOT leak internal details
+  assert.ok(!html.includes('provider'), 'provider not leaked');
+  assert.ok(!html.includes('node'), 'node id not leaked');
+  assert.ok(!html.includes('tier'), 'tier not leaked');
+  assert.ok(!html.includes('credential'), 'credential not leaked');
+  assert.ok(!html.includes('api_key'), 'api_key not leaked');
+  assert.ok(!html.includes('cooldown'), 'cooldown not leaked');
+  assert.ok(!html.includes('circuit'), 'circuit not leaked');
+});
+
+await test('model status section is structurally separate from usage section', async () => {
+  __resetDashboardCacheForTests();
+  const d1 = createMockD1();
+  const env = deepClone(ENV);
+  env.TOKEN_STATS_DB = d1;
+  const html = await pageText(anonRequest(), env);
+  // Both sections exist as separate <section> elements
+  const modelStatusIdx = html.indexOf('模型状态');
+  const usageIdx = html.indexOf('使用情况');
+  assert.ok(modelStatusIdx >= 0, '模型状态 section exists');
+  assert.ok(usageIdx >= 0, '使用情况 section exists');
+  assert.ok(modelStatusIdx < usageIdx, '模型状态 appears before 使用情况');
+  // Performance section should NOT exist anywhere
+  assert.ok(!html.includes('perf-section'), 'no perf-section anywhere');
+  assert.ok(!html.includes('可靠性 · 性能'), 'no old performance section title');
+  // Empty state shows when no nodes configured
+  assert.ok(html.includes('模型映射配置后在此显示'), 'empty state message present');
 });
 
 if (!process.exitCode) console.log(`\ntoken-usage tests passed (${passed}).`);

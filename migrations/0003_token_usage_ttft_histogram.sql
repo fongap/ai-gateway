@@ -23,7 +23,7 @@
 -- reinterpreted as Successful TTFT. New metrics accumulate from
 -- the version that runs this migration onward.
 --
--- Idempotent: all ADD COLUMN IF NOT EXISTS.
+-- This migration is applied once through Wrangler D1 migrations.
 
 ALTER TABLE token_usage_model_hourly
     ADD COLUMN successful_ttft_count INTEGER NOT NULL DEFAULT 0;

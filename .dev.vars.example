@@ -29,20 +29,27 @@ TIER1_NODES_CONFIG_01='[
 # The full list and defaults live in src/config/runtime-vars.js (single source
 # of truth). The GitHub deployment bridge and deploy.yml inject every name
 # listed there; local dev can override any of them in this file.
-MAX_BODY_BYTES="20971520"
-UPSTREAM_HEADERS_TIMEOUT_MS="60000"
-FIRST_EVENT_TIMEOUT_MS="120000"
-STREAM_IDLE_TIMEOUT_MS="240000"
-FAILOVER_BUDGET_MS="240000"
-RATE_LIMIT_COOLDOWN_MS="60000"
-AUTH_FAIL_COOLDOWN_MS="3600000"
-HEDGE_DELAY_MS="6000"
-MAX_HEDGES_PER_REQUEST="1"
-LOG_LEVEL="info"
-EXPOSE_UPSTREAM_INFO="false"
-FAKE_STREAM_PROTECTION="false"
-ALLOW_INSECURE_HTTP_UPSTREAM="false"
-ANTHROPIC_COUNT_TOKENS_MODE="approximate"
+# DEFAULT VALUES (from runtime-vars.js) ARE SHOWN IN COMMENTS — DO NOT UNCOMMENT
+# UNLESS YOU INTENTIONALLY WANT TO OVERRIDE THE CODE DEFAULTS.
+# MAX_BODY_BYTES="20971520"              # default: 20971520 (20 MB)
+# UPSTREAM_HEADERS_TIMEOUT_MS="15000"     # default: 15000 (15 s)
+# FIRST_EVENT_TIMEOUT_MS="30000"          # default: 30000 (30 s)
+# STREAM_IDLE_TIMEOUT_MS="120000"         # default: 120000 (120 s)
+# RATE_LIMIT_COOLDOWN_MS="30000"          # default: 30000 (30 s)
+# AUTH_FAIL_COOLDOWN_MS="3600000"         # default: 3600000 (1 h)
+# FAILOVER_BUDGET_MS="60000"              # default: 60000 (60 s)
+# HEDGE_DELAY_MS="3000"                   # default: 3000 (3 s)
+# MAX_HEDGES_PER_REQUEST="1"              # default: 1
+# LOG_LEVEL="info"                        # default: info
+# EXPOSE_UPSTREAM_INFO="false"            # default: false
+# FAKE_STREAM_PROTECTION="false"          # default: false
+# ALLOW_INSECURE_HTTP_UPSTREAM="false"    # default: false
+# ANTHROPIC_COUNT_TOKENS_MODE="approximate" # default: approximate
+
+# ============ Protocol Fallback (optional) ============
+# JSON object mapping client route to ordered fallback chains.
+# Only "anthropic:messages" -> ["openai:chat_completions"] is supported.
+# PROTOCOL_FALLBACKS='{"anthropic:messages":["openai:chat_completions"]}'
 
 # ============ Token-usage stream hint (all optional, fail-open) ============
 # Ask OpenAI-compatible streaming upstreams to report usage in the final chunk

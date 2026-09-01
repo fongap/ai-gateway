@@ -3,8 +3,8 @@
 // Copyright (c) 2026 Fongap Studio
 //
 // Unit tests for Provider Dashboard observability semantics:
-// - Reliability (success rate) from attributable requests
-// - Performance (TTFT P50/P95) from successful requests only
+// - Usage Coverage (usage_reports / (usage_reports + usage_missing))
+// - TTFT P50/P95 from successful requests only
 // - Failure does NOT produce TTFT samples
 // - Provider-agnostic: no provider-specific logic
 
@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import { createMockD1 } from './mock-d1-database.mjs';
 import {
   persistTokenUsage,
-  queryModelReliability,
+  queryModelUsageCoverage,
   queryModelTtftPercentiles,
   ttftBucketIndex,
   TTFT_BUCKET_BOUNDARIES_MS,
@@ -193,25 +193,25 @@ await test('no model -> no TTFT columns written', async () => {
   assert.equal(d1._modelRows.size, 0, 'no model rows written');
 });
 
-// ─── queryModelReliability ──────────────────────────────────────────────────
+// ─── queryModelUsageCoverage ──────────────────────────────────────────────
 
-console.log('\n── queryModelReliability ──');
+console.log('\n── queryModelUsageCoverage ──');
 
-await test('returns per-model success rate', async () => {
+await test('returns per-model usage coverage', async () => {
   const d1 = createMockD1();
   const env = { TOKEN_STATS_DB: d1 };
   const now = Date.now();
   const usage = { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 };
-  // model-a: 10 success, 0 missing -> 100%
+  // model-a: 10 delivered with usage, 0 missing -> 100% coverage
   for (let i = 0; i < 10; i++) {
     await persistTokenUsage(env, usage, now - i * 1000, 'model-a');
   }
-  // model-b: 1 success, 9 missing (429) -> 10%
+  // model-b: 1 delivered with usage, 9 delivered without usage -> 10% coverage
   await persistTokenUsage(env, usage, now, 'model-b');
   for (let i = 0; i < 9; i++) {
     await persistTokenUsage(env, null, now - (i + 1) * 1000, 'model-b');
   }
-  const result = await queryModelReliability(env, 7, now);
+  const result = await queryModelUsageCoverage(env, 7, now);
   assert.equal(result.available, true);
   assert.ok(Array.isArray(result.rows));
   const a = result.rows.find((r) => r.model === 'model-a');
@@ -221,22 +221,22 @@ await test('returns per-model success rate', async () => {
   assert.equal(a.requests, 10);
   assert.equal(a.reports, 10);
   assert.equal(a.missing, 0);
-  assert.equal(a.reliability, 1);
+  assert.equal(a.usageCoverage, 1);
   assert.equal(b.requests, 10);
   assert.equal(b.reports, 1);
   assert.equal(b.missing, 9);
-  assert.equal(b.reliability, 0.1);
+  assert.equal(b.usageCoverage, 0.1);
 });
 
 await test('missing D1 binding returns available false', async () => {
-  const result = await queryModelReliability({}, 7, Date.now());
+  const result = await queryModelUsageCoverage({}, 7, Date.now());
   assert.equal(result.available, false);
 });
 
 await test('empty model returns empty rows', async () => {
   const d1 = createMockD1();
   const env = { TOKEN_STATS_DB: d1 };
-  const result = await queryModelReliability(env, 7, Date.now());
+  const result = await queryModelUsageCoverage(env, 7, Date.now());
   assert.equal(result.available, true);
   assert.equal(result.rows.length, 0);
 });
@@ -323,19 +323,19 @@ await test('no data returns available false', async () => {
 
 console.log('\n── Provider-agnostic verification ──');
 
-await test('provider name does not affect reliability', async () => {
+await test('provider name does not affect usage coverage', async () => {
   const d1 = createMockD1();
   const env = { TOKEN_STATS_DB: d1 };
   const now = Date.now();
   const usage = { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 };
-  // provider-a: 10 success
+  // provider-a: 10 delivered with usage
   for (let i = 0; i < 10; i++) {
     await persistTokenUsage(env, usage, now - i * 1000, 'model-a');
   }
-  const result = await queryModelReliability(env, 7, now);
+  const result = await queryModelUsageCoverage(env, 7, now);
   assert.equal(result.available, true);
   assert.equal(result.rows.length, 1);
-  assert.equal(result.rows[0].reliability, 1);
+  assert.equal(result.rows[0].usageCoverage, 1);
 });
 
 await test('new provider works without code changes', async () => {
@@ -343,25 +343,25 @@ await test('new provider works without code changes', async () => {
   const env = { TOKEN_STATS_DB: d1 };
   const now = Date.now();
   const usage = { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 };
-  // provider-new: 5 success, 5 missing
+  // provider-new: 5 delivered with usage, 5 delivered without usage
   for (let i = 0; i < 5; i++) {
     await persistTokenUsage(env, usage, now - i * 1000, 'model-new');
   }
   for (let i = 0; i < 5; i++) {
     await persistTokenUsage(env, null, now - (5 + i) * 1000, 'model-new');
   }
-  const result = await queryModelReliability(env, 7, now);
+  const result = await queryModelUsageCoverage(env, 7, now);
   assert.equal(result.available, true);
   const m = result.rows.find((r) => r.model === 'model-new');
   assert.ok(m, 'model-new found');
-  assert.equal(m.reliability, 0.5);
+  assert.equal(m.usageCoverage, 0.5);
 });
 
 // ─── Core verification cases from task ──────────────────────────────────────
 
 console.log('\n── Core verification cases ──');
 
-await test('Provider A: 10 success, TTFT 4s -> Reliability 100%, P50 TTFT 4s', async () => {
+await test('Provider A: 10 delivered with usage, TTFT 4s -> Usage Coverage 100%, P50 TTFT 4s', async () => {
   const d1 = createMockD1();
   const env = { TOKEN_STATS_DB: d1 };
   const now = Date.now();
@@ -369,29 +369,29 @@ await test('Provider A: 10 success, TTFT 4s -> Reliability 100%, P50 TTFT 4s', a
   for (let i = 0; i < 10; i++) {
     await persistTokenUsage(env, usage, now - i * 1000, 'provider-a', 4000);
   }
-  const rel = await queryModelReliability(env, 7, now);
+  const cov = await queryModelUsageCoverage(env, 7, now);
   const ttft = await queryModelTtftPercentiles(env, 'provider-a', 7, now);
-  const a = rel.rows.find((r) => r.model === 'provider-a');
-  assert.equal(a.reliability, 1, 'Reliability 100%');
+  const a = cov.rows.find((r) => r.model === 'provider-a');
+  assert.equal(a.usageCoverage, 1, 'Usage Coverage 100%');
   assert.equal(ttft.p50, 5000, 'P50 TTFT in 2-5s bucket -> 5000ms upper bound');
   assert.equal(ttft.sampleCount, 10);
 });
 
-await test('Provider B: 1 success TTFT 500ms, 9 attributable 429 ~30ms -> Reliability 10%', async () => {
+await test('Provider B: 1 delivered with usage TTFT 500ms, 9 delivered without usage -> Usage Coverage 10%', async () => {
   const d1 = createMockD1();
   const env = { TOKEN_STATS_DB: d1 };
   const now = Date.now();
   const usage = { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 };
-  // 1 success
+  // 1 delivered with usage
   await persistTokenUsage(env, usage, now, 'provider-b', 500);
-  // 9 failures (missing usage = attributable failure)
+  // 9 delivered without usage (missing usage data)
   for (let i = 0; i < 9; i++) {
     await persistTokenUsage(env, null, now - (i + 1) * 1000, 'provider-b');
   }
-  const rel = await queryModelReliability(env, 7, now);
+  const cov = await queryModelUsageCoverage(env, 7, now);
   const ttft = await queryModelTtftPercentiles(env, 'provider-b', 7, now);
-  const b = rel.rows.find((r) => r.model === 'provider-b');
-  assert.equal(b.reliability, 0.1, 'Reliability 10%');
+  const b = cov.rows.find((r) => r.model === 'provider-b');
+  assert.equal(b.usageCoverage, 0.1, 'Usage Coverage 10%');
   // Only 1 TTFT sample (< 5 threshold) -> insufficient
   assert.equal(ttft.insufficient, true, 'insufficient samples');
   assert.equal(ttft.sampleCount, 1, 'only 1 TTFT sample');
@@ -403,18 +403,18 @@ await test('fast failures do not pollute TTFT', async () => {
   const env = { TOKEN_STATS_DB: d1 };
   const now = Date.now();
   const usage = { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 };
-  // 5 fast failures (30ms each) - should NOT produce TTFT samples
+  // 5 fast failures (delivered without usage) - should NOT produce TTFT samples
   for (let i = 0; i < 5; i++) {
     await persistTokenUsage(env, null, now - i * 1000, 'model-fast-fail');
   }
-  // 5 slow successes (4s each)
+  // 5 slow successes (delivered with usage, 4s TTFT each)
   for (let i = 0; i < 5; i++) {
     await persistTokenUsage(env, usage, now - (5 + i) * 1000, 'model-fast-fail', 4000);
   }
-  const rel = await queryModelReliability(env, 7, now);
+  const cov = await queryModelUsageCoverage(env, 7, now);
   const ttft = await queryModelTtftPercentiles(env, 'model-fast-fail', 7, now);
-  const m = rel.rows.find((r) => r.model === 'model-fast-fail');
-  assert.equal(m.reliability, 0.5, 'Reliability 50%');
+  const m = cov.rows.find((r) => r.model === 'model-fast-fail');
+  assert.equal(m.usageCoverage, 0.5, 'Usage Coverage 50%');
   assert.equal(ttft.sampleCount, 5, 'only 5 TTFT samples (failures excluded)');
   assert.equal(ttft.p50, 5000, 'P50 TTFT in 2-5s bucket');
 });

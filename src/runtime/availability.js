@@ -23,7 +23,7 @@
 //
 // Hot-path cost: one Map lookup per node, no allocation in the steady state.
 
-import { peekAvailability } from '../reliability/node-state.js';
+import { peekAvailability, hasBeenObserved } from '../reliability/node-state.js';
 import {
   isTier1Eligible,
   getTier1ModelPerf,
@@ -67,18 +67,22 @@ function getTier1Availability(node, model, now) {
   return 'available';
 }
 
-// Tier 2/3: legacy state. peekAvailability() returns 'yes'|'probe'|'no'.
-// A 'yes' is genuinely "healthy and ready" — the legacy state is required to
-// observe a successful dispatch before it goes 'yes' from a fresh default.
-// (That default is HEALTH_INITIAL=50, but a Tier 2/3 node still needs to
-// survive a real request before the dashboard reports it available.)
+// Tier 2/3: legacy circuit + cooldown state. A fresh isolate creates a
+// default-healthy entry (circuitState='closed', healthScore=50) on first read,
+// so peekAvailability() returns 'yes' even when the node has never successfully
+// served a request. We now gate on hasBeenObserved (totalSuccesses > 0) to
+// distinguish 'unobserved' from 'available' — configured ≠ observed healthy.
 function getLegacyAvailability(node, model, now) {
   if (model && node.models && Object.keys(node.models).length > 0 && !node.models[model]) {
     // Node does not serve this specific logical model.
     return 'unavailable';
   }
   const status = peekAvailability(node.id, now);
-  if (status === 'yes') return 'available';
+  if (status === 'no') return 'unavailable';
   if (status === 'probe') return 'unavailable'; // circuit half-open: still risky
-  return 'unavailable';
+  // status === 'yes': circuit closed and not cooling down. But has this
+  // isolate ever actually observed a success? If not, the node is configured
+  // but unobserved — NOT available.
+  if (!hasBeenObserved(node.id)) return 'unobserved';
+  return 'available';
 }

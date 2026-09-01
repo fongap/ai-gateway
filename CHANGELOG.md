@@ -29,6 +29,34 @@
 - **协议矩阵测试 `scripts/protocol-matrix-test.mjs` ×16**(已纳入 `npm test`):OpenAI Chat 成功/failover/hedge;Responses 原生链路(不经 Chat 转换、chat-only 节点被排除);Anthropic 原生链路(native 路径、`x-api-key`、`anthropic-version`、无 Bearer);**跨协议禁止 fallback**双向断言;hedge 同协议同 surface 断言;旧配置(无 `protocol`/`surfaces`)端到端迁移与 deprecated diagnostic 断言。
 - Claude / Codex 契约测试重写为**原生上游 mock**(Anthropic SSE 生命周期 / Responses SSE 事件序列),新增 `anthropic-version`/`anthropic-beta` 透传、tool_use 流式 `input_json_delta`、原生 stream↔object 防御路径等断言;`gateway-configuration-test` 新增 protocol/surfaces schema 与迁移用例;`node-config-shards-test` 新增 CLI 侧 protocol/surfaces 校验用例。
 
+## 1.2.6 - 2026-09-02
+
+### Added
+
+- **Public Model Status 使用 Runtime + D1 recent evidence。**
+- **TTFT histogram** (7-bucket, per-model, per-hour)。
+- **TTFT P50 / P95** 显示在模型状态区域。
+- **Provider Discovery** 治理框架 (观察-only workflow)。
+- **模型状态性能展示** (status + TTFT P50 + P95 + sample count)。
+- 相关测试 (`reliability-performance-test.mjs` ×40)。
+
+### Changed
+
+- **Dashboard 信息架构调整**：TTFT 从"使用情况"移动至"模型状态"。
+- **模型状态统一展示**当前状态和近期 TTFT (P50 / P95 / 样本数)。
+- **使用情况只保留** Token / 请求 / 活动 / 模型占比。
+- **Reliability 指标修正为 Usage Coverage 语义** (`queryModelUsageCoverage`)。
+- npm 脚本重命名：`test:required` → `test:unit`、`test:full` → `test:all`、`verify` → `validate:merge`、`verify:full` → `validate:deploy`。
+
+### Fixed
+
+- **Public Model Status 在新 isolate 下容易全部显示"未观测"**。
+- **Provider Discovery upload-artifact SHA 错误** (`bbb15f1f` → `330a01c4`)。
+- **Usage Coverage 被错误称为 Reliability / Success Rate**。
+- **migration 0003 注释与实际 SQL 不一致** (删除"idempotent"声明)。
+- **版本信息不一致** (package.json / runtime / integration-test 统一为 1.2.6)。
+- **ci.yml validate-deploy 使用 v6 SHAs** (统一为 v7.0.1)。
+
 ## 1.2.4 - 2026-08-29
 
 ### Fixed

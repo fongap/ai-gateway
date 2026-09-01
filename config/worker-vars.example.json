@@ -20,6 +20,7 @@
     }
   },
   "POLICIES_CONFIG": { "default": { "max_attempts": 5 } },
+  "PROTOCOL_FALLBACKS": { "anthropic:messages": ["openai:chat_completions"] },
   "PROJECT_REPOSITORY_URL": "https://github.com/your-org/ai-gateway"
 }
 
