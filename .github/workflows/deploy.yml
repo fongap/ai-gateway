@@ -182,9 +182,30 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: npx --yes wrangler@4.114.0 deploy -c "$RUNNER_TEMP/wrangler.github.json"
 
-      - name: Verify deployed gateway
-        id: health-check
-        run: node scripts/github-deployment-config.mjs health-check --from-env
+- name: Verify deployed gateway
+  id: health-check
+  run: node scripts/github-deployment-config.mjs health-check --from-env
+
+- name: Verify root page
+  run: |
+    # Ensure the homepage returns HTTP 200 and contains expected content.
+    URL="${{ env.GATEWAY_PUBLIC_BASE_URL }}"
+    # HTTP 200 check
+    STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$URL" -H "Accept: text/html")
+    if [ "$STATUS" != "200" ]; then
+      echo "::error::Root page returned HTTP $STATUS"
+      exit 1
+    fi
+    # Content checks
+    CONTENT=$(curl -s "$URL" -H "Accept: text/html")
+    if echo "$CONTENT" | grep -q "服务暂时不可用"; then
+      echo "::error::Root page still shows degraded UI"
+      exit 1
+    fi
+    if ! echo "$CONTENT" | grep -q "AI Gateway"; then
+      echo "::error::Root page missing expected branding"
+      exit 1
+    fi
 
       - name: Rollback to previous Worker version
         if: failure() && steps.deploy.outcome == 'success'

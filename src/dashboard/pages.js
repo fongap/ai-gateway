@@ -471,9 +471,28 @@ function publicModelStatus(nodes, env, evidence = new Set(), now = Date.now()) {
 const STATE_LABEL = { available: '可用', unobserved: '未观测', degraded: '波动', unavailable: '不可用' };
 const GENERAL_PREFIX = 'general-';
 
+function fmtTtft(ms) {
+  if (ms === Infinity) return '>10s';
+  if (!Number.isFinite(ms) || ms < 0) return '—';
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 10000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.round(ms / 1000)}s`;
+}
+
 function fmtModelTtft(modelTtft) {
-  if (!modelTtft || modelTtft.available === false) return { p50: '--', p95: '--', samples: 0, insufficient: true };
-  if (modelTtft.insufficient) return { p50: '--', p95: '--', samples: modelTtft.sampleCount || 0, insufficient: true };
+  if (!modelTtft || modelTtft.available === false) {
+    return { p50: '--', p95: '--', samples: 0, insufficient: true };
+  }
+
+  if (modelTtft.insufficient) {
+    return {
+      p50: '--',
+      p95: '--',
+      samples: modelTtft.sampleCount || 0,
+      insufficient: true,
+    };
+  }
+
   return {
     p50: modelTtft.p50 != null ? fmtTtft(modelTtft.p50) : '--',
     p95: modelTtft.p95 != null ? fmtTtft(modelTtft.p95) : '--',

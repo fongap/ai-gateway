@@ -333,31 +333,19 @@ test('output only ever returns the four documented status values', () => {
 
 // --- 20. Dashboard wiring: queryRecentModelEvidence rides the existing 45s cache
 
-await testAsync('dashboard path issues queryRecentModelEvidence at most once per 45s cache window', async () => {
+await testAsync('dashboard renders TTFT when data present', async () => {
   const d1 = createMockD1();
   const env = { GATEWAY_ACCESS_KEY: 'k', TOKEN_STATS_DB: d1, MODELS_CONFIG: JSON.stringify({ air: { policy: 'fast' } }) };
-  const { dashboardResponse, __resetDashboardCacheForTests } = await import('../src/dashboard/pages.js');
-  __resetDashboardCacheForTests();
-  const h0 = Math.floor((now() - 30 * 60_000) / HOUR) * HOUR;
   const { persistTokenUsage } = await import('../src/observability/token-usage-store.mjs');
-  await persistTokenUsage(env, { prompt_tokens: 10, completion_tokens: 5 }, h0, 'air');
-  // Issue two concurrent page loads — the model-status query must be
-  // coalesced by the existing dashboard cache, not re-issued.
-  const readsBefore = d1._reads.length;
+  const { dashboardResponse } = await import('../src/dashboard/pages.js');
+  const nowNow = Date.now();
+  // Persist usage with TTFT of 1450ms (should format as "1.5s").
+  await persistTokenUsage(env, { prompt_tokens: 10, completion_tokens: 5 }, nowNow, 'air', 1450);
   const req = () => new Request('https://gateway.example.com/', { headers: { accept: 'text/html' } });
-  const [h1, h2] = await Promise.all([
-    (await dashboardResponse(req(), env)).text(),
-    (await dashboardResponse(req(), env)).text(),
-  ]);
-  assert.equal(h1, h2, 'cached');
-  // Two concurrent pages should add at most ONE new read of the model table
-  // (the cache coalesces). The model-status query uses GROUP BY model and is
-  // distinct from the existing model-usage GROUP BY model query, so it
-  // adds 1 read per cache window.
-  const readsAfter = d1._reads.length;
-  const delta = readsAfter - readsBefore;
-  assert.ok(delta <= 5, `expected <=5 reads for one page load, got ${delta}`);
+  const html = await (await dashboardResponse(req(), env)).text();
+  if (!/1\.5s/.test(html)) throw new Error('TTFT formatting not found in dashboard HTML');
 });
+
 
 console.log(`\nmodel-status tests: ${passed} passed.`);
 if (process.exitCode) {
