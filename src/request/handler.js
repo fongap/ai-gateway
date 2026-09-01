@@ -462,11 +462,14 @@ const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // overload caveat.
 async function dispatchWithHedge(args, tierNodes) {
   // Resolve effective hedge config: policy.hedge (per-model) overrides
-  // the global env defaults. When no policy hedge is configured (null),
-  // keep the legacy behavior — hedge enabled on ALL tiers with
-  // HEDGE_DELAY_MS / MAX_HEDGES_PER_REQUEST from env.
+  // the global env defaults. Tier 3 (paid) nodes NEVER hedge by default
+  // — two paid requests in parallel is rarely worth the cost. To hedge
+  // a paid tier, opt in via policy.hedge.tiers=['tier3'] or policy: 'stable'.
   const hedgePolicy = args.policy?.hedge ?? null;
   const tierKey = `tier${args.tierNumber}`;
+  if (args.tierNumber === 3 && !(hedgePolicy && hedgePolicy.tiers && hedgePolicy.tiers.includes('tier3') && hedgePolicy.enabled !== false)) {
+    return attemptNode(args);
+  }
   let hedgeDelayMs, maxHedges;
   if (hedgePolicy) {
     if (hedgePolicy.enabled === false) return attemptNode(args);
@@ -608,6 +611,7 @@ async function dispatchAttempt(c) {
     request, env, logger, requestId, route, node, requestedModel, clientWantsStream,
     fakeStream, bodyJson, limits, exposeUpstreamInfo, state,
     failoverBudgetMs, requestStartMs, remainingDispatchableAttempts, reqDescriptor,
+    policy,
   } = c;
   const attemptStartMs = Date.now();
   c.attemptStartMs = attemptStartMs;
@@ -825,7 +829,7 @@ async function dispatchAttempt(c) {
 
 async function handleSuccess(s) {
   const { upstream, c, latencyMs, detach, upstreamWasStreaming } = s;
-  const { request, env, logger, requestId, route, node, requestedModel, bodyJson, clientWantsStream, fakeStream, limits, exposeUpstreamInfo, state } = c;
+  const { request, env, logger, requestId, route, node, requestedModel, bodyJson, clientWantsStream, fakeStream, limits, exposeUpstreamInfo, state, policy } = c;
   const surface = c.surface;
   const elapsedSinceStart = () => Date.now() - c.attemptStartMs;
   // Topology-leak policy (P1): by default a successful client response carries
@@ -846,8 +850,11 @@ async function handleSuccess(s) {
     try {
       const remainingRequestBudgetMs = (c.failoverBudgetMs ?? limits.failoverBudgetMs) - (Date.now() - (c.requestStartMs || s.attemptStartMs));
       const remainingAttemptBudgetMs = (c.attemptDeadlineMs ?? Date.now()) - Date.now();
+      // Policy-level first_event_timeout_ms overrides the global env default
+      // for this model (e.g. long-reasoning needs 120s for chain-of-thought).
+      const effectiveFirstEventTimeoutMs = policy?.firstEventTimeoutMs ?? limits.firstEventTimeoutMs;
       const firstEventTimeout = attemptFirstEventTimeoutMs(
-        limits.firstEventTimeoutMs,
+        effectiveFirstEventTimeoutMs,
         Math.min(remainingRequestBudgetMs, remainingAttemptBudgetMs),
         1,
       );
