@@ -1,53 +1,40 @@
-# 贡献指南 / Contributing
+# 贡献指南
 
-## 提交前 / Before submitting
+## 快速开始
 
 ```bash
+git clone https://github.com/fongap/ai-gateway.git && cd ai-gateway
 npm ci
 npm run verify        # syntax + version + config checks + tests + secret scan
 npm run check:deploy  # wrangler dry-run bundle
 ```
 
-## 修改原则 / Principles
+## 提交 PR
 
-每个改动都应回答：是否提高上游配额利用率？是否提高稳定性？是否降低 Worker CPU 开销？代码是否更简单、更可预测？
-Every change should answer: does it improve upstream quota utilization, reliability, Worker CPU cost, or predictability? If not, leave it out.
+1. 创建分支（`feat/`、`fix/`、`refactor/`、`docs/`、`test/`、`chore/`）
+2. 确保 `npm run verify` 和 `npm run check:deploy` 通过
+3. 使用仓库 Pull Request 模板
+4. 等待 CI 通过后请求 review
 
-- 不提交任何真实凭据（Token / `GATEWAY_ACCESS_KEY` / 上游账号）。
-  Never commit real credentials.
-- 保持 OpenAI / Anthropic 双协议路径行为一致。
-  Keep the OpenAI and Anthropic protocol paths behaviorally consistent.
-- 超时/冷却默认值只允许出现在 `src/config/timeouts.js`。
-  Timeout and cooldown defaults live only in `src/config/timeouts.js`.
-- 节点运行时状态只允许通过 `src/reliability/node-state.js` 修改。
-  Node runtime state is mutated only through `src/reliability/node-state.js`.
-- 流式行为改动必须保持 First Event Guard 边界语义（首事件前可切换节点，之后绝不）。
-  Streaming changes must preserve the first-event guard boundary.
-- 影响调度/可靠性/配置格式时，同步更新集成测试（`scripts/integration-test.mjs`）与文档。
-  Update integration tests and docs together with scheduling/config changes.
-- 影响对外行为时更新 `README.md` 与 `README_EN.md`；修改版本时同步 `package.json`、`APP_META.version` 与 `CHANGELOG.md`。
-  Update READMEs for user-visible changes; keep version fields in sync.
+## 治理规则
 
-## Pull Request
+完整开发治理详见：
 
-PR 请说明：目标、改动点、验证结果、破坏性变更、安全影响。
-Describe: goal, changes, verification, breaking changes, security impact.
+- 开发治理：[docs/governance/development-policy.md](docs/governance/development-policy.md)
+- 质量要求：[docs/governance/quality-policy.md](docs/governance/quality-policy.md)
+- 依赖策略：[docs/governance/dependency-policy.md](docs/governance/dependency-policy.md)
+- 发布流程：[docs/governance/release-policy.md](docs/governance/release-policy.md)
+- 文档同步：[docs/governance/documentation-policy.md](docs/governance/documentation-policy.md)
 
-Use the repository Pull Request template and ensure all CI checks pass before requesting review.
+## 架构文档
 
-## Commit Messages
+- 系统总览：[docs/architecture/overview.md](docs/architecture/overview.md)
+- 协议模型：[docs/architecture/protocol-model.md](docs/architecture/protocol-model.md)
+- 调度模型：[docs/architecture/routing-model.md](docs/architecture/routing-model.md)
+- 可靠性模型：[docs/architecture/reliability-model.md](docs/architecture/reliability-model.md)
 
-Commit messages must be meaningful; bare `update` / `fix` commits are not acceptable for a reliability-engineering codebase. Use Conventional-Commits-style prefixes:
+## 运维文档
 
-```
-feat: add request-level failover budget
-fix: prevent half-open probe leak in circuit breaker
-fix: reject malformed node models instead of treating them as wildcard
-refactor: split model registry out of provider profiles
-docs: clarify isolate-local quota semantics
-test: cover hard RPM exhaustion and SSE error envelopes
-chore: pin GitHub Actions to commit SHAs
-ui: refine public gateway entry page
-```
-
-Rules of thumb: one logical change per commit; the subject line states the *behavior* change, not the file list; scheduling/reliability changes should reference the regression test that covers them.
+- 配置参考：[docs/operations/configuration.md](docs/operations/configuration.md)
+- 部署指南：[docs/operations/deployment.md](docs/operations/deployment.md)
+- 故障排查：[docs/operations/troubleshooting.md](docs/operations/troubleshooting.md)

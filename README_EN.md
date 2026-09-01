@@ -66,7 +66,7 @@ Production stores fork-specific non-sensitive Worker configuration in GitHub rep
 git push origin main
 ```
 
-The workflow validates configuration, synchronizes Worker variables and Secrets, applies D1 migrations, deploys the Worker, and runs live health checks. See **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
+The workflow validates configuration, synchronizes Worker variables and Secrets, applies D1 migrations, deploys the Worker, and runs live health checks. See **[docs/operations/deployment.md](docs/operations/deployment.md)**.
 
 ## Config
 
@@ -88,7 +88,7 @@ Node definitions are Worker text variables; upstream credentials and the gateway
 
 `priority` remains part of the shared node schema for Tier 2/3 compatibility, but Tier 1 P2C ignores it.
 
-> Full fields, runtime behavior, Model Registry, and deployment examples → **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)**.
+> Full fields, runtime behavior, Model Registry, and deployment examples → **[docs/operations/configuration.md](docs/operations/configuration.md)**.
 
 ## Endpoints
 
@@ -114,6 +114,6 @@ Clients may send `x-session-id` (8–128 characters) to enable Tier 1 session af
 
 **ai-gateway** · many keys · many models · one stable endpoint · [MIT](LICENSE)
 
-[Architecture](docs/ARCHITECTURE.md) · [Configuration](docs/CONFIGURATION.md) · [Deployment](docs/DEPLOYMENT.md)
+[Architecture](docs/architecture/overview.md) · [Configuration](docs/operations/configuration.md) · [Deployment](docs/operations/deployment.md)
 
 </div>
