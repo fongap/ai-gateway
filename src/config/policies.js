@@ -8,7 +8,7 @@
 // Tier order is fixed (tier-1 -> tier-2 -> tier-3, hard precedence).
 //
 // Built-in policies (always present, user config merges on top):
-//   default        - balanced: maxAttempts=2, hedge=false
+//   default        - balanced: maxAttempts=5, hedge=false
 //   fast           - speed-first: maxAttempts=1, hedge=false
 //   stable         - reliability: maxAttempts=5, hedge={enabled:true, tiers:['tier1']}
 //   long-reasoning - extended first-event: maxAttempts=3, hedge=false, firstEventTimeoutMs=120000
@@ -26,11 +26,15 @@ const ALLOWED_FIELDS = new Set(['max_attempts', 'tier_attempts', 'hedge', 'first
 
 // Built-in policies — always present, user config merges on top.
 // These are the single source of truth; no runtime fallback needed.
+// `hedge` stays undefined on built-ins so models without a model-level
+// `policy:` keep the legacy behavior: HEDGE_DELAY_MS / MAX_HEDGES_PER_REQUEST
+// from env govern hedging. `stable` opts in explicitly. A user-supplied
+// `hedge: { enabled: false }` still disables hedging for that policy.
 const BUILTIN_POLICIES = Object.freeze({
   default: {
-    maxAttempts: 2,
+    maxAttempts: 5,
     tierAttempts: null,
-    hedge: { enabled: false },
+    hedge: undefined,
     firstEventTimeoutMs: null,
   },
   fast: {
