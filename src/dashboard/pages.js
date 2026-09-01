@@ -852,7 +852,7 @@ ${quickHtml}`;
   <div class="empty">模型映射配置后在此显示。</div>
 </section>`;
 
-    return htmlResponse(shell({ title: 'AI Gateway · 错误', body }), 500);
+    return htmlResponse(shell({ title: 'AI Gateway · 错误', body }), { status: 500 });
   }
 }
 

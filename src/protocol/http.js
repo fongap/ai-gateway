@@ -60,7 +60,7 @@ export function jsonError(request, env, status, message, details, requestId, ext
   });
 }
 
-export function htmlResponse(content, init?) {
+export function htmlResponse(content, init) {
   return new Response(content, {
     status: init?.status ?? 200,
     headers: {
