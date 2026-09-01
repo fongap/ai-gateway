@@ -1,10 +1,10 @@
 name: CI
 
 # Two-tier CI:
-#   verify (required): syntax + config + unit/reliability + protocol contract + docs + secret scan
-#   verify:full:      everything in verify + scheduler-stability + integration + stress + codex/claude contract
+#   verify (required): syntax + config + unit tests + protocol contract + docs + secret scan
+#   verify-full:       everything in verify + scheduler-stability + integration + stress + codex/claude contract
 #
-# verify:full runs on push to main, on nightly, and via manual workflow_dispatch.
+# verify-full runs on push to main, on nightly, and via manual workflow_dispatch.
 # verify runs on every push and PR — it is the merge gate.
 on:
   push:
@@ -41,8 +41,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Verify (required)
-        run: npm run verify
+      - name: Validate (merge)
+        run: npm run validate:merge
 
       - name: Dry-run Worker bundle
         run: npm run check:deploy
@@ -65,5 +65,5 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Verify (full)
-        run: npm run verify:full
+      - name: Validate (deploy)
+        run: npm run validate:deploy

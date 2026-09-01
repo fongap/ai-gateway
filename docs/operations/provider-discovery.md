@@ -202,7 +202,7 @@ When P0 warnings are present, the Summary surfaces an explicit callout.
 4. Runs the Runtime consistency check.
 5. Uploads `changes.md`, JSON artifact, and runtime warnings as a single Artifact.
 
-The workflow is **not** part of required CI (`npm run verify`). It is intentionally decoupled so that a flaky third-party endpoint cannot break PR merges. Required CI only runs the unit-test path (`scripts/provider-discovery-test.mjs`), which is offline.
+The workflow is **not** part of required CI (`npm run validate:merge`). It is intentionally decoupled so that a flaky third-party endpoint cannot break PR merges. Required CI only runs the unit-test path (`scripts/provider-discovery-test.mjs`), which is offline.
 
 ## Security
 
@@ -254,4 +254,4 @@ Run with:
 node scripts/provider-discovery-test.mjs
 ```
 
-The test is part of `npm run verify` via `npm run test:required`.
+The test is part of `npm run validate:merge` via `npm run test:unit`.
