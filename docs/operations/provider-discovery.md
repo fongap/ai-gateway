@@ -1,21 +1,21 @@
 # Provider Discovery (v1.1)
 
-> Runtime Node Config = production fact.
-> Discovery Catalog = external observation / auxiliary fact.
+> Runtime Node Config = 生产事实。
+> Discovery Catalog = 外部观察 / 辅助事实。
 
-Provider Discovery tracks Provider **protocol capability**, **surface support**, and **base URL** state across the ecosystem used by the gateway. It exists to answer, in plain prose:
+Provider Discovery 追踪 Provider 在网关使用的生态系统中的**协议能力**、**Surface 支持**和 **base URL** 状态。它的存在是为了回答以下问题：
 
-- Which Providers support which protocols?
-- Does Provider X support OpenAI Chat Completions? OpenAI Responses?
-- Does Provider X support Anthropic Messages? Anthropic `count_tokens`?
-- What base URL does Provider X use for each protocol?
-- Where did each piece of information come from?
-- How did Provider capability change compared with the previous snapshot?
-- Is current Runtime Node configuration consistent with the Catalog?
+- 哪些 Provider 支持哪些协议？
+- Provider X 是否支持 OpenAI Chat Completions？OpenAI Responses？
+- Provider X 是否支持 Anthropic Messages？Anthropic `count_tokens`？
+- Provider X 为每个协议使用什么 base URL？
+- 每条信息来自哪里？
+- 与上一个快照相比，Provider 能力如何变化？
+- 当前 Runtime Node 配置是否与 Catalog 一致？
 
-It does **not** mutate Runtime Node configuration, the Model Registry, Worker Variables, or Worker Secrets. Discovery Catalog output is **advisory only**.
+它**不会**修改 Runtime Node 配置、Model Registry、Worker Variables 或 Worker Secrets。Discovery Catalog 输出**仅供参考**。
 
-## Boundary
+## 边界
 
 ```text
 Provider Capability
@@ -31,7 +31,7 @@ Human Review
 Node / Model Registry Config
 ```
 
-The Catalog is read by humans and CI alike; nothing in the request hot path imports it. The Runtime request hot path (`src/request/handler.js` → `src/scheduler/` → `src/transport/`) is intentionally untouched by Discovery and never reads from `scripts/provider-discovery/*`.
+Catalog 供人类和 CI 共同阅读；请求热路径中没有任何模块导入它。Runtime 请求热路径（`src/request/handler.js` → `src/scheduler/` → `src/transport/`）有意不受 Discovery 影响，也从不读取 `scripts/provider-discovery/*`。
 
 ## Catalog schema (v1.1)
 
@@ -57,40 +57,40 @@ The Catalog is read by humans and CI alike; nothing in the request hot path impo
 }
 ```
 
-Three-state support: `true` (supported), `false` (verified-unsupported), `null` (unknown / not confirmed). Surface absence is `unknown`, **never** `unsupported` (§四 of v1.1).
+三种支持状态：`true`（支持）、`false`（已验证不支持）、`null`（未知 / 未确认）。Surface 缺失为 `unknown`，**永不**为 `unsupported`（v1.1 第四节）。
 
 ### Surfaces
 
-| Protocol    | Allowed surfaces                                  |
-|-------------|---------------------------------------------------|
-| `openai`    | `chat_completions`, `responses`                   |
-| `anthropic` | `messages`, `count_tokens`                        |
+| 协议 | 允许的 surfaces |
+|---|---|
+| `openai` | `chat_completions`, `responses` |
+| `anthropic` | `messages`, `count_tokens` |
 
-`count_tokens` is advisory in the Catalog: the Runtime Node schema (`src/config/nodes.js`) does not currently model it as a `surfaces` entry, so the Runtime consistency layer does not emit a Runtime conflict on `count_tokens` mismatches. The Catalog still records it.
+`count_tokens` 在 Catalog 中仅供参考：Runtime Node schema（`src/config/nodes.js`）目前未将其建模为 `surfaces` 条目，因此 Runtime 一致性层不会在 `count_tokens` 不匹配时发出 Runtime 冲突。Catalog 仍会记录它。
 
-### Evidence levels
+### 证据级别
 
-| Level        | Meaning                                                                 |
-|--------------|-------------------------------------------------------------------------|
-| `configured` | From operator-maintained configuration (Discovery snapshot, runtime)   |
-| `official`   | From the Provider's official documentation                              |
-| `verified`   | Confirmed via a safe metadata endpoint (`GET /models`, official docs)   |
-| `unknown`    | No reliable source available                                            |
+| 级别 | 含义 |
+|---|---|
+| `configured` | 来自运维人员维护的配置（Discovery 快照、runtime） |
+| `official` | 来自 Provider 的官方文档 |
+| `verified` | 通过安全元数据端点（`GET /models`、官方文档）确认 |
+| `unknown` | 无可靠来源可用 |
 
-`verified` is **never** claimed by code that performs generation requests. Discovery never POSTs to `/v1/chat/completions`, `/v1/responses`, or `/v1/messages`.
+`verified` **永不**由执行生成请求的代码声称。Discovery 永不 POST 到 `/v1/chat/completions`、`/v1/responses` 或 `/v1/messages`。
 
-## Local CLI
+## 本地 CLI
 
-`scripts/provider-discovery.mjs`:
+`scripts/provider-discovery.mjs`：
 
 ```bash
-# Validate and inspect a snapshot.
+# 验证和检查快照。
 npm run discovery:check
 
-# Print a short protocol/surface capability summary.
+# 打印简短的协议/surface 能力摘要。
 npm run discovery:summary
 
-# Subcommands (the script also accepts these directly):
+# 子命令（脚本也直接接受这些）：
 node scripts/provider-discovery.mjs check-snapshot <catalog.json>
 node scripts/provider-discovery.mjs summary       <catalog.json>
 node scripts/provider-discovery.mjs diff          <before.json> <after.json> \
@@ -99,71 +99,71 @@ node scripts/provider-discovery.mjs runtime-check <catalog.json> <runtime-view.j
                                                 [--json-out FILE]
 ```
 
-### Exit codes
+### 退出码
 
-| Code | Meaning                                                          |
-|------|------------------------------------------------------------------|
-| 0    | Success, no P0/P1 issues                                         |
-| 1    | Generic failure (bad args, missing files)                        |
-| 2    | At least one P0 or P1 Runtime consistency warning emitted        |
+| 退出码 | 含义 |
+|---|---|
+| 0 | 成功，无 P0/P1 问题 |
+| 1 | 通用失败（参数错误、文件缺失） |
+| 2 | 至少发出一个 P0 或 P1 Runtime 一致性警告 |
 
-## Semantic diff
+## 语义 diff
 
-`scripts/provider-discovery/diff.js` produces a stable, sorted diff with severity tagging:
+`scripts/provider-discovery/diff.js` 生成稳定、排序的 diff，带有严重性标记：
 
-| Kind                          | Default severity |
-|-------------------------------|------------------|
-| `protocol_support_changed`    | P1 (true→false/null), P2 (false/null→true) |
-| `surface_support_changed`     | P1 (supported→unknown), P2 (unknown→supported) |
-| `base_url_changed`            | P3 (metadata only) |
+| 类型 | 默认严重性 |
+|---|---|
+| `protocol_support_changed` | P1 (true→false/null), P2 (false/null→true) |
+| `surface_support_changed` | P1 (supported→unknown), P2 (unknown→supported) |
+| `base_url_changed` | P3（仅元数据） |
 
-Severity buckets per §十二 of v1.1:
+严重性桶按 v1.1 第十二节：
 
-| Priority | Meaning                                                                  |
-|----------|--------------------------------------------------------------------------|
-| **P0**   | Runtime in use, Catalog marks it unsupported                              |
-| **P1**   | Confirmed removal, Runtime capability mismatch, supported→unsupported, supported→unknown |
-| **P2**   | New capability, missing model, new model                                  |
-| **P3**   | Other metadata change                                                    |
+| 优先级 | 含义 |
+|---|---|
+| **P0** | Runtime 正在使用，Catalog 标记为不支持 |
+| **P1** | 已确认移除、Runtime 能力不匹配、supported→unsupported、supported→unknown |
+| **P2** | 新能力、缺失模型、新模型 |
+| **P3** | 其他元数据变更 |
 
-Diff output is invariant to:
+Diff 输出对以下情况保持不变：
 
-- Provider key order in source JSON
-- Surface array order
-- Trailing slash on base URL pathname
-- `/models` endpoint result ordering
+- 源 JSON 中的 Provider 键顺序
+- Surface 数组顺序
+- base URL 路径名的尾部斜杠
+- `/models` 端点结果排序
 
-## Runtime consistency check
+## Runtime 一致性检查
 
-`scripts/provider-discovery/runtime-check.js` compares a sanitized Runtime Node projection against the Catalog and emits warnings. The runtime view is intentionally a *projection* — `id`, `provider`, `protocol`, `surfaces`, `base_url` only — and **must never** include credentials.
+`scripts/provider-discovery/runtime-check.js` 将清理后的 Runtime Node 投影与 Catalog 进行比较，并发出警告。Runtime 视图有意是一个*投影*——仅包含 `id`、`provider`、`protocol`、`surfaces`、`base_url`——且**绝不**包含凭据。
 
-The check is read-only. It never:
+该检查是只读的。它永不：
 
-- Disables a node
-- Deletes a node
-- Modifies `protocol`, `surfaces`, or `base_url`
-- Changes a tier
-- Touches the Model Registry
+- 禁用节点
+- 删除节点
+- 修改 `protocol`、`surfaces` 或 `base_url`
+- 更改 tier
+- 触碰 Model Registry
 
-Warnings are sorted P0 → P3 and printed to stdout (or written to `--json-out`).
+警告按 P0 → P3 排序并打印到 stdout（或写入 `--json-out`）。
 
-`base_url` differences are reported as **differs** (not **invalid**). The check never claims the configured URL is dead — that would require positive evidence Discovery does not gather.
+`base_url` 差异报告为 **differs**（不是 **invalid**）。该检查永不声称配置的 URL 已失效——那需要 Discovery 不收集的积极证据。
 
-## Reports
+## 报告
 
 ### `changes.md`
 
-`scripts/provider-discovery/report.js#formatChangesMarkdown` writes a human-readable Markdown report with sections:
+`scripts/provider-discovery/report.js#formatChangesMarkdown` 编写人类可读的 Markdown 报告，包含以下部分：
 
-- `## Changed` — grouped by provider, each change is one bullet.
-- `## Added` / `## Removed` — provider-level transitions.
-- `## Runtime consistency` — sorted warning list.
-- `## Catalog snapshot` — one row per (provider, protocol).
-- `## Notes` — v1.1 invariants pinned.
+- `## Changed` — 按 provider 分组，每个变更一个 bullet。
+- `## Added` / `## Removed` — provider 级别转换。
+- `## Runtime consistency` — 排序的警告列表。
+- `## Catalog snapshot` — 每个 (provider, protocol) 一行。
+- `## Notes` — v1.1 不变量固定。
 
 ### GitHub Action Summary
 
-`formatActionSummary` writes a short summary suitable for `$GITHUB_STEP_SUMMARY`:
+`formatActionSummary` 编写适合 `$GITHUB_STEP_SUMMARY` 的简短摘要：
 
 ```text
 # Provider Discovery
@@ -190,68 +190,68 @@ Providers checked: 4
 - Runtime configuration warnings: P0=0, P1=0, P2=0, P3=0
 ```
 
-When P0 warnings are present, the Summary surfaces an explicit callout.
+当存在 P0 警告时，Summary 会显示明确的标注。
 
-## Workflow
+## 工作流
 
-`.github/workflows/provider-discovery.yml` runs the pipeline on a nightly schedule (04:00 UTC) and on `workflow_dispatch`. It:
+`.github/workflows/provider-discovery.yml` 在夜间计划（04:00 UTC）和 `workflow_dispatch` 上运行管道。它：
 
-1. Reads the previous and current catalog snapshot.
-2. Normalizes both.
-3. Computes the diff.
-4. Runs the Runtime consistency check.
-5. Uploads `changes.md`, JSON artifact, and runtime warnings as a single Artifact.
+1. 读取上一个和当前的 catalog 快照。
+2. 规范化两者。
+3. 计算 diff。
+4. 运行 Runtime 一致性检查。
+5. 将 `changes.md`、JSON artifact 和 runtime 警告作为单个 Artifact 上传。
 
-The workflow is **not** part of required CI (`npm run validate:merge`). It is intentionally decoupled so that a flaky third-party endpoint cannot break PR merges. Required CI only runs the unit-test path (`scripts/provider-discovery-test.mjs`), which is offline.
+该工作流**不是**必需 CI（`npm run validate:merge`）的一部分。它有意解耦，以便不稳定的第三方端点不会破坏 PR 合并。必需 CI 仅运行单元测试路径（`scripts/provider-discovery-test.mjs`），该路径是离线的。
 
-## Security
+## 安全
 
-The Discovery module never:
+Discovery 模块永不：
 
-- Reads or persists secrets (Authorization headers, API keys, bearer tokens, cookies).
-- Synthesizes URLs from provider names.
-- Performs active probes (POST generation requests, speed tests, health probes).
-- Modifies production configuration.
+- 读取或持久化凭据（Authorization headers、API keys、bearer tokens、cookies）。
+- 从 provider 名称合成 URL。
+- 执行主动探测（POST 生成请求、速度测试、健康探测）。
+- 修改生产配置。
 
-Credential-bearing URLs (`user:pass@host`) and credential-like tokens (`sk-…`, `ghp_…`, `AKIA…`) in the `base_url` field are dropped with a warning. The runtime-view loader only reads fields explicitly projected from Runtime Node config; `credential` (the secret field) is never loaded.
+`base_url` 字段中的凭据承载 URL（`user:pass@host`）和类凭据 token（`sk-…`、`ghp_…`、`AKIA…`）会被丢弃并发出警告。Runtime-view 加载器仅读取从 Runtime Node 配置显式投影的字段；`credential`（秘密字段）永不加载。
 
-## Module layout
+## 模块布局
 
 ```
 scripts/
-├── provider-discovery.mjs               # CLI driver
-├── provider-discovery-test.mjs          # unit test (offline)
+├── provider-discovery.mjs               # CLI 驱动器
+├── provider-discovery-test.mjs          # 单元测试（离线）
 └── provider-discovery/
-    ├── catalog-schema.js                # schema constants + validation
-    ├── normalize.js                     # normalize / sort / canonicalize
-    ├── diff.js                          # semantic diff + severity
-    ├── runtime-check.js                 # Runtime consistency check
-    ├── report.js                        # changes.md + Action Summary formatters
-    ├── load-snapshot.js                 # snapshot + runtime view loaders
-    ├── index.js                         # public re-exports
+    ├── catalog-schema.js                # schema 常量 + 验证
+    ├── normalize.js                     # 规范化 / 排序 / 标准化
+    ├── diff.js                          # 语义 diff + 严重性
+    ├── runtime-check.js                 # Runtime 一致性检查
+    ├── report.js                        # changes.md + Action Summary 格式化器
+    ├── load-snapshot.js                 # 快照 + runtime view 加载器
+    ├── index.js                         # 公共导出
     └── samples/
-        ├── catalog.example.json         # example catalog
-        └── runtime-view.example.json    # example sanitized runtime view
+        ├── catalog.example.json         # 示例 catalog
+        └── runtime-view.example.json    # 示例清理后的 runtime view
 ```
 
-The Discovery module never imports from `src/runtime`, `src/scheduler`, `src/transport`, `src/request`, `src/reliability`, `src/stream`, `src/conversion`, `src/observability`, or `src/protocol`. This is enforced by an invariant test.
+Discovery 模块永不从 `src/runtime`、`src/scheduler`、`src/transport`、`src/request`、`src/reliability`、`src/stream`、`src/conversion`、`src/observability` 或 `src/protocol` 导入。这由不变量测试强制执行。
 
-## Tests
+## 测试
 
-`scripts/provider-discovery-test.mjs` covers:
+`scripts/provider-discovery-test.mjs` 覆盖：
 
-- Provider Capability schema (tri-state, surfaces, evidence)
-- Normalization (stable sort, secret-stripping, base URL canonicalization)
-- Diff semantics (added/removed/changed; severity mapping)
-- Runtime consistency (mismatch, base URL drift, no auto-mutation)
-- Report formatters (markdown, summary, JSON)
-- Security invariants (no secrets in any output path)
-- Boundary invariants (no coupling to runtime hot path)
+- Provider Capability schema（三态、surfaces、evidence）
+- 规范化（稳定排序、secret 剥离、base URL 标准化）
+- Diff 语义（added/removed/changed；严重性映射）
+- Runtime 一致性（不匹配、base URL 漂移、无自动修改）
+- 报告格式化器（markdown、summary、JSON）
+- 安全不变量（任何输出路径中无 secrets）
+- 边界不变量（无耦合到 runtime 热路径）
 
-Run with:
+运行方式：
 
 ```bash
 node scripts/provider-discovery-test.mjs
 ```
 
-The test is part of `npm run validate:merge` via `npm run test:unit`.
+该测试通过 `npm run test:unit` 成为 `npm run validate:merge` 的一部分。

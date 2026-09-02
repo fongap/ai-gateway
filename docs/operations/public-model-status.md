@@ -104,6 +104,6 @@ Public Model Status 的输出是 `[{ id, status }]`。**绝不**携带：
 - Request（handler、route、error）
 - Protocol fallback（Conversion Fallback / Native First）
 - Hedge、retry、Native First
-- D1 schema（未新增表、未新增列）
+- D1 schema（新增 `token_usage_totals`、`token_usage_daily`、`token_usage_weekly` 表；`token_usage_model_hourly` 保持 7 天保留、24h 证据窗口不变）
 - 任何新的外部依赖
 - Required CI 跑时的网络依赖

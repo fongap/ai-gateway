@@ -1,5 +1,16 @@
 # 文档同步规则
 
+## 文档原则
+
+1. 正文以中文为主。
+2. 文件名使用英文 `kebab-case`。
+3. 代码、命令、路径、配置字段、协议名和 Git/GitHub 固有名称保持英文。
+4. 文件名描述长期职责，不描述某次工作状态。
+5. 一个文件只承担一个明确主题。
+6. 当前已经失效、后续不再使用的文档直接删除。
+7. 历史变更通过 Git commit、Pull Request、Release 和 `CHANGELOG.md` 追溯。
+8. 现有规则发生变化时直接修改原文件，不创建重复版本。
+
 ## 核心原则
 
 文档应和对应代码在同一个 PR 更新。不得留下 `TODO: later update docs` 这种明显的文档债务。
@@ -21,6 +32,19 @@
 | Dependabot | [governance/dependency-policy.md](dependency-policy.md) |
 | release workflow / version mechanism | [governance/release-policy.md](release-policy.md) |
 | 新增/删除/修改对外端点 | README.md、README_EN.md |
+
+## 文档同步检查
+
+以下变更必须同步检查文档：
+
+- 顶层目录变化
+- 模块职责变化
+- CI 规则变化
+- Release 流程变化
+- 用户配置方式变化
+- `CHANGELOG.md` 维护规则变化
+
+文档应随代码一起更新，不把明显过期内容留给后续处理。
 
 ## README 同步
 
@@ -51,3 +75,4 @@ CI 中的文档检查包括：
 - 不为每个源码模块建 Markdown
 - 不引入大型文档框架
 - 不生成大量空壳文档
+- 不创建带 `v2`、`new`、`latest`、`final` 等后缀的重复版本

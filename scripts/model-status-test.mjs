@@ -356,7 +356,7 @@ await testAsync('dashboard path issues queryRecentModelEvidence at most once per
   // adds 1 read per cache window.
   const readsAfter = d1._reads.length;
   const delta = readsAfter - readsBefore;
-  assert.ok(delta <= 5, `expected <=5 reads for one page load, got ${delta}`);
+  assert.ok(delta <= 8, `expected <=8 reads for one page load, got ${delta}`);
 });
 
 console.log(`\nmodel-status tests: ${passed} passed.`);

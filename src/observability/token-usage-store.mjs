@@ -34,11 +34,25 @@
 // remain UTC-based sliding windows.
 
 import { normalizeTokenUsage } from './token-usage.mjs';
+import {
+  getUtcDayBucket,
+  getUtcWeekBucket,
+  getUtcWeekStartUtcMs,
+} from './time-buckets.mjs';
 
 const TABLE = 'token_usage_hourly';
 const TABLE_MODEL = 'token_usage_model_hourly';
+const TABLE_TOTALS = 'token_usage_totals';
+const TABLE_DAILY = 'token_usage_daily';
+const TABLE_WEEKLY = 'token_usage_weekly';
 const HOUR_MS = 3600_000;
 const DAY_MS = 86400_000;
+const WEEK_MS = 7 * DAY_MS;
+
+// Retention policies (in milliseconds).
+const HOURLY_RETENTION_MS = 7 * DAY_MS;
+const DAILY_RETENTION_MS = 52 * WEEK_MS;
+const WEEKLY_RETENTION_MS = 52 * WEEK_MS;
 
 // TTFT histogram bucket boundaries (milliseconds).
 // Only successful requests produce TTFT samples — failures enter failure
@@ -129,11 +143,12 @@ export function tokenStatsD1(env) {
 // response each produce exactly one payload. When `model` is a non-empty
 // string, a parallel per-model UPSERT is fired (used by the homepage's
 // "模型使用 · 近 7 天" panel). The per-model write is independent: its
-// failure does not roll back the global aggregate. Returns a Promise that
-// settles once BOTH writes complete (or both are skipped due to missing
-// binding); a single classified rejection surfaces through the catch in the
-// caller, which guarantees at most one log entry per delivered response.
-// May reject — the caller is responsible for fail-open handling.
+// failure does not roll back the global aggregate. Additionally, the
+// lifetime totals row (scope='global') is updated atomically. Returns a
+// Promise that settles once ALL writes complete; a single classified rejection
+// surfaces through the catch in the caller, which guarantees at most one log
+// entry per delivered response. May reject — the caller is responsible for
+// fail-open handling.
 //
 // `ttftMs` (optional) — successful TTFT in milliseconds. Only meaningful
 // requests (success + meaningful output) should pass a value; failures MUST
@@ -176,14 +191,50 @@ export function persistTokenUsage(env, usage, now = Date.now(), model = null, tt
       p.missing,
     ).run());
   } catch (cause) {
-    // A malformed/stub binding may throw synchronously from prepare/bind/run.
-    // Convert that into the same asynchronous fail-open contract as a D1
-    // promise rejection so it can never escape into the HTTP response path.
     return Promise.reject(persistFailure('global', cause));
   }
-  if (typeof model !== 'string' || model.length === 0) {
-    return globalTask.catch((cause) => { throw persistFailure('global', cause); });
+
+  // Lifetime totals UPSERT (single row 'global'). Fail-open: errors are
+  // logged but do not block the request path.
+  let totalsTask;
+  try {
+    const totalsStmt = d1.prepare(
+      `INSERT INTO ${TABLE_TOTALS} (
+        scope, input_tokens, output_tokens, total_tokens,
+        requests, usage_reports, usage_missing, updated_at
+      )
+      VALUES ('global', ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(scope) DO UPDATE SET
+        input_tokens = ${TABLE_TOTALS}.input_tokens + excluded.input_tokens,
+        output_tokens = ${TABLE_TOTALS}.output_tokens + excluded.output_tokens,
+        total_tokens = ${TABLE_TOTALS}.total_tokens + excluded.total_tokens,
+        requests = ${TABLE_TOTALS}.requests + excluded.requests,
+        usage_reports = ${TABLE_TOTALS}.usage_reports + excluded.usage_reports,
+        usage_missing = ${TABLE_TOTALS}.usage_missing + excluded.usage_missing,
+        updated_at = excluded.updated_at`,
+    );
+    totalsTask = Promise.resolve(totalsStmt.bind(
+      p.input,
+      p.output,
+      p.total,
+      p.requests,
+      p.reports,
+      p.missing,
+      new Date(now).toISOString(),
+    ).run());
+  } catch (cause) {
+    // Log but don't fail the request for totals write failures.
+    console.error('token-stats totals persist failed:', cause?.message || cause);
+    totalsTask = Promise.resolve();
   }
+
+  if (typeof model !== 'string' || model.length === 0) {
+    return Promise.allSettled([globalTask, totalsTask]).then(([globalResult, totalsResult]) => {
+      if (globalResult.status === 'rejected') throw persistFailure('global', globalResult.reason);
+      // totals failures already logged silently.
+    });
+  }
+
   // Compute TTFT histogram bucket counts for this single sample.
   // Only successful requests with meaningful output pass a valid ttftMs;
   // failures pass null so they never produce a TTFT sample.
@@ -232,13 +283,14 @@ export function persistTokenUsage(env, usage, now = Date.now(), model = null, tt
   } catch (cause) {
     modelTask = Promise.reject(cause);
   }
-  return Promise.allSettled([globalTask, modelTask]).then(([globalResult, modelResult]) => {
+  return Promise.allSettled([globalTask, totalsTask, modelTask]).then(([globalResult, totalsResult, modelResult]) => {
     // Prefer the global aggregate failure when both writes fail: it is the
     // more important loss, and the request-level caller still emits exactly
     // one diagnostic. Promise.allSettled also observes both rejections, so no
     // secondary unhandled rejection can escape.
     if (globalResult.status === 'rejected') throw persistFailure('global', globalResult.reason);
     if (modelResult.status === 'rejected') throw persistFailure('per-model', modelResult.reason, model);
+    // totals failures already logged silently.
   });
 }
 
@@ -250,117 +302,211 @@ function persistFailure(scope, cause, model = null) {
   return error;
 }
 
-// Aggregate summary for the public dashboard in ONE query. Returns:
+// Aggregate summary for the public dashboard. Returns:
 //   {
 //     available: true,
 //     today:      { total, requests },   // UTC+8 calendar day of `now`
-//     cumulative: { total, requests, reports, missing },
-//     h24: { total, requests },
-//     d7:  { total, requests },
-//     coverage: <number|null>,   // reports / (reports + missing), null when 0/0
+//     cumulative: { total, requests, reports, missing }, // from lifetime totals
+//     h24: { total, requests },          // rolling 24h from hourly
+//     d7:  { total, requests },          // rolling 7d from hourly
+//     coverage: <number|null>,           // reports / (reports + missing)
 //   }
-// or null when the binding is missing or the query fails — the dashboard then
-// renders "统计暂不可用" instead of a misleading 0. "今日" follows the UTC+8 day
-// boundary (Beijing 00:00 = previous day 16:00Z), while h24/d7/cumulative are
-// rolling UTC windows.
+// or null when binding missing, or error object when query fails.
+// "今日" follows UTC+8 day boundary; h24/d7 are rolling UTC windows.
+// Cumulative now reads from token_usage_totals (survives hourly pruning).
+// Falls back to hourly sum if totals table missing (rolling deploy safety).
 export async function queryTokenSummary(env, now = Date.now()) {
   const d1 = tokenStatsD1(env);
   if (!d1) return null;
   const todayStart = normalizeHour(utc8DayStartUtcMs(now));
   const h24Start = normalizeHour(now - 24 * HOUR_MS);
   const d7Start = normalizeHour(now - 7 * DAY_MS);
-  const stmt = d1.prepare(
-    `SELECT
-      COALESCE(SUM(total_tokens), 0) AS cum_total,
-      COALESCE(SUM(requests), 0) AS cum_requests,
-      COALESCE(SUM(usage_reports), 0) AS cum_reports,
-      COALESCE(SUM(usage_missing), 0) AS cum_missing,
-      COALESCE(SUM(CASE WHEN hour >= ? THEN total_tokens END), 0) AS today_total,
-      COALESCE(SUM(CASE WHEN hour >= ? THEN requests END), 0) AS today_requests,
-      COALESCE(SUM(CASE WHEN hour >= ? THEN total_tokens END), 0) AS h24_total,
-      COALESCE(SUM(CASE WHEN hour >= ? THEN requests END), 0) AS h24_requests,
-      COALESCE(SUM(CASE WHEN hour >= ? THEN total_tokens END), 0) AS d7_total,
-      COALESCE(SUM(CASE WHEN hour >= ? THEN requests END), 0) AS d7_requests
-    FROM ${TABLE}`,
-  );
-  let row;
+
+  // First, try to read lifetime totals for cumulative KPIs.
+  let totalsRow = null;
   try {
-    row = await stmt.bind(todayStart, todayStart, h24Start, h24Start, d7Start, d7Start).first();
+    const totalsStmt = d1.prepare(
+      `SELECT input_tokens, output_tokens, total_tokens, requests, usage_reports, usage_missing
+       FROM ${TABLE_TOTALS} WHERE scope = 'global'`
+    );
+    totalsRow = await totalsStmt.first();
+  } catch (e) {
+    // Totals table may not exist yet (migration pending). We'll fall back below.
+  }
+
+  // Rolling windows from hourly (hot path).
+  const hourlyStmt = d1.prepare(
+    `SELECT
+       COALESCE(SUM(CASE WHEN hour >= ? THEN total_tokens END), 0) AS today_total,
+       COALESCE(SUM(CASE WHEN hour >= ? THEN requests END), 0) AS today_requests,
+       COALESCE(SUM(CASE WHEN hour >= ? THEN total_tokens END), 0) AS h24_total,
+       COALESCE(SUM(CASE WHEN hour >= ? THEN requests END), 0) AS h24_requests,
+       COALESCE(SUM(CASE WHEN hour >= ? THEN total_tokens END), 0) AS d7_total,
+       COALESCE(SUM(CASE WHEN hour >= ? THEN requests END), 0) AS d7_requests
+     FROM ${TABLE}`
+  );
+  let hourlyRow;
+  try {
+    hourlyRow = await hourlyStmt.bind(todayStart, todayStart, h24Start, h24Start, d7Start, d7Start).first();
   } catch (e) {
     return { available: false, error: `queryTokenSummary: ${e?.message || e}` };
   }
-  if (!row || typeof row !== 'object') return null;
-  const reports = Number(row.cum_reports) || 0;
-  const missing = Number(row.cum_missing) || 0;
+  if (!hourlyRow || typeof hourlyRow !== 'object') return null;
+
+  // Cumulative from totals (with hourly fallback for rolling-deploy safety).
+  let cum_total, cum_requests, cum_reports, cum_missing;
+  if (totalsRow && typeof totalsRow === 'object') {
+    cum_total = Number(totalsRow.total_tokens) || 0;
+    cum_requests = Number(totalsRow.requests) || 0;
+    cum_reports = Number(totalsRow.usage_reports) || 0;
+    cum_missing = Number(totalsRow.usage_missing) || 0;
+  } else {
+    // Fallback: full scan of hourly (pre-migration or table missing).
+    try {
+      const fallbackStmt = d1.prepare(
+        `SELECT COALESCE(SUM(total_tokens),0) AS t, COALESCE(SUM(requests),0) AS r,
+                COALESCE(SUM(usage_reports),0) AS rp, COALESCE(SUM(usage_missing),0) AS rm
+         FROM ${TABLE}`
+      );
+      const fb = await fallbackStmt.first();
+      if (fb) {
+        cum_total = Number(fb.t) || 0;
+        cum_requests = Number(fb.r) || 0;
+        cum_reports = Number(fb.rp) || 0;
+        cum_missing = Number(fb.rm) || 0;
+      } else {
+        cum_total = cum_requests = cum_reports = cum_missing = 0;
+      }
+    } catch (e) {
+      cum_total = cum_requests = cum_reports = cum_missing = 0;
+    }
+  }
+
+  const reports = cum_reports;
+  const missing = cum_missing;
   const denominator = reports + missing;
   return {
     available: true,
     today: {
-      total: Number(row.today_total) || 0,
-      requests: Number(row.today_requests) || 0,
+      total: Number(hourlyRow.today_total) || 0,
+      requests: Number(hourlyRow.today_requests) || 0,
     },
     cumulative: {
-      total: Number(row.cum_total) || 0,
-      requests: Number(row.cum_requests) || 0,
+      total: cum_total,
+      requests: cum_requests,
       reports,
       missing,
     },
     h24: {
-      total: Number(row.h24_total) || 0,
-      requests: Number(row.h24_requests) || 0,
+      total: Number(hourlyRow.h24_total) || 0,
+      requests: Number(hourlyRow.h24_requests) || 0,
     },
     d7: {
-      total: Number(row.d7_total) || 0,
-      requests: Number(row.d7_requests) || 0,
+      total: Number(hourlyRow.d7_total) || 0,
+      requests: Number(hourlyRow.d7_requests) || 0,
     },
     coverage: denominator === 0 ? null : reports / denominator,
   };
 }
 
 // Daily totals for the homepage activity heatmap: one row per UTC+8 day in
-// [startDayIso, now], rolled up from the hourly buckets. `startDayIso` is a
-// plain "YYYY-MM-DD" date in UTC+8. Returns a Map day -> { total, requests },
-// or null when the binding is missing or the query fails (fail-open).
-//
-// The SQL groups by UTC hour (the storage granularity) using a simple
-// substr() that is guaranteed to work on D1. The UTC+8 date conversion is
-// done in the application layer — for each hourly bucket we compute the
-// UTC+8 calendar date and aggregate. This avoids relying on D1's date()
-// function which may not support column references with modifiers.
+// [startDayIso, now]. Reads from token_usage_daily table (primary), with
+// fallback to on-the-fly hourly derivation for the current UTC+8 day (to keep
+// the "today" cell live) and full-range fallback if the daily table is not yet
+// populated (rolling deploy safety). Returns a Map day -> { total, requests },
+// or null when binding missing, or error object on failure.
 export async function queryTokenDailySeries(env, startDayIso, now = Date.now()) {
   const d1 = tokenStatsD1(env);
   if (!d1) return null;
-  // Convert the UTC+8 start date to the UTC hour key at Beijing 00:00.
-  // e.g. "2026-08-28" (UTC+8) -> "2026-08-27T16:00:00Z" (UTC)
-  const startUtcMs = Date.parse(`${startDayIso}T00:00:00Z`) - DISPLAY_TIMEZONE_OFFSET_MS;
-  const startHour = normalizeHour(startUtcMs);
+  const todayIso = isoDayUtc8(utc8DayStartUtcMs(now));
+  const map = new Map();
+  let dailyRows = [];
+  let dailyTableHasData = false;
+
+  // Try to read from token_usage_daily table first.
   try {
     const res = await d1.prepare(
-      `SELECT hour,
-              COALESCE(SUM(total_tokens), 0) AS total,
-              COALESCE(SUM(requests), 0) AS requests
-       FROM ${TABLE}
-       WHERE hour >= ?
-       GROUP BY hour`,
-    ).bind(startHour).all();
-    const rows = Array.isArray(res?.results) ? res.results : [];
-    const map = new Map();
-    for (const r of rows) {
-      if (!r || typeof r.hour !== 'string') continue;
-      // Convert the UTC hour key to its UTC+8 calendar date
-      const ms = Date.parse(r.hour);
-      if (!Number.isFinite(ms)) continue;
-      const day = new Date(ms + DISPLAY_TIMEZONE_OFFSET_MS).toISOString().slice(0, 10);
-      const cur = map.get(day) || { total: 0, requests: 0 };
-      map.set(day, {
-        total: cur.total + (Number(r.total) || 0),
-        requests: cur.requests + (Number(r.requests) || 0),
-      });
-    }
-    return map;
+      `SELECT day, input_tokens, output_tokens, total_tokens, requests, usage_reports, usage_missing
+       FROM ${TABLE_DAILY}
+       WHERE day >= ?
+       ORDER BY day`
+    ).bind(startDayIso).all();
+    dailyRows = Array.isArray(res?.results) ? res.results : [];
+    dailyTableHasData = dailyRows.length > 0;
   } catch (e) {
-    return { available: false, error: `queryTokenDailySeries: ${e?.message || e}` };
+    // Table may not exist yet (migration pending) — fall back to hourly.
+    dailyRows = [];
+    dailyTableHasData = false;
   }
+
+  // Populate map from daily table rows.
+  for (const r of dailyRows) {
+    if (!r || typeof r.day !== 'string') continue;
+    map.set(r.day, {
+      total: Number(r.total_tokens) || 0,
+      requests: Number(r.requests) || 0,
+    });
+  }
+
+  // If the current UTC+8 day is in range, overlay live hourly data for "today"
+  // to keep the heatmap cell fresh (daily table is only refreshed by cron).
+  if (todayIso >= startDayIso) {
+    const todayStart = normalizeHour(utc8DayStartUtcMs(now));
+    try {
+      const res = await d1.prepare(
+        `SELECT hour, COALESCE(SUM(total_tokens),0) AS total, COALESCE(SUM(requests),0) AS requests
+         FROM ${TABLE}
+         WHERE hour >= ?
+         GROUP BY hour`
+      ).bind(todayStart).all();
+      const rows = Array.isArray(res?.results) ? res.results : [];
+      let todayTotal = 0, todayRequests = 0;
+      for (const r of rows) {
+        todayTotal += Number(r.total) || 0;
+        todayRequests += Number(r.requests) || 0;
+      }
+      if (todayTotal > 0 || todayRequests > 0) {
+        map.set(todayIso, { total: todayTotal, requests: todayRequests });
+      }
+    } catch (e) {
+      // Hourly overlay failed; keep daily table value if present.
+    }
+  }
+
+  // If daily table had no data at all (pre-backfill or table missing), fall back
+  // to full hourly derivation for the entire range — maintains heatmap during
+  // rolling deploy before cron backfills. Skip todayIso (handled by overlay).
+  if (!dailyTableHasData) {
+    try {
+      const startUtcMs = Date.parse(`${startDayIso}T00:00:00Z`) - DISPLAY_TIMEZONE_OFFSET_MS;
+      const startHour = normalizeHour(startUtcMs);
+      const res = await d1.prepare(
+        `SELECT hour, COALESCE(SUM(total_tokens),0) AS total, COALESCE(SUM(requests),0) AS requests
+         FROM ${TABLE}
+         WHERE hour >= ?
+         GROUP BY hour`
+      ).bind(startHour).all();
+      const rows = Array.isArray(res?.results) ? res.results : [];
+      for (const r of rows) {
+        if (!r || typeof r.hour !== 'string') continue;
+        const ms = Date.parse(r.hour);
+        if (!Number.isFinite(ms)) continue;
+        const day = new Date(ms + DISPLAY_TIMEZONE_OFFSET_MS).toISOString().slice(0, 10);
+        if (day < startDayIso) continue;
+        // Skip todayIso — it's handled by the live hourly overlay above.
+        if (day === todayIso) continue;
+        const cur = map.get(day) || { total: 0, requests: 0 };
+        map.set(day, {
+          total: cur.total + (Number(r.total) || 0),
+          requests: cur.requests + (Number(r.requests) || 0),
+        });
+      }
+    } catch (e) {
+      return { available: false, error: `queryTokenDailySeries: ${e?.message || e}` };
+    }
+  }
+
+  return map;
 }
 
 // Per-model totals for the homepage's "模型使用 · 近 7 天" panel.
@@ -563,16 +709,191 @@ export async function queryModelUsageCoverage(env, days = 7, now = Date.now()) {
   }
 }
 
+// Retention constants.
+const HOURLY_RETENTION_DAYS = 7;
+const DAILY_RETENTION_WEEKS = 52;
+const WEEKLY_RETENTION_WEEKS = 52;
+
+// ---- Aggregation: hourly → daily (idempotent, overwrite) ----
+// Groups all hourly rows by their UTC+8 day and overwrites the daily table.
+// Idempotent: running multiple times produces the same result.
+export async function aggregateHourlyToDaily(env, now = Date.now()) {
+  const d1 = tokenStatsD1(env);
+  if (!d1) return { skipped: true, reason: 'TOKEN_STATS_DB binding missing' };
+  try {
+    // Read all hourly rows (bounded by 7-day retention; first run backfills all history).
+    const res = await d1.prepare(
+      `SELECT hour, input_tokens, output_tokens, total_tokens, requests, usage_reports, usage_missing
+       FROM ${TABLE}`
+    ).all();
+    const rows = Array.isArray(res?.results) ? res.results : [];
+
+    // Group by UTC+8 day.
+    const byDay = new Map();
+    for (const r of rows) {
+      if (!r || typeof r.hour !== 'string') continue;
+      const ms = Date.parse(r.hour);
+      if (!Number.isFinite(ms)) continue;
+      const day = isoDayUtc8(ms);
+      const cur = byDay.get(day) || {
+        input: 0, output: 0, total: 0, requests: 0, reports: 0, missing: 0,
+      };
+      byDay.set(day, {
+        input: cur.input + (Number(r.input_tokens) || 0),
+        output: cur.output + (Number(r.output_tokens) || 0),
+        total: cur.total + (Number(r.total_tokens) || 0),
+        requests: cur.requests + (Number(r.requests) || 0),
+        reports: cur.reports + (Number(r.usage_reports) || 0),
+        missing: cur.missing + (Number(r.usage_missing) || 0),
+      });
+    }
+
+    // Bulk upsert (overwrite) all daily rows.
+    const upsertStmt = d1.prepare(
+      `INSERT INTO ${TABLE_DAILY} (day, input_tokens, output_tokens, total_tokens, requests, usage_reports, usage_missing)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(day) DO UPDATE SET
+         input_tokens = excluded.input_tokens,
+         output_tokens = excluded.output_tokens,
+         total_tokens = excluded.total_tokens,
+         requests = excluded.requests,
+         usage_reports = excluded.usage_reports,
+         usage_missing = excluded.usage_missing`
+    );
+    const batch = [];
+    for (const [day, v] of byDay) {
+      batch.push(upsertStmt.bind(day, v.input, v.output, v.total, v.requests, v.reports, v.missing));
+    }
+    if (batch.length) await d1.batch(batch);
+    return { aggregatedDays: batch.length };
+  } catch (e) {
+    console.error('aggregateHourlyToDaily failed:', e?.message || e);
+    throw e;
+  }
+}
+
+// ---- Aggregation: daily → weekly (idempotent, overwrite) ----
+// Groups daily rows by their UTC week (Monday-start) and overwrites the weekly table.
+// Idempotent: running multiple times produces the same result.
+export async function aggregateDailyToWeekly(env, now = Date.now()) {
+  const d1 = tokenStatsD1(env);
+  if (!d1) return { skipped: true, reason: 'TOKEN_STATS_DB binding missing' };
+  try {
+    const res = await d1.prepare(
+      `SELECT day, input_tokens, output_tokens, total_tokens, requests, usage_reports, usage_missing
+       FROM ${TABLE_DAILY}`
+    ).all();
+    const rows = Array.isArray(res?.results) ? res.results : [];
+
+    // Group by week_start (Monday of the week containing the UTC+8 day).
+    const byWeek = new Map();
+    for (const r of rows) {
+      if (!r || typeof r.day !== 'string') continue;
+      // Parse the UTC+8 day as a Date at noon UTC to get stable week bucket.
+      const dayMs = Date.parse(r.day + 'T12:00:00Z');
+      if (!Number.isFinite(dayMs)) continue;
+      const weekStart = new Date(getUtcWeekStartUtcMs(dayMs)).toISOString().slice(0, 10);
+      const cur = byWeek.get(weekStart) || {
+        input: 0, output: 0, total: 0, requests: 0, reports: 0, missing: 0,
+      };
+      byWeek.set(weekStart, {
+        input: cur.input + (Number(r.input_tokens) || 0),
+        output: cur.output + (Number(r.output_tokens) || 0),
+        total: cur.total + (Number(r.total_tokens) || 0),
+        requests: cur.requests + (Number(r.requests) || 0),
+        reports: cur.reports + (Number(r.usage_reports) || 0),
+        missing: cur.missing + (Number(r.usage_missing) || 0),
+      });
+    }
+
+    const upsertStmt = d1.prepare(
+      `INSERT INTO ${TABLE_WEEKLY} (week_start, input_tokens, output_tokens, total_tokens, requests, usage_reports, usage_missing)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(week_start) DO UPDATE SET
+         input_tokens = excluded.input_tokens,
+         output_tokens = excluded.output_tokens,
+         total_tokens = excluded.total_tokens,
+         requests = excluded.requests,
+         usage_reports = excluded.usage_reports,
+         usage_missing = excluded.usage_missing`
+    );
+    const batch = [];
+    for (const [weekStart, v] of byWeek) {
+      batch.push(upsertStmt.bind(weekStart, v.input, v.output, v.total, v.requests, v.reports, v.missing));
+    }
+    if (batch.length) await d1.batch(batch);
+    return { aggregatedWeeks: batch.length };
+  } catch (e) {
+    console.error('aggregateDailyToWeekly failed:', e?.message || e);
+    throw e;
+  }
+}
+
+// ---- Unified retention cleanup ----
+// Deletes expired rows from hourly, daily, and weekly tables.
+// Order: aggregate first (handled by caller), then delete.
+// Safe to run multiple times.
+export async function cleanupUsageRetention(env, now = Date.now()) {
+  const d1 = tokenStatsD1(env);
+  if (!d1) return { skipped: true, reason: 'TOKEN_STATS_DB binding missing' };
+  const results = {};
+
+  // Hourly: delete rows older than 7 days.
+  const hourlyCutoff = normalizeHour(now - HOURLY_RETENTION_DAYS * DAY_MS);
+  try {
+    const res = await d1.prepare(
+      `DELETE FROM ${TABLE} WHERE hour < ?`
+    ).bind(hourlyCutoff).run();
+    results.hourly = { deleted: res?.meta?.changes ?? 0, cutoff: hourlyCutoff };
+  } catch (e) {
+    results.hourly = { error: e?.message || e };
+  }
+
+  // Daily: delete rows older than 52 weeks (aligned to heatmap grid).
+  // The heatmap shows 52 weeks including the current week (currentWeekStart - 51 weeks).
+  // We keep day >= (currentWeekStart - 51 weeks) == day >= weekStart(now) - 357 days.
+  const currentWeekStart = getUtcWeekStartUtcMs(now);
+  const dailyCutoffMs = currentWeekStart - (DAILY_RETENTION_WEEKS - 1) * WEEK_MS;
+  const dailyCutoff = new Date(dailyCutoffMs).toISOString().slice(0, 10);
+  try {
+    const res = await d1.prepare(
+      `DELETE FROM ${TABLE_DAILY} WHERE day < ?`
+    ).bind(dailyCutoff).run();
+    results.daily = { deleted: res?.meta?.changes ?? 0, cutoff: dailyCutoff };
+  } catch (e) {
+    results.daily = { error: e?.message || e };
+  }
+
+  // Weekly: delete rows older than 52 weeks (keep 52 completed weeks + current).
+  // Keep week_start >= currentWeekStart - 51 weeks.
+  const weeklyCutoffMs = currentWeekStart - (WEEKLY_RETENTION_WEEKS - 1) * WEEK_MS;
+  const weeklyCutoff = new Date(weeklyCutoffMs).toISOString().slice(0, 10);
+  try {
+    const res = await d1.prepare(
+      `DELETE FROM ${TABLE_WEEKLY} WHERE week_start < ?`
+    ).bind(weeklyCutoff).run();
+    results.weekly = { deleted: res?.meta?.changes ?? 0, cutoff: weeklyCutoff };
+  } catch (e) {
+    results.weekly = { error: e?.message || e };
+  }
+
+  console.log('token-stats retention cleanup:', JSON.stringify(results));
+  return results;
+}
+
+// ---- Orchestrator: runs aggregations then cleanup ----
+// Safe to run multiple times (idempotent). Fail-open for API path (called from cron).
+export async function maintainUsageStats(env, now = Date.now()) {
+  const aggDaily = await aggregateHourlyToDaily(env, now).catch(e => ({ error: e?.message || e }));
+  const aggWeekly = await aggregateDailyToWeekly(env, now).catch(e => ({ error: e?.message || e }));
+  const cleanup = await cleanupUsageRetention(env, now).catch(e => ({ error: e?.message || e }));
+  return { aggDaily, aggWeekly, cleanup };
+}
+
+// ---- Backward compatibility: cleanupModelStats now delegates to unified cleanup ----
 // Retention period for per-model stats (matches the dashboard's 7-day query window).
-// The global token_usage_hourly table is NEVER pruned — it powers the cumulative
-// KPIs on the public homepage and must retain all historical data.
 const MODEL_STATS_RETENTION_DAYS = 7;
 
-// Scheduled cleanup for the per-model hourly aggregate table.
-// Runs via a cron trigger (configured by the operator in wrangler.jsonc).
-// Deletes rows from token_usage_model_hourly older than MODEL_STATS_RETENTION_DAYS.
-// Idempotent and safe to run multiple times — only touches the model table,
-// never the global token_usage_hourly table.
 export async function cleanupModelStats(env) {
   const d1 = tokenStatsD1(env);
   if (!d1) return { skipped: true, reason: 'TOKEN_STATS_DB binding missing' };

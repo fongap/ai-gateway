@@ -44,6 +44,13 @@ Reliability (src/reliability)             →  whether a node is currently usabl
 - 整请求 failover budget，超时即停
 - 所有短期运行时状态（Tier 1 TTFT/inFlight/cooldown，Tier 2/3 health/circuit/concurrency/RPM）均为 isolate-local best-effort，随 isolate 重启丢失
 - D1 仅用于可选的 token-usage 聚合，不在 AI 请求热路径上
+- KV (TIER1_AFFINITY)：30 分钟 TTL，仅用于 Tier 1 会话亲和
+- D1 token_usage_totals：单行 'global'，生命周期累计，永不清理
+- D1 token_usage_hourly：7 天保留，UTC 小时桶
+- D1 token_usage_model_hourly：7 天保留，按模型 UTC 小时桶
+- D1 token_usage_daily：52 周保留，UTC+8 自然日桶
+- D1 token_usage_weekly：52 周保留，UTC 周一起始周桶
+- 定时任务 (0 3 * * *)：hourly→daily 聚合 → daily→weekly 聚合 → 清理过期数据；所有聚合幂等（覆盖而非累加）
 
 ## Provider Discovery（v1.1，运维观察）
 
