@@ -881,16 +881,7 @@ export async function cleanupUsageRetention(env, now = Date.now()) {
   return results;
 }
 
-// ---- Orchestrator: runs aggregations then cleanup ----
-// Safe to run multiple times (idempotent). Fail-open for API path (called from cron).
-export async function maintainUsageStats(env, now = Date.now()) {
-  const aggDaily = await aggregateHourlyToDaily(env, now).catch(e => ({ error: e?.message || e }));
-  const aggWeekly = await aggregateDailyToWeekly(env, now).catch(e => ({ error: e?.message || e }));
-  const cleanup = await cleanupUsageRetention(env, now).catch(e => ({ error: e?.message || e }));
-  return { aggDaily, aggWeekly, cleanup };
-}
-
-// ---- Backward compatibility: cleanupModelStats now delegates to unified cleanup ----
+// ---- Legacy model cleanup (kept for backward compatibility) ----
 // Retention period for per-model stats (matches the dashboard's 7-day query window).
 const MODEL_STATS_RETENTION_DAYS = 7;
 
@@ -909,4 +900,16 @@ export async function cleanupModelStats(env) {
     console.error('token-stats cleanup failed:', e?.message || e);
     throw e;
   }
+}
+
+// ---- Orchestrator: runs aggregations then cleanup ----
+// Safe to run multiple times (idempotent). Fail-open for API path (called from cron).
+// The model cleanup rejection is allowed to propagate so that Cron Trigger
+// status reflects failures (matching legacy cleanupModelStats behavior).
+export async function maintainUsageStats(env, now = Date.now()) {
+  const aggDaily = await aggregateHourlyToDaily(env, now).catch(e => ({ error: e?.message || e }));
+  const aggWeekly = await aggregateDailyToWeekly(env, now).catch(e => ({ error: e?.message || e }));
+  const cleanup = await cleanupUsageRetention(env, now).catch(e => ({ error: e?.message || e }));
+  const modelCleanup = await cleanupModelStats(env);
+  return { aggDaily, aggWeekly, cleanup, modelCleanup };
 }
