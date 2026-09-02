@@ -73,11 +73,11 @@ Tier 1 额外硬限制为最多 3 个 logical attempt，且在重试前检查共
 
 ## Failover Budget
 
-整个请求由 `FAILOVER_BUDGET_MS`（默认 240s）限制。时间从网关收到请求开始计算；每次新 attempt 检查剩余 budget。Budget 耗尽时停止轮换，返回 504 + attempt count。客户端 abort 是特权的；首事件后透明 failover 不安全。
+整个请求由 `FAILOVER_BUDGET_MS`（默认 60s）限制。时间从网关收到请求开始计算；每次新 attempt 检查剩余 budget。Budget 耗尽时停止轮换，返回 504 + attempt count。客户端 abort 是特权的；首事件后透明 failover 不安全。
 
 ## Hedge（Reactive per-try hedge）
 
-当 logical attempt 在 `HEDGE_DELAY_MS`（默认 6s；`0` 禁用）内未提交时，启动 ONE twin attempt 对抗下一个最佳候选者。Twin 是同一 logical attempt 的额外执行者，不消耗 `max_attempts` 或 tier budget，继承 logical attempt 的绝对 deadline。
+当 logical attempt 在 `HEDGE_DELAY_MS`（默认 3s；`0` 禁用）内未提交时，启动 ONE twin attempt 对抗下一个最佳候选者。Twin 是同一 logical attempt 的额外执行者，不消耗 `max_attempts` 或 tier budget，继承 logical attempt 的绝对 deadline。
 
 - 被赢家的 peer commit 取消的 loser 是 NEUTRAL——无 health penalty、无 cooldown、无 circuit failure
 - Twin 自身真实 timeout/5xx 计为真实失败

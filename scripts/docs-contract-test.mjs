@@ -111,4 +111,44 @@ console.log(`ok - deploy.yml injects all ${RUNTIME_VAR_NAMES.length} runtime var
     console.log(`ok - .dev.vars.example default for ${name} matches runtime-vars.js`);
   }
 
+  // Architecture docs must not contradict runtime-vars.js defaults.
+  // Specific drift-prone values: FAILOVER_BUDGET_MS, HEDGE_DELAY_MS,
+  // UPSTREAM_HEADERS_TIMEOUT_MS, FIRST_EVENT_TIMEOUT_MS.
+  const archDocDefaults = [
+    { file: 'docs/architecture/routing-model.md', varName: 'FAILOVER_BUDGET_MS', def: RUNTIME_TUNABLES.find((t) => t.name === 'FAILOVER_BUDGET_MS').def },
+    { file: 'docs/architecture/routing-model.md', varName: 'HEDGE_DELAY_MS', def: RUNTIME_TUNABLES.find((t) => t.name === 'HEDGE_DELAY_MS').def },
+  ];
+  for (const { file, varName, def } of archDocDefaults) {
+    const text = readDoc(file);
+    // Look for phrases like "默认 NNNNs" or "default NNNNs" near the var name.
+    // Reject any number in seconds that doesn't match def.
+    const re = new RegExp(`${varName}[^\\n]*?\\u9ed8\\u8ba4\\s*(\\d+)\\s*s`, 'g');
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      const seconds = parseInt(m[1], 10);
+      const expectedSeconds = Math.round(def / 1000);
+      assert.equal(
+        seconds,
+        expectedSeconds,
+        `${file}: ${varName} default is ${seconds}s in docs but runtime-vars.js says ${expectedSeconds}s (${def}ms)`,
+      );
+    }
+    passed++;
+    console.log(`ok - ${file} default for ${varName} matches runtime-vars.js (${def}ms)`);
+  }
+
+  // routing-model.md must describe Tier 1 as Affinity → P2C, not LRU.
+  const routingText = readDoc('docs/architecture/routing-model.md');
+  assert.ok(
+    /Tier 1[\s\S]{0,200}Affinity[\s\S]{0,200}P2C/.test(routingText),
+    'routing-model.md must describe Tier 1 as Eligibility → Affinity → P2C (not LRU rotation)',
+  );
+  assert.doesNotMatch(
+    routingText,
+    /Same tier \+ same priority = LRU rotation/,
+    'routing-model.md must not describe LRU rotation as the tier-1 selection algorithm',
+  );
+  passed++;
+  console.log('ok - routing-model.md describes Tier 1 as Affinity → P2C, not LRU');
+
   console.log(`\ndocs contract tests passed (${passed}).`);
