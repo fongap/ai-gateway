@@ -41,7 +41,7 @@ function displayName(id) {
 
 function renderModelRow(m, ttft) {
   const label = STATE_LABEL[m.status] || '不可用';
-  const style = STATE_STYLE[m.status] || ' down';
+  const style = STATE_STYLE[m.status] ?? ' down';
   const t = fmtModelTtft(ttft?.get?.(m.id));
   const sampleTitle = t.insufficient ? 'TTFT 样本不足' : `${t.samples} 个 TTFT 样本`;
   return `<div class="model-row">
