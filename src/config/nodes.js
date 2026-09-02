@@ -3,9 +3,13 @@
 //
 // Config Layer: environment shards -> Runtime Node list.
 //
-//   TIER{1,2,3}_NODES_CONFIG_01..99  plain variables, JSON arrays of node
-//                                    configs WITHOUT any credential material.
-//   NODE_SECRETS_01..99              secrets, JSON objects { nodeId: credential }.
+//   TIER{1,2,3}_NODES_CONFIG_01..99   plain variables, JSON arrays of node
+//                                     configs WITHOUT any credential material.
+//   TIER{1,2,3}_NODES_SECRETS_01..99  secrets, JSON objects { nodeId: credential }.
+//                                     The tier prefix MUST match the matching
+//                                     config shard's tier — secrets are 1:1
+//                                     with the config they pair with, so
+//                                     operator error is surfaced at boot.
 //
 // Node JSON schema:
 //   {
@@ -53,7 +57,10 @@ import { loadModelRegistry } from './registry.js';
 
 const SHARD_MAX_BYTES = 4500; // official variable size limit is 5 KB; keep margin
 export const TIER_SHARD_PATTERN = /^TIER([123])_NODES_CONFIG_(\d{2})$/;
-export const SECRET_SHARD_PATTERN = /^NODE_SECRETS_(\d{2})$/;
+// Secrets are tier-scoped and pair 1:1 with the matching TIER*_NODES_CONFIG_*
+// shard. A TIER1 secret under a TIER2 config is a config error, not a free
+// credential binding.
+export const SECRET_SHARD_PATTERN = /^TIER([123])_NODES_SECRETS_(\d{2})$/;
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const FORBIDDEN_NODE_FIELDS = ['token', 'credential', 'api_key', 'apikey', 'authorization', 'password', 'secret'];
 // Fail-fast schema: any field outside this set is a typo/invalid and the node
@@ -104,26 +111,33 @@ function collectAuxConfigDiagnostics(env) {
   return diags;
 }
 
-// Cross-config validation for node model mappings. Every key in a node's
-// `models` map references a logical model; when that logical model is NOT
-// declared in the Model Registry it emits a WARNING (a node can still be
-// routable for an undeclared model, so this is advisory, not fatal). The check
-// only runs when the registry is loadable and declares at least one model —
-// with no MODELS_CONFIG there is nothing to cross-check against.
+// Cross-config validation for node model mappings. The Model Registry
+// (MODELS_CONFIG) is OPTIONAL metadata; node mappings are the authoritative
+// source of logical model names. The only cross-check worth running is
+// `visibility: 'internal'` — if a node maps a model explicitly marked
+// internal, the node is still built (the model is requestable) but the
+// operator is notified that the visibility field is effectively a no-op for
+// any node that exposes it. We skip this entirely when MODELS_CONFIG is
+// absent (the common case for free-model deployments).
 function collectNodeModelDiagnostics(nodes, env) {
   const diags = [];
   let registry;
   try {
     registry = loadModelRegistry(env);
   } catch {
-    return diags; // registry not loadable in this env — skip this check
+    return diags; // registry not loadable — nothing to cross-check
   }
   if (!registry || Object.keys(registry).length === 0) return diags;
+  const internalModels = new Set();
+  for (const [name, entry] of Object.entries(registry)) {
+    if (entry.visibility === 'internal') internalModels.add(name);
+  }
+  if (internalModels.size === 0) return diags;
   for (const node of nodes) {
     if (!node || !node.models) continue;
     for (const logical of Object.keys(node.models)) {
-      if (!Object.hasOwn(registry, logical)) {
-        diags.push(`NODE CONFIG: node "${node.id}" maps logical model "${logical}" which is not declared in MODELS_CONFIG`);
+      if (internalModels.has(logical)) {
+        diags.push(`NODE CONFIG: node "${node.id}" maps logical model "${logical}" which is marked visibility:"internal" in MODELS_CONFIG; internal models are still requestable but hidden from the dashboard`);
       }
     }
   }
@@ -151,7 +165,7 @@ function buildConfig(env) {
   const accessKeyBound = Boolean(readEnv(env, 'GATEWAY_ACCESS_KEY'));
 
   const tierShards = collectShards(env, TIER_SHARD_PATTERN, 'TIER1_NODES_CONFIG_', 'TIER1_NODES_CONFIG_01', 2, diagnostics);
-  const secretShards = collectShards(env, SECRET_SHARD_PATTERN, 'NODE_SECRETS_', 'NODE_SECRETS_01', 1, diagnostics);
+  const secretShards = collectShards(env, SECRET_SHARD_PATTERN, 'TIER1_NODES_SECRETS_', 'TIER1_NODES_SECRETS_01', 2, diagnostics);
   const nodesDeclared = tierShards.reduce((sum, s) => sum + countArrayEntries(env[s.key]), 0);
 
   let status = 'unconfigured';
@@ -172,10 +186,14 @@ function buildConfig(env) {
     };
   }
 
-  // Merge credential maps from all secret shards.
+  // Merge credential maps from tier-scoped secret shards. Each shard is bound
+  // to the tier in its variable name (TIER1_NODES_SECRETS_* -> tier-1), and
+  // nodeIds from one tier MUST NOT collide with nodeIds from another tier —
+  // every node is uniquely identified by id regardless of tier.
   const credentials = new Map();
+  const credentialTiers = new Map();
   let conflict = false;
-  const sortedSecretShards = [...secretShards].sort((a, b) => a.index - b.index);
+  const sortedSecretShards = [...secretShards].sort((a, b) => a.tierNumber - b.tierNumber || a.index - b.index);
   for (const shard of sortedSecretShards) {
     const parsed = parseJsonVar(env[shard.key], shard.key, diagnostics);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -183,6 +201,7 @@ function buildConfig(env) {
       conflict = true;
       continue;
     }
+    const shardTier = `tier-${shard.tierNumber}`;
     for (const [nodeId, credential] of Object.entries(parsed)) {
       if (typeof credential !== 'string' || !credential.trim()) {
         diagnostics.push(`${shard.key}: credential for "${nodeId}" is empty`);
@@ -190,11 +209,12 @@ function buildConfig(env) {
         continue;
       }
       if (credentials.has(nodeId)) {
-        diagnostics.push(`credential id "${nodeId}" defined in multiple secret shards`);
+        diagnostics.push(`credential id "${nodeId}" defined in multiple secret shards (${credentialTiers.get(nodeId)} and ${shardTier})`);
         conflict = true;
         continue;
       }
       credentials.set(nodeId, credential);
+      credentialTiers.set(nodeId, shardTier);
     }
   }
 
@@ -287,7 +307,7 @@ function buildRuntimeNode(rawNode, tier, credentials, allowInsecure, sourceKey, 
   }
   const forbidden = FORBIDDEN_NODE_FIELDS.filter((f) => f in rawNode);
   if (forbidden.length > 0) {
-    diagnostics.push(`node "${id}": forbidden credential field(s) ${forbidden.join(', ')}; credentials belong in NODE_SECRETS_*`);
+    diagnostics.push(`node "${id}": forbidden credential field(s) ${forbidden.join(', ')}; credentials belong in TIER{N}_NODES_SECRETS_*`);
     return null;
   }
   // Fail-fast: reject unknown top-level fields (e.g. `prioirty` typo) instead of
@@ -318,7 +338,7 @@ function buildRuntimeNode(rawNode, tier, credentials, allowInsecure, sourceKey, 
 
   const credential = credentials.get(id);
   if (!credential) {
-    diagnostics.push(`node "${id}": no credential found in NODE_SECRETS_*; node excluded`);
+    diagnostics.push(`node "${id}": no credential found in TIER{N}_NODES_SECRETS_*; node excluded`);
     return null;
   }
 

@@ -11,7 +11,7 @@ import { snapshotTier1Affinity } from '../scheduler/tier1-affinity.js';
 import { gatewayStats, streamStats } from './gateway-stats.mjs';
 import { tokenStats, summarizeTokenStats, tokenMetricSeries } from './token-usage.mjs';
 import { corsHeaders, jsonError } from '../protocol/http.js';
-import { loadModelRegistry, modelRegistryEntry, servesModel } from '../config/registry.js';
+import { modelRegistryEntry, servesModel } from '../config/registry.js';
 
 export const APP_META = Object.freeze({
   name: 'ai-gateway',
@@ -23,24 +23,25 @@ function sanitizePrometheusLabel(value) {
   return String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
 }
 
-// Logical model list with capability metadata. The Model Registry is the primary
-// source of the logical-model set AND its capabilities; node `provider` labels
-// are only ever used as a backend *label*, never as the model-capability truth.
-// The gateway natively speaks OpenAI (chat_completions / responses) and
-// Anthropic (messages); the `protocols` field lists the surfaces actually
-// offered by the nodes serving each model. Fields beyond the OpenAI baseline
-// are additive and backward-compatible.
+// Logical model list with capability metadata. Node mappings are the PRIMARY
+// source of the logical-model set: a model only exists if at least one node
+// actually serves it. MODELS_CONFIG is an OPTIONAL capability layer — when
+// present, it enriches a node-mapped model with policy / capabilities /
+// reasoning_efforts; when absent, conservative defaults apply. The
+// `visibility` field, when present, can downgrade a model to `internal` to
+// hide it from this public list.
+//
+// Node `provider` labels are only used as a backend *label*, never as the
+// model-capability truth. The gateway natively speaks OpenAI
+// (chat_completions / responses) and Anthropic (messages); the `protocols`
+// field lists the surfaces actually offered by the nodes serving each model.
 function buildModelsList(nodes, env) {
-  const registry = loadModelRegistry(env);
+  const logicalNames = new Set();
+  for (const node of nodes) {
+    for (const key of Object.keys(node.models || {})) logicalNames.add(key);
+  }
+
   const models = new Map();
-
-  // The set of logical models = registry ONLY. A node mapping can never make
-  // an undeclared model public: node config answers "which nodes can serve
-  // this logical model", never "which logical models should exist". A
-  // registry model with no serving node is still listed (status is the
-  // registry's business); a node-only model is not listed here.
-  const logicalNames = new Set(Object.keys(registry));
-
   const entryFor = (logical) => {
     const reg = modelRegistryEntry(env, logical);
     let e = models.get(logical);
@@ -60,11 +61,10 @@ function buildModelsList(nodes, env) {
   };
 
   for (const node of nodes) {
-    // A wildcard node's models map is empty; it still serves every registry
-    // model. Otherwise it serves exactly the keys it declares.
     const keys = Object.keys(node.models || {});
-    const servedKeys = keys.length === 0 ? [...logicalNames] : keys.filter((k) => logicalNames.has(k));
+    const servedKeys = keys.length === 0 ? [...logicalNames] : keys;
     for (const logical of servedKeys) {
+      if (!logicalNames.has(logical)) continue;
       if (!servesModel(node, logical)) continue;
       const e = entryFor(logical);
       e.apiBackends.add(node.provider);
@@ -100,10 +100,15 @@ function buildModelsList(nodes, env) {
 export function healthResponse(request, env, requestId) {
   const config = loadGatewayConfig(env);
   const now = Date.now();
-  const registryModels = Object.keys(loadModelRegistry(env));
+  // A wildcard node (no `models` map) serves every model any node declares.
+  // Build that "all known logical models" set from every node's mapping.
+  const allLogical = new Set();
+  for (const n of config.nodes) {
+    for (const k of Object.keys(n.models || {})) allLogical.add(k);
+  }
   const endpoints = config.nodes.map((n) => {
     const configuredModels = Object.keys(n.models || {});
-    const models = configuredModels.length ? configuredModels : registryModels;
+    const models = configuredModels.length ? configuredModels : [...allLogical];
     const base = {
       id: n.id, tier: n.tier, provider: n.provider, protocol: n.protocol,
       surfaces: n.surfaces, priority: n.priority, models: configuredModels,
@@ -256,7 +261,12 @@ export function metricsResponse(request, env) {
     const label = `node_id="${sanitizePrometheusLabel(node.id)}",tier="${node.tier}",provider="${sanitizePrometheusLabel(node.provider)}"`;
     if (node.tier === 'tier-1') {
       const configured = Object.keys(node.models || {});
-      const modelIds = configured.length ? configured : Object.keys(loadModelRegistry(env));
+      // Wildcard node fallback: serve every logical model any node declares.
+      const fallbackModels = new Set();
+      for (const n of config.nodes) {
+        for (const k of Object.keys(n.models || {})) fallbackModels.add(k);
+      }
+      const modelIds = configured.length ? configured : [...fallbackModels];
       const runtime = snapshotTier1AccountRuntime(node.id, modelIds, now);
       counter('gateway_node_active_requests', runtime.in_flight, label);
       counter('gateway_node_cooldown_remaining_ms', runtime.account_cooldown_remaining_ms, label);

@@ -15,7 +15,7 @@ function fixture() {
       MODELS_CONFIG: { 'code-pro': { policy: 'default' } },
       POLICIES_CONFIG: { default: { max_attempts: 5 } },
     },
-    secrets: { GATEWAY_ACCESS_KEY: 'gateway-key', NODE_SECRETS_01: { 'node-a': 'upstream-key' } },
+    secrets: { GATEWAY_ACCESS_KEY: 'gateway-key', TIER1_NODES_SECRETS_01: { 'node-a': 'upstream-key' } },
   };
 }
 
@@ -24,7 +24,7 @@ const cfg = validateGatewayRuntime(runtime);
 assert.equal(cfg.ready, true);
 assert.equal(cfg.nodesUsable, 1);
 assert.equal(JSON.parse(runtime.vars.TIER1_NODES_CONFIG_01)[0].id, 'node-a');
-assert.equal(JSON.parse(runtime.secrets.NODE_SECRETS_01)['node-a'], 'upstream-key');
+assert.equal(JSON.parse(runtime.secrets.TIER1_NODES_SECRETS_01)['node-a'], 'upstream-key');
 
 assert.throws(
   () => normalizeRuntimeConfig({ vars: { ...fixture().vars, GATEWAY_ACCESS_KEY: 'nope' }, secrets: fixture().secrets }),
@@ -32,7 +32,7 @@ assert.throws(
 );
 assert.throws(
   () => normalizeRuntimeConfig({ vars: fixture().vars, secrets: { GATEWAY_ACCESS_KEY: 'x' } }),
-  /NODE_SECRETS/,
+  /TIER[123]_NODES_SECRETS/,
 );
 assert.throws(
   () => validateGatewayRuntime(normalizeRuntimeConfig({
@@ -51,8 +51,8 @@ assert.ok(path.isAbsolute(wrangler.main), 'entry point must be absolute (config 
 assert.ok(path.isAbsolute(wrangler.d1_databases[0].migrations_dir), 'migrations_dir must be absolute');
 
 assert.deepEqual(
-  withStaleNodeSecretsRemoved(runtime.secrets, [{ name: 'NODE_SECRETS_01' }, { name: 'NODE_SECRETS_02' }, { name: 'UNRELATED_SECRET' }]),
-  { ...runtime.secrets, NODE_SECRETS_02: null },
+  withStaleNodeSecretsRemoved(runtime.secrets, [{ name: 'TIER1_NODES_SECRETS_01' }, { name: 'TIER1_NODES_SECRETS_02' }, { name: 'UNRELATED_SECRET' }]),
+  { ...runtime.secrets, TIER1_NODES_SECRETS_02: null },
 );
 
 // ---- Individual GitHub Variables / Secrets collected from env ----
@@ -70,7 +70,7 @@ function envFixture({ legacy = false } = {}) {
     TIER1_NODES_CONFIG_01: JSON.stringify([{ id: 'node-a', base_url: 'https://provider.example.com/v1', models: { 'code-pro': 'up' } }]),
     CLOUDFLARE_API_TOKEN: 'cf-token',
     GATEWAY_ACCESS_KEY: 'gw-key',
-    NODE_SECRETS_01: JSON.stringify({ 'node-a': 'upstream-key' }),
+    TIER1_NODES_SECRETS_01: JSON.stringify({ 'node-a': 'upstream-key' }),
   };
   if (legacy) {
     delete env.TIER1_NODES_CONFIG_01;
@@ -79,13 +79,13 @@ function envFixture({ legacy = false } = {}) {
     delete env.RATE_LIMIT_COOLDOWN_MS;
     delete env.FIRST_EVENT_TIMEOUT_MS;
     delete env.GATEWAY_ACCESS_KEY;
-    delete env.NODE_SECRETS_01;
+    delete env.TIER1_NODES_SECRETS_01;
     env.GATEWAY_CONFIG = JSON.stringify({
       TIER1_NODES_CONFIG_01: env.TIER1_NODES_CONFIG_01 || JSON.stringify([{ id: 'node-a', base_url: 'https://provider.example.com/v1', models: { 'code-pro': 'up' } }]),
       MODELS_CONFIG: { 'code-pro': { policy: 'default' } },
       POLICIES_CONFIG: { default: { max_attempts: 5 } },
     });
-    env.GATEWAY_SECRETS_CONFIG = JSON.stringify({ GATEWAY_ACCESS_KEY: 'gw-key', NODE_SECRETS_01: { 'node-a': 'upstream-key' } });
+    env.GATEWAY_SECRETS_CONFIG = JSON.stringify({ GATEWAY_ACCESS_KEY: 'gw-key', TIER1_NODES_SECRETS_01: { 'node-a': 'upstream-key' } });
   }
   return env;
 }
@@ -101,7 +101,7 @@ function envFixture({ legacy = false } = {}) {
   assert.equal(JSON.parse(built.runtime.vars.TIER1_NODES_CONFIG_01)[0].id, 'node-a');
   assert.equal(built.runtime.vars.RATE_LIMIT_COOLDOWN_MS, '15000', 'runtime tunable passthrough');
   assert.equal(built.runtime.vars.FIRST_EVENT_TIMEOUT_MS, '15000', 'first-event tunable passthrough');
-  assert.equal(JSON.parse(built.runtime.secrets.NODE_SECRETS_01)['node-a'], 'upstream-key');
+  assert.equal(JSON.parse(built.runtime.secrets.TIER1_NODES_SECRETS_01)['node-a'], 'upstream-key');
 }
 
 // Legacy blobs are read (with warnings) when individual sources are absent.
@@ -119,7 +119,7 @@ function envFixture({ legacy = false } = {}) {
 {
   const env = envFixture();
   env.GATEWAY_CONFIG = JSON.stringify({ TIER1_NODES_CONFIG_01: JSON.stringify([{ id: 'stale-node', base_url: 'https://stale.example.com/v1' }]) });
-  env.GATEWAY_SECRETS_CONFIG = JSON.stringify({ GATEWAY_ACCESS_KEY: 'stale-key', NODE_SECRETS_01: { 'node-a': 'stale' } });
+  env.GATEWAY_SECRETS_CONFIG = JSON.stringify({ GATEWAY_ACCESS_KEY: 'stale-key', TIER1_NODES_SECRETS_01: { 'node-a': 'stale' } });
   const built = buildRuntimeFromEnv(env);
   assert.equal(built.usedLegacyVars, false, 'individual vars take precedence over the legacy blob');
   assert.equal(built.usedLegacySecrets, false, 'individual secrets take precedence over the legacy blob');
@@ -129,20 +129,20 @@ function envFixture({ legacy = false } = {}) {
 
 // Credentials must never appear in the vars map.
 {
-  const v = collectVarsFromEnv({ ...envFixture(), GATEWAY_ACCESS_KEY: 'gw-key', NODE_SECRETS_01: JSON.stringify({ 'node-a': 'x' }) });
+  const v = collectVarsFromEnv({ ...envFixture(), GATEWAY_ACCESS_KEY: 'gw-key', TIER1_NODES_SECRETS_01: JSON.stringify({ 'node-a': 'x' }) });
   assert.ok(!('GATEWAY_ACCESS_KEY' in v.vars), 'GATEWAY_ACCESS_KEY kept out of vars');
-  assert.ok(!('NODE_SECRETS_01' in v.vars), 'NODE_SECRETS_01 kept out of vars');
+  assert.ok(!('TIER1_NODES_SECRETS_01' in v.vars), 'TIER1_NODES_SECRETS_01 kept out of vars');
 }
 
 // Empty values are skipped, not collected as empty strings.
 {
   const env = envFixture();
   env.TIER1_NODES_CONFIG_02 = '';
-  env.NODE_SECRETS_02 = '';
+  env.TIER1_NODES_SECRETS_02 = '';
   const v = collectVarsFromEnv(env);
   const s = collectSecretsFromEnv(env);
   assert.ok(!('TIER1_NODES_CONFIG_02' in v.vars), 'empty variable skipped');
-  assert.ok(!('NODE_SECRETS_02' in s.secrets), 'empty secret skipped');
+  assert.ok(!('TIER1_NODES_SECRETS_02' in s.secrets), 'empty secret skipped');
 }
 
 // Malformed legacy blob JSON fails clearly.
@@ -164,7 +164,7 @@ assert.throws(
   delete env.CLOUDFLARE_ACCOUNT_ID;
   delete env.GATEWAY_PUBLIC_BASE_URL;
   delete env.TIER1_NODES_CONFIG_01;
-  delete env.NODE_SECRETS_01;
+  delete env.TIER1_NODES_SECRETS_01;
   delete env.GATEWAY_ACCESS_KEY;
   delete env.CLOUDFLARE_API_TOKEN;
   const r = preflight(env);
@@ -172,7 +172,7 @@ assert.throws(
   assert.ok(r.errors.some((e) => e.includes('CLOUDFLARE_ACCOUNT_ID')), 'names the missing variable');
   assert.ok(r.errors.some((e) => e.includes('GATEWAY_ACCESS_KEY')), 'names the missing secret');
   assert.ok(r.errors.some((e) => e.includes('No TIER')), 'names the missing node-config shard');
-  assert.ok(r.errors.some((e) => e.includes('No NODE_SECRETS')), 'names the missing credential shard');
+  assert.ok(r.errors.some((e) => e.includes('No TIER[123]_NODES_SECRETS')), 'names the missing credential shard');
 }
 
 // MODELS_CONFIG / POLICIES_CONFIG absence is a warning, never a failure.
@@ -188,7 +188,7 @@ assert.throws(
 
 // A node without a matching credential fails runtime validation.
 {
-  const built = buildRuntimeFromEnv({ ...envFixture(), NODE_SECRETS_01: JSON.stringify({ 'other-node': 'key' }) });
+  const built = buildRuntimeFromEnv({ ...envFixture(), TIER1_NODES_SECRETS_01: JSON.stringify({ 'other-node': 'key' }) });
   assert.throws(
     () => validateGatewayRuntime(built.runtime),
     /node.*has no credential|credential.*has no matching node|degraded|invalid/i,

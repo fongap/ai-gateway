@@ -8,7 +8,7 @@
 //   TIER3_NODES_CONFIG_01 .. _99
 // Secrets:
 //   GATEWAY_ACCESS_KEY
-//   NODE_SECRETS_01 .. _99         JSON objects { nodeId: credential }
+//   TIER{1,2,3}_NODES_SECRETS_01..99   JSON objects { nodeId: credential }
 //
 // Cloudflare Workers variable/secret size limit is 5 KB per value; shards are
 // capped below that with margin. Shards always split on complete entry
@@ -19,7 +19,7 @@ export const SHARD_MAX_BYTES = 4500;
 export const MAX_SHARD_NUMBER = 99;
 
 export const MANAGED_VAR_PATTERN = /^TIER[123]_NODES_CONFIG_\d{2}$/;
-export const MANAGED_SECRET_PATTERN = /^(GATEWAY_ACCESS_KEY|NODE_SECRETS_\d{2})$/;
+export const MANAGED_SECRET_PATTERN = /^(GATEWAY_ACCESS_KEY|TIER[123]_NODES_SECRETS_\d{2})$/;
 
 const FORBIDDEN_NODE_FIELDS = ['token', 'credential', 'api_key', 'apikey', 'authorization', 'password', 'secret'];
 const ALLOWED_NODE_FIELDS = new Set(['id', 'provider', 'protocol', 'surfaces', 'base_url', 'priority', 'models', 'limits']);
@@ -40,7 +40,7 @@ export function shardKeyName(kind, tierNumber, index) {
     if (!VALID_TIER_PATTERN.test(String(tierNumber))) throw new Error(`Invalid tier number: ${tierNumber}`);
     return `TIER${tierNumber}_NODES_CONFIG_${pad(index)}`;
   }
-  if (kind === 'secret') return `NODE_SECRETS_${pad(index)}`;
+  if (kind === 'secret') return `TIER1_NODES_SECRETS_${pad(index)}`;
   throw new Error(`Unknown shard kind: ${kind}`);
 }
 
@@ -77,7 +77,7 @@ export function assertNodesArray(nodes, label = 'nodes config') {
     seen.add(id);
     const forbidden = FORBIDDEN_NODE_FIELDS.filter((f) => f in node);
     if (forbidden.length > 0) {
-      throw new Error(`${label}: node "${id}" contains forbidden credential field(s): ${forbidden.join(', ')}. Credentials belong in the NODE_SECRETS_* secret.`);
+      throw new Error(`${label}: node "${id}" contains forbidden credential field(s): ${forbidden.join(', ')}. Credentials belong in the TIER{1,2,3}_NODES_SECRETS_* secret.`);
     }
     if ('tier' in node) {
       throw new Error(`${label}: node "${id}" must not declare "tier"; the tier comes from the variable name`);
@@ -300,7 +300,7 @@ export function buildPlan({ tiers, secretsMap, existingVarNames = [], existingSe
   const deleteVars = [...new Set(existingVarNames)].filter((name) => MANAGED_VAR_PATTERN.test(name) && !planned.has(name)).sort();
   const plannedS = new Set(plannedSecrets);
   const deleteSecrets = [...new Set(existingSecretNames)]
-    .filter((name) => /^NODE_SECRETS_\d{2}$/.test(name) && !plannedS.has(name))
+    .filter((name) => /^TIER[123]_NODES_SECRETS_\d{2}$/.test(name) && !plannedS.has(name))
     .sort();
 
   return { vars, secrets, plannedVars, plannedSecrets, deleteVars, deleteSecrets, tierSummary };

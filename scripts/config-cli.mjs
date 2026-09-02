@@ -312,7 +312,7 @@ function runMigrate(args) {
   const secretsBlob = parseJsonFile(a['gateway-secrets'], 'GATEWAY_SECRETS_CONFIG');
 
   console.error('WARNING: GATEWAY_CONFIG is deprecated. Migrate to individual GitHub Repository Variables.');
-  console.error('WARNING: GATEWAY_SECRETS_CONFIG is deprecated. Migrate to GATEWAY_ACCESS_KEY + NODE_SECRETS_XX.');
+  console.error('WARNING: GATEWAY_SECRETS_CONFIG is deprecated. Migrate to GATEWAY_ACCESS_KEY + TIER{1,2,3}_NODES_SECRETS_XX.');
 
   const variables = ['CLOUDFLARE_ACCOUNT_ID', 'TOKEN_STATS_D1_ID', 'GATEWAY_PUBLIC_BASE_URL'];
   for (const [key, value] of Object.entries(blob)) {

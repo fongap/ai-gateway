@@ -53,7 +53,7 @@ function makeEnv(priorities, withRpm) {
   return {
     GATEWAY_ACCESS_KEY: ACCESS_KEY,
     TIER1_NODES_CONFIG_01: JSON.stringify(nodes),
-    NODE_SECRETS_01: JSON.stringify(Object.fromEntries(KEYS.map((k) => [k, `cred-${k}`]))),
+    TIER1_NODES_SECRETS_01: JSON.stringify(Object.fromEntries(KEYS.map((k) => [k, `cred-${k}`]))),
     LOG_LEVEL: 'none',
   };
 }

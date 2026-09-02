@@ -9,14 +9,14 @@
 //        Variables: TIER{1,2,3}_NODES_CONFIG_01.., MODELS_CONFIG, POLICIES_CONFIG,
 //                    CLOUDFLARE_ACCOUNT_ID, TOKEN_STATS_D1_ID,
 //                    TIER1_AFFINITY_KV_ID, GATEWAY_PUBLIC_BASE_URL
-//        Secrets:    GATEWAY_ACCESS_KEY, NODE_SECRETS_01.., CLOUDFLARE_API_TOKEN
+//        Secrets:    GATEWAY_ACCESS_KEY, TIER[123]_NODES_SECRETS_01.., CLOUDFLARE_API_TOKEN
 //      The workflow injects these into the process environment; this script
 //      collects the non-empty ones. A single node change only touches the
 //      matching Variable/Secret — no giant blob to rewrite.
 //
 //   2. Legacy blob (deprecated, short-term compatibility):
 //        Variable  GATEWAY_CONFIG         = { TIER*_NODES_CONFIG_*, MODELS_CONFIG, ... }
-//        Secret    GATEWAY_SECRETS_CONFIG = { GATEWAY_ACCESS_KEY, NODE_SECRETS_* }
+//        Secret    GATEWAY_SECRETS_CONFIG = { GATEWAY_ACCESS_KEY, TIER[123]_NODES_SECRETS_* }
 //      Read only when the individual sources are absent, and always emits a
 //      deprecation warning. New config wins; the two are never merged.
 //
@@ -32,8 +32,8 @@ import { RUNTIME_VAR_NAMES } from '../src/config/runtime-vars.js';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const VAR_NAME = /^[A-Z][A-Z0-9_]{0,127}$/;
 const NODE_VAR = /^TIER[123]_NODES_CONFIG_\d{2}$/;
-const NODE_SECRET = /^NODE_SECRETS_\d{2}$/;
-const SECRET_NAME = /^(GATEWAY_ACCESS_KEY|NODE_SECRETS_\d{2})$/;
+const NODE_SECRET = /^TIER[123]_NODES_SECRETS_\d{2}$/;
+const SECRET_NAME = /^(GATEWAY_ACCESS_KEY|TIER[123]_NODES_SECRETS_\d{2})$/;
 const MAX_VALUE_BYTES = 4500;
 
 // Individual Worker text variables the bridge recognizes from env (besides the
@@ -90,7 +90,7 @@ export function normalizeRuntimeConfig(raw) {
   }
   for (const [name, rawValue] of Object.entries(raw.secrets)) {
     if (!SECRET_NAME.test(name)) {
-      throw new Error(`secrets.${name}: only GATEWAY_ACCESS_KEY and NODE_SECRETS_01..99 are supported`);
+      throw new Error(`secrets.${name}: only GATEWAY_ACCESS_KEY and TIER[123]_NODES_SECRETS_01..99 are supported`);
     }
     const value = encodeValue(rawValue, `secrets.${name}`);
     assertSize(name, value);
@@ -101,7 +101,7 @@ export function normalizeRuntimeConfig(raw) {
     throw new Error('vars must contain at least one TIER{1,2,3}_NODES_CONFIG_XX value');
   }
   if (!Object.keys(secrets).some((name) => NODE_SECRET.test(name))) {
-    throw new Error('secrets must contain at least one NODE_SECRETS_XX value');
+    throw new Error('secrets must contain at least one TIER[123]_NODES_SECRETS_XX value');
   }
   return { vars, secrets };
 }
@@ -161,7 +161,7 @@ export function collectSecretsFromEnv(env) {
       if (SECRET_NAME.test(name)) secrets[name] = encodeValue(value, `GATEWAY_SECRETS_CONFIG.${name}`);
     }
     usedLegacy = true;
-    warnings.push('GATEWAY_SECRETS_CONFIG is deprecated. Migrate to GATEWAY_ACCESS_KEY + NODE_SECRETS_XX.');
+    warnings.push('GATEWAY_SECRETS_CONFIG is deprecated. Migrate to GATEWAY_ACCESS_KEY + TIER[123]_NODES_SECRETS_XX.');
   }
   return { secrets, usedLegacy, warnings };
 }
@@ -214,7 +214,7 @@ export function preflight(env) {
     errors.push('TIER1_AFFINITY_KV_ID is required when Tier 1 nodes are configured (session routing is not isolate-sticky).');
   }
   if (!Object.keys(s.secrets).some((n) => NODE_SECRET.test(n))) {
-    errors.push('No NODE_SECRETS_XX Secret is configured. Set at least one credential shard.');
+    errors.push('No TIER[123]_NODES_SECRETS_XX Secret is configured. Set at least one credential shard.');
   }
   // MODELS_CONFIG / POLICIES_CONFIG are optional at runtime (registry/policies
   // provide defaults); surface absence as a warning, never a failure.
@@ -224,7 +224,7 @@ export function preflight(env) {
     warnings.push('D1 persistence disabled: TOKEN_STATS_D1_ID is not configured.');
   }
   if (v.usedLegacy) warnings.push('GATEWAY_CONFIG is deprecated; migrate to individual GitHub Repository Variables.');
-  if (s.usedLegacy) warnings.push('GATEWAY_SECRETS_CONFIG is deprecated; migrate to GATEWAY_ACCESS_KEY + NODE_SECRETS_XX.');
+  if (s.usedLegacy) warnings.push('GATEWAY_SECRETS_CONFIG is deprecated; migrate to GATEWAY_ACCESS_KEY + TIER[123]_NODES_SECRETS_XX.');
   return { ok: errors.length === 0, errors, warnings };
 }
 
@@ -266,7 +266,7 @@ export function buildDeploymentSummary({ config, runtime, d1Configured, affinity
 }
 
 // Wrangler secret bulk preserves undeclared secrets by default. Explicit null
-// entries make our managed NODE_SECRETS shards a true source of truth while
+// entries make our managed TIER[123]_NODES_SECRETS shards a true source of truth while
 // leaving unrelated Worker secrets untouched.
 export function withStaleNodeSecretsRemoved(secrets, existingSecrets) {
   const out = { ...secrets };

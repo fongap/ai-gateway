@@ -64,7 +64,7 @@ function makeEnv({ tier1, tier2, secrets, extraEnv } = {}) {
     TIER1_SCHEDULER_SEED: 'protocol-matrix-test',
     ...(tier1 ? { TIER1_NODES_CONFIG_01: JSON.stringify(tier1) } : {}),
     ...(tier2 ? { TIER2_NODES_CONFIG_01: JSON.stringify(tier2) } : {}),
-    ...(secrets ? { NODE_SECRETS_01: JSON.stringify(secrets) } : {}),
+    ...(secrets ? { TIER1_NODES_SECRETS_01: JSON.stringify(secrets) } : {}),
     ...extraEnv,
   };
 }

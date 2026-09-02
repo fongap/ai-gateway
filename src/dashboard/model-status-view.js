@@ -56,5 +56,5 @@ function renderModelRow(m, ttft) {
 export function renderModels(status, ttft) {
   const rows = modelStatusRows(status).map((m) => renderModelRow(m, ttft)).join('');
   const html = `<div class="status-grid">${rows}</div>`;
-  return { html, observedAt: status?.observed_at || '' };
+  return { html };
 }

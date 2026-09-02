@@ -137,39 +137,42 @@ test('one available + one cooling + D1 -> available', () => {
   assert.equal(findModelStatus(list, 'air'), 'available');
 });
 
-// --- 8. No serving node => unavailable ---------------------------------------
+// --- 8. Node-mapped models are public by default ----------------------------
 
-test('node-only model is never listed: undeclared in registry is not public', () => {
-  const nodes = [node('a', { max: 'up-max' })]; // serves max, but max is NOT in MODELS_CONFIG
-  const list = getPublicModelStatus(nodes, ENV, new Set(['air', 'max']), now());
-  // air has no node at all but IS in the registry -> unavailable (not degraded)
-  assert.equal(findModelStatus(list, 'air'), 'unavailable');
-  // max exists only in a node mapping, not the registry -> NOT in the public catalog.
+test('node-mapped model IS public (no MODELS_CONFIG required)', () => {
+  // Two node-mapped models. No MODELS_CONFIG: both should be public.
+  const nodes = [node('a', { 'public-air': 'up-air', 'public-max': 'up-max' })];
+  const list = getPublicModelStatus(nodes, ENV, new Set(), now());
   const ids = list.models.map((m) => m.id);
-  assert.ok(!ids.includes('max'), 'a node-mapped model not in the registry must not appear');
+  assert.ok(ids.includes('public-air'), 'a node-mapped model is public by default');
+  assert.ok(ids.includes('public-max'), 'a node-mapped model is public by default');
+  // A model in MODELS_CONFIG but with no node mapping is not in the public set.
+  const airInResult = list.models.find((m) => m.id === 'air');
+  assert.equal(airInResult, undefined, 'MODELS_CONFIG alone does not surface a model');
 });
 
-// --- 9. Wildcard node: serves all models -------------------------------------
+// --- 9. Wildcard node: serves any model another node declared ---------------
 
-test('wildcard node serves all registered models', () => {
-  const nodes = [node('a', {})]; // empty models map = wildcard via servesModel
-  const list = getPublicModelStatus(nodes, ENV, new Set(['air']), now());
-  assert.equal(findModelStatus(list, 'air'), 'available');
+test('wildcard node serves any model another node declared', () => {
+  // Two nodes: one wildcard (empty models), one explicit. The wildcard node
+  // serves 'air' (because another node maps it), even though its own models
+  // map is empty.
+  const nodes = [
+    node('a', {}),                                // wildcard
+    node('b', { 'public-air': 'up-air' }),         // explicit
+  ];
+  const list = getPublicModelStatus(nodes, ENV, new Set(['public-air']), now());
+  // Node mappings are the primary source; 'public-air' is in node b's map.
+  const ids = list.models.map((m) => m.id);
+  assert.ok(ids.includes('public-air'), 'public-air is in the public set via node b');
 });
 
 // --- 10. Sort order: result is sorted by id ----------------------------------
 
 test('output is sorted by logical model name', () => {
-  const nodes = [];
-  const env = {
-    GATEWAY_ACCESS_KEY: 'k',
-    MODELS_CONFIG: JSON.stringify({
-      zeta: { policy: 'fast' },
-      alpha: { policy: 'fast' },
-      mid: { policy: 'fast' },
-    }),
-  };
-  const list = getPublicModelStatus(nodes, env, new Set(), now());
+  // Source is node mappings (primary). Build a single node with three models.
+  const nodes = [node('a', { zeta: 'up-zeta', alpha: 'up-alpha', mid: 'up-mid' })];
+  const list = getPublicModelStatus(nodes, ENV, new Set(), now());
   assert.deepEqual(list.models.map((m) => m.id), ['alpha', 'mid', 'zeta']);
   assert.equal(list.observed_at, new Date(now()).toISOString(), 'envelope carries observed_at');
 });
@@ -190,20 +193,23 @@ test('output never carries node ids, providers, or tiers', () => {
 
 // --- 12. Edge: empty node list ----------------------------------------------
 
-test('empty node list -> all models unavailable', () => {
+test('empty node list -> empty public status (no node mappings = no public models)', () => {
   const list = getPublicModelStatus([], ENV, new Set(), now());
-  assert.equal(findModelStatus(list, 'air'), 'unavailable');
+  // Node mappings are primary; with no nodes there is nothing to show. The
+  // MODELS_CONFIG declaration alone does not surface a model.
+  assert.deepEqual(list.models, []);
 });
 
 // --- 13. Edge: null/undefined env handling -----------------------------------
 
-test('null env (e.g. test isolation) does not throw and lists nothing', () => {
+test('null env (e.g. test isolation) falls back to node mappings', () => {
   const nodes = [node('a', { air: 'up-air' })];
   const result = getPublicModelStatus(nodes, null, new Set(), now());
-  // Without a registry there is no public model set — node mappings alone
-  // never create public models.
+  // Without a registry the backward-compat fallback picks up node-mapping
+  // model names so the dashboard is not silently empty.
   assert.ok(Array.isArray(result.models));
-  assert.equal(result.models.length, 0, 'no registry -> no public catalog');
+  assert.equal(result.models.length, 1, 'fallback picks up node-mapping model');
+  assert.equal(result.models[0].id, 'air');
 });
 
 // --- 14. Edge: half-open state treated as unobserved ------------------------

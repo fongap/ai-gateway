@@ -12,6 +12,11 @@
 //
 // When ACCESS_KEYS_CONFIG is absent the gateway falls back to the legacy
 // single GATEWAY_ACCESS_KEY (full access, backward compatible).
+//
+// Note: per-key allowlists are checked against the model's identity only.
+// MODELS_CONFIG is OPTIONAL and is used here purely as an advisory cross-check
+// — operators without MODELS_CONFIG can still use ACCESS_KEYS_CONFIG and the
+// allowlist is enforced against whatever model the request names.
 
 import { readEnv } from './env.js';
 import { loadModelRegistry } from './registry.js';
@@ -89,7 +94,13 @@ function analyzeAccessKeys(env) {
                 continue;
               }
               allowlist.add(m.trim());
-              if (registry && !Object.prototype.hasOwnProperty.call(registry, m.trim())) {
+              // MODELS_CONFIG is optional. The allowlist is enforced on
+              // request, not at config time — a model not declared in the
+              // registry is still a perfectly valid allowlist entry; the
+              // request will simply not match any node and the handler will
+              // return 404, exactly as for any other unknown model. Skip the
+              // "not in registry" advisory entirely when registry is empty.
+              if (registry && Object.keys(registry).length > 0 && !Object.prototype.hasOwnProperty.call(registry, m.trim())) {
                 diagnostics.push(`ACCESS_KEYS_CONFIG: key "${keyId}" allowlists model "${m}" which is not in the Model Registry`);
               }
             }
