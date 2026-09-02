@@ -1,21 +1,29 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
 //
-// Gateway access-key authentication. Supports two modes:
+// Gateway access-key authentication. v1.2.7 governance model.
 //
-//   1. Multi-key (ACCESS_KEYS_CONFIG present): the presented credential is
-//      matched against each declared key's secret (constant-time). On a hit
-//      the resolved key_id and model allowlist are returned.
-//   2. Legacy single key (GATEWAY_ACCESS_KEY only): full access, backward
-//      compatible.
+// Authorization flow:
 //
-// Presented candidates may arrive via Authorization: Bearer or x-api-key.
-// The expected secrets are only ever compared as SHA-256 digests with a
-// constant-time comparison; raw secrets never leave this module.
+//   Client presents a credential (Authorization: Bearer or x-api-key)
+//     ↓
+//   The credential is matched (constant-time SHA-256) against each
+//   configured GATEWAY_ACCESS_KEY_<GROUP> secret.
+//     ↓
+//   On a hit, the resolved group and its model allowlist are returned.
+//     ↓
+//   The request handler calls authorizeModel() against the configured
+//   logical model set BEFORE entering the scheduler.
+//
+// If no GATEWAY_ACCESS_KEY_<GROUP> is configured, the legacy single
+// GATEWAY_ACCESS_KEY is honored (backward compatible). A misconfigured
+// new key group never falls back to the legacy key.
+//
+// Raw secrets never leave this module. Only the low-cardinality group
+// label is used in logs/stats.
 
 import { loadAccessKeysConfig } from '../config/access-keys.js';
 
-// Legacy single-key digest cache (immutable per isolate).
 let cachedAccessKey = null;
 let cachedAccessKeyDigest = null;
 
@@ -56,11 +64,14 @@ function presentedCredentials(request) {
 }
 
 // Resolve the request to an auth result:
-//   { authorized, keyId?, allowAll?, allowlist?, mode }
+//   { authorized, mode, group?, allowAll, allowlist }
 //
-// `mode` is 'multi' (ACCESS_KEYS_CONFIG) or 'legacy' (GATEWAY_ACCESS_KEY).
+// `mode` is 'grouped' (new system), 'legacy' (GATEWAY_ACCESS_KEY), or 'none'.
+// `group` is the credential group label ('AIR', 'PRO', 'MAX', 'ULTRA',
+// 'AGENT', or 'LEGACY'). It is the only non-secret identifier used in logs.
 // `allowlist` is a Set<string>; when undefined the key grants all models
-// (legacy behaviour or explicit models:["*"]).
+// (legacy behaviour or explicit GATEWAY_ACCESS_MODELS_<GROUP>="*").
+// `allowAll` is true when the group's allowlist is "*" (or legacy).
 export async function authorize(request, env) {
   const presented = presentedCredentials(request);
   if (presented.length === 0) return { authorized: false, mode: 'none' };
@@ -75,36 +86,23 @@ export async function authorize(request, env) {
         if (constantTimeEquals(new Uint8Array(candidate), new Uint8Array(expected))) {
           return {
             authorized: true,
-            mode: 'multi',
-            keyId: key.key_id,
+            mode: key.group === 'LEGACY' ? 'legacy' : 'grouped',
+            group: key.group,
             allowAll: key.allowAll,
             allowlist: key.allowAll ? undefined : new Set(key.allowlist),
           };
         }
       }
     }
-    return { authorized: false, mode: 'multi' };
+    return { authorized: false, mode: multi.anyNewKey ? 'grouped' : 'legacy' };
   }
 
-  // Legacy single-key fallback.
-  const accessKey = typeof env?.GATEWAY_ACCESS_KEY === 'string' ? env.GATEWAY_ACCESS_KEY : '';
-  if (!accessKey) return { authorized: false, mode: 'none' };
-  const expected = await getLegacyAccessKeyDigest(accessKey);
-  for (const candidate of presented) {
-    const digest = await sha256Digest(candidate);
-    if (constantTimeEquals(new Uint8Array(digest), expected)) {
-      return { authorized: true, mode: 'legacy', allowAll: true };
-    }
-  }
-  return { authorized: false, mode: 'legacy' };
+  return { authorized: false, mode: 'none' };
 }
 
 // Backward-compatible shim: returns true/false only (legacy callers).
 export async function isAuthorized(request, accessKey) {
   if (accessKey === undefined) {
-    // Best-effort path for callers that no longer pass an accessKey; the full
-    // resolver is `authorize()`. This shim is retained only for the version
-    // endpoint which is exempt from auth.
     return false;
   }
   const legacyDigest = await getLegacyAccessKeyDigest(accessKey);
