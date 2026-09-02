@@ -28,7 +28,7 @@
 // 364 server-rendered <i> cells; hover uses native title attributes.
 
 import { loadGatewayConfig } from '../config/nodes.js';
-import { getPublicModelStatus, MODEL_STATUS_RECENT_WINDOW_MS } from '../runtime/model-status.js';
+import { MODEL_STATUS_RECENT_WINDOW_MS } from '../runtime/model-status.js';
 import { htmlResponse } from '../protocol/http.js';
 import {
   queryTokenSummary,
@@ -39,6 +39,8 @@ import {
   utc8DayStartUtcMs,
   isoDayUtc8,
 } from '../observability/token-usage-store.mjs';
+import { escapeHtml, fmtTokens, fmtInt, fmtTtft, fmtTooltipDate } from './format.js';
+import { publicModelStatus, renderModels, fmtModelTtft } from './model-status-view.js';
 
 export const GITHUB_URL = 'https://github.com/fongap/ai-gateway';
 
@@ -452,117 +454,13 @@ root.addEventListener('focusout',function(e){
 });
 })();</script>`;
 
-// Collapse node-level availability + cross-isolate recent-success evidence
-// into a public-safe per-model status. See src/runtime/model-status.js for
-// the full semantics. The previous implementation equated "this isolate has
-// no Tier 1 TTFT sample" with "未观测", which made every model show
-// unobserved on a fresh isolate even though D1 proved the model was just
-// serving successfully. The new layer:
-//   - Uses runtime availability as ONE input (not the only input).
-//   - Uses D1's per-model recent-success evidence (requests > 0 in the last
-//     24h) as the cross-isolate proof that the model is actually working.
-//   - Never fabricates evidence and never marks every model unavailable
-//     when D1 is missing/failing (fail-open -> empty Set -> `unobserved`).
-//   - Never feeds back into the scheduler, reliability layer or request path.
-// Model set = node mappings (a model in the registry with no serving node is
-// unreachable and is not listed on the dashboard). No node ids, providers,
-// tiers, counts or durations ever leave this function.
-function publicModelStatus(nodes, env, evidence = new Set(), now = Date.now()) {
-  return getPublicModelStatus(nodes, env, evidence, now);
-}
-
-const STATE_LABEL = { available: '可用', unobserved: '未观测', degraded: '波动', unavailable: '不可用' };
-const GENERAL_PREFIX = 'general-';
-const CODE_PREFIX = 'code-';
-
-function fmtModelTtft(modelTtft) {
-  if (!modelTtft || modelTtft.available === false) return { p50: '--', p95: '--', samples: 0, insufficient: true };
-  if (modelTtft.insufficient) return { p50: '--', p95: '--', samples: modelTtft.sampleCount || 0, insufficient: true };
-  return {
-    p50: modelTtft.p50 != null ? fmtTtft(modelTtft.p50) : '--',
-    p95: modelTtft.p95 != null ? fmtTtft(modelTtft.p95) : '--',
-    samples: modelTtft.sampleCount || 0,
-    insufficient: false,
-  };
-}
-
-function renderModelGroup(models, ttft, title) {
-  if (!models.length) return '';
-  const items = models.map((m) => {
-    const label = STATE_LABEL[m.status] || '不可用';
-    const t = fmtModelTtft(ttft?.get?.(m.id));
-    const sampleTitle = t.insufficient ? 'TTFT 样本不足' : `${t.samples} 个 TTFT 样本`;
-    return `<div class="model-item">` +
-      `<span class="model-name">${escapeHtml(m.id)}</span>` +
-      `<span class="model-status ${m.status}"><i class="dot ${m.status}" aria-hidden="true"></i>${label}</span>` +
-      `<span class="model-perf">${t.p50}</span>` +
-      `<span class="model-perf">${t.p95}</span>` +
-      `<span class="model-samples" title="${escapeHtml(sampleTitle)}">${t.samples}</span>` +
-      `<span class="sr-only">状态：${label}，TTFT P50 ${t.p50}，P95 ${t.p95}</span></div>`;
-  }).join('');
-  return `<div class="models-group">` +
-    `<div class="models-group-title">${escapeHtml(title)}</div>` +
-    `<div class="models-head"><b>模型</b><span>状态</span><span>P50</span><span>P95</span><span>样本</span></div>` +
-    `<div class="models-body">${items}</div></div>`;
-}
-
-function renderModels(models, ttft) {
-  const general = [];
-  const code = [];
-  for (const m of models) {
-    if (m.id.toLowerCase().startsWith(GENERAL_PREFIX)) continue;
-    if (m.id.toLowerCase().startsWith(CODE_PREFIX)) {
-      code.push(m);
-    } else {
-      general.push(m);
-    }
-  }
-  if (!general.length && !code.length) {
-    return { html: `<div class="card models-card"><div class="empty">模型映射配置后在此显示。</div></div>` };
-  }
-  const html = `<div class="card models-card">` +
-    renderModelGroup(general, ttft, '通用模型') +
-    renderModelGroup(code, ttft, '编程模型') +
-    `</div>`;
-  return { html };
-}
+// Model status (publicModelStatus, renderModels, fmtModelTtft) lives in
+// ./model-status-view.js. Pure formatters (fmtTokens, fmtInt, fmtTtft,
+// fmtTooltipDate, escapeHtml) live in ./format.js.
 
 // ---- 使用情况 (KPI strip + Token 活动 heatmap, one card) --------------------
 
-// Chinese unit formatting for KPI values: 万 (10^4) and 亿 (10^8).
-// < 10000: integer; >= 10000: 万 with 1 decimal; >= 100M: 亿 with 2 decimals.
-// Never use K/M/B. Exact value available in title attribute.
-function fmtTokens(n) {
-  if (!Number.isFinite(n) || n < 0) return '—';
-  if (n < 10000) return String(Math.trunc(n));
-  if (n < 1e8) {
-    const v = n / 1e4;
-    const s = v >= 100 ? Math.round(v) : (Number.isInteger(v) ? v : v.toFixed(1));
-    return `${s}万`;
-  }
-  const v = n / 1e8;
-  const s = v >= 100 ? Math.round(v) : (Number.isInteger(v) ? v : v.toFixed(2));
-  return `${s}亿`;
-}
-
-function fmtInt(n) {
-    return String(Math.trunc(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  }
-
-// Format TTFT milliseconds into human-friendly string.
-function fmtTtft(ms) {
-    if (!Number.isFinite(ms) || ms < 0) return '--';
-    if (ms < 1000) return `${ms}ms`;
-    const sec = ms / 1000;
-    if (Number.isInteger(sec)) return `${sec}s`;
-    return `${sec.toFixed(1)}s`;
-  }
-
-// Format a UTC+8 ISO date (YYYY-MM-DD) as "6月1日" for tooltip display.
-function fmtTooltipDate(iso) {
-  const d = new Date(iso + 'T00:00:00Z');
-  return `${d.getUTCMonth() + 1}月${d.getUTCDate()}日`;
-}
+// ---- formatters moved to ./format.js ----
 
 // Build the 52×7 activity grid (364 cells, Monday-aligned weeks, the current
 // week is the last column) plus month labels pinned to the columns where each
@@ -887,6 +785,4 @@ ${quickHtml}`;
   }
 }
 
-function escapeHtml(s) {
-  return String(s).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
-}
+// escapeHtml moved to ./format.js
