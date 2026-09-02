@@ -199,9 +199,9 @@ a{color:var(--blue);text-decoration:none}
   box-shadow:0 1px 2px rgba(27,31,36,.025)}
 
 /* Model status — one card, flat list with status + TTFT columns */
-.models-card{overflow:hidden}
-.models-group{padding:12px 0}
-.models-group+.models-group{border-top:1px solid var(--line)}
+.models-card{overflow:hidden;display:flex;flex-wrap:wrap}
+.models-group{flex:1;min-width:280px;padding:12px 0}
+.models-group+.models-group{border-left:1px solid var(--line)}
 .models-group-title{font-size:12px;font-weight:600;color:#606872;padding:4px 16px 8px}
 .models-head{display:grid;grid-template-columns:minmax(100px,1fr) 80px 72px 72px 56px;gap:10px;
   padding:10px 16px;border-bottom:1px solid var(--line);font-size:11px;color:var(--muted);font-weight:600}
