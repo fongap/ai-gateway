@@ -77,6 +77,7 @@ import { dashboardResponse } from '../dashboard/pages.js';
 import { isAuthorized } from './auth.js';
 import { gatewayError, buildBudgetExhaustedResponse, buildExhaustedResponse, buildClientErrorResponse } from './errors.js';
 import { TIER_ORDER, normalizePath, detectRoute, acceptsHtml } from './router.js';
+import { finalHeaders, jsonResponse, streamInterruptionChunk, upstreamModelOf } from './response-helpers.js';
 import { convertAnthropicToOpenAIRequest, ConversionError } from '../conversion/anthropic-to-openai.js';
 import { convertOpenAIToAnthropicResponse, convertOpenAIUsageToAnthropic } from '../conversion/openai-to-anthropic.js';
 import { createAnthropicStreamFromOpenAI } from '../conversion/stream-converter.js';
@@ -1413,29 +1414,6 @@ function makeNodeStreamTrack(c, node, latencyMs) {
   };
 }
 
-const streamErrorEncoder = new TextEncoder();
-
-// Once bytes have reached the client, transparent failover is unsafe.  Still
-// emit a protocol-shaped error event before closing so SDKs see the real
-// gateway interruption instead of only a generic "missing completion marker".
-// Deliberately do not emit a success completion marker after the error.
-function streamInterruptionChunk(route, requestId, reason, { nextSequenceNumber = 0 } = {}) {
-  const message = `Gateway upstream stream interrupted (${reason || 'unknown'}).`;
-  let event;
-  if (route === 'openai_responses') {
-    event = `event: error\ndata: ${JSON.stringify({ type: 'error', code: 'stream_interrupted', message, param: null, sequence_number: nextSequenceNumber })}\n\n`;
-  } else if (route === 'anthropic_messages') {
-    event = `event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'api_error', message } })}\n\n`;
-  } else {
-    event = `data: ${JSON.stringify({ error: { message, type: 'api_error', code: 'stream_interrupted' } })}\n\n`;
-  }
-  return streamErrorEncoder.encode(event);
-}
-
-function upstreamModelOf(node, logicalModel) {
-  return node.models[logicalModel] || logicalModel;
-}
-
 function rotateWithNeutralEnd(state, node, reason, c = {}, preDispatch = false) {
   state.attempted.add(node.id);
   // Pre-dispatch neutrals (invalid base URL) never reached an upstream, so they
@@ -1540,28 +1518,6 @@ function recordOutcome(state, node, classification, c, { latencyMs = -1, ttftWai
 }
 
 // ---- Response helpers ------------------------------------------------------
+// finalHeaders, jsonResponse, streamInterruptionChunk and upstreamModelOf
+// live in ./response-helpers.js.
 
-function finalHeaders(env, request, sourceHeaders, extraHeaders) {
-  const headers = new Headers();
-  if (sourceHeaders) {
-    const contentType = sourceHeaders.get('content-type');
-    if (contentType) headers.set('content-type', contentType);
-    const buffering = sourceHeaders.get('x-accel-buffering');
-    if (buffering) headers.set('x-accel-buffering', buffering);
-  }
-  for (const [key, value] of Object.entries(extraHeaders || {})) headers.set(key, value);
-  for (const [key, value] of Object.entries(corsHeaders(request, env))) headers.set(key, value);
-  return headers;
-}
-
-function jsonResponse(status, data, env, request, extraHeaders) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: {
-      'content-type': 'application/json;charset=UTF-8',
-      'cache-control': 'no-store',
-      ...(extraHeaders || {}),
-      ...corsHeaders(request, env),
-    },
-  });
-}
