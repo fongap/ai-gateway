@@ -49,6 +49,7 @@ import { readEnv, getBool } from './env.js';
 import { loadModelsConfig, getModelsConfigDiagnostics } from './models.js';
 import { loadPoliciesConfig, getPoliciesConfigDiagnostics } from './policies.js';
 import { getProtocolFallbacksDiagnostics } from './protocol-fallbacks.js';
+import { loadModelRegistry } from './registry.js';
 
 const SHARD_MAX_BYTES = 4500; // official variable size limit is 5 KB; keep margin
 export const TIER_SHARD_PATTERN = /^TIER([123])_NODES_CONFIG_(\d{2})$/;
@@ -98,6 +99,32 @@ function collectAuxConfigDiagnostics(env) {
     const pname = mcfg?.policy || 'default';
     if (!policies[pname]) {
       diags.push(`MODELS_CONFIG: model "${model}" references unknown policy "${pname}"`);
+    }
+  }
+  return diags;
+}
+
+// Cross-config validation for node model mappings. Every key in a node's
+// `models` map references a logical model; when that logical model is NOT
+// declared in the Model Registry it emits a WARNING (a node can still be
+// routable for an undeclared model, so this is advisory, not fatal). The check
+// only runs when the registry is loadable and declares at least one model —
+// with no MODELS_CONFIG there is nothing to cross-check against.
+function collectNodeModelDiagnostics(nodes, env) {
+  const diags = [];
+  let registry;
+  try {
+    registry = loadModelRegistry(env);
+  } catch {
+    return diags; // registry not loadable in this env — skip this check
+  }
+  if (!registry || Object.keys(registry).length === 0) return diags;
+  for (const node of nodes) {
+    if (!node || !node.models) continue;
+    for (const logical of Object.keys(node.models)) {
+      if (!Object.hasOwn(registry, logical)) {
+        diags.push(`NODE CONFIG: node "${node.id}" maps logical model "${logical}" which is not declared in MODELS_CONFIG`);
+      }
     }
   }
   return diags;
@@ -196,6 +223,10 @@ function buildConfig(env) {
       nodes.push(node);
     }
   }
+
+  // Cross-config validation: warn if a node maps a logical model not declared in MODELS_CONFIG.
+  const nodeModelDiags = collectNodeModelDiagnostics(nodes, env);
+  diagnostics.push(...nodeModelDiags);
 
   // Credentials without a matching node are a configuration mistake.
   for (const [nodeId] of credentials) {

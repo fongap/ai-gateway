@@ -34,12 +34,12 @@ function buildModelsList(nodes, env) {
   const registry = loadModelRegistry(env);
   const models = new Map();
 
-  // The set of logical models = registry (primary) ∪ node mappings. Because a
-  // wildcard node can serve any registry model, but a registry model with no
-  // serving node is meaningless to a client, we list only models with ≥1
-  // serving node.
+  // The set of logical models = registry ONLY. A node mapping can never make
+  // an undeclared model public: node config answers "which nodes can serve
+  // this logical model", never "which logical models should exist". A
+  // registry model with no serving node is still listed (status is the
+  // registry's business); a node-only model is not listed here.
   const logicalNames = new Set(Object.keys(registry));
-  for (const node of nodes) for (const key of Object.keys(node.models || {})) logicalNames.add(key);
 
   const entryFor = (logical) => {
     const reg = modelRegistryEntry(env, logical);
@@ -74,7 +74,7 @@ function buildModelsList(nodes, env) {
 
   const data = [...models.values()]
     .sort((a, b) => a.id.localeCompare(b.id))
-    .filter((e) => e.apiBackends.size > 0)
+    .filter((e) => e.apiBackends.size > 0 && e.reg.visibility !== 'internal')
     .map((e) => {
       const backends = [...e.apiBackends];
       const apiBackend = backends.length === 1 ? backends[0] : 'mixed';
@@ -317,7 +317,11 @@ export function versionResponse(request, env) {
 
 export function modelsListResponse(request, env, requestId) {
   const config = loadGatewayConfig(env);
-  return new Response(JSON.stringify(buildModelsList(config.nodes, env)), {
+  const list = buildModelsList(config.nodes, env);
+  return new Response(JSON.stringify({
+    ...list,
+    observed_at: new Date().toISOString(),
+  }), {
     status: 200,
     headers: {
       'content-type': 'application/json;charset=UTF-8',

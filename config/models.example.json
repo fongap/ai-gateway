@@ -5,5 +5,6 @@
     "capabilities": { "tools": true, "reasoning": true, "vision": false, "stream": true },
     "reasoning_efforts": ["low", "medium", "high"]
   },
-  "code-max": { "policy": "stable" }
+  "code-max": { "policy": "stable" },
+  "internal-shadow": { "policy": "stable", "visibility": "internal" }
 }

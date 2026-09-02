@@ -24,6 +24,7 @@ import {
   isEvidence,
   EVIDENCE_LEVELS,
 } from './catalog-schema.js';
+import { isSafeDiscoveryUrl } from './ssrf-guard.js';
 
 // ---------- base URL canonicalization -------------------------------------
 
@@ -49,6 +50,13 @@ export function canonicalizeBaseUrl(raw) {
     // Discovery is conservative and refuses http outright).
     if (u.protocol !== 'https:') {
       return { value: null, warning: 'base_url must use https:// (Discovery refuses http)' };
+    }
+    // SSRF defense: reject loopback, link-local, cloud-metadata, private
+    // addresses, and invalid hostnames. A provider that points at
+    // 169.254.169.254 or localhost must surface as a warning, not a fetch.
+    const guard = isSafeDiscoveryUrl(trimmed);
+    if (!guard.safe) {
+      return { value: null, warning: `base_url SSRF guard: ${guard.reason}; value dropped` };
     }
     u.pathname = u.pathname.replace(/\/+$/, '') || '/';
     return { value: u.toString(), warning: null };
@@ -253,7 +261,8 @@ export function normalizeRuntimeView(nodes) {
         try {
           const u = new URL(trimmed);
           if (!u.username && !u.password && u.protocol === 'https:') {
-            baseUrl = u.toString();
+            const guard = isSafeDiscoveryUrl(trimmed);
+            if (guard.safe) baseUrl = u.toString();
           }
         } catch { /* invalid -> null */ }
       }

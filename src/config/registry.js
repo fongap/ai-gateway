@@ -25,12 +25,13 @@ import { loadModelsConfig } from './models.js';
 const DEFAULT_CAPABILITIES = Object.freeze({ tools: false, reasoning: false, vision: false, stream: true });
 const DEFAULT_REASONING_EFFORTS = Object.freeze([]);
 const DEFAULT_POLICY = 'default';
+const DEFAULT_VISIBILITY = 'public';
 
 let cachedEnv;
 let cachedRegistry;
 
 // Build the authoritative registry object: { logicalModel: { policy,
-// capabilities, reasoning_efforts } }.
+// capabilities, reasoning_efforts, visibility } }.
 export function loadModelRegistry(env) {
   if (cachedEnv === env && cachedRegistry) return cachedRegistry;
   cachedEnv = env;
@@ -39,6 +40,7 @@ export function loadModelRegistry(env) {
   for (const [name, cfg] of Object.entries(models)) {
     registry[name] = {
       policy: cfg.policy || DEFAULT_POLICY,
+      visibility: cfg.visibility || DEFAULT_VISIBILITY,
       capabilities: { ...DEFAULT_CAPABILITIES, ...(cfg.capabilities || {}) },
       reasoning_efforts: Array.isArray(cfg.reasoning_efforts) && cfg.reasoning_efforts.length
         ? cfg.reasoning_efforts
@@ -56,6 +58,7 @@ export function modelRegistryEntry(env, model) {
   const registry = loadModelRegistry(env);
   return registry[model] || {
     policy: DEFAULT_POLICY,
+    visibility: DEFAULT_VISIBILITY,
     capabilities: { ...DEFAULT_CAPABILITIES },
     reasoning_efforts: [...DEFAULT_REASONING_EFFORTS],
   };
