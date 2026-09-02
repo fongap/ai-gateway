@@ -9,6 +9,7 @@ src/                          Worker 代码：所有运行时逻辑
 ├─ reliability/               可靠性：节点状态、熔断、错误分类
 ├─ transport/                 协议传输：上游路径、协议头、流式判定
 ├─ protocol/                  协议校验：CORS、OpenAI/Anthropic 请求校验、Responses 模块
+├─ conversion/                协议转换：Anthropic↔OpenAI 双向转换（由 PROTOCOL_FALLBACKS 机制使用）
 ├─ stream/                    流处理：First-Event Guard、SSE 扫描、流追踪与改写
 ├─ request/                   请求处理：鉴权、路由、错误构建、编排
 ├─ observability/             可观测性：日志、指标、D1 聚合、诊断端点
