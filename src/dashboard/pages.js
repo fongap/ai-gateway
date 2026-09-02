@@ -199,7 +199,10 @@ a{color:var(--blue);text-decoration:none}
   box-shadow:0 1px 2px rgba(27,31,36,.025)}
 
 /* Model status — one card, flat list with status + TTFT columns */
-.models-card{overflow:hidden}
+.models-card{overflow:hidden;display:flex;flex-wrap:wrap}
+.models-group{flex:1;min-width:280px;padding:12px 0}
+.models-group+.models-group{border-left:1px solid var(--line)}
+.models-group-title{font-size:12px;font-weight:600;color:#606872;padding:4px 16px 8px}
 .models-head{display:grid;grid-template-columns:minmax(100px,1fr) 80px 72px 72px 56px;gap:10px;
   padding:10px 16px;border-bottom:1px solid var(--line);font-size:11px;color:var(--muted);font-weight:600}
 .models-head span{text-align:right}
@@ -483,17 +486,9 @@ function fmtModelTtft(modelTtft) {
   };
 }
 
-function renderModels(models, ttft) {
-  const allModels = [];
-  for (const m of models) {
-    if (m.id.toLowerCase().startsWith(GENERAL_PREFIX)) continue;
-    if (m.id.toLowerCase().startsWith(CODE_PREFIX)) continue;
-    allModels.push(m);
-  }
-  if (!allModels.length) {
-    return { html: `<div class="card models-card"><div class="empty">模型映射配置后在此显示。</div></div>` };
-  }
-  const items = allModels.map((m) => {
+function renderModelGroup(models, ttft, title) {
+  if (!models.length) return '';
+  const items = models.map((m) => {
     const label = STATE_LABEL[m.status] || '不可用';
     const t = fmtModelTtft(ttft?.get?.(m.id));
     const sampleTitle = t.insufficient ? 'TTFT 样本不足' : `${t.samples} 个 TTFT 样本`;
@@ -505,7 +500,31 @@ function renderModels(models, ttft) {
       `<span class="model-samples" title="${escapeHtml(sampleTitle)}">${t.samples}</span>` +
       `<span class="sr-only">状态：${label}，TTFT P50 ${t.p50}，P95 ${t.p95}</span></div>`;
   }).join('');
-  return { html: `<div class="card models-card"><div class="models-head"><b>模型</b><span>状态</span><span>P50</span><span>P95</span><span>样本</span></div><div class="models-body">${items}</div></div>` };
+  return `<div class="models-group">` +
+    `<div class="models-group-title">${escapeHtml(title)}</div>` +
+    `<div class="models-head"><b>模型</b><span>状态</span><span>P50</span><span>P95</span><span>样本</span></div>` +
+    `<div class="models-body">${items}</div></div>`;
+}
+
+function renderModels(models, ttft) {
+  const general = [];
+  const code = [];
+  for (const m of models) {
+    if (m.id.toLowerCase().startsWith(GENERAL_PREFIX)) continue;
+    if (m.id.toLowerCase().startsWith(CODE_PREFIX)) {
+      code.push(m);
+    } else {
+      general.push(m);
+    }
+  }
+  if (!general.length && !code.length) {
+    return { html: `<div class="card models-card"><div class="empty">模型映射配置后在此显示。</div></div>` };
+  }
+  const html = `<div class="card models-card">` +
+    renderModelGroup(general, ttft, '通用模型') +
+    renderModelGroup(code, ttft, '编程模型') +
+    `</div>`;
+  return { html };
 }
 
 // ---- 使用情况 (KPI strip + Token 活动 heatmap, one card) --------------------
