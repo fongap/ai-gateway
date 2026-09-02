@@ -12,7 +12,7 @@ TIER1_NODES_CONFIG_01='[
   {"id":"nvidia-02","provider":"nvidia","protocol":"openai","surfaces":["chat_completions"],"base_url":"https://integrate.api.nvidia.com/v1","priority":10,"models":{"general-air":"deepseek-ai/deepseek-v3.1"},"limits":{"concurrency":3,"rpm":40}},
   {"id":"glm-01","provider":"zhipu","protocol":"openai","surfaces":["chat_completions"],"base_url":"https://open.bigmodel.cn/api/paas/v4","priority":20,"models":{"code-max":"glm-4.7"},"limits":{"concurrency":2}}
 ]'
-# Same tier + same priority = LRU rotation; different priority = strict order.
+# Tier 1 uses Eligibility → Affinity → P2C (priority is ignored); Tier 2/3 use priority + LRU.
 # NODE_SECRETS_01='{"nvidia-01":"nvapi-xxx","nvidia-02":"nvapi-yyy","glm-01":"zzz.id"}'
 # TIER2_NODES_CONFIG_01='[{"id":"fallback-01","base_url":"https://fallback.example.com/v1","models":{"general-air":"fa"}}]'
 # TIER3_NODES_CONFIG_01='[{"id":"last-resort-01","base_url":"https://last.example.com/v1","models":{}}]'
