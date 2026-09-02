@@ -25,7 +25,7 @@ import { handleRequest } from './request/handler.js';
 import { isCountedRoute, gatewayStats, trackClientResponse } from './observability/gateway-stats.mjs';
 import { normalizePath } from './request/router.js';
 import { sanitizedInternalError } from './observability/diagnostic-endpoints.mjs';
-import { cleanupModelStats } from './observability/token-usage-store.mjs';
+import { maintainUsageStats } from './observability/token-usage-store.mjs';
 
 export default {
   async fetch(request, env, ctx) {
@@ -50,15 +50,13 @@ export default {
     }
   },
 
-  // Periodic cleanup for the per-model token usage table. Triggered by a cron
-  // trigger (configured in wrangler.jsonc). Deletes rows older than the
-  // retention period from token_usage_model_hourly ONLY — the global
-  // token_usage_hourly table is NEVER pruned because it powers the cumulative
-  // KPIs on the public homepage.
+  // Periodic maintenance for token usage tables. Triggered by a cron
+  // trigger (configured in wrangler.jsonc). Runs:
+  //   1. Aggregate hourly → daily (idempotent overwrite)
+  //   2. Aggregate daily → weekly (idempotent overwrite)
+  //   3. Retention cleanup for hourly (7d), daily (52w), weekly (52w)
+  // All operations are idempotent and fail-open for the API path.
   async scheduled(_controller, env, _ctx) {
-    // ScheduledController exposes cron/scheduledTime, not a DOM-style `type`.
-    // Let a rejection reach the Workers runtime so Cron Trigger status and
-    // alerts report a failed run. cleanupModelStats logs the error once.
-    await cleanupModelStats(env);
+    await maintainUsageStats(env);
   },
 };

@@ -81,8 +81,9 @@ await test('first insert creates the hour bucket and records the write', async (
     d1._rows.get(normalizeHour(H0)),
     { input: 2, output: 8, total: 10, requests: 1, reports: 1, missing: 0 },
   );
-  assert.equal(d1._writes.length, 1);
+  assert.equal(d1._writes.length, 2, 'global + totals writes');
   assert.match(d1._writes[0].sql, /ON CONFLICT\(hour\) DO UPDATE SET/);
+  assert.match(d1._writes[1].sql, /token_usage_totals/i, 'second write is totals');
 });
 
 await test('same-hour upsert accumulates input/output/total/requests atomically', async () => {
@@ -354,7 +355,10 @@ await test('cleanupModelStats deletes only per-model rows older than seven days'
     Date.now = originalNow;
   }
   assert.equal(d1._modelRows.size, 1, 'only the retained model row remains');
-  assert.equal(d1._rows.size, 2, 'global history is never pruned');
+  // Global hourly is now pruned by the unified cleanup (7-day retention).
+  // This test only calls cleanupModelStats (legacy per-model cleanup), so
+  // global rows remain. The unified cleanupUsageRetention would prune them.
+  assert.equal(d1._rows.size, 2, 'global hourly unchanged by legacy cleanup');
 });
 
 await test('cleanupModelStats skips cleanly without a D1 binding', async () => {

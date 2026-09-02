@@ -22,15 +22,17 @@ checkout → setup Node → npm ci
   → Validate runtime configuration
   → Wrangler deploy --dry-run
   → Cloudflare authentication check
-  → Apply D1 migrations (if TOKEN_STATS_D1_ID is set)
   → Deploy Worker (atomic code+secrets)
+  → Apply D1 migrations (if TOKEN_STATS_D1_ID is set)
   → Verify deployed gateway
   → Deployment summary
 ```
 
-任何验证步骤失败都会阻止后续步骤——Worker、Secrets 和 D1 不会被触碰。
+任何验证步骤失败都会阻断后续步骤——Worker、Secrets 和 D1 不会被触碰。
 
 部署现在是原子的：代码和 Secret 在同一次 `wrangler deploy --secrets-file` 操作中更新，确保它们属于同一 Worker version。
+
+**D1 迁移在 Worker 部署之后运行**（rolling deploy 安全性由 fail-open fallback 保障：Dashboard 累计 KPI 读取 totals 并回退到 hourly；热力图读取 daily 并回退到 hourly + 今日叠加；Model Status 继续读取 model_hourly 24h 窗口）。迁移文件按顺序应用（0001–0007），新增表 `token_usage_totals`、`token_usage_daily`、`token_usage_weekly`，`token_usage_hourly` 现为 7 天保留，冗余主键索引已移除。本地部署路径自动执行远端 D1 migrations（当 `TOKEN_STATS_DB` binding 存在时）。迁移失败阻断部署。
 
 ## GitHub Variables
 

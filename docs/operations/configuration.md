@@ -110,7 +110,25 @@ Anthropic 原生节点：
 
 ## Token-Usage Persistence（可选 D1）
 
-`TOKEN_STATS_DB` Cloudflare D1 binding。fail-open、非计费可观测性组件。仅存储 hourly UTC 聚合。Token 计数仅使用上游报告的 usage，缺失时从不估算。
+`TOKEN_STATS_DB` Cloudflare D1 binding。fail-open、非计费可观测性组件。
+
+**存储分层：**
+- KV (TIER1_AFFINITY)：30 分钟 TTL，仅用于 Tier 1 会话亲和
+- D1 `token_usage_totals`：单行 'global'，生命周期累计，永不清理
+- D1 `token_usage_hourly`：7 天保留，UTC 小时桶
+- D1 `token_usage_model_hourly`：7 天保留，按模型 UTC 小时桶
+- D1 `token_usage_daily`：52 周保留，UTC+8 自然日桶
+- D1 `token_usage_weekly`：52 周保留，UTC 周一起始周桶
+
+**定时维护**（cron `0 3 * * *`）：`aggregateHourlyToDaily` → `aggregateDailyToWeekly` → `cleanupUsageRetention`；所有聚合幂等（覆盖而非累加）。
+
+**Dashboard 读取路径：**
+- 累计 KPI：`token_usage_totals`（部署过渡期回退 hourly）
+- 52 周热力图：`token_usage_daily`（部署过渡期回退 hourly + 今日叠加）
+- 模型用量：`token_usage_model_hourly`（7 天窗口）
+- 公开 Model Status：`token_usage_model_hourly`（24h 证据窗口，不变）
+
+Token 计数仅使用上游报告的 usage，缺失时从不估算。
 
 ## Configuration Status
 
