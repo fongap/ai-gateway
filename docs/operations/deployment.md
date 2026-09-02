@@ -106,8 +106,9 @@ Deploy 工作流包含自动 Worker-code 回滚。如果 Worker 部署成功但 
 
 `main` 触发自动部署——必须配置 Rulesets：
 
-- Require a pull request before merging（至少 1 approval）
-- Require status checks to pass（`verify` 和 `Deploy`）
+- Require a pull request before merging
+- Require status checks to pass（`validate-merge`，唯一 PR 合并前硬门控）
+- Require linear history
 - Block force push
 - Block branch deletion
 - Allow squash merge

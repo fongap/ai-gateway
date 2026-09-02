@@ -10,12 +10,12 @@
 
 - **Target**: branch `main`
 - **Require a pull request before merging**
-  - 至少 1 approval
-  - 作者不能 self-approve
+  - 0 required approving reviews（由 `validate-merge` status check 守护质量；fork/solo 项目避免阻塞）
+  - Require review thread resolution
 - **Require status checks to pass**
-  - `verify`（CI workflow）
-  - `Deploy`（Deploy workflow）
-  - 可选：Require branches to be up to date
+  - `validate-merge`（CI workflow，唯一 PR 合并前的硬门控）
+  - `Deploy` 是 main 合并**之后**才运行的工作流，**不**适合作为 PR 合并前的 required check
+- **Require linear history**（仅允许 squash merge）
 - **Block force push**
 - **Block branch deletion**
 
@@ -30,10 +30,11 @@
 
 CI 在 `main` 和 Pull Request 上运行：
 
-| Check | Workflow | 内容 |
-|---|---|---|
-| `validate:merge` | CI | `npm run validate:merge`（syntax + version + config + tests + security scan） |
-| `Deploy` | Deploy | 完整部署流程 + health check |
+| Check | Workflow | 何时运行 | 内容 |
+|---|---|---|---|
+| `validate-merge` | CI | PR + main | `npm run validate:merge`（syntax + version + config + tests + security scan） |
+| `validate-deploy` | CI | main | 完整 deploy.yml 语法 + 配置 dry-run 校验 |
+| `Deploy` | Deploy | main | 实际部署 Worker + health check（仅 main 合并后触发，不在 PR 阻塞链路上） |
 
 ## Actions Permissions
 
