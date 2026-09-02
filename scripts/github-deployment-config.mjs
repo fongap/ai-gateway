@@ -100,8 +100,9 @@ export function normalizeRuntimeConfig(raw) {
   if (!Object.keys(vars).some((name) => NODE_VAR.test(name))) {
     throw new Error('vars must contain at least one TIER{1,2,3}_NODES_CONFIG_XX value');
   }
+
   if (!Object.keys(secrets).some((name) => NODE_SECRET.test(name))) {
-    throw new Error('secrets must contain at least one TIER[123]_NODES_SECRETS_XX value');
+    throw new Error('secrets must contain at least one TIER1_NODES_SECRETS_XX value');
   }
   return { vars, secrets };
 }
