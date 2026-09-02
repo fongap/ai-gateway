@@ -664,7 +664,7 @@ await test('模型状态 section has column headers for status, P50, P95, sample
   env.TOKEN_STATS_DB = d1;
   // Provide node config so models appear in the status section
   env.TIER1_NODES_CONFIG_01 = JSON.stringify([
-    { id: 'node-a', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], base_url: 'https://a.example.com/v1', models: { 'code-max': 'up-max' }, limits: { concurrency: 1 } },
+    { id: 'node-a', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], base_url: 'https://a.example.com/v1', models: { 'max': 'up-max' }, limits: { concurrency: 1 } },
   ]);
   env.NODE_SECRETS_01 = JSON.stringify({ 'node-a': 'test-key' });
   const html = await pageText(anonRequest(), env);
@@ -674,7 +674,7 @@ await test('模型状态 section has column headers for status, P50, P95, sample
   assert.ok(html.includes('>P95<'), 'P95 column header');
   assert.ok(html.includes('>样本<'), 'sample column header');
   assert.ok(html.includes('>状态<'), 'status column header');
-  assert.ok(html.includes('code-max'), 'model name present');
+  assert.ok(html.includes('max'), 'model name present');
   assert.ok(html.includes('model-status'), 'status class present');
 });
 

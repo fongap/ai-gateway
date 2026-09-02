@@ -470,6 +470,7 @@ function publicModelStatus(nodes, env, evidence = new Set(), now = Date.now()) {
 
 const STATE_LABEL = { available: '可用', unobserved: '未观测', degraded: '波动', unavailable: '不可用' };
 const GENERAL_PREFIX = 'general-';
+const CODE_PREFIX = 'code-';
 
 function fmtModelTtft(modelTtft) {
   if (!modelTtft || modelTtft.available === false) return { p50: '--', p95: '--', samples: 0, insufficient: true };
@@ -486,6 +487,7 @@ function renderModels(models, ttft) {
   const allModels = [];
   for (const m of models) {
     if (m.id.toLowerCase().startsWith(GENERAL_PREFIX)) continue;
+    if (m.id.toLowerCase().startsWith(CODE_PREFIX)) continue;
     allModels.push(m);
   }
   if (!allModels.length) {
@@ -498,8 +500,8 @@ function renderModels(models, ttft) {
     return `<div class="model-item">` +
       `<span class="model-name">${escapeHtml(m.id)}</span>` +
       `<span class="model-status ${m.status}"><i class="dot ${m.status}" aria-hidden="true"></i>${label}</span>` +
-      `<span class="model-perf">P50 ${t.p50}</span>` +
-      `<span class="model-perf">P95 ${t.p95}</span>` +
+      `<span class="model-perf">${t.p50}</span>` +
+      `<span class="model-perf">${t.p95}</span>` +
       `<span class="model-samples" title="${escapeHtml(sampleTitle)}">${t.samples}</span>` +
       `<span class="sr-only">状态：${label}，TTFT P50 ${t.p50}，P95 ${t.p95}</span></div>`;
   }).join('');
