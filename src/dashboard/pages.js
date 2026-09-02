@@ -525,8 +525,17 @@ function fmtTokens(n) {
 }
 
 function fmtInt(n) {
-  return String(Math.trunc(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-}
+    return String(Math.trunc(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  }
+
+// Format TTFT milliseconds into human-friendly string.
+function fmtTtft(ms) {
+    if (!Number.isFinite(ms) || ms < 0) return '--';
+    if (ms < 1000) return `${ms}ms`;
+    const sec = ms / 1000;
+    if (Number.isInteger(sec)) return `${sec}s`;
+    return `${sec.toFixed(1)}s`;
+  }
 
 // Format a UTC+8 ISO date (YYYY-MM-DD) as "6月1日" for tooltip display.
 function fmtTooltipDate(iso) {
