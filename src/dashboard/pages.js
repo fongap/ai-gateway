@@ -859,6 +859,7 @@ ${quickHtml}`;
 
     return htmlResponse(shell({ title: 'AI Gateway · API 服务入口', body }));
   } catch (e) {
+    try { console.error('[dashboard] dashboardResponse error:', e?.message || e, e?.stack || ''); } catch { /* ignore */ }
     // Graceful degradation: return a minimal HTML page instead of a 500 JSON error
     // This ensures the public homepage never returns {"error":{"message":"Internal gateway error."}}
     const body = `
