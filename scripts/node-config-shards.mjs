@@ -40,7 +40,7 @@ export function shardKeyName(kind, tierNumber, index) {
     if (!VALID_TIER_PATTERN.test(String(tierNumber))) throw new Error(`Invalid tier number: ${tierNumber}`);
     return `TIER${tierNumber}_NODES_CONFIG_${pad(index)}`;
   }
-  if (kind === 'secret') {
+if (kind === 'secret') {
     if (!VALID_TIER_PATTERN.test(String(tierNumber))) throw new Error(`Invalid tier number: ${tierNumber}`);
     return `TIER${tierNumber}_NODES_SECRETS_${pad(index)}`;
   }
