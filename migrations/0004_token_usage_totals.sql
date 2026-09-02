@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS token_usage_totals (
 -- Backfill the single global totals row from the full historical hourly table.
 -- Migration runs exactly once; if the row already exists (re-run safety), the
 -- ON CONFLICT clause leaves it unchanged — the initial baseline is correct.
-INSERT INTO token_usage_totals (
+INSERT OR IGNORE INTO token_usage_totals (
     scope,
     input_tokens,
     output_tokens,
@@ -39,5 +39,4 @@ SELECT
     COALESCE(SUM(usage_reports), 0),
     COALESCE(SUM(usage_missing), 0),
     datetime('now')
-FROM token_usage_hourly
-ON CONFLICT(scope) DO NOTHING;
+FROM token_usage_hourly;
