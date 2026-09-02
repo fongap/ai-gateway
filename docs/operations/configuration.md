@@ -76,13 +76,13 @@ Anthropic 原生节点：
 | 变量 | 默认值 | 范围 | 说明 |
 |---|---|---|---|
 | `MAX_BODY_BYTES` | 20971520 | 1KB–100MB | 请求体限制 |
-| `UPSTREAM_HEADERS_TIMEOUT_MS` | 60000 | 5s–600s | 上游响应头超时 |
-| `FIRST_EVENT_TIMEOUT_MS` | 120000 | 5s–600s | 流式首事件超时 |
-| `STREAM_IDLE_TIMEOUT_MS` | 240000 | 10s–600s | 流块最大间隔 |
-| `RATE_LIMIT_COOLDOWN_MS` | 60000 | 1s–600s | 429 cooldown（无 Retry-After） |
+| `UPSTREAM_HEADERS_TIMEOUT_MS` | 15000 | 5s–600s | 上游响应头超时 |
+| `FIRST_EVENT_TIMEOUT_MS` | 30000 | 5s–600s | 流式首事件超时 |
+| `STREAM_IDLE_TIMEOUT_MS` | 120000 | 10s–600s | 流块最大间隔 |
+| `RATE_LIMIT_COOLDOWN_MS` | 30000 | 1s–600s | 429 cooldown（无 Retry-After） |
 | `AUTH_FAIL_COOLDOWN_MS` | 3600000 | 1min–7d | 401/403 credential cooldown |
-| `FAILOVER_BUDGET_MS` | 240000 | 5s–900s | 整请求 failover budget |
-| `HEDGE_DELAY_MS` | 6000 | 0s–600s | Reactive hedge delay；`0` 禁用 |
+| `FAILOVER_BUDGET_MS` | 60000 | 1s–900s | 整请求 failover budget |
+| `HEDGE_DELAY_MS` | 3000 | 0s–600s | Reactive hedge delay；`0` 禁用 |
 | `MAX_HEDGES_PER_REQUEST` | 1 | 0–3 | 每请求最大 hedge twin 数 |
 | `ALLOWED_ORIGIN` | *(unset)* | origin 或 `*` | CORS 默认关闭 |
 | `EXPOSE_UPSTREAM_INFO` | false | | 暴露上游节点/provider/tier |
@@ -90,10 +90,12 @@ Anthropic 原生节点：
 | `ALLOW_INSECURE_HTTP_UPSTREAM` | false | | 允许 http:// base_url |
 | `ANTHROPIC_COUNT_TOKENS_MODE` | approximate | approximate/disabled | 本地 token 计数 |
 | `LOG_LEVEL` | info | none/error/info/debug | 日志级别 |
+| `STREAM_INCLUDE_USAGE` | auto | auto/always/never | 是否在流式请求中携带 `stream_options.include_usage` |
+| `STREAM_USAGE_INCLUDE_OFF_PROVIDERS` | *(empty)* | provider 列表 | 按 provider 排除 usage hint |
 | `PROJECT_REPOSITORY_URL` | — | https URL | Dashboard 显示 |
 | `PROTOCOL_FALLBACKS` | *(unset)* | JSON object | 跨协议 fallback 链，仅支持 `{"anthropic:messages":["openai:chat_completions"]}` |
 
-运行时参数的唯一事实来源是 `src/config/runtime-vars.js`。超时/冷却默认值的唯一事实来源是 `src/config/timeouts.js`。
+运行时参数的唯一事实来源是 `src/config/runtime-vars.js`。
 
 ## limits.rpm 语义
 
