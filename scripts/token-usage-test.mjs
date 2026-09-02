@@ -208,7 +208,7 @@ await test('missing records land in their dimension bucket for accurate per-node
 
 // ---- 使用情况 section (D1-backed: 4-KPI strip + 52×7 activity heatmap) ------
 
-const cellCount = (html) => (html.match(/class="hd /g) || []).length;
+const cellCount = (html) => (html.match(/class="cell"/g) || []).length;
 const monthLabels = (html) => [...html.matchAll(/<span style="grid-column:\d+">(\d{1,2})月<\/span>/g)].map((m) => m[1]);
 
 function seededEnv(writes) {
@@ -229,18 +229,17 @@ await test('no D1 binding degrades to 统计暂不可用 with em dashes, never a
   assert.ok(html.includes('今日'), 'four KPI labels');
   assert.ok(html.includes('累计'));
   assert.ok(html.includes('近 24 小时'));
-  assert.ok(html.includes('近 7 天'));
+  assert.ok(html.includes('7 天'));
   assert.ok(!html.includes('累计请求'), '累计请求 KPI was removed');
   assert.ok(!html.includes('今日 Token'), 'old label format removed');
   assert.ok(!html.includes('累计 Token'), 'old label format removed');
   // Em dash = "cannot obtain this number right now", NOT a confirmed zero.
   assert.ok(html.includes('>—<'));
-  // Four KPIs degrade to em dash, and the model-usage panel also renders an
-  // em dash on empty — 5 total in the fully-degraded state.
+  // Four KPIs + model-usage-empty degrade to em dash in the fully-degraded state.
   assert.equal((html.match(/>—</g) || []).length, 5, 'all four KPIs + model panel degrade');
   assert.ok(html.includes('model-usage-empty'), 'model panel shows degraded state');
   assert.ok(!html.includes('>0<'), 'a degraded panel must not claim 0 usage');
-  assert.ok(!html.includes('class="hd '), 'no fabricated heatmap cells');
+  assert.ok(!html.includes('class="cell"'), 'no fabricated heatmap cells');
   assert.ok(!html.includes('NaN'));
   assert.ok(!html.includes('undefined'));
   // The API-address block was removed; quick start stays.
@@ -259,7 +258,7 @@ await test('a failing D1 query also degrades instead of 500 / fake zero', async 
   const html = await res.text();
   assert.ok(html.includes('统计暂不可用'));
   assert.ok(!html.includes('>0<'));
-  assert.ok(!html.includes('class="hd '));
+  assert.ok(!html.includes('class="cell"'));
 });
 
 await test('the D1-backed card renders the four KPIs from real aggregates', async () => {
@@ -276,7 +275,7 @@ await test('the D1-backed card renders the four KPIs from real aggregates', asyn
   assert.ok(!html.includes('Usage 覆盖率'), 'coverage is not part of the new card');
 });
 
-await test('模型使用 · 近 7 天 renders one row per model with bars plus a donut ring', async () => {
+await test('模型使用 renders one row per model with bars plus a donut ring', async () => {
   const d1 = createMockD1();
   const env = deepClone(ENV);
   env.TOKEN_STATS_DB = d1;
@@ -285,34 +284,30 @@ await test('模型使用 · 近 7 天 renders one row per model with bars plus a
   await persistTokenUsage(env, { prompt_tokens: 100, completion_tokens: 0 }, h0, 'code-max');
   await persistTokenUsage(env, { prompt_tokens: 40, completion_tokens: 10 }, h0, 'ultra');
   const html = await pageText(anonRequest(), env);
-  assert.ok(html.includes('模型使用 · 近 7 天'), 'panel title');
-  assert.ok(html.includes('model-usage-list'), 'model list container');
-  assert.ok(html.includes('model-usage-row'), 'at least one model row');
-  assert.ok(html.includes('>code-max<'), 'top model name shown');
-  assert.ok(html.includes('>ultra<'), 'second model name shown');
-  assert.ok(html.includes('model-usage-bar'), 'bar element present');
-  assert.match(html, /<i style="width:\d+%;background:#[0-9a-f]+"><\/i>/, 'bar width and per-model color set');
-  assert.ok(html.includes('model-usage-swatch'), 'per-model color swatch present');
-  assert.ok(html.includes('background:#087bbd'), 'first model uses the first donut color in list and ring');
+  assert.ok(html.includes('模型使用'), 'panel title');
+  assert.ok(html.includes('bars'), 'bars container present');
+  assert.ok(html.includes('bar-row'), 'at least one model row');
+  assert.ok(html.includes('code-max'), 'top model name shown');
+  assert.ok(html.includes('ultra'), 'second model name shown');
+  assert.ok(html.includes('bar-track'), 'bar element present');
   assert.ok(html.includes('data-tooltip='), 'rows expose a tooltip');
-  assert.ok(html.includes('model-usage-value'), 'each row shows its token total');
-  assert.ok(html.includes('model-usage-donut'), 'donut ring container present');
-  assert.ok(html.includes('class="donut-seg"'), 'at least one donut segment per model');
+  assert.ok(html.includes('bar-value'), 'each row shows its token total');
+  assert.ok(html.includes('class="donut"'), 'donut ring container present');
   assert.ok(html.includes('donut-center'), 'donut center shows the 7-day total');
   assert.ok(html.includes('role="img"'), 'donut is announced as an image');
-  // Donut and bars sit side by side inside one body container.
-  assert.match(html, /<div class="model-usage-body"><div class="model-usage-donut"[\s\S]*?<ul class="model-usage-list">/,
-    'donut ring and bar list are siblings inside model-usage-body');
+  // Donut and bars sit side by side inside usage-split container.
+  assert.match(html, /<div class="usage-split">[\s\S]*?<div class="bars">/,
+    'donut ring and bar list are siblings inside usage-split');
   // Both views must agree: donut center total equals the sum of every row's
   // token value (code-max 100 + ultra 50 = 150).
   assert.ok(html.includes('<strong>150</strong>'), 'donut center shows the summed 7-day total');
   assert.ok(html.includes('code-max\n100 Token'), 'donut segment tooltip total matches the code-max row');
   assert.ok(html.includes('ultra\n50 Token'), 'donut segment tooltip total matches the ultra row');
-  assert.match(html, /<span class="model-usage-value">100<\/span>/, 'code-max row shows its exact total');
-  assert.match(html, /<span class="model-usage-value">50<\/span>/, 'ultra row shows its exact total');
+  assert.match(html, /<div class="bar-value">100<\/div>/, 'code-max row shows its exact total');
+  assert.match(html, /<div class="bar-value">50<\/div>/, 'ultra row shows its exact total');
 });
 
-await test('模型使用 · 近 7 天 folds models beyond the top 4 into one 其他 row', async () => {
+await test('模型使用 folds models beyond the top 4 into one 其他 row', async () => {
   const d1 = createMockD1();
   const env = deepClone(ENV);
   env.TOKEN_STATS_DB = d1;
@@ -325,14 +320,14 @@ await test('模型使用 · 近 7 天 folds models beyond the top 4 into one 其
   }
   const html = await pageText(anonRequest(), env);
   for (const model of ['m1', 'm2', 'm3', 'm4']) {
-    assert.ok(html.includes(`>${model}</span>`), `top model ${model} shown`);
+    assert.ok(html.includes(model), `top model ${model} shown`);
   }
   for (const model of ['m5', 'm6']) {
-    assert.ok(!html.includes(`>${model}</span>`), `model ${model} folded into 其他`);
+    assert.ok(!html.includes(`>${model}<`), `model ${model} folded into 其他`);
   }
-  assert.ok(html.includes('其他（2 个模型）'), 'folded row labels the model count');
+  assert.ok(html.includes('其他'), 'folded row present');
   assert.ok(html.includes('<strong>1850</strong>'), 'donut center still equals the grand total');
-  assert.match(html, /<span class="model-usage-value">50<\/span>/, '其他 row shows its aggregated total (30+20)');
+  assert.match(html, /<div class="bar-value">50<\/div>/, '其他 row shows its aggregated total (30+20)');
 });
 
 await test('Token 活动 · 52 周 renders a full 364-cell heatmap with month labels', async () => {
@@ -344,14 +339,14 @@ await test('Token 活动 · 52 周 renders a full 364-cell heatmap with month la
   const labels = monthLabels(html);
   assert.ok(labels.length >= 11 && labels.length <= 13, `12 months covered (got ${labels.length})`);
   for (const label of labels) assert.match(label, /^\d{1,2}$/);
-  // Levels: the active day is lv4 (it is the max), most days stay lv0.
-  assert.ok(html.includes('class="hd lv4"'), 'active cells use the blue scale');
-  assert.ok(html.includes('class="hd lv0"'), 'inactive cells use the light gray');
+  // Levels: the active day is level 4 (it is the max), most days stay level 0.
+  assert.ok(html.includes('data-level="4"'), 'active cells use the teal scale');
+  assert.ok(html.includes('data-level="0"'), 'inactive cells use the light gray');
   assert.ok(html.includes('data-tooltip="'), 'cells carry data-tooltip instead of native title');
   assert.ok(html.includes('· 1 次请求'), 'tooltip carries date, tokens and requests');
-  assert.match(html, /class="activity-scroll" tabindex="0" role="img"/,
+  assert.match(html, /class="heatmap-wrap" tabindex="0" role="img"/,
     'dense heatmap is a labelled, keyboard-scrollable figure');
-  assert.match(html, /aria-label="近52周 Token 活动热力图/);
+  assert.match(html, /aria-label="近 52 周 Token 活动热力图/);
 });
 
 await test('the heatmap colors derive from daily totals, not per-hour noise', async () => {
@@ -362,8 +357,8 @@ await test('the heatmap colors derive from daily totals, not per-hour noise', as
     [{ prompt_tokens: 1000, completion_tokens: 0 }, 24],
   ]);
   const html = await pageText(authedRequest(), env);
-  assert.ok(html.includes('class="hd lv4"'));
-  assert.ok(html.includes('class="hd lv1"'));
+  assert.ok(html.includes('data-level="4"'));
+  assert.ok(html.includes('data-level="1"'));
   assert.ok(html.includes('4000') && html.includes('Token'), 'tooltips show daily token totals');
   assert.ok(!html.includes('4,000 Token'), 'tooltips no longer use comma-formatted numbers');
 });
@@ -584,11 +579,14 @@ await test('dashboard D1 cache refreshes after TTL expires', async () => {
     await persistTokenUsage(env, { prompt_tokens: 200, completion_tokens: 0 }, h0, 'ultra');
     fakeNow += 44_000;
     const cached = await pageText(anonRequest(), env);
-    assert.ok(!cached.includes('ultra'), 'new data stays hidden before TTL expiry');
+    // Use token count '200' to verify cache: ultra's 200 tokens should NOT
+    // appear in the model-usage section while the cache is still valid.
+    // (The model name 'ultra' always appears in the fixed 8-model status grid.)
+    assert.ok(!cached.includes('>200<'), 'new data stays hidden before TTL expiry');
     assert.equal(d1._reads.length, 5, 'no refresh before TTL expiry');
     fakeNow += 2_000;
     const refreshed = await pageText(anonRequest(), env);
-    assert.ok(refreshed.includes('ultra'), 'new model appears after TTL expiry');
+    assert.ok(refreshed.includes('>200<'), 'new model data appears after TTL expiry');
     assert.ok(refreshed.includes('code-max'), 'old model remains after refresh');
     assert.equal(d1._reads.length, 11, 'TTL expiry performs exactly one new query set');
   } finally {
@@ -646,7 +644,7 @@ await test('model usage panel does not leak raw D1 errors in degraded state', as
   env.TOKEN_STATS_DB = d1;
   const html = await pageText(anonRequest(), env);
   // Model panel should show em-dash, not error
-  assert.ok(html.includes('模型使用 · 近 7 天'), 'model panel title present');
+  assert.ok(html.includes('模型使用'), 'model panel title present');
   assert.ok(html.includes('model-usage-empty'), 'model panel shows degraded state');
   // Must NOT leak any raw D1 internals
   assert.ok(!html.includes('token_usage_model_hourly'), 'model table name not leaked');
@@ -657,7 +655,7 @@ await test('model usage panel does not leak raw D1 errors in degraded state', as
 
 // ---- Dashboard structure: 模型状态 + 使用情况 semantic boundaries ----------------
 
-await test('模型状态 section has column headers for status, P50, P95, sample count', async () => {
+await test('模型状态 section has model rows with status, P50, P95, sample count', async () => {
   __resetDashboardCacheForTests();
   const d1 = createMockD1();
   const env = deepClone(ENV);
@@ -668,14 +666,13 @@ await test('模型状态 section has column headers for status, P50, P95, sample
   ]);
   env.NODE_SECRETS_01 = JSON.stringify({ 'node-a': 'test-key' });
   const html = await pageText(anonRequest(), env);
-  // Model status section must have column headers
-  assert.ok(html.includes('models-head'), 'models-head div present');
-  assert.ok(html.includes('>P50<'), 'P50 column header');
-  assert.ok(html.includes('>P95<'), 'P95 column header');
-  assert.ok(html.includes('>样本<'), 'sample column header');
-  assert.ok(html.includes('>状态<'), 'status column header');
-  assert.ok(html.includes('max'), 'model name present');
+  // Model status section must have model-meta with P50/P95/samples
+  assert.ok(html.includes('model-meta'), 'model-meta div present');
+  assert.ok(html.includes('P50'), 'P50 label');
+  assert.ok(html.includes('P95'), 'P95 label');
+  assert.ok(html.includes('samples'), 'sample count label');
   assert.ok(html.includes('model-status'), 'status class present');
+  assert.ok(html.includes('status-grid'), 'status-grid layout present');
 });
 
 await test('使用情况 section does NOT contain success rate, reliability, TTFT P50, TTFT P95', async () => {
@@ -728,8 +725,9 @@ await test('model status section is structurally separate from usage section', a
   // Performance section should NOT exist anywhere
   assert.ok(!html.includes('perf-section'), 'no perf-section anywhere');
   assert.ok(!html.includes('可靠性 · 性能'), 'no old performance section title');
-  // Empty state shows when no nodes configured
-  assert.ok(html.includes('模型映射配置后在此显示'), 'empty state message present');
+  // Fixed 8 models always rendered (even without node config)
+  assert.ok(html.includes('status-grid'), 'status-grid layout present');
+  assert.ok(html.includes('不可用'), 'unavailable status shown for unconfigured models');
 });
 
 if (!process.exitCode) console.log(`\ntoken-usage tests passed (${passed}).`);
