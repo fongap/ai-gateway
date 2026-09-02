@@ -77,6 +77,7 @@ section{padding:48px 0;border-top:1px solid var(--line)}
 .model-meta b{color:var(--ink-2);font-weight:500;font-variant-numeric:tabular-nums}
 .model-status{display:inline-flex;align-items:center;gap:7px;color:var(--ink-2);font-size:12px;white-space:nowrap}
 .model-status::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--teal-4);box-shadow:0 0 0 3px var(--teal-soft)}
+.model-status.available::before{background:var(--teal-4);box-shadow:0 0 0 3px var(--teal-soft)}
 .model-status.warn::before{background:var(--amber);box-shadow:0 0 0 3px #f3e8d9}
 .model-status.down::before{background:var(--red);box-shadow:0 0 0 3px #f1e1df}
 

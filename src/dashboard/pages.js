@@ -94,6 +94,14 @@ function showTip(target){
   if(top<4)top=4;
   if(left<4)left=4;
   if(left+tw>window.innerWidth-4)left=window.innerWidth-tw-4;
+  var section=target.closest('section')||target.closest('.heatmap-wrap');
+  if(section){
+    var sr=section.getBoundingClientRect();
+    if(top<sr.top)top=sr.top+4;
+    if(top+th>sr.bottom)top=sr.bottom-th-4;
+    if(left<sr.left)left=sr.left+4;
+    if(left+tw>sr.right)left=sr.right-tw-4;
+  }
   tipEl.style.left=left+'px';tipEl.style.top=top+'px';
 }
 function hideTip(){tipEl.classList.remove('show');tipEl.textContent='';}
@@ -133,7 +141,7 @@ function shell({ title, body }) {
 
 <footer>
   <div class="wrap footer-row">
-    <span>© 2026 Fongap Studio</span>
+    <span>© 2026 <a href="https://www.fongap.com/" target="_blank" rel="noopener noreferrer">Fongap Studio</a></span>
     <span class="footer-sep" aria-hidden="true">·</span>
     <span>保持一个端点，应对所有变化</span>
   </div>
