@@ -1725,8 +1725,9 @@ await test('public home: brand & GitHub once, model status flat list, no protoco
   }), env, {});
   assert.equal(res.status, 200);
   const html = await res.text();
-  // Brand only in the header; never repeated in body.
-  assert.equal(html.split('Smart AI Gateway').length - 1, 1, 'Smart AI Gateway must appear exactly once');
+  // Brand visible only in the header; <title>, <meta description>, aria-label are
+  // standard SEO/accessibility and not counted as body repetition.
+  assert.equal(html.split('<span class="brand-name">Smart AI Gateway</span>').length - 1, 1, 'Smart AI Gateway brand must appear exactly once');
   // GitHub only in the header (footer clone removed).
   assert.equal(html.split('github.com').length - 1, 1, 'GitHub must appear exactly once');
   // GitHub icon is SVG-only, no "GitHub" text label.

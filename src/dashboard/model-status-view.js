@@ -70,8 +70,15 @@ function renderFixedGroup(order, statusMap, ttft, title) {
 
 export function renderModels(models, ttft) {
   // Build a lookup map from the live status data.
+  // Register both raw id and general-prefixed form so the fixed display grid
+  // (which uses general-air etc.) can find status for bare registry ids like 'air'.
   const statusMap = new Map();
-  for (const m of models) statusMap.set(m.id, m);
+  for (const m of models) {
+    statusMap.set(m.id, m);
+    if (!m.id.startsWith('general-') && !m.id.startsWith('code-')) {
+      statusMap.set(GENERAL_PREFIX + m.id, m);
+    }
+  }
 
   const generalHtml = renderFixedGroup(GENERAL_MODEL_ORDER, statusMap, ttft, '通用模型');
   const codeHtml = renderFixedGroup(CODE_MODEL_ORDER, statusMap, ttft, '编程模型');
