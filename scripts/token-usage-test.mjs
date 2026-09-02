@@ -666,6 +666,8 @@ await test('模型状态 section has model rows with status, P50, P95, sample co
   const d1 = createMockD1();
   const env = deepClone(ENV);
   env.TOKEN_STATS_DB = d1;
+  // Declare 'max' in the Model Registry so it appears in the public catalog
+  env.MODELS_CONFIG = JSON.stringify({ max: { policy: 'fast' } });
   // Provide node config so models appear in the status section
   env.TIER1_NODES_CONFIG_01 = JSON.stringify([
     { id: 'node-a', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], base_url: 'https://a.example.com/v1', models: { 'max': 'up-max' }, limits: { concurrency: 1 } },
@@ -721,6 +723,9 @@ await test('model status section is structurally separate from usage section', a
   const d1 = createMockD1();
   const env = deepClone(ENV);
   env.TOKEN_STATS_DB = d1;
+  // Declare a model in the registry without a serving node so it shows as
+  // unavailable — validating the registry-only public catalog rule.
+  env.MODELS_CONFIG = JSON.stringify({ 'unconfigured-model': { policy: 'fast' } });
   const html = await pageText(anonRequest(), env);
   // Both sections exist as separate <section> elements
   const modelStatusIdx = html.indexOf('模型状态');
@@ -731,7 +736,8 @@ await test('model status section is structurally separate from usage section', a
   // Performance section should NOT exist anywhere
   assert.ok(!html.includes('perf-section'), 'no perf-section anywhere');
   assert.ok(!html.includes('可靠性 · 性能'), 'no old performance section title');
-  // Fixed 8 models always rendered (even without node config)
+  // Registry models without serving nodes still appear in the public catalog,
+  // rendered as '不可用' (unavailable).
   assert.ok(html.includes('status-grid'), 'status-grid layout present');
   assert.ok(html.includes('不可用'), 'unavailable status shown for unconfigured models');
 });

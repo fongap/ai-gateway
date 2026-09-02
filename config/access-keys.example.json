@@ -1,0 +1,14 @@
+{
+  "keys": [
+    {
+      "key_id": "prod",
+      "secret": "sk-prod-abcdef123456",
+      "models": ["code-pro", "general-air"]
+    },
+    {
+      "key_id": "admin",
+      "secret": "sk-admin-zzzz",
+      "models": ["*"]
+    }
+  ]
+}

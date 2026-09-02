@@ -283,5 +283,5 @@ async function loadDashboardStats(env, now) {
   for (let i = 0; i < topModels.length; i++) {
     ttft.set(topModels[i], ttftResults[i]);
   }
-  return { summary, daily, modelUsage, recentEvidence, ttft };
+  return { summary, daily, modelUsage, recentEvidence, ttft, observedAt: new Date(now).toISOString() };
 }

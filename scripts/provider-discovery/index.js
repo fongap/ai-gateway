@@ -54,3 +54,12 @@ export {
   loadSnapshotFromFile,
   loadRuntimeViewFromFile,
 } from './load-snapshot.js';
+
+export {
+  isDangerousHost,
+  isSafeDiscoveryUrl,
+  redirectTargetIsSafe,
+  readBoundedResponseText,
+  enforceMaxModelCount,
+  DISCOVERY_LIMITS,
+} from './ssrf-guard.js';

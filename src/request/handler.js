@@ -74,7 +74,8 @@ import { recordTokenUsage } from '../observability/token-usage.mjs';
 import { persistTokenUsage } from '../observability/token-usage-store.mjs';
 import { streamUsageSupported } from '../config/provider-quirks.js';
 import { dashboardResponse } from '../dashboard/pages.js';
-import { isAuthorized } from './auth.js';
+import { authorize } from './auth.js';
+import { keyAllowsModel } from '../config/access-keys.js';
 import { gatewayError, buildBudgetExhaustedResponse, buildExhaustedResponse, buildClientErrorResponse } from './errors.js';
 import { TIER_ORDER, normalizePath, detectRoute, acceptsHtml } from './router.js';
 import { finalHeaders, jsonResponse, streamInterruptionChunk, upstreamModelOf } from './response-helpers.js';
@@ -119,12 +120,20 @@ export async function handleRequest(request, env, ctx) {
     return dashboardResponse(request, env);
   }
 
-  const accessKey = typeof env?.GATEWAY_ACCESS_KEY === 'string' ? env.GATEWAY_ACCESS_KEY : '';
-  if (!accessKey && route !== 'version') {
-    return gatewayError(request, env, route, 500, 'Gateway misconfigured: GATEWAY_ACCESS_KEY is not set.', requestId);
+  // ---- Authorization (multi-key fail-closed or legacy single key) ----
+  const hasMultiKeys = typeof env?.ACCESS_KEYS_CONFIG === 'string' && env.ACCESS_KEYS_CONFIG.trim();
+  const hasLegacyKey = typeof env?.GATEWAY_ACCESS_KEY === 'string' && env.GATEWAY_ACCESS_KEY;
+  if (!hasMultiKeys && !hasLegacyKey && route !== 'version') {
+    return gatewayError(request, env, route, 500, 'Gateway misconfigured: no ACCESS_KEYS_CONFIG or GATEWAY_ACCESS_KEY is set.', requestId);
   }
-  if (route !== 'version' && !(await isAuthorized(request, accessKey))) {
+  const authResult = route !== 'version' ? await authorize(request, env) : { authorized: true, mode: 'skip' };
+  if (route !== 'version' && !authResult.authorized) {
     return gatewayError(request, env, route, 401, 'Unauthorized: gateway access key is invalid or missing.', requestId);
+  }
+  // Log only the low-cardinality, non-secret key_id. Never log the raw key,
+  // prefix, Authorization header, or any digest.
+  if (authResult.keyId) {
+    logger.info('request authorized', { key_id: authResult.keyId, request_id: requestId });
   }
 
   switch (route) {
@@ -183,6 +192,18 @@ export async function handleRequest(request, env, ctx) {
   const fakeStream = route === 'openai_chat'
     && String(env?.FAKE_STREAM_PROTECTION ?? '').trim().toLowerCase() === 'true'
     && !clientWantsStream;
+
+  // ---- Per-key model allowlist (fail closed) ----
+  // Authorization failure must be distinct from scheduler failure: a key
+  // without permission for this model gets a stable 403, never a misleading
+  // "all nodes failed" or a 404 that enumerates internal topology. This also
+  // avoids leaking whether an internal model exists.
+  if (authResult.mode === 'multi' && !authResult.allowAll) {
+    const allowlist = authResult.allowlist || new Set();
+    if (!allowlist.has(requestedModel)) {
+      return gatewayError(request, env, route, 403, 'Forbidden: the provided key is not permitted to use this model.', requestId);
+    }
+  }
 
   // ---- Candidate pool ----
   const config = loadGatewayConfig(env);

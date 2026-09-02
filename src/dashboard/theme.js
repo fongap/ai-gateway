@@ -64,6 +64,7 @@ header{padding:26px 0 0}
 section{padding:48px 0;border-top:1px solid var(--line)}
 .section-head{display:flex;align-items:baseline;justify-content:space-between;gap:20px;margin-bottom:24px}
 .section-title{font-size:14px;font-weight:600;letter-spacing:.015em}
+.section-sub{margin-left:auto;color:var(--ink-3);font-size:12px;white-space:nowrap}
 
 /* model status */
 .status-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 56px}

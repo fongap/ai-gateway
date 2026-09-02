@@ -16,7 +16,9 @@
 import { readEnv } from './env.js';
 
 const CAPABILITY_KEYS = ['tools', 'reasoning', 'vision', 'stream'];
-const ALLOWED_ENTRY_FIELDS = new Set(['policy', 'capabilities', 'reasoning_efforts']);
+const ALLOWED_ENTRY_FIELDS = new Set(['policy', 'capabilities', 'reasoning_efforts', 'visibility']);
+const VALID_VISIBILITY = new Set(['public', 'internal']);
+const DEFAULT_VISIBILITY = 'public';
 
 let cachedEnv;
 let cached;
@@ -61,12 +63,20 @@ function analyzeModels(env) {
         // `policy` participates only when explicitly configured; a present
         // value (null included) must be a non-empty string. Unknown policy
         // names are cross-checked against POLICIES_CONFIG by nodes.js.
-        const entry = { policy: 'default' };
+        const entry = { policy: 'default', visibility: DEFAULT_VISIBILITY };
         if (config.policy !== undefined) {
           if (typeof config.policy === 'string' && config.policy.trim()) {
             entry.policy = config.policy.trim();
           } else {
             errors.push(`MODELS_CONFIG: model "${name}": policy must be a non-empty string`);
+          }
+        }
+        const vis = config.visibility;
+        if (vis !== undefined) {
+          if (!VALID_VISIBILITY.has(vis)) {
+            errors.push(`MODELS_CONFIG: model "${name}": visibility must be "public" or "internal"`);
+          } else {
+            entry.visibility = vis;
           }
         }
         const caps = config.capabilities;

@@ -55,7 +55,8 @@ const ENV = { GATEWAY_ACCESS_KEY: 'k', MODELS_CONFIG: JSON.stringify({ air: { po
 const node = (id, models) => ({ id, provider: 'mock', tier: 'tier-1', protocol: 'openai', surfaces: ['chat_completions'], base_url: `https://${id}.example.com/v1`, models, limits: { concurrency: 1 } });
 const now = () => 1_700_000_000_000;
 
-function findModelStatus(list, id) {
+function findModelStatus(result, id) {
+  const list = Array.isArray(result) ? result : (result?.models || []);
   const entry = list.find((m) => m.id === id);
   if (!entry) throw new Error(`no model ${id} in result`);
   return entry.status;
@@ -138,13 +139,14 @@ test('one available + one cooling + D1 -> available', () => {
 
 // --- 8. No serving node => unavailable ---------------------------------------
 
-test('no configured node serves this model -> unavailable', () => {
-  const nodes = [node('a', { max: 'up-max' })]; // serves max, not air
+test('node-only model is never listed: undeclared in registry is not public', () => {
+  const nodes = [node('a', { max: 'up-max' })]; // serves max, but max is NOT in MODELS_CONFIG
   const list = getPublicModelStatus(nodes, ENV, new Set(['air', 'max']), now());
-  // air has no node at all -> unavailable (not degraded)
+  // air has no node at all but IS in the registry -> unavailable (not degraded)
   assert.equal(findModelStatus(list, 'air'), 'unavailable');
-  // max has a node and recent evidence
-  assert.equal(findModelStatus(list, 'max'), 'available');
+  // max exists only in a node mapping, not the registry -> NOT in the public catalog.
+  const ids = list.models.map((m) => m.id);
+  assert.ok(!ids.includes('max'), 'a node-mapped model not in the registry must not appear');
 });
 
 // --- 9. Wildcard node: serves all models -------------------------------------
@@ -168,7 +170,8 @@ test('output is sorted by logical model name', () => {
     }),
   };
   const list = getPublicModelStatus(nodes, env, new Set(), now());
-  assert.deepEqual(list.map((m) => m.id), ['alpha', 'mid', 'zeta']);
+  assert.deepEqual(list.models.map((m) => m.id), ['alpha', 'mid', 'zeta']);
+  assert.equal(list.observed_at, new Date(now()).toISOString(), 'envelope carries observed_at');
 });
 
 // --- 11. Public-safety: no node ids / providers / tiers in output ------------
@@ -194,11 +197,13 @@ test('empty node list -> all models unavailable', () => {
 
 // --- 13. Edge: null/undefined env handling -----------------------------------
 
-test('null env (e.g. test isolation) does not throw', () => {
+test('null env (e.g. test isolation) does not throw and lists nothing', () => {
   const nodes = [node('a', { air: 'up-air' })];
-  const list = getPublicModelStatus(nodes, null, new Set(), now());
-  // Without a registry, only the node-served model appears; air is unobserved.
-  assert.equal(findModelStatus(list, 'air'), 'unobserved');
+  const result = getPublicModelStatus(nodes, null, new Set(), now());
+  // Without a registry there is no public model set — node mappings alone
+  // never create public models.
+  assert.ok(Array.isArray(result.models));
+  assert.equal(result.models.length, 0, 'no registry -> no public catalog');
 });
 
 // --- 14. Edge: half-open state treated as unobserved ------------------------
@@ -321,8 +326,8 @@ test('output only ever returns the four documented status values', () => {
   const seen = new Set();
   for (const evidence of [new Set(), new Set(['air']), new Set(['air', 'max']), new Set(['max'])]) {
     for (const arr of [nodes, [], [node('a', { air: 'up-air' })]]) {
-      for (const list of [getPublicModelStatus(arr, ENV, evidence, now())]) {
-        for (const m of list) seen.add(m.status);
+      for (const result of [getPublicModelStatus(arr, ENV, evidence, now())]) {
+        for (const m of result.models) seen.add(m.status);
       }
     }
   }

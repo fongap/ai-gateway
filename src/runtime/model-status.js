@@ -74,31 +74,30 @@ export const MODEL_STATUS_RECENT_WINDOW_MS = 24 * 3600_000;
 //   now       : Optional clock for deterministic tests.
 //
 // Output:
-//   [ { id: 'air', status: 'available' | 'degraded' | 'unobserved' | 'unavailable' }, ... ]
+//   { observed_at: <ISO string>, models: [ { id, status }, ... ] }
 //
-// The list is sorted by logical model name for stable rendering. No node ids,
-// providers, tiers, counts or durations leave this function.
+// The list is sorted by logical model id for stable rendering. No node ids,
+// providers, tiers, counts or durations leave this function, and node
+// mappings never contribute a model name — the Model Registry is the only
+// source of the public model set. A node can only decide whether it can serve
+// a registry model; it can never make an undeclared model public.
 export function getPublicModelStatus(nodes, env, evidence = new Set(), now = Date.now()) {
-  // Model set = Model Registry (primary) ∪ node mappings. A model declared
-  // in MODELS_CONFIG with no serving node is unreachable and the dashboard
-  // does not list it, but a model that is only in MODELS_CONFIG AND has a
-  // wildcard node serving all models IS reachable, so we union both sources.
   const names = new Set();
   if (env) {
     try {
-      for (const name of Object.keys(loadModelRegistry(env))) names.add(name);
-    } catch { /* registry not loadable in this env — fall back to node mappings */ }
-  }
-  for (const node of nodes || []) {
-    for (const key of Object.keys(node.models || {})) names.add(key);
+      const registry = loadModelRegistry(env);
+      for (const [name, entry] of Object.entries(registry)) {
+        if (entry.visibility !== 'internal') names.add(name);
+      }
+    } catch { /* registry not loadable in this env — fall back to the empty set */ }
   }
   const evidenceSet = evidence instanceof Set ? evidence : new Set();
-  const list = [];
+  const models = [];
   for (const name of [...names].sort()) {
     const serving = (nodes || []).filter((n) => servesModel(n, name));
-    list.push({ id: name, status: modelStatus(name, serving, evidenceSet, now) });
+    models.push({ id: name, status: modelStatus(name, serving, evidenceSet, now) });
   }
-  return list;
+  return { observed_at: new Date(now).toISOString(), models };
 }
 
 // Compute the status of one logical model.

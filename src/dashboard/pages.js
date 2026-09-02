@@ -6,7 +6,7 @@
 // Quiet Technical Interface — a warm, flat, restrained design:
 //   Header     — δ Smart AI Gateway | GitHub
 //   Hero       — 一个入口，应对所有变化
-//   模型状态   — 8 fixed models (general-air…ultra + code-air…ultra)
+//   模型状态   — 动态模型列表（按 Logical Model ID 排序）
 //   使用情况   — 4-column KPI + 52×7 heatmap + model usage donut/bars
 //   快速开始   — OpenAI / Anthropic tabbed code snippets
 //   Footer     — © 2026 Fongap Studio · tagline
@@ -159,30 +159,36 @@ export async function dashboardResponse(request, env) {
     const recentEvidence = stats.recentEvidence instanceof Set
       ? stats.recentEvidence
       : new Set();
-    const models = publicModelStatus(config.nodes || [], env, recentEvidence, now);
+    // Use the cached stats' observation time as the status clock so concurrent
+    // loads within the 45s cache window render byte-identical output and the
+    // freshness timestamp reflects when the data was actually observed.
+    const statusNow = typeof stats.observedAt === 'string'
+      ? new Date(stats.observedAt).getTime()
+      : now;
+    const models = publicModelStatus(config.nodes || [], env, recentEvidence, statusNow);
     const apiBase = `${new URL(request.url).origin}/v1`;
 
     const modelsResult = renderModels(models, stats.ttft);
     const usageHtml = await usageSection(env, now, stats);
     const quickHtml = quickStartSection(apiBase);
 
-    const body = `
-  <div class="hero wrap">
-    <h1>一个入口，应对所有变化</h1>
-    <p>聚合不同模型、协议与供应商，在变化的上游之上，保持一个稳定、简洁的 API 入口。</p>
-  </div>
-
-  <section id="status">
-    <div class="wrap">
-      <div class="section-head">
-        <span class="section-title">模型状态</span>
-      </div>
-      ${modelsResult.html}
-    </div>
-  </section>
-
-${usageHtml}
-${quickHtml}`;
+    const body = [
+      '<div class="hero wrap">',
+      '  <h1>一个入口，应对所有变化</h1>',
+      '  <p>聚合不同模型、协议与供应商，在变化的上游之上，保持一个稳定、简洁的 API 入口。</p>',
+      '</div>',
+      '<section id="status">',
+      '  <div class="wrap">',
+      '    <div class="section-head">',
+      '      <span class="section-title">模型状态</span>',
+      '      ' + (modelsResult.observedAt ? '<span class="section-sub">状态信息更新于 ' + escapeHtml(modelsResult.observedAt) + '</span>' : '<span class="section-sub">状态信息暂未更新</span>'),
+      '    </div>',
+      '    ' + modelsResult.html,
+      '  </div>',
+      '</section>',
+      usageHtml,
+      quickHtml,
+    ].join('\n');
 
     return htmlResponse(shell({ title: 'Smart AI Gateway', body }));
   } catch (e) {
