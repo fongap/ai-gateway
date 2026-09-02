@@ -22,14 +22,15 @@ checkout → setup Node → npm ci
   → Validate runtime configuration
   → Wrangler deploy --dry-run
   → Cloudflare authentication check
-  → Synchronize Worker Secrets
   → Apply D1 migrations (if TOKEN_STATS_D1_ID is set)
-  → Deploy Worker
+  → Deploy Worker (atomic code+secrets)
   → Verify deployed gateway
   → Deployment summary
 ```
 
 任何验证步骤失败都会阻止后续步骤——Worker、Secrets 和 D1 不会被触碰。
+
+部署现在是原子的：代码和 Secret 在同一次 `wrangler deploy --secrets-file` 操作中更新，确保它们属于同一 Worker version。
 
 ## GitHub Variables
 
@@ -89,8 +90,8 @@ npm run config:check -- \
 
 Deploy 工作流包含自动 Worker-code 回滚。如果 Worker 部署成功但 post-deploy health check 失败，自动运行 `wrangler rollback` 恢复之前版本。
 
-**回滚范围**：Worker code/version only
-**不回滚**：Worker variables、Worker secrets、D1 migrations
+**回滚范围**：Worker code/version only（包括通过 `--secrets-file` 部署的变量和 Secrets）
+**不回滚**：通过 `wrangler secret put` 等命令手动更新的 Secrets、D1 migrations
 
 ### 手动回滚
 

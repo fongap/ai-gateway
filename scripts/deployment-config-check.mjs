@@ -84,7 +84,7 @@ assert.match(workflowSource, /TIER1_NODES_CONFIG_01:/, 'deploy workflow must inj
 assert.match(workflowSource, /TIER1_AFFINITY_KV_ID:/, 'deploy workflow must inject the Tier 1 affinity KV namespace id');
 assert.match(workflowSource, /GATEWAY_CONFIG:/, 'deploy workflow must keep the legacy GATEWAY_CONFIG blob as a deprecated fallback');
 assert.match(workflowSource, /GATEWAY_SECRETS_CONFIG:/, 'deploy workflow must keep the legacy GATEWAY_SECRETS_CONFIG blob as a deprecated fallback');
-assert.match(workflowSource, /secret bulk/, 'deploy workflow must synchronize Worker Secrets');
+assert.match(workflowSource, /--secrets-file|secret bulk/, 'deploy workflow must deploy Worker Secrets (atomic via --secrets-file or legacy via secret bulk)');
 assert.match(workflowSource, /github-deployment-config\.mjs health-check/, 'deploy workflow must verify the deployed gateway over its public API');
 assert.doesNotMatch(workflowSource, /deploy[^\n]*--keep-vars/, 'CI deployment must not preserve Dashboard runtime-variable drift');
 assert.ok(fs.existsSync(path.join(root, 'scripts/github-deployment-config.mjs')), 'GitHub deployment config bridge is required');
