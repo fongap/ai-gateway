@@ -1743,7 +1743,8 @@ await test('public home: brand & GitHub once, model status flat list, no protoco
   assert.ok(!html.includes('智能边缘网关'), 'must not carry the old brand');
   // Accessibility and responsive structure: status is not color-only, tabs
   // expose their selected panel, and the dense heatmap has one concise label.
-  assert.match(html, /class="sr-only">状态：未观测/);
+  // Accessibility: status is not color-only (text label is visible).
+  assert.match(html, /model-status.*未观测/s);
   assert.match(html, /role="tab" aria-controls="pane-openai" aria-selected="true"/);
   assert.match(html, /id="pane-anthropic" role="tabpanel" aria-labelledby="tab-anthropic" hidden/);
   assert.match(html, /ArrowLeft/);

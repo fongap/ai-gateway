@@ -1,17 +1,22 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
 //
-// Public-safe model status rendering. The model status card on the public
-// dashboard collapses runtime availability + cross-isolate D1 evidence into
-// a single per-model row with a colored dot. No node ids, providers, tiers,
-// counts or durations ever leave this module.
+// Public-safe model status rendering.  The model status section on the public
+// dashboard shows a fixed set of 8 logical models in a stable order.  General-
+// prefix models display without the prefix (general-air → air).  No node ids,
+// providers, tiers, counts or durations ever leave this module.
 
 import { getPublicModelStatus } from '../runtime/model-status.js';
 import { escapeHtml, fmtTtft } from './format.js';
 
 const STATE_LABEL = { available: '可用', unobserved: '未观测', degraded: '波动', unavailable: '不可用' };
+const STATE_STYLE = { available: '', unobserved: ' warn', degraded: ' warn', unavailable: ' down' };
 const GENERAL_PREFIX = 'general-';
 const CODE_PREFIX = 'code-';
+
+// Fixed 8-model order — these positions are stable UI, never sorted dynamically.
+const GENERAL_MODEL_ORDER = ['general-air', 'general-pro', 'general-max', 'general-ultra'];
+const CODE_MODEL_ORDER = ['code-air', 'code-pro', 'code-max', 'code-ultra'];
 
 export function publicModelStatus(nodes, env, evidence = new Set(), now = Date.now()) {
   return getPublicModelStatus(nodes, env, evidence, now);
@@ -28,46 +33,49 @@ export function fmtModelTtft(modelTtft) {
   };
 }
 
-export function renderModelGroup(models, ttft, title) {
-  if (!models.length) return '';
-  const items = models.map((m) => {
-    const label = STATE_LABEL[m.status] || '不可用';
-    const t = fmtModelTtft(ttft?.get?.(m.id));
-    const sampleTitle = t.insufficient ? 'TTFT 样本不足' : `${t.samples} 个 TTFT 样本`;
-    return `<div class="model-item">` +
-      `<span class="model-name">${escapeHtml(m.id)}</span>` +
-      `<span class="model-status ${m.status}"><i class="dot ${m.status}" aria-hidden="true"></i>${label}</span>` +
-      `<span class="model-perf">${t.p50}</span>` +
-      `<span class="model-perf">${t.p95}</span>` +
-      `<span class="model-samples" title="${escapeHtml(sampleTitle)}">${t.samples}</span>` +
-      `<span class="sr-only">状态：${label}，TTFT P50 ${t.p50}，P95 ${t.p95}</span></div>`;
-  }).join('');
-  return `<div class="models-group">` +
-    `<div class="models-group-title">${escapeHtml(title)}</div>` +
-    `<div class="models-head"><b>模型</b><span>状态</span><span>P50</span><span>P95</span><span>样本</span></div>` +
-    `<div class="models-body">${items}</div></div>`;
+// Strip the general- prefix for display: general-air → air
+function displayName(id) {
+  if (id.toLowerCase().startsWith(GENERAL_PREFIX)) return id.slice(GENERAL_PREFIX.length);
+  return id;
 }
 
-// Split models into 通用模型 (non-code, non-general-prefix) and 编程模型
-// (code- prefix). general-* models are filtered out entirely; the dashboard
-// does not show them because they are administrative aliases.
+function renderModelRow(m, ttft) {
+  const label = STATE_LABEL[m.status] || '不可用';
+  const style = STATE_STYLE[m.status] || ' down';
+  const t = fmtModelTtft(ttft?.get?.(m.id));
+  const sampleTitle = t.insufficient ? 'TTFT 样本不足' : `${t.samples} 个 TTFT 样本`;
+  return `<div class="model-row">
+    <div>
+      <div class="model-name">${escapeHtml(displayName(m.id))}</div>
+      <div class="model-meta">
+        <span>P50 <b>${t.p50}</b></span>
+        <span>P95 <b>${t.p95}</b></span>
+        <span title="${escapeHtml(sampleTitle)}">${t.samples} samples</span>
+      </div>
+    </div>
+    <div class="model-status${style}">${label}</div>
+  </div>`;
+}
+
+function renderFixedGroup(order, statusMap, ttft, title) {
+  const rows = order.map((id) => {
+    const m = statusMap.get(id) || { id, status: 'unavailable' };
+    return renderModelRow(m, ttft);
+  }).join('');
+  return `<div class="status-block">
+    <div class="status-group-title">${escapeHtml(title)}</div>
+    ${rows}
+  </div>`;
+}
+
 export function renderModels(models, ttft) {
-  const general = [];
-  const code = [];
-  for (const m of models) {
-    if (m.id.toLowerCase().startsWith(GENERAL_PREFIX)) continue;
-    if (m.id.toLowerCase().startsWith(CODE_PREFIX)) {
-      code.push(m);
-    } else {
-      general.push(m);
-    }
-  }
-  if (!general.length && !code.length) {
-    return { html: `<div class="card models-card"><div class="empty">模型映射配置后在此显示。</div></div>` };
-  }
-  const html = `<div class="card models-card">` +
-    renderModelGroup(general, ttft, '通用模型') +
-    renderModelGroup(code, ttft, '编程模型') +
-    `</div>`;
+  // Build a lookup map from the live status data.
+  const statusMap = new Map();
+  for (const m of models) statusMap.set(m.id, m);
+
+  const generalHtml = renderFixedGroup(GENERAL_MODEL_ORDER, statusMap, ttft, '通用模型');
+  const codeHtml = renderFixedGroup(CODE_MODEL_ORDER, statusMap, ttft, '编程模型');
+
+  const html = `<div class="status-grid">${generalHtml}${codeHtml}</div>`;
   return { html };
 }
