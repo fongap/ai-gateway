@@ -49,6 +49,14 @@ const HOUR_MS = 3600_000;
 const DAY_MS = 86400_000;
 const WEEK_MS = 7 * DAY_MS;
 
+// Canonical statistical model key: trim + lowercase.
+// Used ONLY in the observability layer (D1 stats, TTFT, coverage). It never
+// affects routing/auth/model-id exactness (which keep official casing).
+// Merges Code-Max / code-max / CODE-MAX into one stats dimension.
+export function normalizeModelKey(model) {
+  return String(model || '').trim().toLowerCase();
+}
+
 // Retention policies (in milliseconds).
 const HOURLY_RETENTION_MS = 7 * DAY_MS;
 const DAILY_RETENTION_MS = 52 * WEEK_MS;
@@ -234,6 +242,7 @@ export function persistTokenUsage(env, usage, now = Date.now(), model = null, tt
       // totals failures already logged silently.
     });
   }
+  const canonicalModel = normalizeModelKey(model);
 
   // Compute TTFT histogram bucket counts for this single sample.
   // Only successful requests with meaningful output pass a valid ttftMs;
@@ -274,7 +283,7 @@ export function persistTokenUsage(env, usage, now = Date.now(), model = null, tt
         ttft_b5 = ${TABLE_MODEL}.ttft_b5 + excluded.ttft_b5,
         ttft_b6 = ${TABLE_MODEL}.ttft_b6 + excluded.ttft_b6`,
     ).bind(
-      hour, model,
+      hour, canonicalModel,
       p.input, p.output, p.total,
       p.requests, p.reports, p.missing,
       successTtftCount,
