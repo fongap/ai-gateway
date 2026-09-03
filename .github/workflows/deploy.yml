@@ -12,11 +12,17 @@
 # supported as a deprecated fallback while operators migrate; new individual
 # sources always win and the two are never merged.
 #
-# GitHub Actions cannot enumerate Secret values dynamically, so managed secret
-# shards are injected via a fixed range (NODE_SECRETS_01..20). Unset entries
-# arrive as empty strings and are skipped. Raise the range in the env block
-# below if a deployment needs more than 20 credential shards. The same fixed
-# range is used for TIER*_NODES_CONFIG_01..10 variables.
+# GitHub Actions cannot enumerate Secret values dynamically, so tier-scoped
+# credential shards are injected through a fixed range matching the node-config
+# shards:
+#
+#   TIER1_NODES_SECRETS_01..10
+#   TIER2_NODES_SECRETS_01..10
+#   TIER3_NODES_SECRETS_01..10
+#
+# Unset entries arrive as empty strings and are skipped.
+# Each secret shard corresponds to the node-config shard with the same tier and
+# suffix.
 #
 # Main repository: Deploy always runs (a missing required config FAILS here,
 # it is never skipped). Forks: opt in with DEPLOY_ENABLED=true.
@@ -101,26 +107,36 @@ jobs:
       # --- GitHub Secrets (fixed range; unset => empty, skipped) ---
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       GATEWAY_ACCESS_KEY: ${{ secrets.GATEWAY_ACCESS_KEY }}
-      NODE_SECRETS_01: ${{ secrets.NODE_SECRETS_01 }}
-      NODE_SECRETS_02: ${{ secrets.NODE_SECRETS_02 }}
-      NODE_SECRETS_03: ${{ secrets.NODE_SECRETS_03 }}
-      NODE_SECRETS_04: ${{ secrets.NODE_SECRETS_04 }}
-      NODE_SECRETS_05: ${{ secrets.NODE_SECRETS_05 }}
-      NODE_SECRETS_06: ${{ secrets.NODE_SECRETS_06 }}
-      NODE_SECRETS_07: ${{ secrets.NODE_SECRETS_07 }}
-      NODE_SECRETS_08: ${{ secrets.NODE_SECRETS_08 }}
-      NODE_SECRETS_09: ${{ secrets.NODE_SECRETS_09 }}
-      NODE_SECRETS_10: ${{ secrets.NODE_SECRETS_10 }}
-      NODE_SECRETS_11: ${{ secrets.NODE_SECRETS_11 }}
-      NODE_SECRETS_12: ${{ secrets.NODE_SECRETS_12 }}
-      NODE_SECRETS_13: ${{ secrets.NODE_SECRETS_13 }}
-      NODE_SECRETS_14: ${{ secrets.NODE_SECRETS_14 }}
-      NODE_SECRETS_15: ${{ secrets.NODE_SECRETS_15 }}
-      NODE_SECRETS_16: ${{ secrets.NODE_SECRETS_16 }}
-      NODE_SECRETS_17: ${{ secrets.NODE_SECRETS_17 }}
-      NODE_SECRETS_18: ${{ secrets.NODE_SECRETS_18 }}
-      NODE_SECRETS_19: ${{ secrets.NODE_SECRETS_19 }}
-      NODE_SECRETS_20: ${{ secrets.NODE_SECRETS_20 }}
+      TIER1_NODES_SECRETS_01: ${{ secrets.TIER1_NODES_SECRETS_01 }}
+      TIER1_NODES_SECRETS_02: ${{ secrets.TIER1_NODES_SECRETS_02 }}
+      TIER1_NODES_SECRETS_03: ${{ secrets.TIER1_NODES_SECRETS_03 }}
+      TIER1_NODES_SECRETS_04: ${{ secrets.TIER1_NODES_SECRETS_04 }}
+      TIER1_NODES_SECRETS_05: ${{ secrets.TIER1_NODES_SECRETS_05 }}
+      TIER1_NODES_SECRETS_06: ${{ secrets.TIER1_NODES_SECRETS_06 }}
+      TIER1_NODES_SECRETS_07: ${{ secrets.TIER1_NODES_SECRETS_07 }}
+      TIER1_NODES_SECRETS_08: ${{ secrets.TIER1_NODES_SECRETS_08 }}
+      TIER1_NODES_SECRETS_09: ${{ secrets.TIER1_NODES_SECRETS_09 }}
+      TIER1_NODES_SECRETS_10: ${{ secrets.TIER1_NODES_SECRETS_10 }}
+      TIER2_NODES_SECRETS_01: ${{ secrets.TIER2_NODES_SECRETS_01 }}
+      TIER2_NODES_SECRETS_02: ${{ secrets.TIER2_NODES_SECRETS_02 }}
+      TIER2_NODES_SECRETS_03: ${{ secrets.TIER2_NODES_SECRETS_03 }}
+      TIER2_NODES_SECRETS_04: ${{ secrets.TIER2_NODES_SECRETS_04 }}
+      TIER2_NODES_SECRETS_05: ${{ secrets.TIER2_NODES_SECRETS_05 }}
+      TIER2_NODES_SECRETS_06: ${{ secrets.TIER2_NODES_SECRETS_06 }}
+      TIER2_NODES_SECRETS_07: ${{ secrets.TIER2_NODES_SECRETS_07 }}
+      TIER2_NODES_SECRETS_08: ${{ secrets.TIER2_NODES_SECRETS_08 }}
+      TIER2_NODES_SECRETS_09: ${{ secrets.TIER2_NODES_SECRETS_09 }}
+      TIER2_NODES_SECRETS_10: ${{ secrets.TIER2_NODES_SECRETS_10 }}
+      TIER3_NODES_SECRETS_01: ${{ secrets.TIER3_NODES_SECRETS_01 }}
+      TIER3_NODES_SECRETS_02: ${{ secrets.TIER3_NODES_SECRETS_02 }}
+      TIER3_NODES_SECRETS_03: ${{ secrets.TIER3_NODES_SECRETS_03 }}
+      TIER3_NODES_SECRETS_04: ${{ secrets.TIER3_NODES_SECRETS_04 }}
+      TIER3_NODES_SECRETS_05: ${{ secrets.TIER3_NODES_SECRETS_05 }}
+      TIER3_NODES_SECRETS_06: ${{ secrets.TIER3_NODES_SECRETS_06 }}
+      TIER3_NODES_SECRETS_07: ${{ secrets.TIER3_NODES_SECRETS_07 }}
+      TIER3_NODES_SECRETS_08: ${{ secrets.TIER3_NODES_SECRETS_08 }}
+      TIER3_NODES_SECRETS_09: ${{ secrets.TIER3_NODES_SECRETS_09 }}
+      TIER3_NODES_SECRETS_10: ${{ secrets.TIER3_NODES_SECRETS_10 }}
       GATEWAY_SECRETS_CONFIG: ${{ secrets.GATEWAY_SECRETS_CONFIG }}
     steps:
       - name: Checkout

@@ -51,8 +51,8 @@ header{padding:26px 0 0}
 .brand{display:flex;align-items:center;gap:11px}
 .brand-mark{width:26px;height:26px;display:grid;place-items:center;color:var(--teal);font:500 17px/1 ui-monospace,SFMono-Regular,Consolas,monospace}
 .brand-name{font-size:15px;font-weight:600;letter-spacing:.005em}
-.github{width:38px;height:38px;display:grid;place-items:center;border-radius:10px;color:var(--ink-3);transition:background .16s ease,color .16s ease}
-.github:hover{background:rgba(27,30,28,.04);color:var(--ink)}
+.github{width:38px;height:38px;display:grid;place-items:center;border-radius:10px;color:var(--ink-3);transition:color .16s ease}
+.github:hover{color:var(--ink)}
 .github:focus-visible{outline:2px solid var(--teal);outline-offset:3px}
 
 /* hero */

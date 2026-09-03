@@ -124,7 +124,7 @@ function shell({ title, body }) {
   return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="description" content="Smart AI Gateway — 聚合不同模型、协议与供应商，在变化的上游之上保持一个稳定的 API 入口。">
-<title>${escapeHtml(title)}</title><style>${THEME_CSS}</style></head>
+<title>${escapeHtml(title)}</title><link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='85' font-family='ui-monospace,SFMono-Regular,Consolas,monospace' fill='%230f5d53'>δ</text></svg>"><style>${THEME_CSS}</style></head>
 <body>
 
 <header>
@@ -181,7 +181,6 @@ export async function dashboardResponse(request, env) {
       '  <div class="wrap">',
       '    <div class="section-head">',
       '      <span class="section-title">模型状态</span>',
-      '      ' + (modelsResult.observedAt ? '<span class="section-sub">状态信息更新于 ' + escapeHtml(modelsResult.observedAt) + '</span>' : '<span class="section-sub">状态信息暂未更新</span>'),
       '    </div>',
       '    ' + modelsResult.html,
       '  </div>',

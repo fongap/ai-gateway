@@ -1,20 +1,20 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MIT
 //
-// Config-effect Matrix contract tests. The governance matrix is the product of
-// model VISIBILITY (public / internal) and REQUEST ALLOWANCE (is there a node
-// that serves the model?). This file locks the four combinations against the
-// real Model Registry and real getPublicModelStatus() projection:
+// Config-effect Matrix contract tests. Node mappings are the PRIMARY source
+// of the public model set; MODELS_CONFIG is OPTIONAL metadata that can
+// downgrade a model to `visibility: 'internal'` to hide it. The governance
+// matrix is therefore the product of (node-mapping presence x visibility):
 //
-//   visibility x allowance            listed in public status/dashboard   requestable
-//   public     + allowed (node)       yes                                yes
-//   public     + denied (no node)     yes (status: unavailable)          no
-//   internal   + allowed (node)       no (hidden)                        yes
-//   internal   + denied (no node)     no (hidden)                        no
+//   node-mapped  x visibility   listed in public status/dashboard   requestable
+//   yes          public        yes                                yes
+//   yes          internal      no  (hidden)                       yes
+//   no           (n/a)         no  (not public)                    no
 //
-// The Model Registry is the ONLY source of the public model set: a node's
-// `models` map can never surface an undeclared (ghost) model, and an internal
-// model never leaks into the public catalog or the rendered dashboard HTML.
+// The Registry is OPTIONAL: an operator who only deploys node configs (the
+// common free-model case) needs no MODELS_CONFIG. When MODELS_CONFIG IS
+// present, the only thing it can do to the public catalog is hide internal
+// models; it never widens the public set on its own.
 //
 // Requestability uses the real scheduler predicate the request handler relies
 // on (supportsRequest): a request for a model with no serving node is exactly
@@ -44,7 +44,7 @@ function test(name, fn) {
 
 const env = (models) => ({
   GATEWAY_ACCESS_KEY: 'k',
-  MODELS_CONFIG: JSON.stringify(models),
+  ...(models ? { MODELS_CONFIG: JSON.stringify(models) } : {}),
 });
 const node = (id, models) => ({
   id,
@@ -61,7 +61,18 @@ const reqFor = (model) => ({ model, protocol: 'openai', surface: 'chat_completio
 const isRequestable = (nodes, model) => nodes.some((n) => supportsRequest(n, reqFor(model)));
 const ids = (result) => result.models.map((m) => m.id);
 
-// --- Visibility: hidden internal vs listed public, same env -----------------
+// --- Primary rule: node mappings are the public set -------------------------
+
+test('primary: node-mapped models are public by default, no MODELS_CONFIG required', () => {
+  const nodes = [node('a', { 'public-air': 'up-air', 'public-max': 'up-max' })];
+  recordTier1Ttft('a', 'public-air', 100, now() - 1000);
+  // No MODELS_CONFIG: both models should still be listed.
+  const result = getPublicModelStatus(nodes, env(null), new Set(), now());
+  assert.ok(ids(result).includes('public-air'), 'node-mapped model listed without MODELS_CONFIG');
+  assert.ok(ids(result).includes('public-max'), 'node-mapped model listed without MODELS_CONFIG');
+});
+
+// --- Governance: visibility:internal hides a node-mapped model ---------------
 
 test('governance: internal model hidden from public status AND dashboard HTML; public model present', () => {
   const nodes = [node('a', { 'public-vis': 'up-pub', 'private-vis': 'up-priv' })];
@@ -78,9 +89,9 @@ test('governance: internal model hidden from public status AND dashboard HTML; p
   assert.ok(!html.includes('private-vis'), 'internal model never reaches the rendered dashboard HTML');
 });
 
-// --- Governance 1: public + allowed + node available => requestable ---------
+// --- Governance: node-mapped + public + available + requestable --------------
 
-test('governance 1: public + allowed + node available -> listed, available, requestable, dashboard-visible', () => {
+test('governance: public + node + serving + available -> listed, available, requestable, dashboard-visible', () => {
   const nodes = [node('p1', { 'public-air': 'up-air' })];
   recordTier1Ttft('p1', 'public-air', 100, now() - 1000);
   const result = getPublicModelStatus(nodes, env({ 'public-air': { policy: 'fast' } }), new Set(), now());
@@ -92,22 +103,9 @@ test('governance 1: public + allowed + node available -> listed, available, requ
   assert.ok(html.includes('public-air'), 'public model is rendered on the dashboard');
 });
 
-// --- Governance 2: public + denied (no serving node) => hidden? no: listed --
+// --- Governance: internal + node + serving + hidden, but still requestable --
 
-test('governance 2: public + denied (no serving node) -> still listed, but request denied', () => {
-  const nodes = [node('p2', { 'other': 'up-other' })]; // does NOT serve public-air
-  const result = getPublicModelStatus(nodes, env({ 'public-air': { policy: 'fast' } }), new Set(), now());
-  const entry = result.models.find((m) => m.id === 'public-air');
-  assert.ok(entry, 'a denied PUBLIC model is still listed in the public catalog');
-  assert.equal(entry.status, 'unavailable', 'no serving node -> unavailable');
-  assert.ok(!isRequestable(nodes, 'public-air'), 'no serving node -> request denied (404 path)');
-  const { html } = renderModels(result);
-  assert.ok(html.includes('public-air'), 'a denied public model is still rendered on the dashboard');
-});
-
-// --- Governance 3: internal + allowed => hidden from public, but requestable --
-
-test('governance 3: internal + allowed -> hidden from public status/dashboard, but requestable', () => {
+test('governance: internal + node + serving -> hidden from public, but requestable', () => {
   const nodes = [node('i1', { 'internal-pro': 'up-pro' })];
   recordTier1Ttft('i1', 'internal-pro', 100, now() - 1000);
   const result = getPublicModelStatus(nodes, env({
@@ -119,20 +117,19 @@ test('governance 3: internal + allowed -> hidden from public status/dashboard, b
   assert.ok(isRequestable(nodes, 'internal-pro'), 'internal model with a serving node IS requestable');
 });
 
-// --- Governance 4: internal + denied => hidden from public, request denied ---
+// --- Governance: not node-mapped -> not in the public set at all -------------
 
-test('governance 4: internal + denied (no serving node) -> hidden from public status and request denied', () => {
-  const nodes = [node('i2', { 'other': 'up-other' })]; // does NOT serve internal-pro
-  const result = getPublicModelStatus(nodes, env({
-    'internal-pro': { policy: 'fast', visibility: 'internal' },
-  }), new Set(), now());
-  assert.ok(!ids(result).includes('internal-pro'), 'internal model is hidden from public status');
-  assert.ok(!isRequestable(nodes, 'internal-pro'), 'no serving node -> internal model request denied');
+test('governance: a model declared in MODELS_CONFIG but with no node is NOT public', () => {
+  // public-air exists in MODELS_CONFIG but no node maps it.
+  const result = getPublicModelStatus([], env({ 'public-air': { policy: 'fast' } }), new Set(), now());
+  assert.ok(!ids(result).includes('public-air'),
+    'MODELS_CONFIG alone never surfaces a model — node mappings are required');
+  assert.ok(!isRequestable([], 'public-air'), 'no serving node -> request denied (404 path)');
 });
 
 // --- Visibility default: no explicit field => public ------------------------
 
-test('visibility default: a model with NO explicit visibility field is treated as public', () => {
+test('visibility default: a node-mapped model with NO explicit visibility field is treated as public', () => {
   const nodes = [node('d1', { 'no-field': 'up' })];
   recordTier1Ttft('d1', 'no-field', 100, now() - 1000);
   const result = getPublicModelStatus(nodes, env({ 'no-field': { policy: 'fast' } }), new Set(), now());
@@ -141,13 +138,14 @@ test('visibility default: a model with NO explicit visibility field is treated a
   assert.ok(html.includes('no-field'), 'missing visibility field defaults to public -> rendered on dashboard');
 });
 
-// --- Registry-only rule: node mappings can never surface a ghost model ------
+// --- MODELS_CONFIG never widens: it can only narrow (visibility:internal) --
 
-test('registry-only rule: a node-mapped model NOT in the registry never appears in public status', () => {
-  const nodes = [node('g1', { ghost: 'ghost-upstream' })];
-  // MODELS_CONFIG declares public-air only; `ghost` exists only as a node key.
-  const result = getPublicModelStatus(nodes, env({ 'public-air': { policy: 'fast' } }), new Set(), now());
-  assert.ok(!ids(result).includes('ghost'), 'the registry is the only source of the public model set');
+test('MODELS_CONFIG never widens: a model in MODELS_CONFIG but no node mapping is still not public', () => {
+  const result = getPublicModelStatus([], env({
+    'registry-only': { policy: 'fast' },
+  }), new Set(), now());
+  assert.ok(!ids(result).includes('registry-only'),
+    'MODELS_CONFIG cannot surface a model that no node maps to');
 });
 
 console.log(`\nconfig-matrix tests: ${passed} passed.`);

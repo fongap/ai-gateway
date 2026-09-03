@@ -79,7 +79,7 @@ assert.match(workflowSource, /github\.repository\s*==\s*'fongap\/ai-gateway'\s*\
 assert.doesNotMatch(workflowSource, /if:\s*vars\.GATEWAY_CONFIG\s*!=\s*''/, 'deploy must not be gated on a business config variable; missing config must FAIL not SKIP');
 assert.match(workflowSource, /node scripts\/github-deployment-config\.mjs preflight/, 'deploy workflow must run a preflight check before verify');
 assert.match(workflowSource, /prepare --from-env/, 'deploy workflow must read individual GitHub Variables / Secrets from the environment');
-assert.match(workflowSource, /NODE_SECRETS_01:/, 'deploy workflow must inject individual credential shards via a fixed range');
+assert.match(workflowSource, /TIER1_NODES_SECRETS_01:/, 'deploy workflow must inject individual credential shards via a fixed range');
 assert.match(workflowSource, /TIER1_NODES_CONFIG_01:/, 'deploy workflow must inject individual node-config shards via a fixed range');
 assert.match(workflowSource, /TIER1_AFFINITY_KV_ID:/, 'deploy workflow must inject the Tier 1 affinity KV namespace id');
 assert.match(workflowSource, /GATEWAY_CONFIG:/, 'deploy workflow must keep the legacy GATEWAY_CONFIG blob as a deprecated fallback');

@@ -102,16 +102,16 @@ test('stale shard deletion lists are computed', () => {
     tiers: { 1: [node('a')] },
     secretsMap: { a: 'x' },
     existingVarNames: ['TIER1_NODES_CONFIG_01', 'TIER1_NODES_CONFIG_02', 'TIER3_NODES_CONFIG_01'],
-    existingSecretNames: ['NODE_SECRETS_01', 'NODE_SECRETS_02'],
+    existingSecretNames: ['TIER1_NODES_SECRETS_01', 'TIER1_NODES_SECRETS_02'],
   });
   assert.deepEqual(plan.deleteVars.sort(), ['TIER1_NODES_CONFIG_02', 'TIER3_NODES_CONFIG_01']);
-  assert.deepEqual(plan.deleteSecrets, ['NODE_SECRETS_02']);
+  assert.deepEqual(plan.deleteSecrets, ['TIER1_NODES_SECRETS_02']);
 });
 
 test('patterns only match managed names', () => {
   assert.ok(MANAGED_VAR_PATTERN.test('TIER2_NODES_CONFIG_07'));
   assert.ok(!MANAGED_VAR_PATTERN.test('GATEWAY_ACCESS_KEY'));
-  assert.ok(MANAGED_SECRET_PATTERN.test('NODE_SECRETS_03'));
+  assert.ok(MANAGED_SECRET_PATTERN.test('TIER1_NODES_SECRETS_03'));
   assert.ok(MANAGED_SECRET_PATTERN.test('GATEWAY_ACCESS_KEY'));
   assert.ok(!MANAGED_SECRET_PATTERN.test('MY_SECRET'));
 });

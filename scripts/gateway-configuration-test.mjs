@@ -38,7 +38,7 @@ function makeEnv({ tier1, secrets, extraEnv } = {}) {
   return {
     GATEWAY_ACCESS_KEY: 'k',
     ...(tier1 ? { TIER1_NODES_CONFIG_01: JSON.stringify(tier1) } : {}),
-    ...(secrets ? { NODE_SECRETS_01: JSON.stringify(secrets) } : {}),
+    ...(secrets ? { TIER1_NODES_SECRETS_01: JSON.stringify(secrets) } : {}),
     ...extraEnv,
   };
 }
@@ -47,8 +47,8 @@ function makeEnv({ tier1, secrets, extraEnv } = {}) {
 
 test('collectShards parses the correct index group per shard kind', () => {
   const secretShards = collectShards(
-    { NODE_SECRETS_01: '{}', NODE_SECRETS_09: '{}', NODE_SECRETS_12: '{}' },
-    SECRET_SHARD_PATTERN, 'NODE_SECRETS_', 'NODE_SECRETS_01', 1, [],
+    { TIER1_NODES_SECRETS_01: '{}', TIER1_NODES_SECRETS_09: '{}', TIER1_NODES_SECRETS_12: '{}' },
+    SECRET_SHARD_PATTERN, 'TIER1_NODES_SECRETS_', 'TIER1_NODES_SECRETS_01', 2, [],
   );
   assert.deepEqual(secretShards.map((s) => s.index).sort((a, b) => a - b), [1, 9, 12]);
   assert.ok(secretShards.every((s) => Number.isInteger(s.index)), 'secret index must be a number, never NaN');

@@ -61,13 +61,19 @@ import { getRuntimeAvailability } from './availability.js';
 export const MODEL_STATUS_RECENT_WINDOW_MS = 24 * 3600_000;
 
 // Pure function: compute the public four-state status for every logical
-// model known to the gateway (Model Registry ∪ node mappings).
+// model known to the gateway.
+//
+// Source of model names: node mappings are the PRIMARY source — the operator
+// declares models where they actually live (in TIER1/TIER2/TIER3_NODES_CONFIG_*).
+// MODELS_CONFIG is an OPTIONAL metadata layer that may downgrade a model to
+// `visibility: 'internal'` to hide it from the public catalog; it NEVER
+// narrows or widens the visible model set on its own. This keeps the operator
+// from having to enumerate every free model in a separate config file.
 //
 // Inputs:
 //   nodes     : Runtime Node[] (from loadGatewayConfig(env).nodes)
-//   env       : The Worker env (used only to read MODELS_CONFIG via
-//               loadModelRegistry, mirroring the previous dashboard
-//               implementation's model-name source).
+//   env       : The Worker env (used to read MODELS_CONFIG via
+//               loadModelRegistry for visibility filtering only).
 //   evidence  : Set<string> of logical model names with recent-success
 //               evidence (typically from queryRecentModelEvidence()). An
 //               empty set is the fail-open shape — never null.
@@ -77,23 +83,25 @@ export const MODEL_STATUS_RECENT_WINDOW_MS = 24 * 3600_000;
 //   { observed_at: <ISO string>, models: [ { id, status }, ... ] }
 //
 // The list is sorted by logical model id for stable rendering. No node ids,
-// providers, tiers, counts or durations leave this function, and node
-// mappings never contribute a model name — the Model Registry is the only
-// source of the public model set. A node can only decide whether it can serve
-// a registry model; it can never make an undeclared model public.
+// providers, tiers, counts or durations leave this function.
 export function getPublicModelStatus(nodes, env, evidence = new Set(), now = Date.now()) {
   const names = new Set();
+  for (const node of nodes || []) {
+    for (const key of Object.keys(node.models || {})) names.add(key);
+  }
+  let visibility = {};
   if (env) {
     try {
       const registry = loadModelRegistry(env);
       for (const [name, entry] of Object.entries(registry)) {
-        if (entry.visibility !== 'internal') names.add(name);
+        visibility[name] = entry.visibility || 'public';
       }
-    } catch { /* registry not loadable in this env — fall back to the empty set */ }
+    } catch { /* registry not loadable: everything is public */ }
   }
   const evidenceSet = evidence instanceof Set ? evidence : new Set();
   const models = [];
   for (const name of [...names].sort()) {
+    if (visibility[name] === 'internal') continue;
     const serving = (nodes || []).filter((n) => servesModel(n, name));
     models.push({ id: name, status: modelStatus(name, serving, evidenceSet, now) });
   }

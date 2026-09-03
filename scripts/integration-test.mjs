@@ -76,7 +76,7 @@ function makeEnv({ tier1, tier2, tier3, secrets, extraEnv } = {}) {
     ...(tier1 ? { TIER1_NODES_CONFIG_01: JSON.stringify(tier1) } : {}),
     ...(tier2 ? { TIER2_NODES_CONFIG_01: JSON.stringify(tier2) } : {}),
     ...(tier3 ? { TIER3_NODES_CONFIG_01: JSON.stringify(tier3) } : {}),
-    ...(secrets ? { NODE_SECRETS_01: JSON.stringify(secrets) } : {}),
+    ...(secrets ? { TIER1_NODES_SECRETS_01: JSON.stringify(secrets) } : {}),
     ...extraEnv,
   };
 }
@@ -1254,18 +1254,18 @@ await test('public home is served but never leaks internal diagnostics when degr
       basicNode('good-2'),
       { ...basicNode('ghost'), id: 'ghost' }, // no credential -> excluded
     ]),
-    NODE_SECRETS_01: JSON.stringify({ 'good-1': 'k', 'good-2': 'k' }),
+    TIER1_NODES_SECRETS_01: JSON.stringify({ 'good-1': 'k', 'good-2': 'k' }),
   };
   const res = await worker.fetch(new Request('https://gateway.example.com/', {
     headers: { accept: 'text/html' },
   }), env, {});
   assert.equal(res.status, 200);
   const html = await res.text();
-  // Public homepage content only: brand once, topic, no general-* models shown.
+  // Public homepage content only: brand once, topic, and the model status
+  // section. Under v1.2.6 governance, node-mapped models are public by
+  // default — so general-air (mapped by basicNode) is shown.
   assert.match(html, /Smart AI Gateway/);
   assert.match(html, /一个入口，应对所有变化/);
-  // general-air is filtered from display per UTC+8 revamp
-  assert.ok(!html.includes('general-air'), 'general-* models must not appear on the homepage');
   assert.match(html, /可用/);
   // Must NOT leak internal diagnostics, node counts, providers, or credential values.
   // The public client-configuration snippet intentionally names GATEWAY_ACCESS_KEY;
@@ -1455,7 +1455,7 @@ await test('public home renders on malformed config without leaking diagnostics'
   const env = {
     GATEWAY_ACCESS_KEY: ACCESS_KEY,
     TIER1_NODES_CONFIG_01: '{not-json',
-    NODE_SECRETS_01: '{"half":"k"}',
+    TIER1_NODES_SECRETS_01: '{"half":"k"}',
   };
   const res = await worker.fetch(new Request('https://gateway.example.com/', {
     headers: { accept: 'text/html' },
@@ -1708,17 +1708,11 @@ await test('/version is public and exposes only branding, no node/config topolog
 
 await test('public home: brand & GitHub once, model status flat list, no protocol or version leak', async () => {
   resetMock();
+  // Under v1.2.6 governance the public model set comes from node mappings.
+  // Declare four models on the node; the dashboard must show all four.
   const env = makeEnv({
-    tier1: [basicNode('g1', { models: {} })], // wildcard serves all registry models
+    tier1: [{ ...basicNode('g1'), models: { air: 'up-air', max: 'up-max', 'code-air': 'up-ca', 'code-max': 'up-cm' } }],
     secrets: { g1: 'k' },
-    extraEnv: {
-      MODELS_CONFIG: JSON.stringify({
-        air: { policy: 'fast' },
-        max: { policy: 'fast' },
-        'code-air': { policy: 'fast' },
-        'code-max': { policy: 'fast' },
-      }),
-    },
   });
   const res = await worker.fetch(new Request('https://gateway.example.com/', {
     headers: { accept: 'text/html' },

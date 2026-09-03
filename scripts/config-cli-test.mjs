@@ -138,8 +138,8 @@ function check(cond, msg) {
   });
   const gatewaySecrets = writeJSON(path.join(dir, 'gws.json'), {
     GATEWAY_ACCESS_KEY: 'gw-secret',
-    NODE_SECRETS_01: { a: 'up-key' },
-    NODE_SECRETS_02: { b: 'up-key2' },
+    TIER1_NODES_SECRETS_01: { a: 'up-key' },
+    TIER1_NODES_SECRETS_02: { b: 'up-key2' },
   });
   const r = run(['migrate', '--gateway-config', gatewayConfig, '--gateway-secrets', gatewaySecrets]);
   check(r.status === 0, 'migrate exits 0');
@@ -150,8 +150,8 @@ function check(cond, msg) {
   check(r.stdout.includes('MODELS_CONFIG'), 'manifest lists MODELS_CONFIG');
   check(r.stdout.includes('POLICIES_CONFIG'), 'manifest lists POLICIES_CONFIG');
   check(r.stdout.includes('GATEWAY_ACCESS_KEY'), 'manifest lists GATEWAY_ACCESS_KEY');
-  check(r.stdout.includes('NODE_SECRETS_01'), 'manifest lists NODE_SECRETS_01');
-  check(r.stdout.includes('NODE_SECRETS_02'), 'manifest lists NODE_SECRETS_02');
+  check(r.stdout.includes('TIER1_NODES_SECRETS_01'), 'manifest lists TIER1_NODES_SECRETS_01');
+  check(r.stdout.includes('TIER1_NODES_SECRETS_02'), 'manifest lists TIER1_NODES_SECRETS_02');
   check(!/gw-secret|up-key/.test(r.stdout), 'never prints secret values in manifest');
   check(!/up-key/.test(r.stdout), 'never prints upstream key values');
 }
@@ -164,18 +164,18 @@ function check(cond, msg) {
   });
   const gatewaySecrets = writeJSON(path.join(dir, 'gws.json'), {
     GATEWAY_ACCESS_KEY: 'gw-secret',
-    NODE_SECRETS_01: { a: 'up-key' },
+    TIER1_NODES_SECRETS_01: { a: 'up-key' },
   });
   const outDir = path.join(dir, 'out');
   const r = run(['migrate', '--gateway-config', gatewayConfig, '--gateway-secrets', gatewaySecrets, '--out', outDir]);
   check(r.status === 0, 'migrate --out exits 0');
   check(fs.existsSync(path.join(outDir, 'TIER1_NODES_CONFIG_01.json')), 'tier1 shard file written');
-  check(fs.existsSync(path.join(outDir, 'NODE_SECRETS_01.json')), 'node-secrets shard file written');
+  check(fs.existsSync(path.join(outDir, 'TIER1_NODES_SECRETS_01.json')), 'node-secrets shard file written');
   check(!fs.existsSync(path.join(outDir, 'GATEWAY_ACCESS_KEY')), 'GATEWAY_ACCESS_KEY not written without flag');
   check(r.stdout.includes('GATEWAY_ACCESS_KEY: set manually in GitHub Secret'), 'prints manual-set notice');
-  check(!fs.readFileSync(path.join(outDir, 'NODE_SECRETS_01.json'), 'utf8').includes('up-key') || true, 'NODE_SECRETS_01.json file exists');
+  check(!fs.readFileSync(path.join(outDir, 'TIER1_NODES_SECRETS_01.json'), 'utf8').includes('up-key') || true, 'TIER1_NODES_SECRETS_01.json file exists');
   // Confirm the file does contain the value locally (this is the operator's own copy).
-  check(fs.readFileSync(path.join(outDir, 'NODE_SECRETS_01.json'), 'utf8').includes('up-key'), 'operator copy contains the value locally');
+  check(fs.readFileSync(path.join(outDir, 'TIER1_NODES_SECRETS_01.json'), 'utf8').includes('up-key'), 'operator copy contains the value locally');
 }
 
 console.log('config-cli tests passed.');

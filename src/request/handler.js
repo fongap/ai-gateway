@@ -75,7 +75,8 @@ import { persistTokenUsage } from '../observability/token-usage-store.mjs';
 import { streamUsageSupported } from '../config/provider-quirks.js';
 import { dashboardResponse } from '../dashboard/pages.js';
 import { authorize } from './auth.js';
-import { keyAllowsModel } from '../config/access-keys.js';
+import { loadAccessKeysConfig, collectConfiguredModels } from '../config/access-keys.js';
+import { authorizeModel, filterVisibleModels } from './model-authz.js';
 import { gatewayError, buildBudgetExhaustedResponse, buildExhaustedResponse, buildClientErrorResponse } from './errors.js';
 import { TIER_ORDER, normalizePath, detectRoute, acceptsHtml } from './router.js';
 import { finalHeaders, jsonResponse, streamInterruptionChunk, upstreamModelOf } from './response-helpers.js';
@@ -120,20 +121,23 @@ export async function handleRequest(request, env, ctx) {
     return dashboardResponse(request, env);
   }
 
-  // ---- Authorization (multi-key fail-closed or legacy single key) ----
-  const hasMultiKeys = typeof env?.ACCESS_KEYS_CONFIG === 'string' && env.ACCESS_KEYS_CONFIG.trim();
-  const hasLegacyKey = typeof env?.GATEWAY_ACCESS_KEY === 'string' && env.GATEWAY_ACCESS_KEY;
-  if (!hasMultiKeys && !hasLegacyKey && route !== 'version') {
-    return gatewayError(request, env, route, 500, 'Gateway misconfigured: no ACCESS_KEYS_CONFIG or GATEWAY_ACCESS_KEY is set.', requestId);
+  // ---- Authorization (grouped multi-key or legacy single key, fail closed) ----
+  // Misconfiguration is checked via loadAccessKeysConfig (the single source of
+  // truth for which key(s) exist): no configured key means nothing can be served.
+  const accessConfig = route !== 'version' ? loadAccessKeysConfig(env) : { keys: [], anyNewKey: false };
+  const hasAnyKey = accessConfig.keys.length > 0;
+  if (!hasAnyKey && route !== 'version') {
+    return gatewayError(request, env, route, 500,
+      'Gateway misconfigured: no GATEWAY_ACCESS_KEY_<GROUP> (or legacy GATEWAY_ACCESS_KEY) is set.', requestId);
   }
-  const authResult = route !== 'version' ? await authorize(request, env) : { authorized: true, mode: 'skip' };
+  const authResult = route !== 'version' ? await authorize(request, env) : { authorized: true, mode: 'skip', group: null };
   if (route !== 'version' && !authResult.authorized) {
     return gatewayError(request, env, route, 401, 'Unauthorized: gateway access key is invalid or missing.', requestId);
   }
-  // Log only the low-cardinality, non-secret key_id. Never log the raw key,
+  // Log only the low-cardinality, non-secret group. Never log the raw key,
   // prefix, Authorization header, or any digest.
-  if (authResult.keyId) {
-    logger.info('request authorized', { key_id: authResult.keyId, request_id: requestId });
+  if (authResult.group) {
+    logger.info('request authorized', { key_group: authResult.group, request_id: requestId });
   }
 
   switch (route) {
@@ -193,16 +197,22 @@ export async function handleRequest(request, env, ctx) {
     && String(env?.FAKE_STREAM_PROTECTION ?? '').trim().toLowerCase() === 'true'
     && !clientWantsStream;
 
-  // ---- Per-key model allowlist (fail closed) ----
-  // Authorization failure must be distinct from scheduler failure: a key
-  // without permission for this model gets a stable 403, never a misleading
-  // "all nodes failed" or a 404 that enumerates internal topology. This also
-  // avoids leaking whether an internal model exists.
-  if (authResult.mode === 'multi' && !authResult.allowAll) {
-    const allowlist = authResult.allowlist || new Set();
-    if (!allowlist.has(requestedModel)) {
-      return gatewayError(request, env, route, 403, 'Forbidden: the provided key is not permitted to use this model.', requestId);
-    }
+  // ---- Model authorization (fail closed, BEFORE the scheduler) ----
+  // A key without permission for this model gets a stable 403, never a
+  // misleading "all nodes failed" or a 404 that enumerates internal topology.
+  // This must not leak whether an internal model exists: an allowlist-only key
+  // gets 403 for anything outside its allowlist, and 404 only when the model
+  // is allowlisted but not configured.
+  // `configuredModels` is the union of all node `models` keys — the single
+  // source of model existence (see config/access-keys.js). It is computed
+  // before the scheduler so authorization never depends on routing health.
+  const gatewayConfigForAuth = loadGatewayConfig(env);
+  const configuredModels = collectConfiguredModels(gatewayConfigForAuth.nodes);
+  const modelAuthz = authorizeModel(requestedModel, configuredModels, authResult);
+  if (!modelAuthz.allowed) {
+    return gatewayError(request, env, route, modelAuthz.status, modelAuthz.status === 403
+      ? 'Forbidden: the provided key is not permitted to use this model.'
+      : 'Model not found for this key.', requestId);
   }
 
   // ---- Candidate pool ----
@@ -213,7 +223,7 @@ export async function handleRequest(request, env, ctx) {
   // /health would say 503 while traffic kept flowing.
   if (!config.ready) {
     return gatewayError(request, env, route, 500,
-      'Gateway misconfigured: no usable node configuration. Check TIER*_NODES_CONFIG_* and NODE_SECRETS_*.',
+      'Gateway misconfigured: no usable node configuration. Check TIER*_NODES_CONFIG_* and TIER*_NODES_SECRETS_*.',
       requestId,
       { configuration_status: config.status, ...(exposeUpstreamInfo ? { diagnostics: config.diagnostics.slice(0, 5) } : {}) });
   }
