@@ -110,7 +110,7 @@ export function getPublicModelStatus(nodes, env, evidence = new Set(), now = Dat
       id: name,
       status,
       display_order: entry.display_order !== undefined ? entry.display_order : 100,
-      group: entry.group !== undefined ? entry.group : 'general',
+      group: entry.group !== undefined ? entry.group : (name.startsWith('Code-') ? 'coding' : 'general'),
     });
   }
   models.sort((a, b) => {
