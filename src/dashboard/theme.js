@@ -28,7 +28,7 @@ export const THEME_CSS = `
   --amber:#b4793b;
   --red:#a75b58;
   --radius:14px;
-  --content:1040px;
+  --content:1140px;
 }
 *{
 box-sizing:border-box;margin:0;padding:0
