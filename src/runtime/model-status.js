@@ -92,6 +92,15 @@ function deriveGroup(name) {
   return 'general';
 }
 
+const MODEL_NAME_PRIORITY = {
+  air: 10, pro: 20, max: 30, ultra: 40,
+  omni: 50, 'omni-vision': 51, 'omni-video': 52, 'omni-audio': 53, 'omni-ocr': 54,
+};
+function modelNamePriority(name) {
+  const lower = name.toLowerCase().replace(/^code-/, '');
+  return MODEL_NAME_PRIORITY[lower] ?? 90;
+}
+
 export function getPublicModelStatus(nodes, env, evidence = new Set(), now = Date.now()) {
   const names = new Set();
   for (const node of nodes || []) {
@@ -123,7 +132,10 @@ export function getPublicModelStatus(nodes, env, evidence = new Set(), now = Dat
   }
   models.sort((a, b) => {
     const diff = a.display_order - b.display_order;
-    return diff !== 0 ? diff : a.id.localeCompare(b.id);
+    if (diff !== 0) return diff;
+    const pa = modelNamePriority(a.id);
+    const pb = modelNamePriority(b.id);
+    return pa !== pb ? pa - pb : a.id.localeCompare(b.id);
   });
   return { observed_at: new Date(now).toISOString(), models };
 }

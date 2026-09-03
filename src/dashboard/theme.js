@@ -151,9 +151,6 @@ footer{padding:32px 0 42px;border-top:1px solid var(--line);color:var(--ink-3);f
 .footer-row{display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap}
 .footer-sep{color:#b8bbb4}
 
-/* main content height limit */
-.main-content{max-height:200vh;overflow-y:auto}
-
 /* responsive */
 @media(max-width:760px){
   .wrap{width:calc(100% - 40px)}
