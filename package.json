@@ -1,6 +1,6 @@
 {
   "name": "ai-gateway",
-  "version": "1.2.6",
+  "version": "1.2.7",
   "private": true,
   "description": "AI aggregation gateway for Cloudflare Workers: many APIs, keys, and models behind one stable endpoint — node-local cooldowns, tier fallback, circuit-breaker recovery.",
   "type": "module",
