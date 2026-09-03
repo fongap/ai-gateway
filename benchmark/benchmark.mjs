@@ -77,7 +77,7 @@ function makeEnv(nodeCount) {
   return {
     GATEWAY_ACCESS_KEY: ACCESS_KEY,
     TIER1_NODES_CONFIG_01: JSON.stringify(nodes),
-    NODE_SECRETS_01: JSON.stringify(secrets),
+    TIER1_NODES_SECRETS_01: JSON.stringify(secrets),
     LOG_LEVEL: 'none',
   };
 }

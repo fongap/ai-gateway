@@ -7,7 +7,7 @@
 // (timeouts.js) derives its clamp limits from the int entries; docs and
 // example configs reference the same names.
 //
-// Sensitive values (GATEWAY_ACCESS_KEY, NODE_SECRETS_*, CLOUDFLARE_API_TOKEN)
+// Sensitive values (GATEWAY_ACCESS_KEY, TIER*_NODES_SECRETS_*, CLOUDFLARE_API_TOKEN)
 // are NOT listed here — they are Secrets, never plain Worker variables.
 //
 // CLOUDFLARE_ACCOUNT_ID, TOKEN_STATS_D1_ID and GATEWAY_PUBLIC_BASE_URL are

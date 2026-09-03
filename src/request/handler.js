@@ -223,7 +223,7 @@ export async function handleRequest(request, env, ctx) {
   // /health would say 503 while traffic kept flowing.
   if (!config.ready) {
     return gatewayError(request, env, route, 500,
-      'Gateway misconfigured: no usable node configuration. Check TIER*_NODES_CONFIG_* and NODE_SECRETS_*.',
+      'Gateway misconfigured: no usable node configuration. Check TIER*_NODES_CONFIG_* and TIER*_NODES_SECRETS_*.',
       requestId,
       { configuration_status: config.status, ...(exposeUpstreamInfo ? { diagnostics: config.diagnostics.slice(0, 5) } : {}) });
   }

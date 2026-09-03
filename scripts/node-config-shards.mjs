@@ -40,7 +40,10 @@ export function shardKeyName(kind, tierNumber, index) {
     if (!VALID_TIER_PATTERN.test(String(tierNumber))) throw new Error(`Invalid tier number: ${tierNumber}`);
     return `TIER${tierNumber}_NODES_CONFIG_${pad(index)}`;
   }
-  if (kind === 'secret') return `TIER1_NODES_SECRETS_${pad(index)}`;
+  if (kind === 'secret') {
+    if (!VALID_TIER_PATTERN.test(String(tierNumber))) throw new Error(`Invalid tier number: ${tierNumber}`);
+    return `TIER${tierNumber}_NODES_SECRETS_${pad(index)}`;
+  }
   throw new Error(`Unknown shard kind: ${kind}`);
 }
 
@@ -268,32 +271,41 @@ export function buildPlan({ tiers, secretsMap, existingVarNames = [], existingSe
   }
 
   if (secretsMap && Object.keys(secretsMap).length > 0) {
-    const entries = Object.entries(secretsMap)
-      .sort(([a], [b]) => a.localeCompare(b));
-    // Shard whole-object boundaries: accumulate entries until byte budget hit.
-    const shards = [];
-    let currentEntries = [];
-    let currentBytes = 2;
-    for (const [id, credential] of entries) {
-      const pair = `"${id}":${JSON.stringify(credential)}`;
-      const joiner = currentEntries.length > 0 ? 1 : 0;
-      if (currentEntries.length > 0 && currentBytes + joiner + byteLength(pair) > maxBytes) {
-        shards.push(currentEntries);
-        currentEntries = [];
-        currentBytes = 2;
+    // Shard secrets per-tier to match the node-config shard structure.
+    for (const tierNumber of [1, 2, 3]) {
+      const nodes = tiers[tierNumber];
+      if (!nodes || nodes.length === 0) continue;
+      const tierNodeIds = new Set(nodes.map((n) => n.id.trim()));
+      const tierEntries = Object.entries(secretsMap)
+        .filter(([id]) => tierNodeIds.has(id))
+        .sort(([a], [b]) => a.localeCompare(b));
+      if (tierEntries.length === 0) continue;
+      // Shard whole-object boundaries: accumulate entries until byte budget hit.
+      const shards = [];
+      let currentEntries = [];
+      let currentBytes = 2;
+      for (const [id, credential] of tierEntries) {
+        const pair = `"${id}":${JSON.stringify(credential)}`;
+        const joiner = currentEntries.length > 0 ? 1 : 0;
+        if (currentEntries.length > 0 && currentBytes + joiner + byteLength(pair) > maxBytes) {
+          shards.push(currentEntries);
+          currentEntries = [];
+          currentBytes = 2;
+        }
+        currentEntries.push(pair);
+        currentBytes += joiner + byteLength(pair);
+        if (byteLength(pair) + 2 > maxBytes) {
+          throw new Error(`Credential "${id}" is too large for a single ${maxBytes}-byte shard.`);
+        }
       }
-      currentEntries.push(pair);
-      currentBytes += joiner + byteLength(pair);
-      if (byteLength(pair) + 2 > maxBytes) {
-        throw new Error(`Credential "${id}" is too large for a single ${maxBytes}-byte shard.`);
-      }
+      if (currentEntries.length > 0) shards.push(currentEntries);
+      shards.forEach((entries_, i) => {
+        const key = shardKeyName('secret', tierNumber, i + 1);
+        secrets[key] = '{' + entries_.join(',') + '}';
+        plannedSecrets.push(key);
+      });
+      tierSummary[tierNumber].secretShards = shards.length;
     }
-    if (currentEntries.length > 0) shards.push(currentEntries);
-    shards.forEach((entries_, i) => {
-      const key = shardKeyName('secret', null, i + 1);
-      secrets[key] = '{' + entries_.join(',') + '}';
-      plannedSecrets.push(key);
-    });
   }
 
   const planned = new Set([...plannedVars]);
