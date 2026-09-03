@@ -86,21 +86,18 @@ export const MODEL_STATUS_RECENT_WINDOW_MS = 24 * 3600_000;
 // providers, tiers, counts or durations leave this function.
 
 function deriveGroup(name) {
-  if (name.startsWith('Code-')) return 'coding';
-  if (name.startsWith('Live-') || name === 'Live') return 'live';
-  if (name.startsWith('Media-')) return 'media';
-  if (name.startsWith('Omni')) return 'omni';
+  if (name.startsWith('Code-')) return 'code';
+  if (name === 'Omni') return 'omni';
+  if (name === 'OCR') return 'ocr';
   return 'general';
 }
 
 const MODEL_NAME_PRIORITY = {
   air: 10, pro: 20, max: 30, ultra: 40,
-  vision: 10, video: 20, audio: 30, ocr: 40,
-  translate: 10, transcribe: 20,
 };
-const GROUP_PRIORITY = { general: 0, coding: 1, live: 2, media: 3, omni: 4 };
+const GROUP_PRIORITY = { general: 0, code: 1, omni: 2, ocr: 3 };
 function modelNamePriority(name) {
-  const lower = name.toLowerCase().replace(/^(code-|omni-|live-|media-)/, '');
+  const lower = name.toLowerCase().replace(/^code-/, '');
   return MODEL_NAME_PRIORITY[lower] ?? 90;
 }
 
@@ -110,19 +107,22 @@ export function getPublicModelStatus(nodes, env, evidence = new Set(), now = Dat
     for (const key of Object.keys(node.models || {})) names.add(key);
   }
   let visibility = {};
+  let uiVisible = {};
   let registry = {};
   if (env) {
     try {
       registry = loadModelRegistry(env);
       for (const [name, entry] of Object.entries(registry)) {
         visibility[name] = entry.visibility || 'public';
+        uiVisible[name] = entry.ui_visible !== false;
       }
-    } catch { /* registry not loadable: everything is public */ }
+    } catch { /* registry not loadable: everything is public + ui visible */ }
   }
   const evidenceSet = evidence instanceof Set ? evidence : new Set();
   const models = [];
   for (const name of [...names]) {
     if (visibility[name] === 'internal') continue;
+    if (uiVisible[name] === false) continue;
     const serving = (nodes || []).filter((n) => servesModel(n, name));
     const status = modelStatus(name, serving, evidenceSet, now);
     const entry = registry[name] || {};

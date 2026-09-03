@@ -15,12 +15,13 @@
 
 import { readEnv } from './env.js';
 
-const CAPABILITY_KEYS = ['tools', 'reasoning', 'vision', 'stream'];
-const ALLOWED_ENTRY_FIELDS = new Set(['policy', 'capabilities', 'reasoning_efforts', 'visibility', 'display_order', 'group']);
+const CAPABILITY_KEYS = ['tools', 'reasoning', 'vision', 'stream', 'ocr'];
+const ALLOWED_ENTRY_FIELDS = new Set(['policy', 'capabilities', 'reasoning_efforts', 'visibility', 'display_order', 'group', 'ui_visible']);
 const VALID_VISIBILITY = new Set(['public', 'internal']);
 const DEFAULT_VISIBILITY = 'public';
 const DEFAULT_DISPLAY_ORDER = 100;
 const DEFAULT_GROUP = 'general';
+const DEFAULT_UI_VISIBLE = true;
 
 let cachedEnv;
 let cached;
@@ -65,7 +66,7 @@ function analyzeModels(env) {
         // `policy` participates only when explicitly configured; a present
         // value (null included) must be a non-empty string. Unknown policy
         // names are cross-checked against POLICIES_CONFIG by nodes.js.
-        const entry = { policy: 'default', visibility: DEFAULT_VISIBILITY };
+        const entry = { policy: 'default', visibility: DEFAULT_VISIBILITY, ui_visible: DEFAULT_UI_VISIBLE };
         if (config.policy !== undefined) {
           if (typeof config.policy === 'string' && config.policy.trim()) {
             entry.policy = config.policy.trim();
@@ -100,6 +101,14 @@ function analyzeModels(env) {
           }
         } else {
           entry.group = DEFAULT_GROUP;
+        }
+        const uiv = config.ui_visible;
+        if (uiv !== undefined) {
+          if (typeof uiv !== 'boolean') {
+            errors.push(`MODELS_CONFIG: model "${name}": ui_visible must be a boolean`);
+          } else {
+            entry.ui_visible = uiv;
+          }
         }
         const caps = config.capabilities;
         if (caps !== undefined) {

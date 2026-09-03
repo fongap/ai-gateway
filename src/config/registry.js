@@ -22,12 +22,13 @@ import { loadModelsConfig } from './models.js';
 // support nothing beyond streaming. Only an explicit MODELS_CONFIG declaration
 // turns a capability on. This keeps /v1/models from promising tools/reasoning
 // for third-party OpenAI-compatible models that may not have them.
-const DEFAULT_CAPABILITIES = Object.freeze({ tools: false, reasoning: false, vision: false, stream: true });
+const DEFAULT_CAPABILITIES = Object.freeze({ tools: false, reasoning: false, vision: false, stream: true, ocr: false });
 const DEFAULT_REASONING_EFFORTS = Object.freeze([]);
 const DEFAULT_POLICY = 'default';
 const DEFAULT_VISIBILITY = 'public';
 const DEFAULT_DISPLAY_ORDER = 100;
 const DEFAULT_GROUP = 'general';
+const DEFAULT_UI_VISIBLE = true;
 
 let cachedEnv;
 let cachedRegistry;
@@ -49,6 +50,7 @@ export function loadModelRegistry(env) {
         : [...DEFAULT_REASONING_EFFORTS],
       display_order: cfg.display_order !== undefined ? cfg.display_order : DEFAULT_DISPLAY_ORDER,
       group: cfg.group !== undefined ? cfg.group : DEFAULT_GROUP,
+      ui_visible: cfg.ui_visible !== undefined ? cfg.ui_visible : DEFAULT_UI_VISIBLE,
     };
   }
   cachedRegistry = registry;
@@ -67,6 +69,7 @@ export function modelRegistryEntry(env, model) {
     reasoning_efforts: [...DEFAULT_REASONING_EFFORTS],
     display_order: DEFAULT_DISPLAY_ORDER,
     group: DEFAULT_GROUP,
+    ui_visible: DEFAULT_UI_VISIBLE,
   };
 }
 
