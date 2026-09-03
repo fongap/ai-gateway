@@ -28,6 +28,7 @@
 
 import { readEnv } from './env.js';
 import { loadGatewayConfig } from './nodes.js';
+import { loadModelsConfig } from './models.js';
 
 export const KEY_GROUPS = Object.freeze(['AIR', 'PRO', 'MAX', 'ULTRA', 'AGENT']);
 
@@ -70,6 +71,25 @@ export function collectConfiguredModels(nodes) {
   const set = new Set();
   for (const n of nodes || []) {
     for (const k of Object.keys(n?.models || {})) set.add(k);
+  }
+  return set;
+}
+
+// Build the closed catalog of all known logical models.
+// Includes both explicitly mapped models and models declared in MODELS_CONFIG.
+// This is the authoritative list of models that wildcard nodes can serve.
+export function collectKnownModels(nodes, env) {
+  const set = new Set();
+  // Explicit node mappings
+  for (const n of nodes || []) {
+    for (const k of Object.keys(n?.models || {})) set.add(k);
+  }
+  // Models declared in MODELS_CONFIG (even if no node serves them yet)
+  if (env) {
+    try {
+      const models = loadModelsConfig(env);
+      for (const name of Object.keys(models)) set.add(name);
+    } catch { /* MODELS_CONFIG not loadable */ }
   }
   return set;
 }

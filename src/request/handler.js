@@ -144,7 +144,7 @@ export async function handleRequest(request, env, ctx) {
     case 'version': return versionResponse(request, env);
     case 'health': return healthResponse(request, env, requestId);
     case 'metrics': return metricsResponse(request, env, requestId);
-    case 'models': return modelsListResponse(request, env, requestId);
+    case 'models': return modelsListResponse(request, env, requestId, authResult);
     case 'openai_chat':
     case 'anthropic_messages':
     case 'anthropic_count_tokens':
