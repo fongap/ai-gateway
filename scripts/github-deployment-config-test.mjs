@@ -214,4 +214,39 @@ assert.throws(
   assert.ok(disabled.includes('disabled'), 'D1 disabled is stated explicitly');
 }
 
+// ---- GATEWAY_ACCESS_MODELS_* as Variables (not Secrets) regression ----
+
+// GATEWAY_ACCESS_MODELS_MAX is collected as a variable, not a secret.
+{
+  const env = envFixture();
+  env.GATEWAY_ACCESS_KEY_MAX = 'max-secret';
+  env.GATEWAY_ACCESS_MODELS_MAX = 'Max,Code-Max';
+  const v = collectVarsFromEnv(env);
+  const s = collectSecretsFromEnv(env);
+  assert.equal(v.vars.GATEWAY_ACCESS_MODELS_MAX, 'Max,Code-Max', 'MODELS_MAX collected in vars');
+  assert.ok(!('GATEWAY_ACCESS_MODELS_MAX' in s.secrets), 'MODELS_MAX NOT in secrets');
+}
+
+// GATEWAY_ACCESS_KEY_* remains a secret, not a variable.
+{
+  const env = envFixture();
+  env.GATEWAY_ACCESS_KEY_PRO = 'pro-secret';
+  env.GATEWAY_ACCESS_MODELS_PRO = 'Pro';
+  const v = collectVarsFromEnv(env);
+  const s = collectSecretsFromEnv(env);
+  assert.ok(!('GATEWAY_ACCESS_KEY_PRO' in v.vars), 'KEY_PRO NOT in vars');
+  assert.equal(s.secrets.GATEWAY_ACCESS_KEY_PRO, 'pro-secret', 'KEY_PRO collected in secrets');
+}
+
+// Deployment config: GATEWAY_ACCESS_MODELS_MAX appears in vars map, never in secrets.
+{
+  const env = envFixture();
+  env.GATEWAY_ACCESS_KEY_MAX = 'max-key';
+  env.GATEWAY_ACCESS_MODELS_MAX = 'Max,Code-Max';
+  const v = collectVarsFromEnv(env);
+  const s = collectSecretsFromEnv(env);
+  assert.ok('GATEWAY_ACCESS_MODELS_MAX' in v.vars, 'MODELS_MAX in vars map');
+  assert.ok(!('GATEWAY_ACCESS_MODELS_MAX' in s.secrets), 'MODELS_MAX not in secrets map');
+}
+
 console.log('github deployment config tests passed.');
