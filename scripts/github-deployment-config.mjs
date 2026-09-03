@@ -49,7 +49,7 @@ const RUNTIME_VAR_PATTERN = new RegExp(
 );
 const EXTRA_VAR_ALLOW = new Set(['PROJECT_REPOSITORY_URL']);
 // Credential-bearing names must never appear in the vars map.
-const CREDENTIAL_NAMES = new Set(['CLOUDFLARE_API_TOKEN']);
+const CREDENTIAL_NAMES = new Set(['CLOUDFLARE_API_TOKEN', 'GATEWAY_ACCESS_KEY_AIR', 'GATEWAY_ACCESS_KEY_PRO', 'GATEWAY_ACCESS_KEY_MAX', 'GATEWAY_ACCESS_KEY_ULTRA', 'GATEWAY_ACCESS_KEY_AGENT']);
 
 export function parseConfigObject(text, label = 'configuration') {
   let parsed;
@@ -99,7 +99,8 @@ export function normalizeRuntimeConfig(raw) {
     assertSize(name, value);
     secrets[name] = value;
   }
-  if (!secrets.GATEWAY_ACCESS_KEY) throw new Error('secrets.GATEWAY_ACCESS_KEY is required');
+  const hasGroupKey = Object.keys(secrets).some((k) => /^GATEWAY_ACCESS_KEY_(?:AIR|PRO|MAX|ULTRA|AGENT)$/.test(k));
+  if (!hasGroupKey) throw new Error('secrets must contain at least one GATEWAY_ACCESS_KEY_<GROUP> (AIR, PRO, MAX, ULTRA, AGENT)');
   if (!Object.keys(vars).some((name) => NODE_VAR.test(name))) {
     throw new Error('vars must contain at least one TIER{1,2,3}_NODES_CONFIG_XX value');
   }

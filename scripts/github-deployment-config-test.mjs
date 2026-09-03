@@ -15,7 +15,7 @@ function fixture() {
       MODELS_CONFIG: { 'code-pro': { policy: 'default' } },
       POLICIES_CONFIG: { default: { max_attempts: 5 } },
     },
-    secrets: { GATEWAY_ACCESS_KEY: 'gateway-key', TIER1_NODES_SECRETS_01: { 'node-a': 'upstream-key' } },
+    secrets: { GATEWAY_ACCESS_KEY_AIR: 'gateway-key', TIER1_NODES_SECRETS_01: { 'node-a': 'upstream-key' } },
   };
 }
 
@@ -27,11 +27,11 @@ assert.equal(JSON.parse(runtime.vars.TIER1_NODES_CONFIG_01)[0].id, 'node-a');
 assert.equal(JSON.parse(runtime.secrets.TIER1_NODES_SECRETS_01)['node-a'], 'upstream-key');
 
 assert.throws(
-  () => normalizeRuntimeConfig({ vars: { ...fixture().vars, GATEWAY_ACCESS_KEY: 'nope' }, secrets: fixture().secrets }),
+  () => normalizeRuntimeConfig({ vars: { ...fixture().vars, GATEWAY_ACCESS_KEY_AIR: 'nope' }, secrets: fixture().secrets }),
   /credentials belong in secrets/,
 );
 assert.throws(
-  () => normalizeRuntimeConfig({ vars: fixture().vars, secrets: { GATEWAY_ACCESS_KEY: 'x' } }),
+  () => normalizeRuntimeConfig({ vars: fixture().vars, secrets: { GATEWAY_ACCESS_KEY_AIR: 'x' } }),
   /TIER[123]_NODES_SECRETS/,
 );
 assert.throws(
@@ -69,7 +69,7 @@ function envFixture({ legacy = false } = {}) {
     POLICIES_CONFIG: JSON.stringify({ default: { max_attempts: 5 } }),
     TIER1_NODES_CONFIG_01: JSON.stringify([{ id: 'node-a', base_url: 'https://provider.example.com/v1', models: { 'code-pro': 'up' } }]),
     CLOUDFLARE_API_TOKEN: 'cf-token',
-    GATEWAY_ACCESS_KEY: 'gw-key',
+    GATEWAY_ACCESS_KEY_AIR: 'gw-key',
     TIER1_NODES_SECRETS_01: JSON.stringify({ 'node-a': 'upstream-key' }),
   };
   if (legacy) {
@@ -78,14 +78,14 @@ function envFixture({ legacy = false } = {}) {
     delete env.POLICIES_CONFIG;
     delete env.RATE_LIMIT_COOLDOWN_MS;
     delete env.FIRST_EVENT_TIMEOUT_MS;
-    delete env.GATEWAY_ACCESS_KEY;
+    delete env.GATEWAY_ACCESS_KEY_AIR;
     delete env.TIER1_NODES_SECRETS_01;
     env.GATEWAY_CONFIG = JSON.stringify({
       TIER1_NODES_CONFIG_01: env.TIER1_NODES_CONFIG_01 || JSON.stringify([{ id: 'node-a', base_url: 'https://provider.example.com/v1', models: { 'code-pro': 'up' } }]),
       MODELS_CONFIG: { 'code-pro': { policy: 'default' } },
       POLICIES_CONFIG: { default: { max_attempts: 5 } },
     });
-    env.GATEWAY_SECRETS_CONFIG = JSON.stringify({ GATEWAY_ACCESS_KEY: 'gw-key', TIER1_NODES_SECRETS_01: { 'node-a': 'upstream-key' } });
+    env.GATEWAY_SECRETS_CONFIG = JSON.stringify({ GATEWAY_ACCESS_KEY_AIR: 'gw-key', TIER1_NODES_SECRETS_01: { 'node-a': 'upstream-key' } });
   }
   return env;
 }
@@ -119,18 +119,18 @@ function envFixture({ legacy = false } = {}) {
 {
   const env = envFixture();
   env.GATEWAY_CONFIG = JSON.stringify({ TIER1_NODES_CONFIG_01: JSON.stringify([{ id: 'stale-node', base_url: 'https://stale.example.com/v1' }]) });
-  env.GATEWAY_SECRETS_CONFIG = JSON.stringify({ GATEWAY_ACCESS_KEY: 'stale-key', TIER1_NODES_SECRETS_01: { 'node-a': 'stale' } });
+  env.GATEWAY_SECRETS_CONFIG = JSON.stringify({ GATEWAY_ACCESS_KEY_AIR: 'stale-key', TIER1_NODES_SECRETS_01: { 'node-a': 'stale' } });
   const built = buildRuntimeFromEnv(env);
   assert.equal(built.usedLegacyVars, false, 'individual vars take precedence over the legacy blob');
   assert.equal(built.usedLegacySecrets, false, 'individual secrets take precedence over the legacy blob');
   assert.equal(JSON.parse(built.runtime.vars.TIER1_NODES_CONFIG_01)[0].id, 'node-a', 'legacy node-a did not leak');
-  assert.equal(built.runtime.secrets.GATEWAY_ACCESS_KEY, 'gw-key', 'legacy access key did not leak');
+  assert.equal(built.runtime.secrets.GATEWAY_ACCESS_KEY_AIR, 'gw-key', 'legacy access key did not leak');
 }
 
 // Credentials must never appear in the vars map.
 {
-  const v = collectVarsFromEnv({ ...envFixture(), GATEWAY_ACCESS_KEY: 'gw-key', TIER1_NODES_SECRETS_01: JSON.stringify({ 'node-a': 'x' }) });
-  assert.ok(!('GATEWAY_ACCESS_KEY' in v.vars), 'GATEWAY_ACCESS_KEY kept out of vars');
+  const v = collectVarsFromEnv({ ...envFixture(), GATEWAY_ACCESS_KEY_AIR: 'gw-key', TIER1_NODES_SECRETS_01: JSON.stringify({ 'node-a': 'x' }) });
+  assert.ok(!('GATEWAY_ACCESS_KEY_AIR' in v.vars), 'GATEWAY_ACCESS_KEY_AIR kept out of vars');
   assert.ok(!('TIER1_NODES_SECRETS_01' in v.vars), 'TIER1_NODES_SECRETS_01 kept out of vars');
 }
 
@@ -165,12 +165,12 @@ assert.throws(
   delete env.GATEWAY_PUBLIC_BASE_URL;
   delete env.TIER1_NODES_CONFIG_01;
   delete env.TIER1_NODES_SECRETS_01;
-  delete env.GATEWAY_ACCESS_KEY;
+  delete env.GATEWAY_ACCESS_KEY_AIR;
   delete env.CLOUDFLARE_API_TOKEN;
   const r = preflight(env);
   assert.equal(r.ok, false, 'preflight fails on missing config');
   assert.ok(r.errors.some((e) => e.includes('CLOUDFLARE_ACCOUNT_ID')), 'names the missing variable');
-  assert.ok(r.errors.some((e) => e.includes('GATEWAY_ACCESS_KEY')), 'names the missing secret');
+  assert.ok(r.errors.some((e) => e.includes('GATEWAY_ACCESS_KEY_<GROUP>')), 'names the missing secret');
   assert.ok(r.errors.some((e) => e.includes('No TIER')), 'names the missing node-config shard');
   assert.ok(r.errors.some((e) => e.includes('No TIER[123]_NODES_SECRETS')), 'names the missing credential shard');
 }

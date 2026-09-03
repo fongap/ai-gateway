@@ -162,7 +162,7 @@ function buildConfig(env) {
       diagnostics.push(msg);
     }
   }
-  const accessKeyBound = Boolean(readEnv(env, 'GATEWAY_ACCESS_KEY'));
+  const accessKeyBound = Boolean(readEnv(env, 'GATEWAY_ACCESS_KEY')) || ['AIR', 'PRO', 'MAX', 'ULTRA', 'AGENT'].some((g) => readEnv(env, `GATEWAY_ACCESS_KEY_${g}`));
 
   const tierShards = collectShards(env, TIER_SHARD_PATTERN, 'TIER1_NODES_CONFIG_', 'TIER1_NODES_CONFIG_01', 2, diagnostics);
   const secretShards = collectShards(env, SECRET_SHARD_PATTERN, 'TIER1_NODES_SECRETS_', 'TIER1_NODES_SECRETS_01', 2, diagnostics);
