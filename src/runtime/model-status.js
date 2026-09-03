@@ -84,6 +84,25 @@ export const MODEL_STATUS_RECENT_WINDOW_MS = 24 * 3600_000;
 //
 // The list is sorted by logical model id for stable rendering. No node ids,
 // providers, tiers, counts or durations leave this function.
+
+function deriveGroup(name) {
+  if (name.startsWith('Code-')) return 'coding';
+  if (name.startsWith('Live-') || name === 'Live') return 'live';
+  if (name.startsWith('Media-')) return 'media';
+  if (name.startsWith('Omni')) return 'omni';
+  return 'general';
+}
+
+const MODEL_NAME_PRIORITY = {
+  air: 10, pro: 20, max: 30, ultra: 40,
+  vision: 10, video: 20, audio: 30, ocr: 40,
+  translate: 10, transcribe: 20,
+};
+function modelNamePriority(name) {
+  const lower = name.toLowerCase().replace(/^(code-|omni-|live-|media-)/, '');
+  return MODEL_NAME_PRIORITY[lower] ?? 90;
+}
+
 export function getPublicModelStatus(nodes, env, evidence = new Set(), now = Date.now()) {
   const names = new Set();
   for (const node of nodes || []) {
@@ -110,12 +129,15 @@ export function getPublicModelStatus(nodes, env, evidence = new Set(), now = Dat
       id: name,
       status,
       display_order: entry.display_order !== undefined ? entry.display_order : 100,
-      group: entry.group !== undefined ? entry.group : (name.startsWith('Code-') ? 'coding' : 'general'),
+      group: entry.group !== undefined ? entry.group : deriveGroup(name),
     });
   }
   models.sort((a, b) => {
     const diff = a.display_order - b.display_order;
-    return diff !== 0 ? diff : a.id.localeCompare(b.id);
+    if (diff !== 0) return diff;
+    const pa = modelNamePriority(a.id);
+    const pb = modelNamePriority(b.id);
+    return pa !== pb ? pa - pb : a.id.localeCompare(b.id);
   });
   return { observed_at: new Date(now).toISOString(), models };
 }
