@@ -24,14 +24,27 @@ export function modelStatusRows(status) {
   return status.models;
 }
 
+function fmtTtftSeconds(s) {
+  if (s === '--' || s == null) return '--s';
+  if (typeof s !== 'string') return '--s';
+  if (s.endsWith('ms')) {
+    const n = Number(s.slice(0, -2));
+    if (!Number.isFinite(n)) return '--s';
+    return `${(n / 1000).toFixed(2)}s`;
+  }
+  if (s.endsWith('s')) return s;
+  return `${s}s`;
+}
+
 export function fmtModelTtft(modelTtft) {
-  if (!modelTtft || modelTtft.available === false) return { p50: '--', p95: '--', samples: 0, insufficient: true };
-  if (modelTtft.insufficient) return { p50: '--', p95: '--', samples: modelTtft.sampleCount || 0, insufficient: true };
+  if (!modelTtft || modelTtft.available === false) return { p50: '--s', p95: '--s', samples: 0, insufficient: true, noSamples: true };
+  if (modelTtft.insufficient) return { p50: '--s', p95: '--s', samples: modelTtft.sampleCount || 0, insufficient: true, noSamples: true };
   return {
-    p50: modelTtft.p50 != null ? fmtTtft(modelTtft.p50) : '--',
-    p95: modelTtft.p95 != null ? fmtTtft(modelTtft.p95) : '--',
+    p50: fmtTtftSeconds(modelTtft.p50 != null ? fmtTtft(modelTtft.p50) : '--'),
+    p95: fmtTtftSeconds(modelTtft.p95 != null ? fmtTtft(modelTtft.p95) : '--'),
     samples: modelTtft.sampleCount || 0,
     insufficient: false,
+    noSamples: (modelTtft.sampleCount || 0) === 0,
   };
 }
 
@@ -39,13 +52,17 @@ function renderModelRow(m, ttft) {
   const label = STATE_LABEL[m.status] || '不可用';
   const style = STATE_STYLE[m.status] ?? ' down';
   const t = fmtModelTtft(ttft?.get?.(m.id));
+  const samplesText = t.noSamples ? '-- samples' : `${t.samples} samples`;
   const sampleTitle = t.insufficient ? 'TTFT 样本不足' : `${t.samples} 个 TTFT 样本`;
   return `<div class="model-row">
-    <div class="model-name">${escapeHtml(m.id)}</div>
-    <div class="metric"><span class="metric-label">P50</span><span class="metric-value">${t.p50}</span></div>
-    <div class="metric"><span class="metric-label">P95</span><span class="metric-value">${t.p95}</span></div>
-    <div class="samples" title="${escapeHtml(sampleTitle)}">${t.samples} samples</div>
-    <div class="model-status${style}"><span class="status-dot"></span>${label}</div>
+    <div class="mr-name">${escapeHtml(m.id)}</div>
+    <div class="mr-p50-label">P50</div>
+    <div class="mr-p50-val">${t.p50}</div>
+    <div class="mr-p95-label">P95</div>
+    <div class="mr-p95-val">${t.p95}</div>
+    <div class="mr-samples" title="${escapeHtml(sampleTitle)}">${samplesText}</div>
+    <div class="mr-dot${style}"></div>
+    <div class="mr-status">${label}</div>
   </div>`;
 }
 
