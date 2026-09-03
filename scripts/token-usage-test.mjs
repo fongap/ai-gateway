@@ -672,12 +672,11 @@ await test('模型状态 section has model rows with status, P50, P95, sample co
   ]);
   env.TIER1_NODES_SECRETS_01 = JSON.stringify({ 'node-a': 'test-key' });
   const html = await pageText(anonRequest(), env);
-  // Model status section must have model-meta with P50/P95/samples
-  assert.ok(html.includes('model-meta'), 'model-meta div present');
+  // Model status section must have rows with P50/P95/samples and status
   assert.ok(html.includes('P50'), 'P50 label');
   assert.ok(html.includes('P95'), 'P95 label');
   assert.ok(html.includes('samples'), 'sample count label');
-  assert.ok(html.includes('model-status'), 'status class present');
+  assert.ok(html.includes('mr-status'), 'status class present');
   assert.ok(html.includes('status-grid'), 'status-grid layout present');
 });
 
