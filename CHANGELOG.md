@@ -1,5 +1,37 @@
 ﻿# Changelog
 
+## 1.2.7 - 2026-09-04
+
+### Changed — 模型治理与一致性收敛（v1.2.7）
+
+- **模型目录（Model Registry）新增 `ui_visible` 字段**：控制 Dashboard 与模型选择器的显示，与 API 可见性（`visibility`）解耦。8 个 Public 模型（Air/Pro/Max/Ultra, Code-Air/Code-Pro/Code-Max/Code-Ultra）为 `true`；Agent 能力模型 Omni/OCR 为 `false`，不出现在普通用户选择器与 Dashboard「模型状态」中，但保留完整的后台统计、健康监控与 Agent 发现能力。
+- **正式逻辑模型收敛为 10 个**：8 个面向用户 + 2 个 Agent 能力（Omni/OCR）。Group 分类收敛为 `general` / `code` / `omni` / `ocr`，`deriveGroup` 仅作兼容 fallback。
+- **MODELS_CONFIG 扩展 `ui_visible` 与 `ocr` capability**：Omni 默认 `vision=true`，OCR 为 `ocr=true`，均 `ui_visible=false`。`ui_visible` 默认 `true`，未知字段/非法类型仍产生 diagnostics。
+- **Key-scoped `/v1/models`**：模型列表按 Key Scope（`configuredModels ∩ allowlist`）过滤。AGENT Key 可发现全部 10 个模型；受限 Key 仅返回被授权子集。Visible == Callable。
+- **Closed Catalog 收敛**：`collectKnownModels = node mappings ∪ MODELS_CONFIG`。Wildcard node 仅服务已知目录模型，拒绝任意字符串，防止未声明模型被调用。
+- **Key-scoped 权限去重**：`access-keys.js` 与 `model-authz.js` 的 `filterVisibleModels` 收敛为单一源，`/v1/models` 与请求授权共用同一逻辑。
+- **Tier Secret 强制校验**：Node Tier 必须与 Secret Tier 一致（Tier1 node 不得使用 Tier2 secret），不匹配直接 diagnostics / fail closed。
+- **Malformed shard 检测全覆盖**：TIER1/2/3 的 NODES_CONFIG / NODES_SECRETS 统一校验后缀格式（如 `_01`），格式错误直接报错不再静默忽略。
+
+### Fixed — 可观测性一致性收敛
+
+- **统计维度大小写归一化**：`normalizeModelKey = trim + toLowerCase`。新写入直接写入 canonical key；历史读取统一 `GROUP BY LOWER(TRIM(model))`，合并 `Code-Max` / `code-max` / `CODE-MAX` 为同一统计维度。覆盖 Token / Requests / Top-N / Percentage / Recent Evidence / TTFT / Coverage 全维度。不修改历史 D1 行，新写入走 canonical key，历史按读取时归一化聚合，7 天保留期后旧大小写自然淘汰。
+- **Dashboard TTFT P50/P95 统一**：`queryAllModelsTtft` 单次 grouped D1 查询（`GROUP BY LOWER(TRIM(model))`）一次性拉取所有模型的 7 桶直方图，内存算 P50/P95，不再 N+1 查询 Top 4。8 个 Public Model 均可获取 TTFT（只要有数据），不再仅限 Usage Top 4。
+- **Recent Evidence 窗口收敛 24h**：统一使用 `MODEL_STATUS_RECENT_WINDOW_MS = 24h`，不再有硬编码 7 天。
+- **Public Model Status 仅显示 8 个 Public 模型**：Omni/OCR 后台继续完整统计与监控，但 Dashboard「模型状态」与 `/v1/models`（受限 Key）不再暴露。
+
+### Changed — 协议文档与版本收敛
+
+- **协议架构描述统一**：OpenAI / Anthropic 双原生协议，Native First；仅 Anthropic Messages 在显式配置 `PROTOCOL_FALLBACKS` 时允许单向 fallback 至 OpenAI Chat；不存在隐式跨协议 fallback；Hedge 永不跨 protocol / surface。文档与代码注释同步修正。
+- **版本统一为 1.2.7**：`package.json` / `APP_META` / `CHANGELOG` / `README` / `docs` / `example config` 统一为 1.2.7。
+
+### Removed
+
+- 删除废弃的转换代码残留与未使用的兼容层。
+- 冻结 Dashboard 布局调整（宽度/像素/间距/字体），专注治理正确性。
+
+---
+
 ## Unreleased
 
 ### Changed — 协议层架构收敛（OpenAI / Anthropic 双原生协议）
