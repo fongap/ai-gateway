@@ -53,17 +53,14 @@ function renderModelRow(m, ttft) {
   </div>`;
 }
 
-function splitModelsByCodePrefix(models) {
-  const codeModels = [];
-  const normalModels = [];
+function splitModelsByGroup(models) {
+  const groups = {};
   for (const m of models) {
-    if (m.id.startsWith('Code-')) {
-      codeModels.push(m);
-    } else {
-      normalModels.push(m);
-    }
+    const grp = m.group || 'general';
+    if (!groups[grp]) groups[grp] = [];
+    groups[grp].push(m);
   }
-  return { normalModels, codeModels };
+  return groups;
 }
 
 function renderModelBlock(models, ttft, title) {
@@ -77,9 +74,18 @@ function renderModelBlock(models, ttft, title) {
 
 export function renderModels(status, ttft) {
   const allModels = modelStatusRows(status);
-  const { normalModels, codeModels } = splitModelsByCodePrefix(allModels);
-  const normalHtml = renderModelBlock(normalModels, ttft, '标准模型');
-  const codeHtml = renderModelBlock(codeModels, ttft, '编程模型');
-  const html = `<div class="status-grid-split">${normalHtml}${codeHtml}</div>`;
+  const groups = splitModelsByGroup(allModels);
+  const groupOrder = ['general', 'coding'];
+  const groupTitles = { general: '通用模型', coding: '编程模型' };
+  
+  const blocks = [];
+  for (const grp of groupOrder) {
+    if (groups[grp] && groups[grp].length > 0) {
+      const title = groupTitles[grp] || grp;
+      blocks.push(renderModelBlock(groups[grp], ttft, title));
+    }
+  }
+  
+  const html = `<div class="status-grid-split">${blocks.join('')}</div>`;
   return { html };
 }

@@ -26,6 +26,8 @@ const DEFAULT_CAPABILITIES = Object.freeze({ tools: false, reasoning: false, vis
 const DEFAULT_REASONING_EFFORTS = Object.freeze([]);
 const DEFAULT_POLICY = 'default';
 const DEFAULT_VISIBILITY = 'public';
+const DEFAULT_DISPLAY_ORDER = 100;
+const DEFAULT_GROUP = 'general';
 
 let cachedEnv;
 let cachedRegistry;
@@ -45,6 +47,8 @@ export function loadModelRegistry(env) {
       reasoning_efforts: Array.isArray(cfg.reasoning_efforts) && cfg.reasoning_efforts.length
         ? cfg.reasoning_efforts
         : [...DEFAULT_REASONING_EFFORTS],
+      display_order: cfg.display_order !== undefined ? cfg.display_order : DEFAULT_DISPLAY_ORDER,
+      group: cfg.group !== undefined ? cfg.group : DEFAULT_GROUP,
     };
   }
   cachedRegistry = registry;
@@ -61,6 +65,8 @@ export function modelRegistryEntry(env, model) {
     visibility: DEFAULT_VISIBILITY,
     capabilities: { ...DEFAULT_CAPABILITIES },
     reasoning_efforts: [...DEFAULT_REASONING_EFFORTS],
+    display_order: DEFAULT_DISPLAY_ORDER,
+    group: DEFAULT_GROUP,
   };
 }
 
