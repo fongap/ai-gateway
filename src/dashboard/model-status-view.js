@@ -53,8 +53,33 @@ function renderModelRow(m, ttft) {
   </div>`;
 }
 
+function splitModelsByCodePrefix(models) {
+  const codeModels = [];
+  const normalModels = [];
+  for (const m of models) {
+    if (m.id.startsWith('Code-')) {
+      codeModels.push(m);
+    } else {
+      normalModels.push(m);
+    }
+  }
+  return { normalModels, codeModels };
+}
+
+function renderModelBlock(models, ttft, title) {
+  if (!models.length) return '';
+  const rows = models.map((m) => renderModelRow(m, ttft)).join('');
+  return `<div class="status-block">
+    <div class="status-group-title">${escapeHtml(title)}</div>
+    <div class="status-grid-inner">${rows}</div>
+  </div>`;
+}
+
 export function renderModels(status, ttft) {
-  const rows = modelStatusRows(status).map((m) => renderModelRow(m, ttft)).join('');
-  const html = `<div class="status-grid">${rows}</div>`;
+  const allModels = modelStatusRows(status);
+  const { normalModels, codeModels } = splitModelsByCodePrefix(allModels);
+  const normalHtml = renderModelBlock(normalModels, ttft, '标准模型');
+  const codeHtml = renderModelBlock(codeModels, ttft, '编程模型');
+  const html = `<div class="status-grid-split">${normalHtml}${codeHtml}</div>`;
   return { html };
 }

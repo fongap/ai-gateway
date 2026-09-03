@@ -137,7 +137,7 @@ function shell({ title, body }) {
   </div>
 </header>
 
-<main>${body}</main>
+<main class="main-content">${body}</main>
 
 <footer>
   <div class="wrap footer-row">
