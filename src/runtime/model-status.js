@@ -98,6 +98,7 @@ const MODEL_NAME_PRIORITY = {
   vision: 10, video: 20, audio: 30, ocr: 40,
   translate: 10, transcribe: 20,
 };
+const GROUP_PRIORITY = { general: 0, coding: 1, live: 2, media: 3, omni: 4 };
 function modelNamePriority(name) {
   const lower = name.toLowerCase().replace(/^(code-|omni-|live-|media-)/, '');
   return MODEL_NAME_PRIORITY[lower] ?? 90;
@@ -133,6 +134,9 @@ export function getPublicModelStatus(nodes, env, evidence = new Set(), now = Dat
     });
   }
   models.sort((a, b) => {
+    const ga = GROUP_PRIORITY[a.group] ?? 9;
+    const gb = GROUP_PRIORITY[b.group] ?? 9;
+    if (ga !== gb) return ga - gb;
     const diff = a.display_order - b.display_order;
     if (diff !== 0) return diff;
     const pa = modelNamePriority(a.id);

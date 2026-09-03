@@ -41,13 +41,11 @@ function renderModelRow(m, ttft) {
   const t = fmtModelTtft(ttft?.get?.(m.id));
   const sampleTitle = t.insufficient ? 'TTFT 样本不足' : `${t.samples} 个 TTFT 样本`;
   return `<div class="model-row">
-    <div>
-      <div class="model-name">${escapeHtml(m.id)}</div>
-      <div class="model-meta">
-        <span>P50 <b>${t.p50}</b></span>
-        <span>P95 <b>${t.p95}</b></span>
-        <span title="${escapeHtml(sampleTitle)}">${t.samples} samples</span>
-      </div>
+    <div class="model-name">${escapeHtml(m.id)}</div>
+    <div class="model-meta">
+      <span>P50 <b>${t.p50}</b></span>
+      <span>P95 <b>${t.p95}</b></span>
+      <span title="${escapeHtml(sampleTitle)}">${t.samples} samples</span>
     </div>
     <div class="model-status${style}">${label}</div>
   </div>`;
