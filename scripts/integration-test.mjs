@@ -1739,7 +1739,7 @@ await test('public home: brand & GitHub once, model status flat list, no protoco
   // Accessibility and responsive structure: status is not color-only, tabs
   // expose their selected panel, and the dense heatmap has one concise label.
   // Accessibility: status is not color-only (text label is visible).
-  assert.match(html, /model-status.*未观测/s);
+  assert.match(html, /mr-status.*未观测/s);
   assert.match(html, /role="tab" aria-controls="pane-openai" aria-selected="true"/);
   assert.match(html, /id="pane-anthropic" role="tabpanel" aria-labelledby="tab-anthropic" hidden/);
   assert.match(html, /ArrowLeft/);

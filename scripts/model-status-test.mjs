@@ -424,6 +424,96 @@ test('node-mapped model without MODELS_CONFIG gets default order=100 and group=g
   assert.equal(list.models[0].group, 'general');
 });
 
+// --- 22. v1.2.7 Model Governance: ui_visible and 10-model catalog ---------
+
+test('ui_visible=false hides model from public status', () => {
+  const env = { GATEWAY_ACCESS_KEY: 'k', MODELS_CONFIG: JSON.stringify({
+    Air: { policy: 'default', group: 'general', ui_visible: true },
+    Omni: { policy: 'default', group: 'omni', ui_visible: false },
+  }) };
+  const nodes = [node('n1', { Air: 'up', Omni: 'up' })];
+  const list = getPublicModelStatus(nodes, env, new Set(['Air', 'Omni']), now());
+  assert.deepEqual(list.models.map((m) => m.id), ['Air']);
+});
+
+test('ui_visible defaults to true when not specified', () => {
+  const env = { GATEWAY_ACCESS_KEY: 'k', MODELS_CONFIG: JSON.stringify({
+    Air: { policy: 'default', group: 'general' },
+  }) };
+  const nodes = [node('n1', { Air: 'up' })];
+  const list = getPublicModelStatus(nodes, env, new Set(['Air']), now());
+  assert.equal(list.models.length, 1);
+  assert.equal(list.models[0].id, 'Air');
+});
+
+test('Omni and OCR excluded from public status with ui_visible=false', () => {
+  const env = { GATEWAY_ACCESS_KEY: 'k', MODELS_CONFIG: JSON.stringify({
+    Air: { policy: 'default', group: 'general', ui_visible: true, display_order: 10 },
+    Pro: { policy: 'default', group: 'general', ui_visible: true, display_order: 20 },
+    Max: { policy: 'default', group: 'general', ui_visible: true, display_order: 30 },
+    Ultra: { policy: 'default', group: 'general', ui_visible: true, display_order: 40 },
+    'Code-Air': { policy: 'default', group: 'code', ui_visible: true, display_order: 10 },
+    'Code-Pro': { policy: 'default', group: 'code', ui_visible: true, display_order: 20 },
+    'Code-Max': { policy: 'default', group: 'code', ui_visible: true, display_order: 30 },
+    'Code-Ultra': { policy: 'default', group: 'code', ui_visible: true, display_order: 40 },
+    Omni: { policy: 'default', group: 'omni', ui_visible: false, display_order: 10 },
+    OCR: { policy: 'default', group: 'ocr', ui_visible: false, display_order: 10 },
+  }) };
+  const nodes = [node('n1', {
+    Air: 'up', Pro: 'up', Max: 'up', Ultra: 'up',
+    'Code-Air': 'up', 'Code-Pro': 'up', 'Code-Max': 'up', 'Code-Ultra': 'up',
+    Omni: 'up', OCR: 'up',
+  })];
+  const list = getPublicModelStatus(nodes, env, new Set([
+    'Air', 'Pro', 'Max', 'Ultra',
+    'Code-Air', 'Code-Pro', 'Code-Max', 'Code-Ultra',
+    'Omni', 'OCR',
+  ]), now());
+  const ids = list.models.map((m) => m.id);
+  assert.deepEqual(ids, ['Air', 'Pro', 'Max', 'Ultra', 'Code-Air', 'Code-Pro', 'Code-Max', 'Code-Ultra']);
+  assert.ok(!ids.includes('Omni'), 'Omni must not appear in public status');
+  assert.ok(!ids.includes('OCR'), 'OCR must not appear in public status');
+});
+
+test('group values: general, code, omni, ocr from config', () => {
+  const env = { GATEWAY_ACCESS_KEY: 'k', MODELS_CONFIG: JSON.stringify({
+    Air: { policy: 'default', group: 'general', ui_visible: true },
+    'Code-Air': { policy: 'default', group: 'code', ui_visible: true },
+    Omni: { policy: 'default', group: 'omni', ui_visible: false },
+    OCR: { policy: 'default', group: 'ocr', ui_visible: false },
+  }) };
+  const nodes = [node('n1', { Air: 'up', 'Code-Air': 'up', Omni: 'up', OCR: 'up' })];
+  const list = getPublicModelStatus(nodes, env, new Set(['Air', 'Code-Air', 'Omni', 'OCR']), now());
+  // Only Air and Code-Air are ui_visible=true
+  const air = list.models.find((m) => m.id === 'Air');
+  const codeAir = list.models.find((m) => m.id === 'Code-Air');
+  assert.equal(air.group, 'general');
+  assert.equal(codeAir.group, 'code');
+});
+
+test('deriveGroup fallback: Code- prefix -> code, Omni -> omni, OCR -> ocr', () => {
+  // No MODELS_CONFIG, so deriveGroup is the fallback
+  const nodes = [node('n1', { Air: 'up', 'Code-Max': 'up', Omni: 'up', OCR: 'up' })];
+  const list = getPublicModelStatus(nodes, null, new Set(['Air', 'Code-Max', 'Omni', 'OCR']), now());
+  const air = list.models.find((m) => m.id === 'Air');
+  const codeMax = list.models.find((m) => m.id === 'Code-Max');
+  const omni = list.models.find((m) => m.id === 'Omni');
+  const ocr = list.models.find((m) => m.id === 'OCR');
+  assert.equal(air.group, 'general');
+  assert.equal(codeMax.group, 'code');
+  assert.equal(omni.group, 'omni');
+  assert.equal(ocr.group, 'ocr');
+});
+
+test('ui_visible=false with visibility=public still hidden from public status', () => {
+  const env = { GATEWAY_ACCESS_KEY: 'k', MODELS_CONFIG: JSON.stringify({
+    Omni: { policy: 'default', visibility: 'public', ui_visible: false, group: 'omni' },
+  }) };
+  const nodes = [node('n1', { Omni: 'up' })];
+  const list = getPublicModelStatus(nodes, env, new Set(['Omni']), now());
+  assert.equal(list.models.length, 0);
+});
+
 console.log(`\nmodel-status tests: ${passed} passed.`);
 if (process.exitCode) {
   console.error('Some tests FAILED.');

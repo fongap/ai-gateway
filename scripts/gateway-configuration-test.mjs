@@ -217,6 +217,8 @@ test('registry builds capability + policy from MODELS_CONFIG and fills conservat
   assert.equal(def.capabilities.tools, false, 'undeclared models must not promise tools');
   assert.equal(def.capabilities.reasoning, false, 'undeclared models must not promise reasoning');
   assert.equal(def.capabilities.vision, false);
+  assert.equal(def.capabilities.ocr, false);
+  assert.equal(def.ui_visible, true, 'default ui_visible should be true');
   assert.deepEqual(def.reasoning_efforts, [], 'no reasoning efforts without a declaration');
 });
 
@@ -251,6 +253,35 @@ test('MODELS_CONFIG rejects unknown capabilities and non-boolean values', () => 
   } }));
   assert.ok(diags.some((d) => d.includes('capabilities.visionz')), 'unknown capability key must be flagged');
   assert.ok(diags.some((d) => d.includes('capabilities.reasoning')), 'non-boolean capability must be flagged');
+});
+
+test('MODELS_CONFIG accepts ocr capability and ui_visible field', () => {
+  const env = makeEnv({ extraEnv: {
+    MODELS_CONFIG: JSON.stringify({
+      'OCR': { policy: 'default', capabilities: { ocr: true }, ui_visible: false, group: 'ocr' },
+      'Omni': { policy: 'default', capabilities: { vision: true }, ui_visible: false, group: 'omni' },
+    }),
+  } });
+  const diags = getModelsConfigDiagnostics(env);
+  assert.ok(!diags.some((d) => d.includes('ocr')), 'ocr capability should be accepted');
+  assert.ok(!diags.some((d) => d.includes('ui_visible')), 'ui_visible field should be accepted');
+  const reg = modelRegistryEntry(env, 'OCR');
+  assert.equal(reg.capabilities.ocr, true);
+  assert.equal(reg.ui_visible, false);
+  assert.equal(reg.group, 'ocr');
+  const omni = modelRegistryEntry(env, 'Omni');
+  assert.equal(omni.capabilities.vision, true);
+  assert.equal(omni.ui_visible, false);
+  assert.equal(omni.group, 'omni');
+});
+
+test('MODELS_CONFIG rejects non-boolean ui_visible', () => {
+  const diags = getModelsConfigDiagnostics(makeEnv({ extraEnv: {
+    MODELS_CONFIG: JSON.stringify({
+      'm': { ui_visible: 'yes' },
+    }),
+  } }));
+  assert.ok(diags.some((d) => d.includes('ui_visible must be a boolean')), 'non-boolean ui_visible must be flagged');
 });
 
 test('malformed POLICIES_CONFIG is FATAL: invalid config refuses service', () => {
