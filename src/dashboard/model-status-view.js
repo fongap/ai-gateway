@@ -53,39 +53,23 @@ function renderModelRow(m, ttft) {
   </div>`;
 }
 
-function splitModelsByGroup(models) {
-  const groups = {};
-  for (const m of models) {
-    const grp = m.group || 'general';
-    if (!groups[grp]) groups[grp] = [];
-    groups[grp].push(m);
-  }
-  return groups;
-}
+function splitModelsByGroup() { return {}; }
 
 function renderModelBlock(models, ttft, title) {
   if (!models.length) return '';
   const rows = models.map((m) => renderModelRow(m, ttft)).join('');
   return `<div class="status-block">
-    <div class="status-group-title">${escapeHtml(title)}</div>
     <div class="status-grid-inner">${rows}</div>
   </div>`;
 }
 
 export function renderModels(status, ttft) {
   const allModels = modelStatusRows(status);
-  const groups = splitModelsByGroup(allModels);
-  const groupOrder = ['general', 'coding', 'live', 'media'];
-  const groupTitles = { general: '通用模型', coding: '编程模型', live: 'Live 模型', media: '媒体模型' };
-  
-  const blocks = [];
-  for (const grp of groupOrder) {
-    if (groups[grp] && groups[grp].length > 0) {
-      const title = groupTitles[grp] || grp;
-      blocks.push(renderModelBlock(groups[grp], ttft, title));
-    }
-  }
-  
-  const html = `<div class="status-grid-split">${blocks.join('')}</div>`;
+  const mid = Math.ceil(allModels.length / 2);
+  const left = allModels.slice(0, mid);
+  const right = allModels.slice(mid);
+  const leftHtml = renderModelBlock(left, ttft);
+  const rightHtml = renderModelBlock(right, ttft);
+  const html = `<div class="status-grid-split">${leftHtml}${rightHtml}</div>`;
   return { html };
 }
