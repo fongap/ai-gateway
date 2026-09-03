@@ -183,7 +183,6 @@ export function buildRuntimeFromEnv(env) {
 // Deployment preflight: verify required configuration is present without
 // touching any remote resource. Returns { ok, errors, warnings }.
 const REQUIRED_VARS = ['CLOUDFLARE_ACCOUNT_ID', 'GATEWAY_PUBLIC_BASE_URL'];
-const KEY_GROUPS = ['AIR', 'PRO', 'MAX', 'ULTRA', 'AGENT'];
 const REQUIRED_SECRETS = ['CLOUDFLARE_API_TOKEN'];
 
 export function preflight(env) {
