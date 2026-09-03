@@ -75,8 +75,8 @@ function renderModelBlock(models, ttft, title) {
 export function renderModels(status, ttft) {
   const allModels = modelStatusRows(status);
   const groups = splitModelsByGroup(allModels);
-  const groupOrder = ['general', 'coding'];
-  const groupTitles = { general: '标准模型', coding: '编程模型' };
+  const groupOrder = ['general', 'coding', 'live', 'media'];
+  const groupTitles = { general: '通用模型', coding: '编程模型', live: 'Live 模型', media: '媒体模型' };
   
   const blocks = [];
   for (const grp of groupOrder) {

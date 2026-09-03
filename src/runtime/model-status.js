@@ -84,6 +84,14 @@ export const MODEL_STATUS_RECENT_WINDOW_MS = 24 * 3600_000;
 //
 // The list is sorted by logical model id for stable rendering. No node ids,
 // providers, tiers, counts or durations leave this function.
+
+function deriveGroup(name) {
+  if (name.startsWith('Code-')) return 'coding';
+  if (name.startsWith('Live-') || name === 'Live') return 'live';
+  if (name.startsWith('Media-')) return 'media';
+  return 'general';
+}
+
 export function getPublicModelStatus(nodes, env, evidence = new Set(), now = Date.now()) {
   const names = new Set();
   for (const node of nodes || []) {
@@ -110,7 +118,7 @@ export function getPublicModelStatus(nodes, env, evidence = new Set(), now = Dat
       id: name,
       status,
       display_order: entry.display_order !== undefined ? entry.display_order : 100,
-      group: entry.group !== undefined ? entry.group : (name.startsWith('Code-') ? 'coding' : 'general'),
+      group: entry.group !== undefined ? entry.group : deriveGroup(name),
     });
   }
   models.sort((a, b) => {
