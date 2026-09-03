@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MIT
 //
-// ACCESS_KEYS_CONFIG unit tests: fail-closed allowlists, key_id resolution,
-// rotation, and backward-compatible legacy fallback. Verifies that no secret
-// ever appears in logs or error responses.
+// GATEWAY_ACCESS_KEY_<GROUP> unit tests: five independent groups (AIR/PRO/MAX/ULTRA/AGENT),
+// fail-closed CSV allowlists, legacy GATEWAY_ACCESS_KEY fallback, and no secret leakage.
 
 import assert from 'node:assert/strict';
 import { loadAccessKeysConfig, keyAllowsModel, __resetAccessKeysCacheForTests } from '../src/config/access-keys.js';
@@ -42,142 +41,191 @@ const mkReq = (key) => new Request('https://gateway.example.com/v1/chat/completi
   body: '{}',
 });
 
-// --- 1. Legacy fallback: no ACCESS_KEYS_CONFIG, uses GATEWAY_ACCESS_KEY ---
-
-await testAsync('legacy fallback: no ACCESS_KEYS_CONFIG -> GATEWAY_ACCESS_KEY grants all', async () => {
+// --- 1. Legacy fallback: no GATEWAY_ACCESS_KEY_<GROUP>, uses GATEWAY_ACCESS_KEY ---
+await testAsync('legacy fallback: no GATEWAY_ACCESS_KEY_<GROUP> -> GATEWAY_ACCESS_KEY grants all', async () => {
   const env = { ...ENV_MODELS, GATEWAY_ACCESS_KEY: 'legacy-secret' };
   const result = await authorize(mkReq('legacy-secret'), env);
   assert.equal(result.authorized, true);
   assert.equal(result.mode, 'legacy');
   assert.equal(result.allowAll, true);
-  assert.equal(result.keyId, undefined);
+  assert.equal(result.group, 'LEGACY');
 });
 
-// --- 2. Multi-key: explicit allowlist ---
-
-await testAsync('multi-key: allowlist permits listed model, denies others', async () => {
+// --- 2. Grouped key: explicit CSV allowlist ---
+await testAsync('grouped key: allowlist permits listed model, denies others', async () => {
   const env = {
     ...ENV_MODELS,
-    ACCESS_KEYS_CONFIG: JSON.stringify({ keys: [{ key_id: 'prod', secret: 's1', models: ['code-pro'] }] }),
+    GATEWAY_ACCESS_KEY_PRO: 'prod-secret',
+    GATEWAY_ACCESS_MODELS_PRO: 'code-pro',
   };
-  const ok = await authorize(mkReq('s1'), env);
+  const ok = await authorize(mkReq('prod-secret'), env);
   assert.equal(ok.authorized, true);
-  assert.equal(ok.keyId, 'prod');
+  assert.equal(ok.mode, 'grouped');
+  assert.equal(ok.group, 'PRO');
   assert.equal(ok.allowAll, false);
   assert.ok(ok.allowlist.has('code-pro'));
   assert.ok(!ok.allowlist.has('general-air'));
 });
 
-// --- 3. Fail closed: missing models -> empty allowlist ---
-
-await testAsync('fail closed: missing models field -> denies everything', async () => {
+// --- 3. Fail closed: missing models field -> empty allowlist ---
+await testAsync('fail closed: missing GATEWAY_ACCESS_MODELS_<GROUP> -> denies everything', async () => {
   const env = {
     ...ENV_MODELS,
-    ACCESS_KEYS_CONFIG: JSON.stringify({ keys: [{ key_id: 'blank', secret: 's2' }] }),
+    GATEWAY_ACCESS_KEY_AIR: 'air-secret',
+    // no GATEWAY_ACCESS_MODELS_AIR -> empty allowlist
   };
-  const result = await authorize(mkReq('s2'), env);
+  const result = await authorize(mkReq('air-secret'), env);
   assert.equal(result.authorized, true);
-  assert.equal(result.keyId, 'blank');
+  assert.equal(result.group, 'AIR');
   assert.equal(result.allowAll, false);
   assert.equal(result.allowlist.size, 0);
   assert.equal(keyAllowsModel({ allowAll: false, allowlist: result.allowlist }, 'code-pro'), false);
 });
 
-// --- 4. Wildcard: models: ["*"] ---
-
-await testAsync('wildcard: models ["*"] permits all', async () => {
+// --- 4. Wildcard: GATEWAY_ACCESS_MODELS_<GROUP>="*" ---
+await testAsync('wildcard: GATEWAY_ACCESS_MODELS_<GROUP>="*" permits all', async () => {
   const env = {
     ...ENV_MODELS,
-    ACCESS_KEYS_CONFIG: JSON.stringify({ keys: [{ key_id: 'admin', secret: 's3', models: ['*'] }] }),
+    GATEWAY_ACCESS_KEY_MAX: 'max-secret',
+    GATEWAY_ACCESS_MODELS_MAX: '*',
   };
-  const result = await authorize(mkReq('s3'), env);
+  const result = await authorize(mkReq('max-secret'), env);
   assert.equal(result.authorized, true);
   assert.equal(result.allowAll, true);
   assert.equal(result.allowlist, undefined);
 });
 
 // --- 5. Wrong key: not authorized ---
-
 await testAsync('wrong credential -> not authorized', async () => {
   const env = {
     ...ENV_MODELS,
-    ACCESS_KEYS_CONFIG: JSON.stringify({ keys: [{ key_id: 'prod', secret: 's1', models: ['*'] }] }),
+    GATEWAY_ACCESS_KEY_ULTRA: 'ultra-secret',
+    GATEWAY_ACCESS_MODELS_ULTRA: '*',
   };
   const result = await authorize(mkReq('wrong'), env);
   assert.equal(result.authorized, false);
-  assert.equal(result.mode, 'multi');
+  assert.equal(result.mode, 'grouped'); // grouped mode but key not matched
 });
 
-// --- 6. Rotation: two keys coexist ---
-
-await testAsync('rotation: multiple keys coexist and each resolves independently', async () => {
+// --- 6. Rotation: multiple groups coexist independently ---
+await testAsync('rotation: multiple groups coexist and each resolves independently', async () => {
   const env = {
     ...ENV_MODELS,
-    ACCESS_KEYS_CONFIG: JSON.stringify({
-      keys: [
-        { key_id: 'old', secret: 'old-secret', models: ['*'] },
-        { key_id: 'new', secret: 'new-secret', models: ['code-pro'] },
-      ],
-    }),
+    GATEWAY_ACCESS_KEY_AGENT: 'agent-secret',
+    GATEWAY_ACCESS_MODELS_AGENT: '*',
+    GATEWAY_ACCESS_KEY_PRO: 'prod-secret',
+    GATEWAY_ACCESS_MODELS_PRO: 'code-pro',
   };
-  const old = await authorize(mkReq('old-secret'), env);
-  const neu = await authorize(mkReq('new-secret'), env);
-  assert.equal(old.keyId, 'old');
-  assert.equal(neu.keyId, 'new');
-  assert.equal(old.allowAll, true);
-  assert.equal(neu.allowAll, false);
+  const agent = await authorize(mkReq('agent-secret'), env);
+  const prod = await authorize(mkReq('prod-secret'), env);
+  assert.equal(agent.group, 'AGENT');
+  assert.equal(prod.group, 'PRO');
+  assert.equal(agent.allowAll, true);
+  assert.equal(prod.allowAll, false);
 });
 
-// --- 7. No secret leakage: key_id only ---
-
+// --- 7. No secret leakage: only group in result ---
 await testAsync('no secret leakage: auth result carries no raw secret or prefix', async () => {
   const env = {
     ...ENV_MODELS,
-    ACCESS_KEYS_CONFIG: JSON.stringify({ keys: [{ key_id: 'prod', secret: 's1', models: ['*'] }] }),
+    GATEWAY_ACCESS_KEY_AIR: 'air-secret',
+    GATEWAY_ACCESS_MODELS_AIR: '*',
   };
-  const result = await authorize(mkReq('s1'), env);
+  const result = await authorize(mkReq('air-secret'), env);
   const serialized = JSON.stringify(result);
-  assert.ok(!/s1/.test(serialized), 'raw secret must not appear');
+  assert.ok(!/air-secret/.test(serialized), 'raw secret must not appear');
   assert.ok(!/bearer/i.test(serialized), 'Authorization scheme must not appear');
 });
 
 // --- 8. Diagnostics: unknown model in allowlist ---
-
 test('diagnostics: allowlist referencing unknown model emits warning', () => {
   const env = {
     ...ENV_MODELS,
-    ACCESS_KEYS_CONFIG: JSON.stringify({ keys: [{ key_id: 'k', secret: 's', models: ['ghost'] }] }),
+    GATEWAY_ACCESS_KEY_PRO: 'prod-secret',
+    GATEWAY_ACCESS_MODELS_PRO: 'ghost',
   };
   const { diagnostics } = loadAccessKeysConfig(env);
-  assert.ok(diagnostics.some((d) => d.includes('ghost') && d.includes('Model Registry')), `unexpected diagnostics: ${diagnostics}`);
+  assert.ok(diagnostics.some((d) => d.includes('ghost') && d.includes('not currently configured')), `unexpected diagnostics: ${diagnostics}`);
 });
 
-// --- 9. Diagnostics: missing key_id ---
-
-test('diagnostics: missing key_id is flagged', () => {
+// --- 9. Legacy disabled when any new group configured ---
+await testAsync('legacy disabled: GATEWAY_ACCESS_KEY ignored when any GATEWAY_ACCESS_KEY_<GROUP> set', async () => {
   const env = {
     ...ENV_MODELS,
-    ACCESS_KEYS_CONFIG: JSON.stringify({ keys: [{ secret: 's', models: ['*'] }] }),
+    GATEWAY_ACCESS_KEY: 'legacy-secret', // should be ignored
+    GATEWAY_ACCESS_KEY_PRO: 'prod-secret',
+    GATEWAY_ACCESS_MODELS_PRO: 'code-pro',
   };
-  const { diagnostics } = loadAccessKeysConfig(env);
-  assert.ok(diagnostics.some((d) => d.includes('key_id')), `unexpected diagnostics: ${diagnostics}`);
+  // Legacy key should NOT work
+  const legacyResult = await authorize(mkReq('legacy-secret'), env);
+  assert.equal(legacyResult.authorized, false);
+  // New group key should work
+  const prodResult = await authorize(mkReq('prod-secret'), env);
+  assert.equal(prodResult.authorized, true);
+  assert.equal(prodResult.group, 'PRO');
 });
 
-// --- 10. x-api-key channel works ---
-
+// --- 10. x-api-key header works ---
 await testAsync('x-api-key header is also accepted', async () => {
   const env = {
     ...ENV_MODELS,
-    ACCESS_KEYS_CONFIG: JSON.stringify({ keys: [{ key_id: 'prod', secret: 's1', models: ['*'] }] }),
+    GATEWAY_ACCESS_KEY_AIR: 'air-secret',
+    GATEWAY_ACCESS_MODELS_AIR: '*',
   };
   const req = new Request('https://gateway.example.com/v1/chat/completions', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-api-key': 's1' },
+    headers: { 'content-type': 'application/json', 'x-api-key': 'air-secret' },
     body: '{}',
   });
   const result = await authorize(req, env);
   assert.equal(result.authorized, true);
-  assert.equal(result.keyId, 'prod');
+  assert.equal(result.group, 'AIR');
+});
+
+// --- 11. All five groups independent ---
+await testAsync('all five groups independent: each has own secret and allowlist', async () => {
+  const env = {
+    ...ENV_MODELS,
+    GATEWAY_ACCESS_KEY_AIR: 'air-secret',
+    GATEWAY_ACCESS_MODELS_AIR: 'general-air',
+    GATEWAY_ACCESS_KEY_PRO: 'pro-secret',
+    GATEWAY_ACCESS_MODELS_PRO: 'code-pro',
+    GATEWAY_ACCESS_KEY_MAX: 'max-secret',
+    GATEWAY_ACCESS_MODELS_MAX: 'general-air,code-pro',
+    GATEWAY_ACCESS_KEY_ULTRA: 'ultra-secret',
+    GATEWAY_ACCESS_MODELS_ULTRA: '*',
+    GATEWAY_ACCESS_KEY_AGENT: 'agent-secret',
+    GATEWAY_ACCESS_MODELS_AGENT: 'code-pro',
+  };
+  const air = await authorize(mkReq('air-secret'), env);
+  const pro = await authorize(mkReq('pro-secret'), env);
+  const max = await authorize(mkReq('max-secret'), env);
+  const ultra = await authorize(mkReq('ultra-secret'), env);
+  const agent = await authorize(mkReq('agent-secret'), env);
+  assert.equal(air.group, 'AIR');
+  assert.equal(pro.group, 'PRO');
+  assert.equal(max.group, 'MAX');
+  assert.equal(ultra.group, 'ULTRA');
+  assert.equal(agent.group, 'AGENT');
+  assert.ok(air.allowlist.has('general-air'));
+  assert.ok(!air.allowlist.has('code-pro'));
+  assert.ok(pro.allowlist.has('code-pro'));
+  assert.ok(max.allowlist.has('general-air') && max.allowlist.has('code-pro'));
+  assert.equal(ultra.allowAll, true);
+  assert.ok(agent.allowlist.has('code-pro'));
+});
+
+// --- 12. Empty CSV string -> fail closed ---
+await testAsync('fail closed: empty GATEWAY_ACCESS_MODELS_<GROUP> -> empty allowlist', async () => {
+  const env = {
+    ...ENV_MODELS,
+    GATEWAY_ACCESS_KEY_AIR: 'air-secret',
+    GATEWAY_ACCESS_MODELS_AIR: '',
+  };
+  const result = await authorize(mkReq('air-secret'), env);
+  assert.equal(result.authorized, true);
+  assert.equal(result.allowAll, false);
+  assert.equal(result.allowlist.size, 0);
 });
 
 console.log(`\naccess-keys tests: ${passed} passed.`);
