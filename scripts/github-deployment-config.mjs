@@ -33,7 +33,10 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const VAR_NAME = /^[A-Z][A-Z0-9_]{0,127}$/;
 const NODE_VAR = /^TIER[123]_NODES_CONFIG_\d{2}$/;
 const NODE_SECRET = /^TIER[123]_NODES_SECRETS_\d{2}$/;
-const SECRET_NAME = /^(GATEWAY_ACCESS_KEY|TIER[123]_NODES_SECRETS_\d{2})$/;
+const KEY_GROUPS = ['AIR', 'PRO', 'MAX', 'ULTRA', 'AGENT'];
+const GROUP_KEY_PATTERN = `GATEWAY_ACCESS_KEY_(?:${KEY_GROUPS.join('|')})`;
+const GROUP_MODELS_PATTERN = `GATEWAY_ACCESS_MODELS_(?:${KEY_GROUPS.join('|')})`;
+const SECRET_NAME = new RegExp(`^(?:${GROUP_KEY_PATTERN}|${GROUP_MODELS_PATTERN}|TIER[123]_NODES_SECRETS_\\d{2})$`);
 const MAX_VALUE_BYTES = 4500;
 
 // Individual Worker text variables the bridge recognizes from env (besides the
@@ -46,7 +49,7 @@ const RUNTIME_VAR_PATTERN = new RegExp(
 );
 const EXTRA_VAR_ALLOW = new Set(['PROJECT_REPOSITORY_URL']);
 // Credential-bearing names must never appear in the vars map.
-const CREDENTIAL_NAMES = new Set(['GATEWAY_ACCESS_KEY', 'CLOUDFLARE_API_TOKEN']);
+const CREDENTIAL_NAMES = new Set(['CLOUDFLARE_API_TOKEN']);
 
 export function parseConfigObject(text, label = 'configuration') {
   let parsed;
@@ -180,7 +183,8 @@ export function buildRuntimeFromEnv(env) {
 // Deployment preflight: verify required configuration is present without
 // touching any remote resource. Returns { ok, errors, warnings }.
 const REQUIRED_VARS = ['CLOUDFLARE_ACCOUNT_ID', 'GATEWAY_PUBLIC_BASE_URL'];
-const REQUIRED_SECRETS = ['CLOUDFLARE_API_TOKEN', 'GATEWAY_ACCESS_KEY'];
+const KEY_GROUPS = ['AIR', 'PRO', 'MAX', 'ULTRA', 'AGENT'];
+const REQUIRED_SECRETS = ['CLOUDFLARE_API_TOKEN'];
 
 export function preflight(env) {
   const errors = [];
@@ -194,6 +198,11 @@ export function preflight(env) {
     if (!env[name] || String(env[name]).trim() === '') {
       errors.push(`${name} is missing from GitHub Repository Secrets.`);
     }
+  }
+  // Require at least one GATEWAY_ACCESS_KEY_<GROUP> secret
+  const hasGroupKey = Object.keys(env).some((k) => /^GATEWAY_ACCESS_KEY_(?:AIR|PRO|MAX|ULTRA|AGENT)$/.test(k) && env[k] && String(env[k]).trim() !== '');
+  if (!hasGroupKey) {
+    errors.push('At least one GATEWAY_ACCESS_KEY_<GROUP> (AIR, PRO, MAX, ULTRA, AGENT) is missing from GitHub Repository Secrets.');
   }
   const v = collectVarsFromEnv(env);
   const s = collectSecretsFromEnv(env);
@@ -424,7 +433,9 @@ async function main() {
   }
   if (command === 'health-check') {
     const runtime = resolveRuntime(argv);
-    await verifyRemote(process.env.GATEWAY_PUBLIC_BASE_URL, runtime.secrets.GATEWAY_ACCESS_KEY);
+    const groupKey = Object.keys(runtime.secrets).find((k) => /^GATEWAY_ACCESS_KEY_(?:AIR|PRO|MAX|ULTRA|AGENT)$/.test(k));
+    if (!groupKey) throw new Error('No GATEWAY_ACCESS_KEY_<GROUP> secret found for health check');
+    await verifyRemote(process.env.GATEWAY_PUBLIC_BASE_URL, runtime.secrets[groupKey]);
     console.log('Remote health checks passed.');
     return;
   }
