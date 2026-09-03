@@ -12,11 +12,12 @@ import { gatewayStats, streamStats } from './gateway-stats.mjs';
 import { tokenStats, summarizeTokenStats, tokenMetricSeries } from './token-usage.mjs';
 import { corsHeaders, jsonError } from '../protocol/http.js';
 import { modelRegistryEntry, servesModel } from '../config/registry.js';
+import { filterVisibleModels as filterModelsByKey, collectConfiguredModels } from '../config/access-keys.js';
 
 export const APP_META = Object.freeze({
   name: 'ai-gateway',
   displayName: 'Smart AI Gateway',
-  version: '1.2.6',
+  version: '1.2.7',
 });
 
 function sanitizePrometheusLabel(value) {
@@ -31,11 +32,10 @@ function sanitizePrometheusLabel(value) {
 // `visibility` field, when present, can downgrade a model to `internal` to
 // hide it from this public list.
 //
-// Node `provider` labels are only used as a backend *label*, never as the
-// model-capability truth. The gateway natively speaks OpenAI
-// (chat_completions / responses) and Anthropic (messages); the `protocols`
-// field lists the surfaces actually offered by the nodes serving each model.
-function buildModelsList(nodes, env) {
+// buildModelsList: builds the key-scoped model list for /v1/models.
+// Returns only models visible to the current key (intersection of configured models
+// and key's allowlist). Also includes ui_visible flag and ocr capability.
+function buildModelsList(nodes, env, authResult) {
   const logicalNames = new Set();
   for (const node of nodes) {
     for (const key of Object.keys(node.models || {})) logicalNames.add(key);
@@ -72,9 +72,15 @@ function buildModelsList(nodes, env) {
     }
   }
 
+  // Determine allowed models for this key
+  const configuredModels = collectConfiguredModels(nodes);
+  const allowedModels = filterModelsByKey(authResult, configuredModels);
+  const allowedSet = new Set(allowedModels);
+
   const data = [...models.values()]
     .sort((a, b) => a.id.localeCompare(b.id))
     .filter((e) => e.apiBackends.size > 0 && e.reg.visibility !== 'internal')
+    .filter((e) => allowedSet.has(e.id))
     .map((e) => {
       const backends = [...e.apiBackends];
       const apiBackend = backends.length === 1 ? backends[0] : 'mixed';
@@ -91,7 +97,9 @@ function buildModelsList(nodes, env) {
         supports_reasoning_effort: e.reg.capabilities.reasoning,
         reasoning_efforts: [...e.reg.reasoning_efforts].sort(),
         supports_vision: e.reg.capabilities.vision,
+        supports_ocr: e.reg.capabilities.ocr,
         supports_stream: e.reg.capabilities.stream,
+        ui_visible: e.reg.ui_visible !== false,
       };
     });
   return { object: 'list', data };
@@ -325,9 +333,9 @@ export function versionResponse(request, env) {
   });
 }
 
-export function modelsListResponse(request, env, requestId) {
+export function modelsListResponse(request, env, requestId, authResult) {
   const config = loadGatewayConfig(env);
-  const list = buildModelsList(config.nodes, env);
+  const list = buildModelsList(config.nodes, env, authResult);
   return new Response(JSON.stringify({
     ...list,
     observed_at: new Date().toISOString(),

@@ -5,8 +5,9 @@
 // fail-closed CSV allowlists, legacy GATEWAY_ACCESS_KEY fallback, and no secret leakage.
 
 import assert from 'node:assert/strict';
-import { loadAccessKeysConfig, keyAllowsModel, __resetAccessKeysCacheForTests } from '../src/config/access-keys.js';
+import { loadAccessKeysConfig, keyAllowsModel, __resetAccessKeysCacheForTests, collectConfiguredModels, collectKnownModels } from '../src/config/access-keys.js';
 import { authorize } from '../src/request/auth.js';
+import { filterVisibleModels } from '../src/request/model-authz.js';
 
 let passed = 0;
 function test(name, fn) {
@@ -226,6 +227,75 @@ await testAsync('fail closed: empty GATEWAY_ACCESS_MODELS_<GROUP> -> empty allow
   assert.equal(result.authorized, true);
   assert.equal(result.allowAll, false);
   assert.equal(result.allowlist.size, 0);
+});
+
+// --- 13. Closed catalog: wildcard node serves only known models ---
+test('closed catalog: collectKnownModels includes node mappings + MODELS_CONFIG', () => {
+  const env = {
+    MODELS_CONFIG: JSON.stringify({
+      Air: { policy: 'default', group: 'general' },
+      Omni: { policy: 'default', group: 'omni', ui_visible: false },
+      OCR: { policy: 'default', group: 'ocr', ui_visible: false },
+    }),
+  };
+  const nodes = [{ id: 'n1', models: { 'Code-Max': 'x' } }];
+  const known = collectKnownModels(nodes, env);
+  assert.ok(known.has('Code-Max'), 'node mapping included');
+  assert.ok(known.has('Air'), 'MODELS_CONFIG included');
+  assert.ok(known.has('Omni'), 'MODELS_CONFIG included');
+  assert.ok(known.has('OCR'), 'MODELS_CONFIG included');
+  assert.ok(!known.has('made-up-model'), 'unknown model not in closed catalog');
+});
+
+test('closed catalog: wildcard node does not serve unknown model string', () => {
+  const env = { MODELS_CONFIG: JSON.stringify({ Air: { policy: 'default' } }) };
+  const nodes = [{ id: 'n1', models: {} }]; // wildcard
+  const known = collectKnownModels(nodes, env);
+  // Wildcard node serves only known models, not arbitrary strings
+  assert.ok(known.has('Air'));
+  assert.ok(!known.has('made-up-model'));
+});
+
+// --- 14. Key-scoped /v1/models filtering ---
+test('key-scoped models: allowAll key sees all configured models', () => {
+  const nodes = [{ id: 'n1', models: { Air: 'a', 'Code-Max': 'c', Omni: 'o', OCR: 'r' } }];
+  const configured = collectConfiguredModels(nodes);
+  const authz = { authorized: true, allowAll: true };
+  const visible = filterVisibleModels(configured, authz);
+  assert.deepEqual(visible, ['Air', 'Code-Max', 'OCR', 'Omni']);
+});
+
+test('key-scoped models: allowlist key sees only allowed models', () => {
+  const nodes = [{ id: 'n1', models: { Air: 'a', 'Code-Max': 'c', Omni: 'o', OCR: 'r' } }];
+  const configured = collectConfiguredModels(nodes);
+  const authz = { authorized: true, allowAll: false, allowlist: new Set(['Air', 'Omni']) };
+  const visible = filterVisibleModels(configured, authz);
+  assert.deepEqual(visible, ['Air', 'Omni']);
+});
+
+test('key-scoped models: AGENT key with wildcard sees all 10 models', () => {
+  const nodes = [{ id: 'n1', models: {
+    Air: 'a', Pro: 'p', Max: 'm', Ultra: 'u',
+    'Code-Air': 'ca', 'Code-Pro': 'cp', 'Code-Max': 'cm', 'Code-Ultra': 'cu',
+    Omni: 'o', OCR: 'r',
+  } }];
+  const configured = collectConfiguredModels(nodes);
+  const authz = { authorized: true, allowAll: true };
+  const visible = filterVisibleModels(configured, authz);
+  assert.equal(visible.length, 10);
+  assert.ok(visible.includes('Omni'));
+  assert.ok(visible.includes('OCR'));
+  assert.ok(visible.includes('Code-Max'));
+});
+
+test('key-scoped models: OCR-only key sees only OCR', () => {
+  const nodes = [{ id: 'n1', models: {
+    Air: 'a', Pro: 'p', 'Code-Max': 'cm', Omni: 'o', OCR: 'r',
+  } }];
+  const configured = collectConfiguredModels(nodes);
+  const authz = { authorized: true, allowAll: false, allowlist: new Set(['OCR']) };
+  const visible = filterVisibleModels(configured, authz);
+  assert.deepEqual(visible, ['OCR']);
 });
 
 console.log(`\naccess-keys tests: ${passed} passed.`);
