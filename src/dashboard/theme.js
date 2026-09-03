@@ -62,12 +62,12 @@ header{padding:26px 0 0}
 .github:focus-visible{outline:2px solid var(--teal);outline-offset:3px}
 
 /* hero */
-.hero{padding:72px 0 62px;text-align:center}
-.hero h1{margin:0 0 20px;font-family:"Songti SC","STSong","SimSun","Noto Serif CJK SC",serif;font-weight:500;font-size:clamp(36px,5vw,52px);line-height:1.28;letter-spacing:-.018em}
-.hero p{max-width:680px;margin:0 auto;color:var(--ink-2);font-size:15.5px;line-height:1.9}
+.hero{padding:40px 0 28px;text-align:center}
+.hero h1{margin:0 0 12px;font-family:"Songti SC","STSong","SimSun","Noto Serif CJK SC",serif;font-weight:500;font-size:clamp(28px,4vw,42px);line-height:1.28;letter-spacing:-.018em}
+.hero p{max-width:680px;margin:0 auto;color:var(--ink-2);font-size:15px;line-height:1.7}
 
 /* sections */
-section{padding:48px 0;border-top:1px solid var(--line)}
+section{padding:32px 0;border-top:1px solid var(--line)}
 .section-head{display:flex;align-items:baseline;justify-content:space-between;gap:20px;margin-bottom:24px}
 .section-title{font-size:14px;font-weight:600;letter-spacing:.015em}
 .section-sub{margin-left:auto;color:var(--ink-3);font-size:12px;white-space:nowrap}
@@ -152,16 +152,16 @@ footer{padding:32px 0 42px;border-top:1px solid var(--line);color:var(--ink-3);f
 .footer-sep{color:#b8bbb4}
 
 /* main content height limit */
-.main-content{max-height:calc(200vh - 200px);overflow-y:auto}
+.main-content{max-height:200vh;overflow-y:auto}
 
 /* responsive */
 @media(max-width:760px){
   .wrap{width:calc(100% - 40px)}
   header{padding-top:22px}
-  .hero{padding:64px 0 54px}
-  .hero h1{font-size:36px}
+  .hero{padding:32px 0 22px}
+  .hero h1{font-size:28px}
   .hero p{font-size:14px}
-  section{padding:44px 0}
+  section{padding:28px 0}
   .status-grid{grid-template-columns:1fr;gap:34px 0}
   .status-grid-split{grid-template-columns:1fr;gap:34px 0}
   .status-block+.status-block{border-left:0;border-top:1px solid var(--line-soft);padding-left:0;padding-top:30px}

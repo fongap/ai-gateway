@@ -16,9 +16,11 @@
 import { readEnv } from './env.js';
 
 const CAPABILITY_KEYS = ['tools', 'reasoning', 'vision', 'stream'];
-const ALLOWED_ENTRY_FIELDS = new Set(['policy', 'capabilities', 'reasoning_efforts', 'visibility']);
+const ALLOWED_ENTRY_FIELDS = new Set(['policy', 'capabilities', 'reasoning_efforts', 'visibility', 'display_order', 'group']);
 const VALID_VISIBILITY = new Set(['public', 'internal']);
 const DEFAULT_VISIBILITY = 'public';
+const DEFAULT_DISPLAY_ORDER = 100;
+const DEFAULT_GROUP = 'general';
 
 let cachedEnv;
 let cached;
@@ -78,6 +80,26 @@ function analyzeModels(env) {
           } else {
             entry.visibility = vis;
           }
+        }
+        const order = config.display_order;
+        if (order !== undefined) {
+          if (typeof order !== 'number' || !Number.isFinite(order) || order < 0) {
+            errors.push(`MODELS_CONFIG: model "${name}": display_order must be a non-negative finite number`);
+          } else {
+            entry.display_order = order;
+          }
+        } else {
+          entry.display_order = DEFAULT_DISPLAY_ORDER;
+        }
+        const grp = config.group;
+        if (grp !== undefined) {
+          if (typeof grp !== 'string' || !grp.trim()) {
+            errors.push(`MODELS_CONFIG: model "${name}": group must be a non-empty string`);
+          } else {
+            entry.group = grp.trim();
+          }
+        } else {
+          entry.group = DEFAULT_GROUP;
         }
         const caps = config.capabilities;
         if (caps !== undefined) {

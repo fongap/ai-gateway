@@ -90,9 +90,10 @@ export function getPublicModelStatus(nodes, env, evidence = new Set(), now = Dat
     for (const key of Object.keys(node.models || {})) names.add(key);
   }
   let visibility = {};
+  let registry = {};
   if (env) {
     try {
-      const registry = loadModelRegistry(env);
+      registry = loadModelRegistry(env);
       for (const [name, entry] of Object.entries(registry)) {
         visibility[name] = entry.visibility || 'public';
       }
@@ -100,11 +101,22 @@ export function getPublicModelStatus(nodes, env, evidence = new Set(), now = Dat
   }
   const evidenceSet = evidence instanceof Set ? evidence : new Set();
   const models = [];
-  for (const name of [...names].sort()) {
+  for (const name of [...names]) {
     if (visibility[name] === 'internal') continue;
     const serving = (nodes || []).filter((n) => servesModel(n, name));
-    models.push({ id: name, status: modelStatus(name, serving, evidenceSet, now) });
+    const status = modelStatus(name, serving, evidenceSet, now);
+    const entry = registry[name] || {};
+    models.push({
+      id: name,
+      status,
+      display_order: entry.display_order !== undefined ? entry.display_order : 100,
+      group: entry.group !== undefined ? entry.group : 'general',
+    });
   }
+  models.sort((a, b) => {
+    const diff = a.display_order - b.display_order;
+    return diff !== 0 ? diff : a.id.localeCompare(b.id);
+  });
   return { observed_at: new Date(now).toISOString(), models };
 }
 

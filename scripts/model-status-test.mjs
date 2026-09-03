@@ -370,6 +370,60 @@ await testAsync('dashboard path issues queryRecentModelEvidence at most once per
   assert.ok(delta <= 8, `expected <=8 reads for one page load, got ${delta}`);
 });
 
+// --- 21. Config-driven model order and grouping ------------------------------
+
+test('config-driven model order: display_order controls sort order', () => {
+  const env = { GATEWAY_ACCESS_KEY: 'k', MODELS_CONFIG: JSON.stringify({
+    alpha: { policy: 'default', display_order: 30, group: 'general' },
+    beta: { policy: 'default', display_order: 10, group: 'general' },
+    gamma: { policy: 'default', display_order: 20, group: 'general' },
+  }) };
+  const nodes = [node('n1', { alpha: 'up', beta: 'up', gamma: 'up' })];
+  const list = getPublicModelStatus(nodes, env, new Set(['alpha', 'beta', 'gamma']), now());
+  assert.deepEqual(list.models.map((m) => m.id), ['beta', 'gamma', 'alpha']);
+});
+
+test('config-driven grouping: group field controls which block a model appears in', () => {
+  const env = { GATEWAY_ACCESS_KEY: 'k', MODELS_CONFIG: JSON.stringify({
+    air: { policy: 'default', display_order: 10, group: 'general' },
+    pro: { policy: 'default', display_order: 20, group: 'general' },
+    codeair: { policy: 'default', display_order: 10, group: 'coding' },
+    codepro: { policy: 'default', display_order: 20, group: 'coding' },
+  }) };
+  const nodes = [node('n1', { air: 'up', pro: 'up', codeair: 'up', codepro: 'up' })];
+  const list = getPublicModelStatus(nodes, env, new Set(['air', 'pro', 'codeair', 'codepro']), now());
+  const generalModels = list.models.filter((m) => m.group === 'general');
+  const codingModels = list.models.filter((m) => m.group === 'coding');
+  assert.deepEqual(generalModels.map((m) => m.id), ['air', 'pro']);
+  assert.deepEqual(codingModels.map((m) => m.id), ['codeair', 'codepro']);
+});
+
+test('display_order missing uses default 100', () => {
+  const env = { GATEWAY_ACCESS_KEY: 'k', MODELS_CONFIG: JSON.stringify({
+    zebra: { policy: 'default' },
+    alpha: { policy: 'default', display_order: 10 },
+  }) };
+  const nodes = [node('n1', { zebra: 'up', alpha: 'up' })];
+  const list = getPublicModelStatus(nodes, env, new Set(['zebra', 'alpha']), now());
+  assert.deepEqual(list.models.map((m) => m.id), ['alpha', 'zebra']);
+});
+
+test('group missing defaults to general', () => {
+  const env = { GATEWAY_ACCESS_KEY: 'k', MODELS_CONFIG: JSON.stringify({
+    solo: { policy: 'default', display_order: 5 },
+  }) };
+  const nodes = [node('n1', { solo: 'up' })];
+  const list = getPublicModelStatus(nodes, env, new Set(['solo']), now());
+  assert.equal(list.models[0].group, 'general');
+});
+
+test('node-mapped model without MODELS_CONFIG gets default order=100 and group=general', () => {
+  const nodes = [node('n1', { mymodel: 'up' })];
+  const list = getPublicModelStatus(nodes, ENV, new Set(['mymodel']), now());
+  assert.equal(list.models[0].display_order, 100);
+  assert.equal(list.models[0].group, 'general');
+});
+
 console.log(`\nmodel-status tests: ${passed} passed.`);
 if (process.exitCode) {
   console.error('Some tests FAILED.');
