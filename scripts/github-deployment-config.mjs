@@ -36,7 +36,7 @@ const NODE_SECRET = /^TIER[123]_NODES_SECRETS_\d{2}$/;
 const KEY_GROUPS = ['AIR', 'PRO', 'MAX', 'ULTRA', 'AGENT'];
 const GROUP_KEY_PATTERN = `GATEWAY_ACCESS_KEY_(?:${KEY_GROUPS.join('|')})`;
 const GROUP_MODELS_PATTERN = `GATEWAY_ACCESS_MODELS_(?:${KEY_GROUPS.join('|')})`;
-const SECRET_NAME = new RegExp(`^(?:${GROUP_KEY_PATTERN}|${GROUP_MODELS_PATTERN}|TIER[123]_NODES_SECRETS_\\d{2})$`);
+const SECRET_NAME = new RegExp(`^(?:${GROUP_KEY_PATTERN}|TIER[123]_NODES_SECRETS_\\d{2})$`);
 const MAX_VALUE_BYTES = 4500;
 
 // Individual Worker text variables the bridge recognizes from env (besides the
@@ -45,6 +45,7 @@ const MAX_VALUE_BYTES = 4500;
 // and example configs can never drift.
 const RUNTIME_VAR_PATTERN = new RegExp(
   '^(TIER[123]_NODES_CONFIG_\\d{2}|MODELS_CONFIG|POLICIES_CONFIG|' +
+  GROUP_MODELS_PATTERN + '|' +
   RUNTIME_VAR_NAMES.join('|') + ')$',
 );
 const EXTRA_VAR_ALLOW = new Set(['PROJECT_REPOSITORY_URL']);
