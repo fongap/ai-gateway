@@ -11,8 +11,8 @@ import { snapshotTier1Affinity } from '../scheduler/tier1-affinity.js';
 import { gatewayStats, streamStats } from './gateway-stats.mjs';
 import { tokenStats, summarizeTokenStats, tokenMetricSeries } from './token-usage.mjs';
 import { corsHeaders, jsonError } from '../protocol/http.js';
-import { modelRegistryEntry, servesModel } from '../config/registry.js';
-import { filterVisibleModels as filterModelsByKey, collectConfiguredModels } from '../config/access-keys.js';
+import { modelRegistryEntry, servesModel, collectKnownModels } from '../config/registry.js';
+import { filterVisibleModels as filterModelsByKey } from '../config/access-keys.js';
 
 export const APP_META = Object.freeze({
   name: 'ai-gateway',
@@ -36,10 +36,11 @@ function sanitizePrometheusLabel(value) {
 // Returns only models visible to the current key (intersection of configured models
 // and key's allowlist). Also includes ui_visible flag and ocr capability.
 function buildModelsList(nodes, env, authResult) {
-  const logicalNames = new Set();
-  for (const node of nodes) {
-    for (const key of Object.keys(node.models || {})) logicalNames.add(key);
-  }
+  // The Known Model Catalog is the single source of model existence: every
+  // explicit node.models key union every MODELS_CONFIG key. A wildcard node
+  // (empty models) serves every model in this catalog. Visible == Callable
+  // holds because the same catalog drives authorization.
+  const logicalNames = collectKnownModels(nodes, env);
 
   const models = new Map();
   const entryFor = (logical) => {
@@ -65,16 +66,16 @@ function buildModelsList(nodes, env, authResult) {
     const servedKeys = keys.length === 0 ? [...logicalNames] : keys;
     for (const logical of servedKeys) {
       if (!logicalNames.has(logical)) continue;
-      if (!servesModel(node, logical)) continue;
+      if (!servesModel(node, logical, logicalNames)) continue;
       const e = entryFor(logical);
       e.apiBackends.add(node.provider);
       for (const surface of node.surfaces || []) e.surfaces.add(surface);
     }
   }
 
-  // Determine allowed models for this key
-  const configuredModels = collectConfiguredModels(nodes);
-  const allowedModels = filterModelsByKey(authResult, configuredModels);
+  // Determine allowed models for this key. Visible == Callable because the
+  // filter is the same catalog that authorization checks against.
+  const allowedModels = filterModelsByKey(authResult, logicalNames);
   const allowedSet = new Set(allowedModels);
 
   const data = [...models.values()]
@@ -108,12 +109,10 @@ function buildModelsList(nodes, env, authResult) {
 export function healthResponse(request, env, requestId) {
   const config = loadGatewayConfig(env);
   const now = Date.now();
-  // A wildcard node (no `models` map) serves every model any node declares.
-  // Build that "all known logical models" set from every node's mapping.
-  const allLogical = new Set();
-  for (const n of config.nodes) {
-    for (const k of Object.keys(n.models || {})) allLogical.add(k);
-  }
+  // The Known Model Catalog (node models keys union MODELS_CONFIG) is the
+  // single source of "all known logical models". A wildcard node serves
+  // every model in this catalog; a mapped node serves only its own keys.
+  const allLogical = collectKnownModels(config.nodes, env);
   const endpoints = config.nodes.map((n) => {
     const configuredModels = Object.keys(n.models || {});
     const models = configuredModels.length ? configuredModels : [...allLogical];
@@ -269,11 +268,8 @@ export function metricsResponse(request, env, requestId) {
     const label = `node_id="${sanitizePrometheusLabel(node.id)}",tier="${node.tier}",provider="${sanitizePrometheusLabel(node.provider)}"`;
     if (node.tier === 'tier-1') {
       const configured = Object.keys(node.models || {});
-      // Wildcard node fallback: serve every logical model any node declares.
-      const fallbackModels = new Set();
-      for (const n of config.nodes) {
-        for (const k of Object.keys(n.models || {})) fallbackModels.add(k);
-      }
+      // Wildcard node fallback: serve every model in the Known Model Catalog.
+      const fallbackModels = collectKnownModels(config.nodes, env);
       const modelIds = configured.length ? configured : [...fallbackModels];
       const runtime = snapshotTier1AccountRuntime(node.id, modelIds, now);
       counter('gateway_node_active_requests', runtime.in_flight, label);

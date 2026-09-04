@@ -82,9 +82,46 @@ export function isWildcardNode(node) {
   return !node.models || Object.keys(node.models).length === 0;
 }
 
-// Does this node serve the given logical model? A wildcard node serves any
-// model; a mapped node serves only models it declares.
-export function servesModel(node, model) {
-  if (isWildcardNode(node)) return true;
+// Does this node serve the given logical model?
+//   * A node with an explicit `models` map serves only the models it declares.
+//   * A wildcard node (empty `models`) serves ANY model inside the current
+//     Known Model Catalog. With no catalog supplied (standalone tests that
+//     build raw nodes without an env), the legacy permissive behavior is
+//     preserved — the request path always passes the catalog, so the
+//     gateway itself is always closed.
+export function servesModel(node, model, knownModels) {
+  if (isWildcardNode(node)) return knownModels ? knownModels.has(model) : true;
   return Object.hasOwn(node.models, model);
+}
+
+// Collect the Known Model Catalog for a node list + env: the union of every
+// explicit node `models` key and every MODELS_CONFIG key. This is the single
+// source of truth for "which logical models exist" used by authorization,
+// wildcard eligibility, /v1/models, diagnostics, health, metrics, the model
+// status projection and the scheduler. No other module should reassemble its
+// own model set.
+export function collectKnownModels(nodes, env) {
+  const set = new Set();
+  for (const n of nodes || []) {
+    for (const k of Object.keys(n?.models || {})) set.add(k);
+  }
+  if (env) {
+    try {
+      const models = loadModelsConfig(env);
+      for (const name of Object.keys(models)) set.add(name);
+    } catch { /* MODELS_CONFIG not loadable */ }
+  }
+  return set;
+}
+
+// Build the list of explicitly-configured logical models from a node list.
+// Wildcard nodes (empty `models`) do NOT contribute names. This is a subset
+// of collectKnownModels and is kept for backward compatibility with callers
+// that need only the node-mapped set.
+export function collectConfiguredModels(nodes) {
+  const set = new Set();
+  for (const n of nodes || []) {
+    for (const k of Object.keys(n?.models || {})) set.add(k);
+  }
+  return set;
 }

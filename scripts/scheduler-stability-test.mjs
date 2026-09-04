@@ -540,8 +540,9 @@ await test('Failure: repeated ambiguous 429 without Retry-After uses exponential
   getTier1Model('a', 'm1').cooldownUntil = 0;
   applyTier1Outcome('a', 'm1', c, now);
   const second = getTier1Model('a', 'm1').cooldownUntil - now;
-  assert.equal(first, 30_000);
-  assert.equal(second, 60_000);
+  // ±10% cooldown jitter (PR 7) — verify exponential growth within range.
+  assert.ok(first >= 30_000 * 0.9 && first <= 30_000 * 1.1, `first backoff ${first} not in [27000, 33000]`);
+  assert.ok(second >= 60_000 * 0.9 && second <= 60_000 * 1.1, `second backoff ${second} not in [54000, 66000]`);
   assert.equal(getTier1Model('a', 'm1').scopeAmbiguous429, true);
   assert.equal(getTier1Account('a').accountCooldownUntil, 0, 'ambiguous 429 must not block other models');
 });
@@ -549,11 +550,13 @@ await test('Failure: repeated ambiguous 429 without Retry-After uses exponential
 await test('Failure: timeout and 5xx backoff grow after hysteresis threshold', () => {
   const timeout = classifyTier1Failure({ kind: 'first_event_timeout' });
   for (let i = 0; i < 3; i++) applyTier1Outcome('a', 'm1', timeout, 1_000_000);
-  assert.equal(getTier1Model('a', 'm1').cooldownUntil - 1_000_000, 20_000);
+  const timeoutCd = getTier1Model('a', 'm1').cooldownUntil - 1_000_000;
+  assert.ok(timeoutCd >= 20_000 * 0.9 && timeoutCd <= 20_000 * 1.1, `timeout cooldown ${timeoutCd} not in [18000, 22000]`);
 
   const server = classifyTier1Failure({ kind: 'server' });
   for (let i = 0; i < 3; i++) applyTier1Outcome('b', 'm1', server, 1_000_000);
-  assert.equal(getTier1Model('b', 'm1').cooldownUntil - 1_000_000, 4_000);
+  const serverCd = getTier1Model('b', 'm1').cooldownUntil - 1_000_000;
+  assert.ok(serverCd >= 4_000 * 0.9 && serverCd <= 4_000 * 1.1, `server cooldown ${serverCd} not in [3600, 4400]`);
 });
 
 await test('Failure: HALF_OPEN -> one failure reopens to COOLDOWN', () => {

@@ -14,6 +14,23 @@
 // errors, timeouts, first-event failures. 429 and 401/403 have their own
 // node-local cooldowns and never open the circuit. Any success resets the
 // consecutive-failure counter.
+//
+// Cooldown jitter: when an automatically-computed cooldown is applied
+// (i.e. no explicit Retry-After header), a small ±10% jitter is added to
+// avoid different isolates re-probing the same upstream simultaneously.
+// This only affects auto-computed defaults; explicit Retry-After values
+// pass through unchanged.
+
+// Apply a light ±10% jitter to an automatically-computed cooldown.
+// Explicit Retry-After values are passed through unchanged — this only
+// affects auto-computed defaults (fallback cooldowns like rateLimitCooldownMs,
+// authFailCooldownMs, model missing, etc.).
+const JITTER_FACTOR = 0.1;
+function maybeJitter(cooldownMs) {
+  if (cooldownMs <= 0) return cooldownMs;
+  const delta = cooldownMs * JITTER_FACTOR;
+  return Math.round(cooldownMs + (Math.random() * 2 - 1) * delta);
+}
 
 export const CIRCUIT_FAILURE_THRESHOLD = 3;
 export const CIRCUIT_OPEN_MS = 30_000;
@@ -230,12 +247,14 @@ export function markProbeFailure(nodeId, model, now = Date.now()) {
 
 // Record a failure. `counted` marks transient upstream failures (5xx /
 // network / timeout / first-event) that drive the circuit. `cooldownMs` and
-// `reason` set the node-local cooldown window.
+// `reason` set the node-local cooldown window. When `cooldownMs` comes from
+// an auto-computed fallback (no explicit Retry-After), a light ±10% jitter
+// is applied to avoid synchronized re-probes across isolates.
 export function recordFailure(nodeId, { counted = false, cooldownMs = 0, reason = null } = {}, now = Date.now()) {
   const s = releaseAndReturn(nodeId);
   s.totalFailures++;
   if (cooldownMs > 0) {
-    s.cooldownUntil = now + cooldownMs;
+    s.cooldownUntil = now + maybeJitter(cooldownMs);
     s.cooldownReason = reason;
   }
   s.consecutiveFailures = counted ? s.consecutiveFailures + 1 : 0;

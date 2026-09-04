@@ -42,7 +42,7 @@ export function tier1DeadlineTooSmall(remainingBudgetMs, p99TtftMs) {
 //   excludeId          — skip the hedge primary when picking a twin.
 export function pickTier1Candidate(tier1Nodes, req, attempted, {
   affinityAccountId = null, evaluateAffinity = false, now = Date.now(),
-  excludeId = null, rng = Math.random,
+  excludeId = null, rng = Math.random, knownModels = null,
 } = {}) {
   const eligible = [];
   for (const node of tier1Nodes) {
@@ -51,7 +51,7 @@ export function pickTier1Candidate(tier1Nodes, req, attempted, {
     // Lazily move expired cooldowns to HALF_OPEN so a real request can probe
     // recovery — no background probe is ever sent.
     maybeTransitionToHalfOpen(node.id, req.model, now);
-    if (!isTier1Eligible(node, req, now)) continue;
+    if (!isTier1Eligible(node, req, now, knownModels)) continue;
     eligible.push(node);
   }
   if (eligible.length === 0) return null;

@@ -33,13 +33,16 @@ import { servesModel } from '../config/registry.js';
 // A request descriptor: { model, protocol, surface }. Every selection helper
 // below filters candidates through ALL THREE dimensions — a node is eligible
 // only when its protocol matches, its declared surfaces include the request
-// surface, and it serves the logical model.
-export function supportsRequest(node, req) {
+// surface, and it serves the logical model. `knownModels` is the Known Model
+// Catalog (collectKnownModels): it bounds wildcard nodes so an empty-models
+// node serves only models that actually exist somewhere in the gateway.
+export function supportsRequest(node, req, knownModels) {
   if (!req || typeof req !== 'object') return false;
   if (node.protocol !== req.protocol) return false;
   if (!Array.isArray(node.surfaces) || !node.surfaces.includes(req.surface)) return false;
-  // Empty models map = wildcard (node serves any configured logical model).
-  return servesModel(node, req.model);
+  // Empty models map = wildcard. The catalog narrows wildcard to known models;
+  // without a catalog (standalone tests) the legacy permissive form is kept.
+  return servesModel(node, req.model, knownModels);
 }
 
 function underRpmCap(node, now) {
@@ -74,7 +77,11 @@ export function rpmWindowRetryAfterSec(now = Date.now()) {
 //     otherwise. When every candidate is exhausted the tier is skipped.
 //   soft ("rpm_mode":"soft"): exhausted nodes remain last-resort candidates so
 //     a lone capped node still serves instead of failing the request.
-export function pickCandidate(tierNodes, req, attempted, now = Date.now(), excludeId = null) {
+//
+//   knownModels (optional) is the Known Model Catalog; it bounds wildcard
+//   nodes so an empty-models node only serves catalog models. The request path
+//   always passes it (defense in depth on top of the preflight authz gate).
+export function pickCandidate(tierNodes, req, attempted, now = Date.now(), excludeId = null, knownModels) {
   let best = null;
   let bestState = null;
   let bestUncapped = null;
@@ -83,7 +90,7 @@ export function pickCandidate(tierNodes, req, attempted, now = Date.now(), exclu
   for (const node of tierNodes) {
     if (node.id === excludeId) continue;
     if (attempted.has(node.id)) continue;
-    if (!supportsRequest(node, req)) continue;
+    if (!supportsRequest(node, req, knownModels)) continue;
     if (peekAvailability(node.id, now) === 'no') continue;
     // A (node, model) pair in model_missing cooldown is skipped without
     // disabling the node for its other models.
@@ -116,10 +123,10 @@ export function pickCandidate(tierNodes, req, attempted, now = Date.now(), exclu
 // True when this tier could serve the request if it had capacity right now
 // (every candidate busy at its concurrency limit or hard-RPM exhausted). Used
 // to distinguish "saturated" from "cooling down" in client responses.
-export function tierHasDeferredCapacity(tierNodes, req, attempted, now = Date.now()) {
+export function tierHasDeferredCapacity(tierNodes, req, attempted, now = Date.now(), knownModels) {
   for (const node of tierNodes) {
     if (attempted.has(node.id)) continue;
-    if (!supportsRequest(node, req)) continue;
+    if (!supportsRequest(node, req, knownModels)) continue;
     if (peekAvailability(node.id, now) === 'no') continue;
     if (isModelCooling(node.id, req.model, now)) continue;
     const s = getNodeState(node.id);
@@ -138,19 +145,19 @@ export function tierHasDeferredCapacity(tierNodes, req, attempted, now = Date.no
 // selectable as last resort, so budget must agree with selection. Deferred
 // capacity (concurrency-saturated / hard-RPM-exhausted) belongs to
 // tierHasDeferredCapacity instead: Retry-After and diagnostics, no budget.
-export function tierHasDispatchableNode(tierNodes, req, attempted, now = Date.now()) {
-  return countDispatchableNodes(tierNodes, req, attempted, now) > 0;
+export function tierHasDispatchableNode(tierNodes, req, attempted, now = Date.now(), knownModels) {
+  return countDispatchableNodes(tierNodes, req, attempted, now, knownModels) > 0;
 }
 
 // Count candidates that pickCandidate could dispatch right now without
 // claiming their slots.  The request pipeline uses this to divide its
 // remaining wall-clock budget across attempts that can actually happen,
 // rather than across a policy maximum that may be larger than the live pool.
-export function countDispatchableNodes(tierNodes, req, attempted, now = Date.now()) {
+export function countDispatchableNodes(tierNodes, req, attempted, now = Date.now(), knownModels) {
   let count = 0;
   for (const node of tierNodes) {
     if (attempted.has(node.id)) continue;
-    if (!supportsRequest(node, req)) continue;
+    if (!supportsRequest(node, req, knownModels)) continue;
     if (peekAvailability(node.id, now) === 'no') continue;
     if (isModelCooling(node.id, req.model, now)) continue;
     if (getNodeState(node.id).activeRequests >= node.limits.concurrency) continue;

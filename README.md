@@ -82,7 +82,7 @@ git push origin main
 | 配置项 | 作用 |
 |---|---|
 | `TIER{1,2,3}_NODES_CONFIG_01..` | 各层节点池 |
-| `NODE_SECRETS_01..` | `{ node-id: credential }` |
+| `TIER{1,2,3}_NODES_SECRETS_01..` | 节点凭据（tier-scoped，与 config shard 一一对应） |
 | `GATEWAY_ACCESS_KEY` | 网关访问密钥 |
 | `TIER1_AFFINITY` | 必需的 Cloudflare KV binding；保存哈希 session key → Tier 1 account，30 分钟 TTL |
 | `TOKEN_STATS_DB` | 可选 D1 binding；token usage 分层存储：totals（累计）、daily/weekly（52 周）、hourly/model_hourly（7 天），定时聚合与清理 |

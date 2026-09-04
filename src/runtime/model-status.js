@@ -42,7 +42,7 @@
 // Public-safety: this module NEVER reads credentials, node ids, providers or
 // tiers into its outputs. The return value is a list of { id, status } only.
 
-import { loadModelRegistry, servesModel } from '../config/registry.js';
+import { loadModelRegistry, servesModel, collectKnownModels } from '../config/registry.js';
 import { getRuntimeAvailability } from './availability.js';
 
 // Recent-evidence window. The D1 per-model table stores UTC hourly buckets
@@ -119,11 +119,16 @@ export function getPublicModelStatus(nodes, env, evidence = new Set(), now = Dat
     } catch { /* registry not loadable: everything is public + ui visible */ }
   }
   const evidenceSet = evidence instanceof Set ? evidence : new Set();
+  // The Known Model Catalog bounds wildcard nodes so a wildcard node only
+  // serves models that actually exist in the gateway. The public name set
+  // stays node-mapped (an operator declares models where they live); the
+  // catalog is the same single source used by authorization.
+  const knownModels = collectKnownModels(nodes, env);
   const models = [];
   for (const name of [...names]) {
     if (visibility[name] === 'internal') continue;
     if (uiVisible[name] === false) continue;
-    const serving = (nodes || []).filter((n) => servesModel(n, name));
+    const serving = (nodes || []).filter((n) => servesModel(n, name, knownModels));
     const status = modelStatus(name, serving, evidenceSet, now);
     const entry = registry[name] || {};
     models.push({

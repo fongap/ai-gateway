@@ -27,11 +27,12 @@ import { tier1HasDispatchableNode, tier1CountDispatchableNodes, TIER1_MAX_ATTEMP
 // reproducible in tests without adding a production env knob — when the seed
 // is absent (production), Math.random is used and behaviour stays random.
 export function pickForTier(tierNumber, tierNodes, req, attempted, opts = {}) {
+  const { knownModels } = opts;
   if (tierNumber !== 1) {
-    const node = pickCandidate(tierNodes, req, attempted);
+    const node = pickCandidate(tierNodes, req, attempted, undefined, null, knownModels);
     return node ? { node } : null;
   }
-  const r = pickTier1Candidate(tierNodes, req, attempted, opts);
+  const r = pickTier1Candidate(tierNodes, req, attempted, { ...opts, knownModels });
   if (!r) return null;
   if (r.raceLost) return { raceLost: true };
   return {
@@ -83,14 +84,14 @@ export function makeTier1Rng(env) {
 //     budget explicitly (0 disables it).
 // Budget is a per-tier UPPER bound; the shared state.maxAttempts still caps the
 // request's total upstream attempts, and FAILOVER_BUDGET_MS caps wall-clock.
-export function computeTierCaps(tiers, reqDescriptor, attempted, policy) {
+export function computeTierCaps(tiers, reqDescriptor, attempted, policy, knownModels) {
   const now = Date.now();
   const caps = {};
   for (const t of TIER_ORDER) caps[t] = 0;
   const dispatchable = TIER_ORDER.filter((t) =>
     t === 1
-      ? tier1HasDispatchableNode(tiers[t], reqDescriptor, attempted, now)
-      : tierHasDispatchableNode(tiers[t], reqDescriptor, attempted, now));
+      ? tier1HasDispatchableNode(tiers[t], reqDescriptor, attempted, now, knownModels)
+      : tierHasDispatchableNode(tiers[t], reqDescriptor, attempted, now, knownModels));
   if (dispatchable.length === 0) return caps;
   const max = policy.maxAttempts;
   const surplus = Math.max(0, max - dispatchable.length);
@@ -107,7 +108,7 @@ export function computeTierCaps(tiers, reqDescriptor, attempted, policy) {
 // applying live availability, per-tier caps, strict tier order, and the shared
 // policy cap.  This is deliberately recomputed before every attempt because a
 // pre-dispatch deny or a concurrent request can change the live candidate set.
-export function countRemainingDispatchableAttempts(tiers, reqDescriptor, attempted, tierCaps, currentTier, usedInTier, sharedRemaining) {
+export function countRemainingDispatchableAttempts(tiers, reqDescriptor, attempted, tierCaps, currentTier, usedInTier, sharedRemaining, knownModels) {
   const now = Date.now();
   let total = 0;
   let currentReached = false;
@@ -118,8 +119,8 @@ export function countRemainingDispatchableAttempts(tiers, reqDescriptor, attempt
       (tierCaps[tierNumber] ?? 0) - (tierNumber === currentTier ? usedInTier : 0));
     if (capRemaining === 0) continue;
     const live = tierNumber === 1
-      ? tier1CountDispatchableNodes(tiers[tierNumber], reqDescriptor, attempted, now)
-      : countDispatchableNodes(tiers[tierNumber], reqDescriptor, attempted, now);
+      ? tier1CountDispatchableNodes(tiers[tierNumber], reqDescriptor, attempted, now, knownModels)
+      : countDispatchableNodes(tiers[tierNumber], reqDescriptor, attempted, now, knownModels);
     total += Math.min(capRemaining, live);
   }
   return Math.max(1, Math.min(Math.max(1, sharedRemaining), total || 1));

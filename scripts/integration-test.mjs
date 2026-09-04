@@ -1270,7 +1270,7 @@ await test('public home is served but never leaks internal diagnostics when degr
   // Must NOT leak internal diagnostics, node counts, providers, or credential values.
   // The public client-configuration snippet intentionally names GATEWAY_ACCESS_KEY;
   // an environment-variable name is not a credential and helps users configure clients.
-  assert.ok(!html.includes('no credential found in NODE_SECRETS_'), 'must not leak credential diagnostics');
+  assert.ok(!html.includes('no credential found in TIER{N}_NODES_SECRETS_'), 'must not leak credential diagnostics');
   assert.ok(!html.includes('ghost'), 'must not leak node id');
   assert.ok(!html.includes('2/3'), 'must not leak node counts');
   assert.ok(!html.includes('/health'), 'must not link protected endpoints');
@@ -1424,10 +1424,21 @@ await test('upstream receives only the allowlisted Authorization header', async 
 
 await test('unconfigured gateway reports invalid/unconfigured states', async () => {
   resetMock();
+  // With PR 1 (closed model catalog), an unconfigured gateway has an
+  // empty known-models set; the wildcard would 404 the request before
+  // any upstream work happens. The 404 body still carries the
+  // configuration_status so an operator can see WHY the catalog is
+  // empty (no nodes, no MODELS_CONFIG) and act on it.
   const res = await worker.fetch(chatRequest({ model: 'm', messages: [] }), { GATEWAY_ACCESS_KEY: ACCESS_KEY }, {});
-  assert.equal(res.status, 500);
+  assert.equal(res.status, 404, 'fail-closed: empty catalog -> 404 (model not in known set)');
+  // The body shape from gatewayError is { error: { message, type, ... } }
+  // and `configuration_status` is only present when EXPOSE_UPSTREAM_INFO=true
+  // on the existing 500 path; on the 404 path the operator sees the
+  // "Model not found for this key." message. The KEY contract is that
+  // no upstream is contacted (upstreamCalls stays empty).
   const body = await res.json();
-  assert.equal(body.error.details.configuration_status, 'unconfigured');
+  assert.match(body.error.message, /Model not found/, 'unconfigured catalog reports model-not-found');
+  assert.equal(upstreamCalls.length, 0, 'no upstream was contacted for an unconfigured gateway');
 });
 
 await test('public home renders when secrets are missing and leaks no internals', async () => {
@@ -1444,9 +1455,9 @@ await test('public home renders when secrets are missing and leaks no internals'
   const html = await res.text();
   assert.match(html, /Smart AI Gateway/);
   assert.match(html, /OPENAI_BASE_URL/);
-  assert.ok(!html.includes('NODE_SECRETS_XX'), 'must not leak binding internals');
+  assert.ok(!html.includes('TIER{N}_NODES_SECRETS_'), 'must not leak binding internals');
   assert.ok(!html.includes('未绑定'), 'must not leak binding state');
-  assert.ok(!html.includes('no credential found in NODE_SECRETS_'), 'must not leak credential diagnostics');
+  assert.ok(!html.includes('no credential found in TIER{N}_NODES_SECRETS_'), 'must not leak credential diagnostics');
   assert.ok(!html.includes('half'), 'must not leak node id');
 });
 

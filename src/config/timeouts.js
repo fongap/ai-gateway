@@ -87,6 +87,7 @@ export function getLimits(env) {
     failoverBudgetMs: clampInt(readEnv(env, 'FAILOVER_BUDGET_MS'), LIMITS.FAILOVER_BUDGET_MS.min, LIMITS.FAILOVER_BUDGET_MS.max, LIMITS.FAILOVER_BUDGET_MS.def),
     hedgeDelayMs: clampInt(readEnv(env, 'HEDGE_DELAY_MS'), LIMITS.HEDGE_DELAY_MS.min, LIMITS.HEDGE_DELAY_MS.max, LIMITS.HEDGE_DELAY_MS.def),
     maxHedgesPerRequest: clampInt(readEnv(env, 'MAX_HEDGES_PER_REQUEST'), LIMITS.MAX_HEDGES_PER_REQUEST.min, LIMITS.MAX_HEDGES_PER_REQUEST.max, LIMITS.MAX_HEDGES_PER_REQUEST.def),
+    gatewayKeyRpm: clampInt(readEnv(env, 'GATEWAY_KEY_RPM'), LIMITS.GATEWAY_KEY_RPM.min, LIMITS.GATEWAY_KEY_RPM.max, LIMITS.GATEWAY_KEY_RPM.def),
   };
   cache.set(env, cached);
   return cached;

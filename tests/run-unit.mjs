@@ -48,6 +48,13 @@ const UNIT_TESTS = [
   'scripts/conversion-test.mjs',
   'scripts/config-matrix-test.mjs',
   'scripts/access-keys-test.mjs',
+  'scripts/closed-catalog-test.mjs',
+  'scripts/tier1-affinity-bounding-test.mjs',
+  'scripts/reliability-fault-injection-test.mjs',
+  'scripts/key-rpm-test.mjs',
+  'scripts/calendar-heatmap-test.mjs',
+  'scripts/calendar-heatmap-view-test.mjs',
+  'scripts/migrations-check-test.mjs',
   'scripts/version-check-test.mjs',
 ];
 
