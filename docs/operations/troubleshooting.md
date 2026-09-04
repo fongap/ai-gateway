@@ -14,9 +14,9 @@
 
 添加至少一个 tier-config Variable，包含有效 JSON。
 
-### `ERROR: No NODE_SECRETS_XX Secret is configured`
+### `ERROR: No TIER{N}_NODES_SECRETS_XX Secret is configured`
 
-添加至少一个 `NODE_SECRETS_01` Secret，包含 JSON 对象 `{ "node-id": "credential" }`。
+添加至少一个 `TIER{1,2,3}_NODES_SECRETS_01` Secret，包含 JSON 对象 `{ "node-id": "credential" }`。Secret 的 tier 前缀必须与所配对的 `TIER*_NODES_CONFIG_*` 一致。
 
 ### `D1 persistence disabled: TOKEN_STATS_D1_ID is not configured`
 

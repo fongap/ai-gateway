@@ -38,7 +38,8 @@ import { supportsRequest } from '../scheduler/scheduler.js';
 import { TIER_ORDER } from './router.js';
 import { gatewayError } from './errors.js';
 import { authorize } from './auth.js';
-import { collectConfiguredModels, loadAccessKeysConfig } from '../config/access-keys.js';
+import { loadAccessKeysConfig } from '../config/access-keys.js';
+import { collectKnownModels } from '../config/registry.js';
 import { authorizeModel } from './model-authz.js';
 import { detectRoute, normalizePath, acceptsHtml } from './router.js';
 import { dashboardResponse } from '../dashboard/pages.js';
@@ -51,6 +52,7 @@ import {
 } from '../protocol/anthropic.js';
 import { validateOpenAIResponsesRequest } from '../protocol/responses/index.js';
 import { jsonResponse } from './response-helpers.js';
+import { admitKeyRequest } from '../ratelimit/key-rpm.js';
 
 // (protocol, surface) keyed by the client route. The same map lives in
 // handler.js for now; this is a long-term import path. Until the rest of
@@ -93,6 +95,7 @@ export function getRouteProtocolSurface(route) {
  *   tiers: { 1: any[], 2: any[], 3: any[] },
  *   policy: any,
  *   failoverBudgetMs: number,
+ *   knownModels: Set<string>,
  * }} PreflightOk
  *
  * @typedef {PreflightTerminal | PreflightOk} PreflightResult
@@ -144,6 +147,37 @@ export async function preflight(request, env, ctx) {
       ok: false,
       response: gatewayError(request, env, route, 401, 'Unauthorized: gateway access key is invalid or missing.', requestId),
     };
+  }
+
+  // Per-key in-isolate RPM cap. The fingerprint is the credential GROUP
+  // label (e.g. "AIR", "PRO", "LEGACY") — never the raw key. A cap of
+  // 0 means the limiter is disabled. Diagnostic endpoints (health /
+  // metrics / version) are exempt: they carry no upstream cost and
+  // are useful for an operator to monitor the cap itself.
+  if (route !== 'version' && route !== 'health' && route !== 'metrics') {
+    const limits = getLimits(env);
+    const fingerprint = authResult.group || (authResult.mode === 'legacy' ? 'LEGACY' : 'ANON');
+    const verdict = admitKeyRequest(fingerprint, limits.gatewayKeyRpm);
+    if (!verdict.ok) {
+      const headers = {
+        'retry-after': String(verdict.retryAfterSec),
+        ...(corsHeaders(request, env) || {}),
+      };
+      return {
+        ok: false,
+        response: new Response(
+          JSON.stringify({
+            error: {
+              message: `Gateway access-key RPM cap exceeded. Retry after ${verdict.retryAfterSec}s.`,
+              type: 'rate_limit_error',
+              code: 'gateway_key_rpm',
+              retry_after_seconds: verdict.retryAfterSec,
+            },
+          }),
+          { status: 429, headers: { 'content-type': 'application/json', ...headers } },
+        ),
+      };
+    }
   }
 
   // Authenticated diagnostic endpoints short-circuit here.
@@ -228,15 +262,20 @@ export async function preflight(request, env, ctx) {
     && !clientWantsStream;
 
   // ---- Model authorization (fail closed, BEFORE the scheduler) ----
+  // The Known Model Catalog is the union of every explicit node.models key
+  // and every MODELS_CONFIG key. It is the single source of model existence:
+  // "*" means every model in this catalog, never an arbitrary string, and an
+  // empty catalog grants zero models.
   const gatewayConfigForAuth = loadGatewayConfig(env);
-  const configuredModels = collectConfiguredModels(gatewayConfigForAuth.nodes);
-  const modelAuthz = authorizeModel(requestedModel, configuredModels, authResult);
+  const knownModels = collectKnownModels(gatewayConfigForAuth.nodes, env);
+  const modelAuthz = authorizeModel(requestedModel, knownModels, authResult);
   if (!modelAuthz.allowed) {
     return {
       ok: false,
       response: gatewayError(request, env, route, modelAuthz.status, modelAuthz.status === 403
         ? 'Forbidden: the provided key is not permitted to use this model.'
-        : 'Model not found for this key.', requestId),
+        : 'Model not found for this key.', requestId,
+        { configuration_status: gatewayConfigForAuth.status, known_model_count: knownModels.size, ...(exposeUpstreamInfo ? { diagnostics: gatewayConfigForAuth.diagnostics.slice(0, 5) } : {}) }),
     };
   }
 
@@ -254,7 +293,7 @@ export async function preflight(request, env, ctx) {
   const tiers = config.tiers;
   /** @type {{ model: string, protocol: 'openai' | 'anthropic', surface: 'chat_completions' | 'responses' | 'messages' }} */
   const requestDescriptor = { model: requestedModel, ...ROUTE_PROTOCOL_SURFACE[route] };
-  const supported = TIER_ORDER.some((t) => tiers[t].some((n) => supportsRequest(n, requestDescriptor)));
+  const supported = TIER_ORDER.some((t) => tiers[t].some((n) => supportsRequest(n, requestDescriptor, knownModels)));
   if (!supported) {
     return {
       ok: false,
@@ -285,5 +324,6 @@ export async function preflight(request, env, ctx) {
     tiers,
     policy,
     failoverBudgetMs,
+    knownModels,
   };
 }

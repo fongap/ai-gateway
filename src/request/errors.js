@@ -76,9 +76,15 @@ export function buildBudgetExhaustedResponse(request, env, route, requestId, req
     `Gateway failover budget exhausted after ${state.logicalAttempts} attempt(s).`, requestId, details);
 }
 
-export function buildExhaustedResponse(request, env, route, requestId, requestedModel, state, tiers, exposeUpstreamInfo, reqDescriptor) {
+export function buildExhaustedResponse(request, env, route, requestId, requestedModel, state, tiers, exposeUpstreamInfo, reqDescriptor, knownModels) {
   const last = state.attempts[state.attempts.length - 1];
   const nothingAttempted = state.attempts.length === 0;
+
+  // The Known Model Catalog bounds wildcard nodes so the exhausted-response
+  // analysis (deferred capacity, blocking wait) only considers nodes that
+  // actually serve a known model. Passed in from the handler (state.knownModels
+  // is the same Set, computed once in preflight).
+  const knownModels_ = knownModels ?? state.knownModels;
 
   // Distinguish WHY no node was available:
   //   saturated (all candidates busy at concurrency caps or hard-RPM exhausted)
@@ -103,8 +109,8 @@ export function buildExhaustedResponse(request, env, route, requestId, requested
     } else {
       const deferred = TIER_ORDER.some((t) =>
         t === 1
-          ? tier1HasDeferredCapacity(tiers[t], reqDescriptor, state.attempted, now)
-          : tierHasDeferredCapacity(tiers[t], reqDescriptor, state.attempted, now));
+          ? tier1HasDeferredCapacity(tiers[t], reqDescriptor, state.attempted, now, knownModels_)
+          : tierHasDeferredCapacity(tiers[t], reqDescriptor, state.attempted, now, knownModels_));
       if (deferred) {
         status = 503;
         message = 'All eligible nodes are at capacity. Retry shortly.';
@@ -112,7 +118,7 @@ export function buildExhaustedResponse(request, env, route, requestId, requested
         status = 429;
         message = 'All eligible nodes are temporarily unavailable (cooldown or circuit open).';
       }
-      retryAfterSec = earliestBlockingRetryAfterSec(tiers, reqDescriptor, now);
+      retryAfterSec = earliestBlockingRetryAfterSec(tiers, reqDescriptor, now, knownModels_);
     }
   } else {
     // Terminal status is driven by the aggregated failure kinds, not by whatever
@@ -121,7 +127,7 @@ export function buildExhaustedResponse(request, env, route, requestId, requested
     status = terminalStatus(state.failureKinds) ?? (last?.status === 429 ? 429 : 502);
     message = `All nodes failed for model "${requestedModel}".`;
     if (status === 429) {
-      retryAfterSec = earliestBlockingRetryAfterSec(tiers, reqDescriptor, now);
+      retryAfterSec = earliestBlockingRetryAfterSec(tiers, reqDescriptor, now, knownModels_);
       // A distributed rate-limiter deny (rate_limit_global) leaves no node
       // cooldown — the node was never at fault. When that is what blocked
       // everything, back the client off to the next fixed-window reset instead
@@ -155,11 +161,11 @@ export function buildExhaustedResponse(request, env, route, requestId, requested
 // never contributes — only nodes that actually serve THIS request AND are
 // currently blocking it. The min across blocking reasons is returned so the
 // shortest real wait wins.
-function earliestBlockingRetryAfterSec(tiers, reqDescriptor, now = Date.now()) {
+function earliestBlockingRetryAfterSec(tiers, reqDescriptor, now = Date.now(), knownModels) {
   let minMs = Infinity;
   for (const t of TIER_ORDER) {
     for (const node of tiers[t] ?? []) {
-      if (!supportsRequest(node, reqDescriptor)) continue;
+      if (!supportsRequest(node, reqDescriptor, knownModels)) continue;
       const wait = blockingWaitMs(node, reqDescriptor.model, now);
       if (wait < minMs) minMs = wait;
     }

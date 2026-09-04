@@ -10,7 +10,7 @@ Model Registry (`src/config/registry.js`) 是逻辑模型的策略和能力（`c
 
 ## Node 与 Tier
 
-节点配置通过 `src/config/nodes.js` 合并 `TIER{1,2,3}_NODES_CONFIG_01..99` Worker 文本变量与 `NODE_SECRETS_01..99` Worker Secrets 生成 Runtime Node：
+节点配置通过 `src/config/nodes.js` 合并 `TIER{1,2,3}_NODES_CONFIG_01..99` Worker 文本变量与 `TIER{1,2,3}_NODES_SECRETS_01..99` Worker Secrets 生成 Runtime Node（tier-scoped secret 与 config shard 1:1 配对）：
 
 - Tier 仅从变量前缀派生；节点 JSON 不能声明它
 - Credential lookup 在此且仅在此发生；下游模块只看到 `runtimeNode.credential`

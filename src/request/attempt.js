@@ -4,6 +4,9 @@
 //
 // Single Node Attempt — one upstream request against one chosen node.
 //
+// This file IS the public attempt boundary. The native / fallback tier loop
+// (handler.js) drives it via dispatchWithHedge(args, tierNodes).
+//
 // Responsibility split (kept out of this module):
 //   Scheduler   = decides WHICH node to attempt (this file is not the picker)
 //   Reliability = decides how an attempt's outcome mutates node state
@@ -22,12 +25,19 @@
 //     client abort / malformed)
 //   - building the AttemptOutcome and feeding it to Reliability + the
 //     streaming observability callbacks
+//   - attempt-level success/failure finalization
 //
 // The native / fallback tier loop drives this. attempt.js never owns
 // tier ordering, candidate selection, hedge eligibility, or budget
 // accounting beyond a single attempt's headers / first-event slice.
 //
-// PR 4 is a behavior-preserving refactor: the implementation stays
-// in handler.js for now. This file is the new public boundary that
-// the tier loop imports. The body relocation happens in PR 5, after
-// the orchestrator structure is proven out.
+// --- Implementation status (PR 3) ----------------------------------------
+// The full implementation still lives in handler.js (a behavior-preserving
+// rest stop — the move is being done in stages so each step is independently
+// validated). attempt.js re-exports the same symbols so external code can
+// already import them from this stable boundary, and the body relocation
+// proceeds incrementally from here. Nothing in handler.js should import the
+// attempt symbols from this file yet (that would re-introduce the cycle that
+// is being removed in stages).
+
+export { attemptNode, dispatchWithHedge } from './handler.js';

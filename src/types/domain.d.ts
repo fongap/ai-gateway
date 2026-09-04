@@ -206,4 +206,60 @@
  * @typedef {'rotate' | 'tier_exhausted' | 'budget_exhausted' | 'stop' | 'success'} AttemptResult
  */
 
+/**
+ * Per-node runtime state held in node-state.js. The shape is the source
+ * of truth for `getNodeState` consumers; every field has an explicit
+ * zero-initial default so a fresh state is a valid closed-circuit state.
+ *
+ * @typedef {{
+ *   activeRequests: number,
+ *   rpm: { count: number, minute: number },
+ *   cooldownUntil: number,
+ *   cooldownReason: string | null,
+ *   totalFailures: number,
+ *   consecutiveFailures: number,
+ *   lastTransientFailureAt: number,
+ *   circuitState: 'closed' | 'open' | 'half-open',
+ *   circuitOpenedAt: number,
+ *   probeInFlight: boolean,
+ *   probeTtftMs: number,
+ *   avgTtftMs: number,
+ *   healthScore: number,
+ *   healthPenalty: number,
+ *   healthUpdatedAt: number,
+ *   modelPerf: Map<string, ModelPerfEntry>,
+ *   lastSeen: number,
+ * }} NodeState
+ */
+
+/**
+ * @typedef {{
+ *   ttftCount: number,
+ *   ttftSum: number,
+ *   ttftEwma: number,
+ *   lastProbeFailureAt: number,
+ *   consecutive5xx: number,
+ *   consecutiveTimeouts: number,
+ *   consecutiveRateLimits: number,
+ *   consecutiveSuccesses: number,
+ *   cooldownUntil: number,
+ *   cooldownScope: 'model' | 'auth' | null,
+ *   exhausted: boolean,
+ * }} ModelPerfEntry
+ */
+
+/**
+ * A single decision returned by the scheduler when picking the next
+ * candidate for a tier. The shape is shared by all tier pickers
+ * (Tier 1 with affinity release token, Tier 2/3 with priority/LRU).
+ *
+ * @typedef {{
+ *   node: RuntimeNode,
+ *   raceLost: boolean,
+ *   releaseToken?: { accountId: string } | null,
+ *   updateAffinity?: boolean,
+ *   escapedFromAffinity?: boolean,
+ * }} PickedCandidate
+ */
+
 export {};

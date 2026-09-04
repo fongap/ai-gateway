@@ -82,7 +82,7 @@ Node definitions are Worker text variables; upstream credentials and the gateway
 | Configuration item | Purpose |
 |---|---|
 | `TIER{1,2,3}_NODES_CONFIG_01..` | node pools per tier |
-| `NODE_SECRETS_01..` | `{ node-id: credential }` |
+| `TIER{1,2,3}_NODES_SECRETS_01..` | Node credentials (tier-scoped, 1:1 with config shard) |
 | `GATEWAY_ACCESS_KEY` | gateway access key |
 | `TIER1_AFFINITY` | required Cloudflare KV binding for hashed session key → Tier 1 account |
 

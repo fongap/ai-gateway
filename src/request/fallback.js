@@ -57,7 +57,7 @@ import { computeTierCaps } from './tier-loop.js';
 export async function runFallbackChain({ loopCtx, route, requestedModel, runTierLoop }) {
   const {
     env, requestId, exposeUpstreamInfo, request, state, policy,
-    failoverBudgetMs, requestStartMs, tiers, bodyJson,
+    failoverBudgetMs, requestStartMs, tiers, bodyJson, knownModels,
   } = loopCtx;
   const fallbacks = getFallbackChain(route, env);
   for (const fb of fallbacks) {
@@ -68,7 +68,7 @@ export async function runFallbackChain({ loopCtx, route, requestedModel, runTier
     }
     const fbReqDescriptor = { model: requestedModel, protocol: fb.protocol, surface: fb.surface };
     const fbSupported = TIER_ORDER.some((t) =>
-      tiers[t].some((n) => supportsRequest(n, fbReqDescriptor)));
+      tiers[t].some((n) => supportsRequest(n, fbReqDescriptor, knownModels)));
     if (!fbSupported) continue;
     let convertedBody;
     try {
@@ -83,7 +83,7 @@ export async function runFallbackChain({ loopCtx, route, requestedModel, runTier
       }
       throw e;
     }
-    const fbTierCaps = computeTierCaps(tiers, fbReqDescriptor, state.attempted, policy);
+    const fbTierCaps = computeTierCaps(tiers, fbReqDescriptor, state.attempted, policy, knownModels);
     const conversionContext = {
       convertedBody,
       fallbackProtocol: fb.protocol,

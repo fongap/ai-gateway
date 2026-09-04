@@ -253,7 +253,7 @@ async function runTierLoop(loopCtx, reqDescriptor, conversionContext, overrideTi
 // charging from a failure-kind string. Successful dispatches get one debug
 // line here (failures log their own dispatch line inside recordOutcome), so
 // every upstream dispatch emits exactly one completion record.
-async function attemptNode(c) {
+export async function attemptNode(c) {
   const outcome = await dispatchAttempt(c);
   if (outcome.budgetCharged === undefined) outcome.budgetCharged = true;
   if (outcome.response?.status === 200) {
@@ -296,7 +296,7 @@ const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // absolute attempt deadline instead of being handed a fresh one. See The Tail
 // at Scale (Dean & Barroso, 2013) for the underlying technique and its
 // overload caveat.
-async function dispatchWithHedge(args, tierNodes) {
+export async function dispatchWithHedge(args, tierNodes) {
   // Resolve effective hedge config: policy.hedge (per-model) overrides
   // the global env defaults. Tier 3 (paid) nodes NEVER hedge by default
   // — two paid requests in parallel is rarely worth the cost. To hedge

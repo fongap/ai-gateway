@@ -42,9 +42,9 @@ checkout → setup Node → npm ci
 | `GATEWAY_PUBLIC_BASE_URL` | 是 | `https://` URL（无尾部 `/v1`） |
 | `TOKEN_STATS_D1_ID` | 可选 | D1 数据库 ID |
 | `TIER1_AFFINITY_KV_ID` | Tier 1 配置时必需 | KV namespace ID |
-| `TIER1_NODES_CONFIG_01..10` | 至少一个 tier variable | JSON 数组 |
-| `TIER2_NODES_CONFIG_01..10` | 可选 | 同上 |
-| `TIER3_NODES_CONFIG_01..10` | 可选 | 同上 |
+| `TIER1_NODES_CONFIG_01..99` | 至少一个 tier variable | JSON 数组 |
+| `TIER2_NODES_CONFIG_01..99` | 可选 | 同上 |
+| `TIER3_NODES_CONFIG_01..99` | 可选 | 同上 |
 | `MODELS_CONFIG` | 可选 | 模型注册表覆盖 |
 | `POLICIES_CONFIG` | 可选 | Attempt budgets |
 | `DEPLOY_ENABLED` | 仅 Fork | 设为 `true` 启用 |
@@ -55,14 +55,14 @@ checkout → setup Node → npm ci
 |---|---|---|
 | `CLOUDFLARE_API_TOKEN` | 是 | Cloudflare 部署 token |
 | `GATEWAY_ACCESS_KEY` | 是 | 客户端访问密钥 |
-| `NODE_SECRETS_01..20` | 至少一个 | `{ "node-id": "credential" }` |
+| `TIER{1,2,3}_NODES_SECRETS_01..99` | 至少一个 | `{ "node-id": "credential" }`（tier-scoped，与 config shard 一一对应） |
 
 ## 节点管理
 
 ### 添加新节点
 
 1. 编辑匹配的 `TIER*_NODES_CONFIG_XX` Variable——追加新节点对象
-2. 将 credential 添加到 `NODE_SECRETS_XX` Secret
+2. 将 credential 添加到匹配的 `TIER*_NODES_SECRETS_XX` Secret（tier 必须与 config shard 一致）
 3. 推送到 `main`
 
 ### 编辑节点
@@ -71,7 +71,7 @@ checkout → setup Node → npm ci
 
 ### 轮换 API Key
 
-编辑包含该节点的 `NODE_SECRETS_XX` Secret，更新 credential。
+编辑包含该节点的 `TIER*_NODES_SECRETS_XX` Secret，更新 credential。
 
 ### 轮换 Gateway Access Key
 
