@@ -98,6 +98,7 @@ const DIAGNOSTIC_BYTES = 4096;
 // — a hedge twin is never cross-protocol.
 import { preflight as runPreflight, getRouteProtocolSurface } from './preflight.js';
 import { pickForTier, makeTier1Rng, computeTierCaps, countRemainingDispatchableAttempts } from './tier-loop.js';
+import { runFallbackChain } from './fallback.js';
 
 export async function handleRequest(request, env, ctx) {
   const logger = getLogger(env);
@@ -165,40 +166,13 @@ export async function handleRequest(request, env, ctx) {
   // SAME state (logicalAttempts, dispatches, hedges, failoverBudget,
   // requestStartMs) — no fresh budget. Hedge does not cross protocols (the
   // scheduler's protocol+surface filter already excludes foreign nodes).
-  const fallbacks = getFallbackChain(route, env);
-  for (const fb of fallbacks) {
-    if (state.logicalAttempts >= policy.maxAttempts) break;
-    const remainingBudgetMs = failoverBudgetMs - (Date.now() - requestStartMs);
-    if (remainingBudgetMs <= 0) {
-      return buildBudgetExhaustedResponse(request, env, route, requestId, requestedModel, state, exposeUpstreamInfo);
-    }
-    const fbReqDescriptor = { model: requestedModel, protocol: fb.protocol, surface: fb.surface };
-    const fbSupported = TIER_ORDER.some((t) =>
-      tiers[t].some((n) => supportsRequest(n, fbReqDescriptor)));
-    if (!fbSupported) continue;
-    let convertedBody;
-    try {
-      if (route === 'anthropic_messages' && fb.protocol === 'openai' && fb.surface === 'chat_completions') {
-        convertedBody = convertAnthropicToOpenAIRequest(bodyJson);
-      } else {
-        continue;
-      }
-    } catch (e) {
-      if (e instanceof ConversionError) {
-        return anthropicErrorResponse(request, env, 400, e.code, requestId);
-      }
-      throw e;
-    }
-    const fbTierCaps = computeTierCaps(tiers, fbReqDescriptor, state.attempted, policy);
-    const conversionContext = {
-      convertedBody,
-      fallbackProtocol: fb.protocol,
-      fallbackSurface: fb.surface,
-      clientRoute: route,
-    };
-    const fbResult = await runTierLoop(loopCtx, fbReqDescriptor, conversionContext, fbTierCaps);
-    if (fbResult) return fbResult;
-  }
+  const fbResult = await runFallbackChain({
+    loopCtx,
+    route,
+    requestedModel,
+    runTierLoop,
+  });
+  if (fbResult) return fbResult;
 
   return buildExhaustedResponse(request, env, route, requestId, requestedModel, state, tiers, exposeUpstreamInfo, reqDescriptor);
 }
