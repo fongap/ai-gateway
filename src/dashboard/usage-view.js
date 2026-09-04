@@ -11,7 +11,9 @@ import {
   utc8DayStartUtcMs,
   isoDayUtc8,
 } from '../observability/token-usage-store.mjs';
-import { escapeHtml, fmtTokens, fmtInt, fmtTooltipDate } from './format.js';
+import { escapeHtml, fmtTokens, fmtInt } from './format.js';
+import { buildCalendarHeatmap } from './heatmap.js';
+import { renderHeatmap } from './heatmap-view.js';
 
 const DAY_MS = 86_400_000;
 const HEATMAP_WEEKS = 52;
@@ -30,49 +32,30 @@ function modelShade(i, n) {
 }
 
 // ---- Heatmap ---------------------------------------------------------------
+//
+// The heatmap is now built through the shared `buildCalendarHeatmap`
+// utility (`src/dashboard/heatmap.js`) and rendered by `renderHeatmap`
+// (`src/dashboard/heatmap-view.js`). The utility supports two modes
+// (rolling-52-weeks and calendar-year) and is the single source of
+// truth for the date / weekday / month plumbing. The renderer is the
+// single source of truth for the HTML output.
+//
+// `buildHeatmap` is kept as a thin adapter so the existing call-site
+// in `usageSection` and the test contract (which asserts on the HTML
+// output) continue to work without churn.
 
 export function buildHeatmap(daily, now) {
-  const todayStartUtc8 = utc8DayStartUtcMs(now);
-  const todayIso = isoDayUtc8(todayStartUtc8);
-  const dow = (new Date(todayIso).getUTCDay() + 6) % 7;
-  const currentWeekStartUtc8 = todayStartUtc8 - dow * DAY_MS;
-  const gridStartUtc8 = currentWeekStartUtc8 - (HEATMAP_WEEKS - 1) * 7 * DAY_MS;
-
-  let max = 0;
-  for (const v of daily?.values() || []) if (v.total > max) max = v.total;
-
-  const cells = [];
-  const monthStarts = [];
-  let prevMonth = -1;
-  for (let w = 0; w < HEATMAP_WEEKS; w++) {
-    const weekStartMs = gridStartUtc8 + w * 7 * DAY_MS;
-    const weekStartIso = isoDayUtc8(weekStartMs);
-    const month = new Date(weekStartIso).getUTCMonth();
-    if (month !== prevMonth) monthStarts.push({ col: w, month });
-    prevMonth = month;
-    for (let d = 0; d < 7; d++) {
-      const dayMs = weekStartMs + d * DAY_MS;
-      const iso = isoDayUtc8(dayMs);
-      const future = iso > todayIso;
-      const v = daily?.get(iso);
-      const total = future || !v ? 0 : v.total;
-      const requests = future || !v ? 0 : v.requests;
-      const level = total <= 0 || max <= 0 ? 0 : Math.min(4, Math.max(1, Math.ceil((total / max) * 4)));
-      const tip = future ? iso : `${fmtTooltipDate(iso)}\n${fmtTokens(total)} Token · ${fmtInt(requests)} 次请求`;
-      cells.push(`<i class="cell" data-level="${level}" tabindex="0" data-tooltip="${escapeHtml(tip)}" aria-label="${escapeHtml(tip)}"></i>`);
-    }
-  }
-
-  const labels = [];
-  let lastCol = -99;
-  for (const { col, month } of monthStarts) {
-    if (col > HEATMAP_WEEKS - 3) break;
-    if (labels.length && col - lastCol < 3) continue;
-    labels.push(`<span style="grid-column:${col + 1}">${month + 1}月</span>`);
-    lastCol = col;
-  }
-
-  return { cells, labels };
+  const heatmap = buildCalendarHeatmap({
+    mode: 'rolling-52-weeks',
+    today: now,
+    data: daily,
+    valueKey: 'total',
+  });
+  const { cells, labels, ariaLabel } = renderHeatmap(heatmap, {
+    data: daily,
+    valueKey: 'total',
+  });
+  return { cells, labels, ariaLabel };
 }
 
 // ---- KPI -------------------------------------------------------------------
@@ -194,9 +177,9 @@ export async function usageSection(env, now = Date.now(), stats = null) {
   }
   const activity = available
     ? (() => {
-        const { cells, labels } = buildHeatmap(daily, now);
+        const { cells, labels, ariaLabel } = buildHeatmap(daily, now);
         return `<div class="heatmap-wrap" tabindex="0" role="img" ` +
-          `aria-label="近 52 周 Token 活动热力图">` +
+          `aria-label="${escapeHtml(ariaLabel)}">` +
           `<div class="heatmap" aria-hidden="true">${cells.join('')}</div>` +
           `<div class="months" aria-hidden="true">${labels.join('')}</div></div>`;
       })()
