@@ -22,6 +22,10 @@ scripts/                      工具脚本：部署、测试、配置检查、CI
 ├─ provider-discovery/        Provider Discovery v1.1：catalog schema、normalize、report、samples（只读观察，不进入 Runtime 热路径）
 └─ *.sh / *.ps1               跨平台部署脚本
 
+tests/                        测试入口：unit runner + 文档
+├─ run-unit.mjs               单元测试 runner（加载 scripts/*-test.mjs）
+└─ README.md                  测试布局说明
+
 config/                       示例配置文件（*.example.json）
 benchmark/                    性能基准测试
 migrations/                   D1 数据库迁移 SQL
@@ -39,7 +43,7 @@ docs/                         文档体系
 
 ## 目录规则
 
-- `src/` 只包含运行时代码；测试在 `scripts/` 中，配置示例在 `config/` 中
+- `src/` 只包含运行时代码；测试入口在 `tests/` 中，测试文件在 `scripts/` 中，配置示例在 `config/` 中
 - `docs/` 只包含长期文档；临时状态不入文档
 - `scripts/` 中的测试文件以 `-test.mjs` 结尾，工具文件不以 `-test.mjs` 结尾
 - 新增顶层目录需满足：有明确的长期职责，且不与现有目录职责重叠
