@@ -1,5 +1,34 @@
 ﻿# Changelog
 
+## Unreleased
+
+### Changed — 协议层架构收敛（OpenAI / Anthropic 双原生协议）
+
+- **上游协议正式收敛为 OpenAI 与 Anthropic 两种原生协议族。** 客户端请求现在被原样转发到**同协议、同 surface** 的原生上游 endpoint,不再存在任何跨协议转换:
+  - `Chat → 上游 /v1/chat/completions`(原已原生,不变)
+  - `Responses → 上游 /v1/responses`(原为 Responses↔Chat 双向模拟,现删除转换、原生透传)
+  - `Messages → 上游 /v1/messages`(原为 Anthropic→Chat→Anthropic 双重转换,现删除转换、原生透传)
+- **Node Schema 新增 `protocol` 与 `surfaces`.** `protocol`(`openai`|`anthropic`)决定 wire format、上游 endpoint、认证 header(openai → `Authorization: Bearer`;anthropic → `x-api-key` + `anthropic-version`/`anthropic-beta` 透传)与协议头;`surfaces`(openai: `chat_completions`/`responses`;anthropic: `messages`)声明节点真正支持的接口。`provider` 退化为纯元数据(dashboard/metrics/诊断/quirks),**不再隐式决定 transport**。旧配置缺省时按 `openai` + 默认 surface 迁移并输出 deprecated diagnostic(节点仍可用,gateway 不因此 invalid)。
+- **新增 Transport 层 `src/transport/`(index/openai/anthropic)。** 只负责 upstream path、协议 headers、模型替换、流式判定与协议特定响应语义;可靠性逻辑仍完全由 scheduler/reliability/request 层统一控制。`src/config/profiles.js` 删除,换成 `src/config/provider-quirks.js`(仅记录 `stream_options.include_usage` 等 wire-format 兼容差异,不决定协议/路径/transport)。
+- **调度器升级为 protocol + surface + model 三重过滤**(`supportsRequest`)。`/v1/responses` 只路由到 `surfaces` 含 `responses` 的 openai 节点,`/v1/messages` 只进入 anthropic 节点;**禁止跨协议 fallback**,OpenAI 节点全失败时健康的 Anthropic 节点不会被调用(反向亦然)。同协议内的轮换/hedge/tier fallback 完整保留。
+- **Hedge 强制协议隔离.** twin 由同一三重过滤选择器挑选,必然与 primary 同 protocol、同 surface;无可选 twin 时不启动 hedge。
+- **各协议独立的 First Event Guard 判定.** OpenAI Chat 保持"任何可解析非错误事件提交";OpenAI Responses 仅 `response.*.delta` 提交(生命周期事件不提交);Anthropic 原生仅 `text_delta`/`thinking_delta`/`input_json_delta` 提交(`message_start`/block 生命周期/ping/`message_delta` 不提交)。提交前可 failover,提交后禁止透明切换——两个协议族不再共用一个错误的首事件判断。
+- **诊断增强.** dispatch 日志与 attempts 记录新增 `provider` / `protocol` / `surface` 字段;`/health` 节点条目新增 `protocol`/`surfaces`;`/v1/models` 的 `protocols` 改为按服务节点的真实 surfaces 并集,`api_backends` 改用 provider 标签。topology hiding 与 secret 分离策略不变。
+
+### Fixed
+
+- **修复 hedge `kind=unknown` 可观测性 bug.** ① fetch 失败路径的 rotate outcome 现在携带已分类的 `kind`(此前丢弃,导致 `hedge failed ... primary_kind=unknown`);② 竞速已被赢家解决后,输家迟到的 neutral 结果不再触发误导性的 `hedge failed` 日志(赢家侧无 kind 被打成 `unknown`)。只修日志信息传播,错误分类/惩罚/circuit/retry 行为不变。
+- **移除 `buildTargetUrl` 中遗留的调试 `console.log`(测试残留).**
+
+### Removed — legacy 协议转换代码
+
+- `src/protocol/convert.js`(Anthropic↔OpenAI 非流式转换)、`src/stream/transform.js`(Chat SSE→Anthropic SSE)、`src/protocol/responses/{request,stream}.js`(Responses↔Chat 双向模拟)、`src/protocol/responses/{response,reasoning,tools}.js`(仅服务于转换链路)、`src/config/profiles.js`(按 provider 名猜测 transport 的兼容 profile)。原生透传所需的防御性 stream↔object 组装以 `src/protocol/responses/native-stream.js` 与 `src/stream/anthropic-native.js` 重建(均在首字节交付前运行,失败仍可轮换)。
+
+### Added
+
+- **协议矩阵测试 `scripts/protocol-matrix-test.mjs` ×16**(已纳入 `npm test`):OpenAI Chat 成功/failover/hedge;Responses 原生链路(不经 Chat 转换、chat-only 节点被排除);Anthropic 原生链路(native 路径、`x-api-key`、`anthropic-beta` 透传、无 Bearer);**跨协议禁止 fallback**双向断言;hedge 同协议同 surface 断言;旧配置(无 `protocol`/`surfaces`)端到端迁移与 deprecated diagnostic 断言。
+
+---
 ## 1.2.7 - 2026-09-04
 
 ### Changed — 模型治理与一致性收敛（v1.2.7）
@@ -31,37 +60,6 @@
 - 冻结 Dashboard 布局调整（宽度/像素/间距/字体），专注治理正确性。
 
 ---
-
-## Unreleased
-
-### Changed — 协议层架构收敛（OpenAI / Anthropic 双原生协议）
-
-- **上游协议正式收敛为 OpenAI 与 Anthropic 两种原生协议族。** 客户端请求现在被原样转发到**同协议、同 surface** 的原生上游 endpoint,不再存在任何跨协议转换:
-  - `Chat → 上游 /v1/chat/completions`(原已原生,不变)
-  - `Responses → 上游 /v1/responses`(原为 Responses↔Chat 双向模拟,现删除转换、原生透传)
-  - `Messages → 上游 /v1/messages`(原为 Anthropic→Chat→Anthropic 双重转换,现删除转换、原生透传)
-- **Node Schema 新增 `protocol` 与 `surfaces`。** `protocol`(`openai`|`anthropic`)决定 wire format、上游 endpoint、认证 header(openai → `Authorization: Bearer`;anthropic → `x-api-key` + `anthropic-version`/`anthropic-beta` 透传)与协议头;`surfaces`(openai: `chat_completions`/`responses`;anthropic: `messages`)声明节点真正支持的接口。`provider` 退化为纯元数据(dashboard/metrics/诊断/quirks),**不再隐式决定 transport**。旧配置缺省时按 `openai` + 默认 surface 迁移并输出 deprecated diagnostic(节点仍可用,gateway 不因此 invalid)。
-- **新增 Transport 层 `src/transport/`(index/openai/anthropic)。** 只负责 upstream path、协议 headers、模型替换、流式判定与协议特定响应语义;可靠性逻辑仍完全由 scheduler/reliability/request 层统一控制。`src/config/profiles.js` 删除,换成 `src/config/provider-quirks.js`(仅记录 `stream_options.include_usage` 等 wire-format 兼容差异,不决定协议/路径/transport)。
-- **调度器升级为 protocol + surface + model 三重过滤**(`supportsRequest`)。`/v1/responses` 只路由到 `surfaces` 含 `responses` 的 openai 节点,`/v1/messages` 只进入 anthropic 节点;**禁止跨协议 fallback**,OpenAI 节点全失败时健康的 Anthropic 节点不会被调用(反向亦然)。同协议内的轮换/hedge/tier fallback 完整保留。
-- **Hedge 强制协议隔离。** twin 由同一三重过滤选择器挑选,必然与 primary 同 protocol、同 surface;无可选 twin 时不启动 hedge。
-- **各协议独立的 First Event Guard 判定。** OpenAI Chat 保持"任何可解析非错误事件提交";OpenAI Responses 仅 `response.*.delta` 提交(生命周期事件不提交);Anthropic 原生仅 `text_delta`/`thinking_delta`/`input_json_delta` 提交(`message_start`/block 生命周期/ping/`message_delta` 不提交)。提交前可 failover,提交后禁止透明切换——两个协议族不再共用一个错误的首事件判断。
-- **诊断增强。** dispatch 日志与 attempts 记录新增 `provider` / `protocol` / `surface` 字段;`/health` 节点条目新增 `protocol`/`surfaces`;`/v1/models` 的 `protocols` 改为按服务节点的真实 surfaces 并集,`api_backends` 改用 provider 标签。topology hiding 与 secret 分离策略不变。
-
-### Fixed
-
-- **修复 hedge `kind=unknown` 可观测性 bug。** ① fetch 失败路径的 rotate outcome 现在携带已分类的 `kind`(此前丢弃,导致 `hedge failed ... primary_kind=unknown`);② 竞速已被赢家解决后,输家迟到的 neutral 结果不再触发误导性的 `hedge failed` 日志(赢家侧无 kind 被打成 `unknown`)。只修日志信息传播,错误分类/惩罚/circuit/retry 行为不变。
-- **移除 `buildTargetUrl` 中遗留的调试 `console.log`(测试残留)。**
-
-### Removed — legacy 协议转换代码
-
-- `src/protocol/convert.js`(Anthropic↔OpenAI 非流式转换)、`src/stream/transform.js`(Chat SSE→Anthropic SSE)、`src/protocol/responses/{request,stream}.js`(Responses↔Chat 双向模拟)、`src/protocol/responses/{response,reasoning,tools}.js`(仅服务于转换链路)、`src/config/profiles.js`(按 provider 名猜测 transport 的兼容 profile)。原生透传所需的防御性 stream↔object 组装以 `src/protocol/responses/native-stream.js` 与 `src/stream/anthropic-native.js` 重建(均在首字节交付前运行,失败仍可轮换)。
-
-### Added
-
-- **协议矩阵测试 `scripts/protocol-matrix-test.mjs` ×16**(已纳入 `npm test`):OpenAI Chat 成功/failover/hedge;Responses 原生链路(不经 Chat 转换、chat-only 节点被排除);Anthropic 原生链路(native 路径、`x-api-key`、`anthropic-version`、无 Bearer);**跨协议禁止 fallback**双向断言;hedge 同协议同 surface 断言;旧配置(无 `protocol`/`surfaces`)端到端迁移与 deprecated diagnostic 断言。
-- Claude / Codex 契约测试重写为**原生上游 mock**(Anthropic SSE 生命周期 / Responses SSE 事件序列),新增 `anthropic-version`/`anthropic-beta` 透传、tool_use 流式 `input_json_delta`、原生 stream↔object 防御路径等断言;`gateway-configuration-test` 新增 protocol/surfaces schema 与迁移用例;`node-config-shards-test` 新增 CLI 侧 protocol/surfaces 校验用例。
-
-## 1.2.6 - 2026-09-02
 
 ### Added
 

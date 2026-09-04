@@ -10,14 +10,30 @@
 
 ## 版本事实来源
 
-版本号的唯一事实来源是 `package.json` 中的 `version` 字段。`APP_META.version` 和 `CHANGELOG.md` 必须与之保持一致。
+```text
+软件版本
+→ package.json.version
 
-## 版本同步
+Node Runtime Requirement
+→ package.json.engines.node
+```
+
+以下属于同步副本（必须保持一致）：
+
+```text
+package-lock.json
+APP_META.version
+CHANGELOG.md
+README.md
+README_EN.md
+```
 
 版本变更时必须同步更新：
+
 1. `package.json` → `version`
-2. `CHANGELOG.md` → 对应版本条目
-3. Git Tag → `v*.*.*`
+2. `package-lock.json` → `version`（通过 npm 正常生成，不得手动编辑）
+3. `CHANGELOG.md` → 对应版本条目
+4. Git Tag → `v*.*.*`
 
 ## CHANGELOG
 
@@ -31,12 +47,12 @@ CHANGELOG 只记录历史版本变化，不放长期治理规则。
 ## Git Tag
 
 - 格式：`v*.*.*`（如 `v1.2.4`）
-- 由发布 workflow 自动创建
-- Tag 触发 Release 工作流
+- 由维护者显式创建
+- 不自动触发 Release workflow（当前由维护者手动创建）
 
 ## GitHub Release
 
-- 由 Tag `v*.*.*` 自动触发
+- 由维护者显式创建
 - 包含：
   - CHANGELOG 中对应版本的条目
   - ZIP 和 TAR.GZ 发布资产
@@ -44,13 +60,16 @@ CHANGELOG 只记录历史版本变化，不放长期治理规则。
 
 ## Release Workflow
 
-发布流程：
+当前发布流程：
+
 1. 更新版本号（`package.json`、`APP_META.version`）
 2. 更新 CHANGELOG
 3. 提交并推送到 `main`
 4. 创建 Git Tag（`v*.*.*`）
-5. Tag 触发 Release 工作流
-6. 工作流构建、打包、创建 GitHub Release
+5. 维护者显式创建 GitHub Release
+6. CI / Deploy 自动化（`npm ci → npm run validate:merge → npm run check:deploy`）
+
+以后如果增加自动 Release workflow，再同步修改本文件。
 
 ## Deployment / Release Relationship
 
@@ -69,7 +88,16 @@ CHANGELOG 只记录历史版本变化，不放长期治理规则。
 
 ## 正式 Release
 
-正式 Release 必须满足：
+正式 Release 的唯一外部证据是：
+
+```text
+Git tag vX.Y.Z
++
+GitHub Release
+```
+
+内部条件：
+
 - CI 全部通过
 - 版本号一致
 - CHANGELOG 已更新

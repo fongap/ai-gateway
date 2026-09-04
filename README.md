@@ -7,7 +7,7 @@
 把一堆容易限流、失效、抖动的上游 Key，聚合为一个稳定、自动恢复的 AI API。
 
 ![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)
-![Node](https://img.shields.io/badge/Node.js-%3E%3D20-43853d?logo=node.js&logoColor=white)
+![Node](https://img.shields.io/badge/Node.js-%3E%3D22-43853d?logo=node.js&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-2ea44f)
 
 [本地安装](#本地安装) · [自动部署](#自动部署) · [配置](#配置) · [端点](#端点) · [安全](#安全)
