@@ -96,152 +96,33 @@ const DIAGNOSTIC_BYTES = 4096;
 // converted to a fallback protocol+surface and re-runs through the same
 // scheduler. The native triple filter still holds on each individual attempt
 // — a hedge twin is never cross-protocol.
-const ROUTE_PROTOCOL_SURFACE = Object.freeze({
-  openai_chat: { protocol: 'openai', surface: 'chat_completions' },
-  openai_responses: { protocol: 'openai', surface: 'responses' },
-  anthropic_messages: { protocol: 'anthropic', surface: 'messages' },
-});
+import { preflight as runPreflight, getRouteProtocolSurface } from './preflight.js';
 
 export async function handleRequest(request, env, ctx) {
   const logger = getLogger(env);
-  const requestId = crypto.randomUUID();
-  const requestUrl = new URL(request.url);
-  const pathname = normalizePath(requestUrl.pathname);
-  const route = detectRoute(request.method, pathname);
-  // Whole-request wall clock starts when the gateway receives the request. It
-  // bounds the total failover budget (see FAILOVER_BUDGET_MS) regardless of how
-  // many attempts / nodes / tiers are involved.
-  const requestStartMs = Date.now();
-  const failoverBudgetMs = getLimits(env).failoverBudgetMs;
-  const exposeUpstreamInfo = String(env?.EXPOSE_UPSTREAM_INFO ?? '').trim().toLowerCase() === 'true';
-
-  if (request.method === 'OPTIONS') {
-    return new Response(null, { status: 204, headers: corsHeaders(request, env) });
+  const pre = await runPreflight(request, env, ctx);
+  if (!pre.ok) {
+    return /** @type {Response} */ (/** @type {{ ok: false, response: Response }} */ (pre).response);
   }
-  if (request.method === 'GET' && pathname === '/' && acceptsHtml(request)) {
-    return dashboardResponse(request, env);
+  if (pre.authResult.group) {
+    logger.info('request authorized', { key_group: pre.authResult.group, request_id: pre.requestId });
   }
 
-  // ---- Authorization (grouped multi-key or legacy single key, fail closed) ----
-  // Misconfiguration is checked via loadAccessKeysConfig (the single source of
-  // truth for which key(s) exist): no configured key means nothing can be served.
-  const accessConfig = route !== 'version' ? loadAccessKeysConfig(env) : { keys: [], anyNewKey: false };
-  const hasAnyKey = accessConfig.keys.length > 0;
-  if (!hasAnyKey && route !== 'version') {
-    return gatewayError(request, env, route, 500,
-      'Gateway misconfigured: no GATEWAY_ACCESS_KEY_<GROUP> (or legacy GATEWAY_ACCESS_KEY) is set.', requestId);
-  }
-  const authResult = route !== 'version' ? await authorize(request, env) : { authorized: true, mode: 'skip', group: null };
-  if (route !== 'version' && !authResult.authorized) {
-    return gatewayError(request, env, route, 401, 'Unauthorized: gateway access key is invalid or missing.', requestId);
-  }
-  // Log only the low-cardinality, non-secret group. Never log the raw key,
-  // prefix, Authorization header, or any digest.
-  if (authResult.group) {
-    logger.info('request authorized', { key_group: authResult.group, request_id: requestId });
-  }
-
-  switch (route) {
-    case 'version': return versionResponse(request, env);
-    case 'health': return healthResponse(request, env, requestId);
-    case 'metrics': return metricsResponse(request, env, requestId);
-    case 'models': return modelsListResponse(request, env, requestId, authResult);
-    case 'openai_chat':
-    case 'anthropic_messages':
-    case 'anthropic_count_tokens':
-    case 'openai_responses':
-      break;
-    default:
-      return gatewayError(request, env, route, 404, 'Route not found.', requestId);
-  }
-
-  // ---- Request body ----
-  const limits = getLimits(env);
-  let bodyJson;
-  try {
-    const contentType = (request.headers.get('content-type') || '').toLowerCase();
-    if (!contentType.includes('application/json')) {
-      return gatewayError(request, env, route, 415, 'This endpoint requires Content-Type: application/json.', requestId);
-    }
-    const text = await readBodyTextWithLimit(request, limits.maxBodyBytes);
-    bodyJson = JSON.parse(text || '{}');
-  } catch (error) {
-    if (error instanceof BodyTooLargeError) {
-      return gatewayError(request, env, route, 413, error.message, requestId);
-    }
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    return gatewayError(request, env, route, 400, `Invalid JSON request body: ${errorMessage}`, requestId);
-  }
-
-  // ---- Local Anthropic count_tokens ----
-  if (route === 'anthropic_count_tokens') {
-    const mode = String(env?.ANTHROPIC_COUNT_TOKENS_MODE || 'approximate').toLowerCase();
-    if (!['approximate', 'disabled'].includes(mode)) {
-      return anthropicErrorResponse(request, env, 500, 'ANTHROPIC_COUNT_TOKENS_MODE must be approximate or disabled.', requestId);
-    }
-    if (mode === 'disabled') {
-      return anthropicErrorResponse(request, env, 404, 'Token counting is disabled on this gateway.', requestId);
-    }
-    const validationError = validateAnthropicCountTokensRequest(bodyJson);
-    if (validationError) return anthropicErrorResponse(request, env, 400, validationError, requestId);
-    return jsonResponse(200, { input_tokens: estimateAnthropicInputTokens(bodyJson) }, env, request, { 'x-request-id': requestId });
-  }
-
-  let validationError;
-  if (route === 'openai_responses') validationError = validateOpenAIResponsesRequest(bodyJson);
-  else if (route === 'anthropic_messages') validationError = validateAnthropicMessagesRequest(bodyJson);
-  else validationError = validateOpenAIChatRequest(bodyJson);
-  if (validationError) return gatewayError(request, env, route, 400, validationError, requestId);
-
-  const requestedModel = String(bodyJson.model || '');
-  const clientWantsStream = bodyJson.stream === true;
-  const fakeStream = route === 'openai_chat'
-    && String(env?.FAKE_STREAM_PROTECTION ?? '').trim().toLowerCase() === 'true'
-    && !clientWantsStream;
-
-  // ---- Model authorization (fail closed, BEFORE the scheduler) ----
-  // A key without permission for this model gets a stable 403, never a
-  // misleading "all nodes failed" or a 404 that enumerates internal topology.
-  // This must not leak whether an internal model exists: an allowlist-only key
-  // gets 403 for anything outside its allowlist, and 404 only when the model
-  // is allowlisted but not configured.
-  // `configuredModels` is the union of all node `models` keys — the single
-  // source of model existence (see config/access-keys.js). It is computed
-  // before the scheduler so authorization never depends on routing health.
-  const gatewayConfigForAuth = loadGatewayConfig(env);
-  const configuredModels = collectConfiguredModels(gatewayConfigForAuth.nodes);
-  const modelAuthz = authorizeModel(requestedModel, configuredModels, authResult);
-  if (!modelAuthz.allowed) {
-    return gatewayError(request, env, route, modelAuthz.status, modelAuthz.status === 403
-      ? 'Forbidden: the provided key is not permitted to use this model.'
-      : 'Model not found for this key.', requestId);
-  }
-
-  // ---- Candidate pool ----
-  const config = loadGatewayConfig(env);
-  // `ready` is the single serve/don't-serve gate: it is true only for the
-  // ready/degraded statuses. A structurally INVALID config (duplicate ids,
-  // conflicting shards) refuses service even if some nodes parsed — otherwise
-  // /health would say 503 while traffic kept flowing.
-  if (!config.ready) {
-    return gatewayError(request, env, route, 500,
-      'Gateway misconfigured: no usable node configuration. Check TIER*_NODES_CONFIG_* and TIER*_NODES_SECRETS_*.',
-      requestId,
-      { configuration_status: config.status, ...(exposeUpstreamInfo ? { diagnostics: config.diagnostics.slice(0, 5) } : {}) });
-  }
-  const tiers = config.tiers;
-  const reqDescriptor = { model: requestedModel, ...ROUTE_PROTOCOL_SURFACE[route] };
-  const supported = TIER_ORDER.some((t) => tiers[t].some((n) => supportsRequest(n, reqDescriptor)));
-  if (!supported) {
-    const fallbacks = getFallbackChain(route, env);
-    if (fallbacks.length === 0 || !fallbacks.some((fb) =>
-      TIER_ORDER.some((t) => tiers[t].some((n) => supportsRequest(n, { model: requestedModel, ...fb }))))) {
-      return gatewayError(request, env, route, 404,
-        `No configured node provides model "${requestedModel}" via protocol "${reqDescriptor.protocol}" surface "${reqDescriptor.surface}". Verify the models mapping.`, requestId);
-    }
-  }
-
-  const policy = getPolicy(requestedModel, loadModelsConfig(env), loadPoliciesConfig(env));
+  // Preflight validated auth, body, model authz, config readiness, and the
+  // (model, protocol, surface) candidate existence check. Unpack the
+  // carried request context; aliasing is just to keep the inner naming
+  // identical to the pre-refactor handler.
+  const {
+    request: req, env: envFromPre, ctx: ctxFromPre,
+    requestId, requestStartMs,
+    route, requestedModel, clientWantsStream, fakeStream, bodyJson,
+    limits, exposeUpstreamInfo, authResult, requestDescriptor: reqDescriptor,
+    config, tiers, policy, failoverBudgetMs,
+  } = pre;
+  void authResult;
+  // The request / env / ctx carried by preflight are the same as our
+  // parameters; keep the inner code referring to the originals.
+  void req; void envFromPre; void ctxFromPre;
 
   // Three SEPARATE counters, never one overloaded total:
   //   logicalAttempts — max_attempts budget; a primary + its optional hedge
