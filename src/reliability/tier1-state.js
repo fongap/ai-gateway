@@ -153,11 +153,13 @@ function modelBlocked(model, now) {
 }
 
 // Read-only eligibility filter. Missing runtime state means UNKNOWN, not bad.
-export function isTier1Eligible(node, req, now = Date.now()) {
+// `knownModels` (the Known Model Catalog) bounds wildcard nodes: an
+// empty-models node serves only catalog models, never an arbitrary string.
+export function isTier1Eligible(node, req, now = Date.now(), knownModels) {
   if (!node || node.tier !== 'tier-1') return false;
   if (node.protocol !== req.protocol) return false;
   if (!Array.isArray(node.surfaces) || !node.surfaces.includes(req.surface)) return false;
-  if (!servesModel(node, req.model)) return false;
+  if (!servesModel(node, req.model, knownModels)) return false;
   const account = accounts.get(node.id);
   if (!account) return true;
   if (account.accountDisabled || account.accountCooldownUntil > now) return false;
@@ -178,18 +180,18 @@ export function maybeTransitionToHalfOpen(accountId, modelId, now = Date.now()) 
   }
 }
 
-export function tier1CountDispatchableNodes(nodes, req, attempted, now = Date.now()) {
+export function tier1CountDispatchableNodes(nodes, req, attempted, now = Date.now(), knownModels) {
   let count = 0;
   for (const node of nodes ?? []) {
     if (attempted.has(node.id)) continue;
     maybeTransitionToHalfOpen(node.id, req.model, now);
-    if (isTier1Eligible(node, req, now)) count++;
+    if (isTier1Eligible(node, req, now, knownModels)) count++;
   }
   return count;
 }
 
-export function tier1HasDispatchableNode(nodes, req, attempted, now = Date.now()) {
-  return tier1CountDispatchableNodes(nodes, req, attempted, now) > 0;
+export function tier1HasDispatchableNode(nodes, req, attempted, now = Date.now(), knownModels) {
+  return tier1CountDispatchableNodes(nodes, req, attempted, now, knownModels) > 0;
 }
 
 function median(values) {
@@ -302,12 +304,23 @@ function exponential(base, max, count) {
   return Math.min(max, base * 2 ** Math.max(0, count - 1));
 }
 
+// Apply a light ±10% jitter to an automatically-computed cooldown. This
+// avoids different isolates re-probing the same failing upstream at the
+// exact same instant. Explicit Retry-After values are NOT jittered — only
+// auto-computed backoffs are.
+const JITTER_FACTOR = 0.1;
+function jitter(ms) {
+  if (ms <= 0) return ms;
+  const delta = ms * JITTER_FACTOR;
+  return Math.round(ms + (Math.random() * 2 - 1) * delta);
+}
+
 function modelCooldownMs(model, outcome) {
   if (outcome.cooldownMs > 0) return Math.min(outcome.cooldownMs, TIER1_COOLDOWN_MAX_MS);
-  if (outcome.backoff === 'rate_limit') return exponential(TIER1_429_BASE_MS, TIER1_429_MAX_MS, model.consecutiveRateLimits);
-  if (outcome.backoff === 'timeout') return exponential(TIER1_TIMEOUT_BASE_MS, TIER1_TIMEOUT_MAX_MS, model.consecutiveFailures);
-  if (outcome.backoff === 'server') return exponential(TIER1_5XX_BASE_MS, TIER1_5XX_MAX_MS, model.consecutiveFailures);
-  return exponential(TIER1_COOLDOWN_DEFAULT_MS, TIER1_COOLDOWN_MAX_MS, model.consecutiveFailures);
+  if (outcome.backoff === 'rate_limit') return jitter(exponential(TIER1_429_BASE_MS, TIER1_429_MAX_MS, model.consecutiveRateLimits));
+  if (outcome.backoff === 'timeout') return jitter(exponential(TIER1_TIMEOUT_BASE_MS, TIER1_TIMEOUT_MAX_MS, model.consecutiveFailures));
+  if (outcome.backoff === 'server') return jitter(exponential(TIER1_5XX_BASE_MS, TIER1_5XX_MAX_MS, model.consecutiveFailures));
+  return jitter(exponential(TIER1_COOLDOWN_DEFAULT_MS, TIER1_COOLDOWN_MAX_MS, model.consecutiveFailures));
 }
 
 export function applyTier1Outcome(accountId, modelId, outcome, now = Date.now()) {
@@ -410,10 +423,10 @@ export function tier1BlockingWaitMs(node, modelId, now = Date.now()) {
   return Infinity;
 }
 
-export function tier1HasDeferredCapacity(nodes, req, attempted, now = Date.now()) {
+export function tier1HasDeferredCapacity(nodes, req, attempted, now = Date.now(), knownModels) {
   for (const node of nodes ?? []) {
     if (attempted.has(node.id) || node.tier !== 'tier-1') continue;
-    if (node.protocol !== req.protocol || !node.surfaces?.includes(req.surface) || !servesModel(node, req.model)) continue;
+    if (node.protocol !== req.protocol || !node.surfaces?.includes(req.surface) || !servesModel(node, req.model, knownModels)) continue;
     const account = accounts.get(node.id);
     if (!account || account.accountDisabled || account.accountCooldownUntil > now) continue;
     const model = account.models.get(req.model);

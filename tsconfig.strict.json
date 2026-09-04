@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "noImplicitThis": true,
+    "noUncheckedIndexedAccess": false
+  },
+  "include": [
+    "src/types/domain.d.ts",
+    "src/scheduler/scheduler.js",
+    "src/scheduler/tier1-scheduler.js",
+    "src/scheduler/tier1-affinity.js",
+    "src/reliability/node-state.js",
+    "src/reliability/tier1-state.js",
+    "src/reliability/classify.js",
+    "src/ratelimit/key-rpm.js",
+    "src/observability/token-usage.mjs"
+  ]
+}

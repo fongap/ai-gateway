@@ -29,7 +29,7 @@
 
 import { readEnv } from './env.js';
 import { loadGatewayConfig } from './nodes.js';
-import { loadModelsConfig } from './models.js';
+import { collectKnownModels } from './registry.js';
 
 export const KEY_GROUPS = Object.freeze(['AIR', 'PRO', 'MAX', 'ULTRA', 'AGENT']);
 
@@ -58,42 +58,17 @@ function parseModelsField(raw, group, knownModels) {
   if (knownModels) {
     for (const m of out.allowlist) {
       if (!knownModels.has(m)) {
-        out.warnings.push(`GATEWAY_ACCESS_MODELS_${group} references model "${m}" which is not currently configured in any TIER*_NODES_CONFIG_*.models`);
+        out.warnings.push(`GATEWAY_ACCESS_MODELS_${group} references model "${m}" which is not in the Known Model Catalog (node models or MODELS_CONFIG)`);
       }
     }
   }
   return out;
 }
 
-// Build the list of currently-configured logical models from a node list.
-// Wildcard nodes (empty `models`) do NOT contribute names — wildcard is a
-// per-node service contract, not a model declaration.
-export function collectConfiguredModels(nodes) {
-  const set = new Set();
-  for (const n of nodes || []) {
-    for (const k of Object.keys(n?.models || {})) set.add(k);
-  }
-  return set;
-}
-
-// Build the closed catalog of all known logical models.
-// Includes both explicitly mapped models and models declared in MODELS_CONFIG.
-// This is the authoritative list of models that wildcard nodes can serve.
-export function collectKnownModels(nodes, env) {
-  const set = new Set();
-  // Explicit node mappings
-  for (const n of nodes || []) {
-    for (const k of Object.keys(n?.models || {})) set.add(k);
-  }
-  // Models declared in MODELS_CONFIG (even if no node serves them yet)
-  if (env) {
-    try {
-      const models = loadModelsConfig(env);
-      for (const name of Object.keys(models)) set.add(name);
-    } catch { /* MODELS_CONFIG not loadable */ }
-  }
-  return set;
-}
+// collectKnownModels and collectConfiguredModels are defined in registry.js
+// (the model-catalog module). They are re-exported here for backward
+// compatibility with callers that imported them from this module.
+export { collectKnownModels, collectConfiguredModels } from './registry.js';
 
 let cachedEnv;
 let cachedConfig;
@@ -119,7 +94,10 @@ function analyzeAccessKeys(env) {
   } catch {
     nodes = []; // config not yet loadable; cross-check skipped (warnings empty)
   }
-  const knownModels = collectConfiguredModels(nodes);
+  // The Known Model Catalog (node models keys union MODELS_CONFIG) is the
+  // single source for the cross-check. A model in the allowlist but not in
+  // the catalog emits a warning (the operator may add it later).
+  const knownModels = collectKnownModels(nodes, env);
 
   // Detect whether any new-style GATEWAY_ACCESS_KEY_<GROUP> is configured.
   // This decides whether the legacy GATEWAY_ACCESS_KEY is consulted.

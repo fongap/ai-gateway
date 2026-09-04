@@ -146,7 +146,7 @@ test('diagnostics: allowlist referencing unknown model emits warning', () => {
     GATEWAY_ACCESS_MODELS_PRO: 'ghost',
   };
   const { diagnostics } = loadAccessKeysConfig(env);
-  assert.ok(diagnostics.some((d) => d.includes('ghost') && d.includes('not currently configured')), `unexpected diagnostics: ${diagnostics}`);
+  assert.ok(diagnostics.some((d) => d.includes('ghost') && d.includes('not in the Known Model Catalog')), `unexpected diagnostics: ${diagnostics}`);
 });
 
 // --- 9. Legacy disabled when any new group configured ---

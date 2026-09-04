@@ -6,10 +6,10 @@
 
 | 来源 | 用途 | 示例 |
 |---|---|---|
-| `TIER{1,2,3}_NODES_CONFIG_01..10` | 各层节点池 | JSON 数组 |
+| `TIER{1,2,3}_NODES_CONFIG_01..99` | 各层节点池 | JSON 数组 |
 | `MODELS_CONFIG` | 模型注册表覆盖 | JSON 对象 |
 | `POLICIES_CONFIG` | Attempt budgets 和 tier 策略 | JSON 对象 |
-| `NODE_SECRETS_01..20` | 节点凭据 | `{ "node-id": "credential" }` |
+| `TIER{1,2,3}_NODES_SECRETS_01..99` | 节点凭据（tier-scoped，与 config shard 一一对应） | `{ "node-id": "credential" }` |
 | `GATEWAY_ACCESS_KEY` | 网关访问密钥 | Bearer token |
 | 运行时参数 | 超时、冷却等 | 见下方表格 |
 
@@ -20,7 +20,7 @@ GitHub Deployment Variables 持有非敏感配置；GitHub Secrets 持有凭据�
 | 配置项 | 必需 | 内容 |
 |---|---|---|
 | `GATEWAY_ACCESS_KEY` | 是 | 客户端访问网关的密钥 |
-| `NODE_SECRETS_01..99` | 是 | JSON 对象 `{ "node-id": "credential" }`，按 entry 边界分片 |
+| `TIER{1,2,3}_NODES_SECRETS_01..99` | 至少一个 | JSON 对象 `{ "node-id": "credential" }`，按 entry 边界分片。Secret 的 tier 前缀必须与所配对的 `TIER{1,2,3}_NODES_CONFIG_*` 一致——把 TIER1 凭据放 TIER2 Secret 是配置错误，operator 会在启动时看到诊断信息 |
 
 节点按 `id` 查找 credential。缺少 credential 的节点被排除调度；没有节点的 credential 在 `/health` 诊断中报告。
 
@@ -84,6 +84,7 @@ Anthropic 原生节点：
 | `FAILOVER_BUDGET_MS` | 60000 | 1s–900s | 整请求 failover budget |
 | `HEDGE_DELAY_MS` | 3000 | 0s–600s | Reactive hedge delay；`0` 禁用 |
 | `MAX_HEDGES_PER_REQUEST` | 1 | 0–3 | 每请求最大 hedge twin 数 |
+| `GATEWAY_KEY_RPM` | 0 | 0–100000 | 单 isolate 内每个 access key 的 60s 滑动窗口请求上限；`0` 禁用。需要跨 isolate 严格上限时使用 `QUOTA_RATE_LIMITER` binding |
 | `ALLOWED_ORIGIN` | *(unset)* | origin 或 `*` | CORS 默认关闭 |
 | `EXPOSE_UPSTREAM_INFO` | false | | 暴露上游节点/provider/tier |
 | `FAKE_STREAM_PROTECTION` | false | | 非流式请求转流式上游 + 重组 |

@@ -25,6 +25,12 @@ export const RUNTIME_TUNABLES = [
   { name: 'FAILOVER_BUDGET_MS', type: 'int', min: 1_000, max: 900_000, def: 60_000 },
   { name: 'HEDGE_DELAY_MS', type: 'int', min: 0, max: 600_000, def: 3_000 },
   { name: 'MAX_HEDGES_PER_REQUEST', type: 'int', min: 0, max: 3, def: 1 },
+  // Per-isolate, per-key RPM cap. Counts request-START moments in a
+  // 60s sliding window. The cap is best-effort (single-isolate); for a
+  // strict global cap across isolates, bind a Cloudflare Rate Limiting
+  // worker binding (this is the existing model, see QUOTA_RATE_LIMITER).
+  // 0 disables the cap entirely (default for backward compatibility).
+  { name: 'GATEWAY_KEY_RPM', type: 'int', min: 0, max: 100_000, def: 0 },
 ];
 
 export const RUNTIME_STRING_VARS = [

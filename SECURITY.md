@@ -20,7 +20,7 @@ If private advisories are unavailable, open a public Issue containing only a req
 
 ## Deployment responsibilities
 
-- Store `GATEWAY_ACCESS_KEY` and all `NODE_SECRETS_*` shards as Cloudflare Secrets; node configs (`TIERx_NODES_CONFIG_*`) are plain variables and must never contain credential material;
+- Store `GATEWAY_ACCESS_KEY` and all `TIER{1,2,3}_NODES_SECRETS_*` shards as Cloudflare Secrets (tier-scoped, paired 1:1 with the matching `TIERx_NODES_CONFIG_*` shard); node configs (`TIERx_NODES_CONFIG_*`) are plain variables and must never contain credential material;
 - never commit `.dev.vars`, `.env`, `secrets*.json`, or `wrangler.user.jsonc`;
 - never pass credentials through URL query parameters;
 - keep `/health` and `/metrics` protected;

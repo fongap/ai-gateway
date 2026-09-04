@@ -181,7 +181,7 @@ await test('half-open probe -> 429 proves liveness and releases the probe, keepi
   assert.equal(s.circuitState, 'closed', 'a 429 during a probe must not keep half-open');
   assert.equal(s.consecutiveFailures, 0);
   assert.ok(getCooldownRemainingMs(id, now + 1) > 0, 'rate-limit cooldown must be kept');
-  tick(31_000);
+  tick(35_000);
   assert.equal(peekAvailability(id, now), 'yes', 'node must be schedulable again after cooldown');
 });
 

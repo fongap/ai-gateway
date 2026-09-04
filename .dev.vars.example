@@ -13,13 +13,18 @@ TIER1_NODES_CONFIG_01='[
   {"id":"glm-01","provider":"zhipu","protocol":"openai","surfaces":["chat_completions"],"base_url":"https://open.bigmodel.cn/api/paas/v4","priority":20,"models":{"code-max":"glm-4.7"},"limits":{"concurrency":2}}
 ]'
 # Tier 1 uses Eligibility → Affinity → P2C (priority is ignored); Tier 2/3 use priority + LRU.
-# NODE_SECRETS_01='{"nvidia-01":"nvapi-xxx","nvidia-02":"nvapi-yyy","glm-01":"zzz.id"}'
+# TIER1_NODES_SECRETS_01='{"nvidia-01":"nvapi-xxx","nvidia-02":"nvapi-yyy","glm-01":"zzz.id"}'
 # TIER2_NODES_CONFIG_01='[{"id":"fallback-01","base_url":"https://fallback.example.com/v1","models":{"general-air":"fa"}}]'
 # TIER3_NODES_CONFIG_01='[{"id":"last-resort-01","base_url":"https://last.example.com/v1","models":{}}]'
 
 # ============ Credentials live ONLY here (Secrets) ============
-# NODE_SECRETS_01='{"nvidia-01":"nvapi-xxx","openrouter-01":"sk-or-xxx"}'
-# More shards: NODE_SECRETS_02, NODE_SECRETS_03, ...
+# Secrets are tier-scoped and pair 1:1 with the matching TIER*_NODES_CONFIG_*
+# shard. A TIER1 credential under a TIER2 secret is a config error (operator
+# surfaces it at boot via /health).
+# TIER1_NODES_SECRETS_01='{"nvidia-01":"nvapi-xxx","openrouter-01":"sk-or-xxx"}'
+# TIER2_NODES_SECRETS_01='{"fallback-01":"sk-fb"}'
+# TIER3_NODES_SECRETS_01='{"last-resort-01":"sk-lr"}'
+# More shards: TIER1_NODES_SECRETS_02, TIER1_NODES_SECRETS_03, ... (01..99)
 
 # ============ Optional policy / model config ============
 # MODELS_CONFIG='{"general-air":{"policy":"fast"}}'
@@ -40,6 +45,7 @@ TIER1_NODES_CONFIG_01='[
 # FAILOVER_BUDGET_MS="60000"              # default: 60000 (60 s)
 # HEDGE_DELAY_MS="3000"                   # default: 3000 (3 s)
 # MAX_HEDGES_PER_REQUEST="1"              # default: 1
+# GATEWAY_KEY_RPM="600"                   # default: 0 (disabled) — per-isolate per-key RPM cap on the gateway access key
 # LOG_LEVEL="info"                        # default: info
 # EXPOSE_UPSTREAM_INFO="false"            # default: false
 # FAKE_STREAM_PROTECTION="false"          # default: false
