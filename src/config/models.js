@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // MODELS_CONFIG: logical model -> { policy, capabilities?, reasoning_efforts? }.
@@ -45,7 +46,8 @@ function analyzeModels(env) {
     try {
       parsed = JSON.parse(raw);
     } catch (e) {
-      errors.push(`MODELS_CONFIG invalid JSON (${e.message}); fields ignored`);
+      const msg = e instanceof Error ? e.message : String(e);
+      errors.push(`MODELS_CONFIG invalid JSON (${msg}); fields ignored`);
       cached = { models, errors };
       return cached;
     }

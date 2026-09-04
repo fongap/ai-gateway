@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // Main request pipeline.
@@ -168,7 +169,8 @@ export async function handleRequest(request, env, ctx) {
     if (error instanceof BodyTooLargeError) {
       return gatewayError(request, env, route, 413, error.message, requestId);
     }
-    return gatewayError(request, env, route, 400, `Invalid JSON request body: ${error.message}`, requestId);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    return gatewayError(request, env, route, 400, `Invalid JSON request body: ${errorMessage}`, requestId);
   }
 
   // ---- Local Anthropic count_tokens ----
@@ -881,7 +883,8 @@ async function dispatchAttempt(c) {
     }
     const classification = classifyNetworkError(headersTimeoutHit);
     recordOutcome(state, node, classification, c, { latencyMs });
-    logger.debug(`upstream fetch failed on ${node.id}: ${error?.message || error}`);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    logger.debug(`upstream fetch failed on ${node.id}: ${errorMessage}`);
     // The classification kind MUST travel with the rotate outcome: hedge
     // logging reads it from the settled outcome, and dropping it here used to
     // surface as primary_kind=unknown / twin_kind=unknown even though the
@@ -968,7 +971,7 @@ async function handleSuccess(s) {
       guarded = await ensureFirstSseEvent(upstream, firstEventTimeout, request.signal, isRealOutput);
     } catch (e) {
       detach();
-      const code = e?.code || GUARD_ERROR.EMPTY;
+      const code = (e && typeof e === 'object' && 'code' in e) ? String(e.code) : GUARD_ERROR.EMPTY;
       if (request.signal?.aborted) {
         recordOutcome(state, node, classifyClientAbort(), c, {
           latencyMs: Date.now() - c.attemptStartMs,
@@ -1149,12 +1152,13 @@ async function handleSuccess(s) {
       recordNodeSuccess(c, node, latencyMs);
       return { response: synthesizeResponsesFromObject(data, requestedModel, { ...extraHeaders, ...corsHeaders(request, env) }) };
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
       if (request.signal?.aborted) {
         recordOutcome(state, node, classifyClientAbort(), c, { latencyMs: elapsedSinceStart(), status: upstream.status });
         return { response: gatewayError(request, env, route, 499, 'Client closed the request during assembly.', requestId) };
       }
       const classification = classifyFirstEventFailure();
-      recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: error.message });
+      recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: errorMessage });
       return { rotate: true, kind: classification.kind };
     }
   }
@@ -1175,12 +1179,13 @@ async function handleSuccess(s) {
         data.model = requestedModel;
         return { response: jsonResponse(200, data, env, request, extraHeaders) };
       } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
         if (request.signal?.aborted) {
           recordOutcome(state, node, classifyClientAbort(), c, { latencyMs: elapsedSinceStart(), status: upstream.status });
           return { response: gatewayError(request, env, route, 499, 'Client closed the request during assembly.', requestId) };
         }
         const classification = classifyFirstEventFailure();
-        recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: error.message });
+        recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: errorMessage });
         return { rotate: true, kind: classification.kind };
       }
     }
@@ -1277,12 +1282,13 @@ async function handleSuccess(s) {
       }
       return { response: jsonResponse(200, converted, env, request, extraHeaders) };
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
       if (request.signal?.aborted) {
         recordOutcome(state, node, classifyClientAbort(), c, { latencyMs: elapsedSinceStart(), status: upstream.status });
         return { response: gatewayError(request, env, route, 499, 'Client closed the request during assembly.', requestId) };
       }
       const classification = classifyFirstEventFailure();
-      recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: error.message });
+      recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: errorMessage });
       return { rotate: true, kind: classification.kind };
     }
   }
@@ -1325,12 +1331,13 @@ async function handleSuccess(s) {
     if (data && typeof data === 'object') data.model = requestedModel;
     return { response: jsonResponse(200, data, env, request, extraHeaders) };
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
     if (request.signal?.aborted) {
       recordOutcome(state, node, classifyClientAbort(), c, { latencyMs, status: upstream.status });
       return { response: gatewayError(request, env, route, 499, 'Client closed the request during assembly.', requestId) };
     }
     const classification = classifyFirstEventFailure();
-    recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: error.message });
+    recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: errorMessage });
     return { rotate: true, kind: classification.kind };
   }
 }
@@ -1492,6 +1499,13 @@ function noteFailure(state, kind) {
 //   * dispatches counts every real upstream dispatch (never a pre-dispatch deny);
 //   * logicalAttempts counts the logical attempt the dispatch belongs to — a
 //     hedge twin belongs to its primary's attempt and does not increment it.
+/**
+ * @param {Record<string, any>} state
+ * @param {Record<string, any>} node
+ * @param {Record<string, any>} classification
+ * @param {Record<string, any>} c
+ * @param {{latencyMs?: number, ttftWaitMs?: number, status?: number, diagnostic?: string}} [opts]
+ */
 function recordOutcome(state, node, classification, c, { latencyMs = -1, ttftWaitMs, status = 0, diagnostic } = {}) {
   state.attempted.add(node.id);
   state.dispatches++;

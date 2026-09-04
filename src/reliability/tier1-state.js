@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // Isolate-local adaptive state for Tier 1 only. Performance is learned from
@@ -267,7 +268,9 @@ export function recordTier1Ttft(accountId, modelId, observedMs, now = Date.now()
   return true;
 }
 
-export function classifyTier1Failure(classification, { retryAfterMs } = {}) {
+/** @param {{ retryAfterMs?: number }} opts */
+export function classifyTier1Failure(classification, opts = {}) {
+  const { retryAfterMs } = opts;
   const kind = classification?.kind;
   if (kind === 'auth') return { scope: 'account', action: 'disable', reason: kind };
   if (kind === 'model_missing') return { scope: 'model', action: 'disable', reason: kind };
@@ -424,7 +427,9 @@ export function tier1HasDeferredCapacity(nodes, req, attempted, now = Date.now()
 }
 
 // Only explicit, comparable provider data may call this interface.
-export function recordTier1QuotaSignal(accountId, { remainingRatio, resetAtMs = 0 } = {}, now = Date.now()) {
+/** @param {{ remainingRatio?: number, resetAtMs?: number }} signal */
+export function recordTier1QuotaSignal(accountId, signal = {}, now = Date.now()) {
+  const { remainingRatio, resetAtMs = 0 } = signal;
   if (!Number.isFinite(remainingRatio) || remainingRatio < 0 || remainingRatio > 1) return false;
   const account = getTier1Account(accountId);
   if (remainingRatio === 0 && resetAtMs > now) {
