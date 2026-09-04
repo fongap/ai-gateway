@@ -20,8 +20,8 @@ CI 必须在 `main` 和 Pull Request 上通过。
 - `npm run check:deployment-config` — 部署配置验证
 
 ### 测试
-- `npm run test:unit` — 运行全部 14 个单元测试套件（CI 必需）
-- `npm run test:all` — 运行全部 19 个测试套件（包含集成、压力和契约测试）
+- `npm run test:unit` — 运行全部单元测试套件（CI 必需）
+- `npm run test:all` — 运行全部测试套件（包含集成、压力和契约测试）
 - 包含：配置、调度、可靠性、流处理、Token 使用、协议矩阵、集成、压力测试、契约测试、文档契约测试
 
 ### 安全
