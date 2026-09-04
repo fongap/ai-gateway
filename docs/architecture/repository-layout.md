@@ -9,7 +9,7 @@ src/                          Worker 代码：所有运行时逻辑
 ├─ reliability/               可靠性：节点状态、熔断、错误分类
 ├─ transport/                 协议传输：上游路径、协议头、流式判定
 ├─ protocol/                  协议校验：CORS、OpenAI/Anthropic 请求校验、Responses 模块
-├─ conversion/                协议转换：Anthropic↔OpenAI 双向转换（由 PROTOCOL_FALLBACKS 机制使用）
+├─ conversion/                协议转换：仅用于显式协议 fallback 所需的兼容转换（当前只支持 Anthropic Messages → OpenAI Chat 单向；OpenAI Chat 不 fallback 到 Anthropic；OpenAI Responses 不转换 Chat；不存在通用双向 conversion）
 ├─ stream/                    流处理：First-Event Guard、SSE 扫描、流追踪与改写
 ├─ request/                   请求处理：鉴权、路由、错误构建、编排
 ├─ observability/             可观测性：日志、指标、D1 聚合、诊断端点
@@ -21,6 +21,10 @@ scripts/                      工具脚本：部署、测试、配置检查、CI
 ├─ *-test.mjs                 测试套件
 ├─ provider-discovery/        Provider Discovery v1.1：catalog schema、normalize、report、samples（只读观察，不进入 Runtime 热路径）
 └─ *.sh / *.ps1               跨平台部署脚本
+
+tests/                        测试入口：unit runner + 文档
+├─ run-unit.mjs               单元测试 runner（加载 scripts/*-test.mjs）
+└─ README.md                  测试布局说明
 
 config/                       示例配置文件（*.example.json）
 benchmark/                    性能基准测试
@@ -39,7 +43,7 @@ docs/                         文档体系
 
 ## 目录规则
 
-- `src/` 只包含运行时代码；测试在 `scripts/` 中，配置示例在 `config/` 中
+- `src/` 只包含运行时代码；测试入口在 `tests/` 中，测试文件在 `scripts/` 中，配置示例在 `config/` 中
 - `docs/` 只包含长期文档；临时状态不入文档
 - `scripts/` 中的测试文件以 `-test.mjs` 结尾，工具文件不以 `-test.mjs` 结尾
 - 新增顶层目录需满足：有明确的长期职责，且不与现有目录职责重叠

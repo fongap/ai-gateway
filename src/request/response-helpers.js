@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // Pure response and stream helpers for the request pipeline.

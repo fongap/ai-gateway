@@ -81,6 +81,63 @@ PR 必须说明：目标、改动点、验证结果、破坏性变更、安全�
   ```
 - **不得混入结构重构**。
 
+### 行为等价原则（行为等价重构）
+
+所有结构性改动必须遵循 Strict Behavior-Preserving Refactor：
+- 不改变外部 API 行为
+- 不改变状态码
+- 不改变错误 envelope
+- 不改变 header 语义
+- 不改变 stream / non-stream 行为
+- 不改变 fallback 顺序
+- 不改变 hedge 行为
+- 不改变 failover budget
+- 不改变 timeout 语义
+- 不改变 cooldown / half-open / circuit 行为
+- 不改变 Tier 1 P2C 行为
+- 不改变 Tier 2/3 调度语义
+- 不改变 Key Scope
+- 不改变模型可见性语义
+- 不改变 D1 retention 语义
+
+如果发现业务 Bug：记录问题，单独开 Issue 或单独 PR。不得借结构重构顺手修复。
+
+### 测试优先于类型，类型辅助重构
+
+本轮统一采用以下防护顺序：
+```text
+行为测试
+    ↓
+类型约束
+    ↓
+结构重构
+```
+
+类型系统不是行为正确性的替代品。checkJs + JSDoc 可以捕获参数遗漏、字段拼写错误、返回值不完整、跨模块契约漂移、null/undefined 使用错误，但它不能证明 P2C 行为不变、hedge 时机不变、failover budget 不变、first-event commit point 不变、Retry-After 语义不变、stream 生命周期不变。
+
+因此：每个核心重构 PR 都必须同时有行为回归测试。
+
+### 不做全量重写
+
+禁止：
+- 整个仓库 .js → .ts
+- 重构 + TypeScript + 业务修复 一次完成
+TypeScript 只采用渐进式迁移。
+
+### Runtime 依赖策略
+
+继续保持：Runtime zero-dependency / minimal-dependency。
+不得为了重构引入：Express、Hono、Axios、Lodash、Zod、Jest、Vitest 或其他非必要 Runtime framework。
+Cloudflare Worker Runtime 优先使用：Web Standard API、Node built-in、当前已有轻量实现。
+TypeScript 可作为 devDependency，但不得进入 Worker runtime 依赖链。
+
+### 性能约束
+
+不要使用“绝对零 allocation”作为形式主义 KPI。
+正确约束是：不得引入可测量的、无必要的请求热路径性能回退。
+重点禁止：重复 JSON parse、重复 JSON stringify、重复 Registry 构建、重复 env shard parse、重复 config load、无必要 deep clone、无必要 structuredClone、无必要 Object.freeze / deepFreeze、重复 D1 query。
+为模块化增加明显的中间 buffer 或为类型安全增加 runtime 转换如确有少量新 Context Object / Result Object，只要：逻辑清晰、不产生明显热点、不造成可测量性能回退，可以接受。
+
 ## 明确模块职责
 
 长期边界：

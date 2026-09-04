@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // Route detection for the gateway surface. Only the allowlisted paths below are

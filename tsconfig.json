@@ -1,0 +1,32 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true,
+    "strict": true,
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": [],
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "noImplicitAny": false,
+    "noImplicitThis": false,
+    "strictNullChecks": false
+  },
+  "include": [
+    "src/types/domain.d.ts",
+    "src/config/**/*.js",
+    "src/config/**/*.mjs",
+    "src/scheduler/**/*.js",
+    "src/reliability/**/*.js",
+    "src/request/**/*.js"
+  ],
+  "exclude": [
+    "node_modules",
+    "test",
+    "scripts"
+  ]
+}

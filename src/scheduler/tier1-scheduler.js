@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // Tier 1 selection — Eligibility -> Affinity -> P2C -> Score.

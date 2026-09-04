@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // Main request pipeline.
@@ -95,151 +96,35 @@ const DIAGNOSTIC_BYTES = 4096;
 // converted to a fallback protocol+surface and re-runs through the same
 // scheduler. The native triple filter still holds on each individual attempt
 // — a hedge twin is never cross-protocol.
-const ROUTE_PROTOCOL_SURFACE = Object.freeze({
-  openai_chat: { protocol: 'openai', surface: 'chat_completions' },
-  openai_responses: { protocol: 'openai', surface: 'responses' },
-  anthropic_messages: { protocol: 'anthropic', surface: 'messages' },
-});
+import { preflight as runPreflight, getRouteProtocolSurface } from './preflight.js';
+import { pickForTier, makeTier1Rng, computeTierCaps, countRemainingDispatchableAttempts } from './tier-loop.js';
+import { runFallbackChain } from './fallback.js';
 
 export async function handleRequest(request, env, ctx) {
   const logger = getLogger(env);
-  const requestId = crypto.randomUUID();
-  const requestUrl = new URL(request.url);
-  const pathname = normalizePath(requestUrl.pathname);
-  const route = detectRoute(request.method, pathname);
-  // Whole-request wall clock starts when the gateway receives the request. It
-  // bounds the total failover budget (see FAILOVER_BUDGET_MS) regardless of how
-  // many attempts / nodes / tiers are involved.
-  const requestStartMs = Date.now();
-  const failoverBudgetMs = getLimits(env).failoverBudgetMs;
-  const exposeUpstreamInfo = String(env?.EXPOSE_UPSTREAM_INFO ?? '').trim().toLowerCase() === 'true';
-
-  if (request.method === 'OPTIONS') {
-    return new Response(null, { status: 204, headers: corsHeaders(request, env) });
+  const pre = await runPreflight(request, env, ctx);
+  if (!pre.ok) {
+    return /** @type {Response} */ (/** @type {{ ok: false, response: Response }} */ (pre).response);
   }
-  if (request.method === 'GET' && pathname === '/' && acceptsHtml(request)) {
-    return dashboardResponse(request, env);
+  if (pre.authResult.group) {
+    logger.info('request authorized', { key_group: pre.authResult.group, request_id: pre.requestId });
   }
 
-  // ---- Authorization (grouped multi-key or legacy single key, fail closed) ----
-  // Misconfiguration is checked via loadAccessKeysConfig (the single source of
-  // truth for which key(s) exist): no configured key means nothing can be served.
-  const accessConfig = route !== 'version' ? loadAccessKeysConfig(env) : { keys: [], anyNewKey: false };
-  const hasAnyKey = accessConfig.keys.length > 0;
-  if (!hasAnyKey && route !== 'version') {
-    return gatewayError(request, env, route, 500,
-      'Gateway misconfigured: no GATEWAY_ACCESS_KEY_<GROUP> (or legacy GATEWAY_ACCESS_KEY) is set.', requestId);
-  }
-  const authResult = route !== 'version' ? await authorize(request, env) : { authorized: true, mode: 'skip', group: null };
-  if (route !== 'version' && !authResult.authorized) {
-    return gatewayError(request, env, route, 401, 'Unauthorized: gateway access key is invalid or missing.', requestId);
-  }
-  // Log only the low-cardinality, non-secret group. Never log the raw key,
-  // prefix, Authorization header, or any digest.
-  if (authResult.group) {
-    logger.info('request authorized', { key_group: authResult.group, request_id: requestId });
-  }
-
-  switch (route) {
-    case 'version': return versionResponse(request, env);
-    case 'health': return healthResponse(request, env, requestId);
-    case 'metrics': return metricsResponse(request, env, requestId);
-    case 'models': return modelsListResponse(request, env, requestId, authResult);
-    case 'openai_chat':
-    case 'anthropic_messages':
-    case 'anthropic_count_tokens':
-    case 'openai_responses':
-      break;
-    default:
-      return gatewayError(request, env, route, 404, 'Route not found.', requestId);
-  }
-
-  // ---- Request body ----
-  const limits = getLimits(env);
-  let bodyJson;
-  try {
-    const contentType = (request.headers.get('content-type') || '').toLowerCase();
-    if (!contentType.includes('application/json')) {
-      return gatewayError(request, env, route, 415, 'This endpoint requires Content-Type: application/json.', requestId);
-    }
-    const text = await readBodyTextWithLimit(request, limits.maxBodyBytes);
-    bodyJson = JSON.parse(text || '{}');
-  } catch (error) {
-    if (error instanceof BodyTooLargeError) {
-      return gatewayError(request, env, route, 413, error.message, requestId);
-    }
-    return gatewayError(request, env, route, 400, `Invalid JSON request body: ${error.message}`, requestId);
-  }
-
-  // ---- Local Anthropic count_tokens ----
-  if (route === 'anthropic_count_tokens') {
-    const mode = String(env?.ANTHROPIC_COUNT_TOKENS_MODE || 'approximate').toLowerCase();
-    if (!['approximate', 'disabled'].includes(mode)) {
-      return anthropicErrorResponse(request, env, 500, 'ANTHROPIC_COUNT_TOKENS_MODE must be approximate or disabled.', requestId);
-    }
-    if (mode === 'disabled') {
-      return anthropicErrorResponse(request, env, 404, 'Token counting is disabled on this gateway.', requestId);
-    }
-    const validationError = validateAnthropicCountTokensRequest(bodyJson);
-    if (validationError) return anthropicErrorResponse(request, env, 400, validationError, requestId);
-    return jsonResponse(200, { input_tokens: estimateAnthropicInputTokens(bodyJson) }, env, request, { 'x-request-id': requestId });
-  }
-
-  let validationError;
-  if (route === 'openai_responses') validationError = validateOpenAIResponsesRequest(bodyJson);
-  else if (route === 'anthropic_messages') validationError = validateAnthropicMessagesRequest(bodyJson);
-  else validationError = validateOpenAIChatRequest(bodyJson);
-  if (validationError) return gatewayError(request, env, route, 400, validationError, requestId);
-
-  const requestedModel = String(bodyJson.model || '');
-  const clientWantsStream = bodyJson.stream === true;
-  const fakeStream = route === 'openai_chat'
-    && String(env?.FAKE_STREAM_PROTECTION ?? '').trim().toLowerCase() === 'true'
-    && !clientWantsStream;
-
-  // ---- Model authorization (fail closed, BEFORE the scheduler) ----
-  // A key without permission for this model gets a stable 403, never a
-  // misleading "all nodes failed" or a 404 that enumerates internal topology.
-  // This must not leak whether an internal model exists: an allowlist-only key
-  // gets 403 for anything outside its allowlist, and 404 only when the model
-  // is allowlisted but not configured.
-  // `configuredModels` is the union of all node `models` keys — the single
-  // source of model existence (see config/access-keys.js). It is computed
-  // before the scheduler so authorization never depends on routing health.
-  const gatewayConfigForAuth = loadGatewayConfig(env);
-  const configuredModels = collectConfiguredModels(gatewayConfigForAuth.nodes);
-  const modelAuthz = authorizeModel(requestedModel, configuredModels, authResult);
-  if (!modelAuthz.allowed) {
-    return gatewayError(request, env, route, modelAuthz.status, modelAuthz.status === 403
-      ? 'Forbidden: the provided key is not permitted to use this model.'
-      : 'Model not found for this key.', requestId);
-  }
-
-  // ---- Candidate pool ----
-  const config = loadGatewayConfig(env);
-  // `ready` is the single serve/don't-serve gate: it is true only for the
-  // ready/degraded statuses. A structurally INVALID config (duplicate ids,
-  // conflicting shards) refuses service even if some nodes parsed — otherwise
-  // /health would say 503 while traffic kept flowing.
-  if (!config.ready) {
-    return gatewayError(request, env, route, 500,
-      'Gateway misconfigured: no usable node configuration. Check TIER*_NODES_CONFIG_* and TIER*_NODES_SECRETS_*.',
-      requestId,
-      { configuration_status: config.status, ...(exposeUpstreamInfo ? { diagnostics: config.diagnostics.slice(0, 5) } : {}) });
-  }
-  const tiers = config.tiers;
-  const reqDescriptor = { model: requestedModel, ...ROUTE_PROTOCOL_SURFACE[route] };
-  const supported = TIER_ORDER.some((t) => tiers[t].some((n) => supportsRequest(n, reqDescriptor)));
-  if (!supported) {
-    const fallbacks = getFallbackChain(route, env);
-    if (fallbacks.length === 0 || !fallbacks.some((fb) =>
-      TIER_ORDER.some((t) => tiers[t].some((n) => supportsRequest(n, { model: requestedModel, ...fb }))))) {
-      return gatewayError(request, env, route, 404,
-        `No configured node provides model "${requestedModel}" via protocol "${reqDescriptor.protocol}" surface "${reqDescriptor.surface}". Verify the models mapping.`, requestId);
-    }
-  }
-
-  const policy = getPolicy(requestedModel, loadModelsConfig(env), loadPoliciesConfig(env));
+  // Preflight validated auth, body, model authz, config readiness, and the
+  // (model, protocol, surface) candidate existence check. Unpack the
+  // carried request context; aliasing is just to keep the inner naming
+  // identical to the pre-refactor handler.
+  const {
+    request: req, env: envFromPre, ctx: ctxFromPre,
+    requestId, requestStartMs,
+    route, requestedModel, clientWantsStream, fakeStream, bodyJson,
+    limits, exposeUpstreamInfo, authResult, requestDescriptor: reqDescriptor,
+    config, tiers, policy, failoverBudgetMs,
+  } = pre;
+  void authResult;
+  // The request / env / ctx carried by preflight are the same as our
+  // parameters; keep the inner code referring to the originals.
+  void req; void envFromPre; void ctxFromPre;
 
   // Three SEPARATE counters, never one overloaded total:
   //   logicalAttempts — max_attempts budget; a primary + its optional hedge
@@ -281,40 +166,13 @@ export async function handleRequest(request, env, ctx) {
   // SAME state (logicalAttempts, dispatches, hedges, failoverBudget,
   // requestStartMs) — no fresh budget. Hedge does not cross protocols (the
   // scheduler's protocol+surface filter already excludes foreign nodes).
-  const fallbacks = getFallbackChain(route, env);
-  for (const fb of fallbacks) {
-    if (state.logicalAttempts >= policy.maxAttempts) break;
-    const remainingBudgetMs = failoverBudgetMs - (Date.now() - requestStartMs);
-    if (remainingBudgetMs <= 0) {
-      return buildBudgetExhaustedResponse(request, env, route, requestId, requestedModel, state, exposeUpstreamInfo);
-    }
-    const fbReqDescriptor = { model: requestedModel, protocol: fb.protocol, surface: fb.surface };
-    const fbSupported = TIER_ORDER.some((t) =>
-      tiers[t].some((n) => supportsRequest(n, fbReqDescriptor)));
-    if (!fbSupported) continue;
-    let convertedBody;
-    try {
-      if (route === 'anthropic_messages' && fb.protocol === 'openai' && fb.surface === 'chat_completions') {
-        convertedBody = convertAnthropicToOpenAIRequest(bodyJson);
-      } else {
-        continue;
-      }
-    } catch (e) {
-      if (e instanceof ConversionError) {
-        return anthropicErrorResponse(request, env, 400, e.code, requestId);
-      }
-      throw e;
-    }
-    const fbTierCaps = computeTierCaps(tiers, fbReqDescriptor, state.attempted, policy);
-    const conversionContext = {
-      convertedBody,
-      fallbackProtocol: fb.protocol,
-      fallbackSurface: fb.surface,
-      clientRoute: route,
-    };
-    const fbResult = await runTierLoop(loopCtx, fbReqDescriptor, conversionContext, fbTierCaps);
-    if (fbResult) return fbResult;
-  }
+  const fbResult = await runFallbackChain({
+    loopCtx,
+    route,
+    requestedModel,
+    runTierLoop,
+  });
+  if (fbResult) return fbResult;
 
   return buildExhaustedResponse(request, env, route, requestId, requestedModel, state, tiers, exposeUpstreamInfo, reqDescriptor);
 }
@@ -384,111 +242,6 @@ async function runTierLoop(loopCtx, reqDescriptor, conversionContext, overrideTi
     }
   }
   return null;
-}
-
-// Tier-aware picker. Tier 1 uses P2C + affinity + tier1-state eligibility;
-// Tier 2/3 use the existing node-state pickCandidate unchanged. Returns
-// { node, tier1ReleaseToken?, tier1EscapedFromAffinity? } or { raceLost } or null.
-// An optional deterministic RNG (from TIER1_SCHEDULER_SEED) makes P2C sampling
-// reproducible in tests without adding a production env knob — when the seed
-// is absent (production), Math.random is used and behaviour stays random.
-function pickForTier(tierNumber, tierNodes, req, attempted, opts = {}) {
-  if (tierNumber !== 1) {
-    const node = pickCandidate(tierNodes, req, attempted);
-    return node ? { node } : null;
-  }
-  const r = pickTier1Candidate(tierNodes, req, attempted, opts);
-  if (!r) return null;
-  if (r.raceLost) return { raceLost: true };
-  return {
-    node: r.node,
-    tier1ReleaseToken: r.releaseToken,
-    tier1EscapedFromAffinity: r.escapedFromAffinity,
-    tier1UpdateAffinity: r.updateAffinity,
-    tier1AffinityHit: r.affinityHit,
-  };
-}
-
-// Mulberry32 — a tiny deterministic PRNG for test reproducibility only. It is
-// only wired in when env.TIER1_SCHEDULER_SEED is a non-empty string; production
-// leaves it unset and P2C uses Math.random.
-function makeTier1Rng(env) {
-  const seedRaw = String(env?.TIER1_SCHEDULER_SEED ?? '').trim();
-  if (!seedRaw) return Math.random;
-  let h = 1779033703 ^ seedRaw.length;
-  for (let i = 0; i < seedRaw.length; i++) {
-    h = Math.imul(h ^ seedRaw.charCodeAt(i), 3432918353);
-    h = (h << 13) | (h >>> 19);
-  }
-  let a = h >>> 0;
-  return () => {
-    a |= 0; a = (a + 0x6D2B79F5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-// Per-tier attempt budget: { tier1, tier2, tier3 } -> max attempts each.
-//   * Two capacity notions are kept strictly apart. DISPATCHABLE means a
-//     candidate this tier could truly launch right now (supports the model,
-//     circuit/model cooldown clear, under concurrency, not hard-RPM exhausted);
-//     DEFERRED means capacity exists but cannot serve yet (saturated /
-//     over-quota). Deferred capacity feeds only Retry-After and diagnostic
-//     classification (see tierHasDeferredCapacity in scheduler.js) — it earns
-//     NO budget, otherwise an attempt slot gets reserved for a tier that will
-//     refuse dispatch while the current tier may still have immediately usable
-//     candidates left to spend that slot on.
-//   * A tier with no dispatchable candidate for the request descriptor gets 0
-//     budget.
-//   * By default `max_attempts` is split so every dispatchable tier gets at
-//     least one attempt and the surplus goes to the highest (most-preferred)
-//     dispatchable tier — maximizing free/priority resource use while keeping
-//     the paid fallback reachable and never starving an intermediate tier.
-//   * `policy.tierAttempts` (POLICIES_CONFIG tier_attempts) overrides a tier's
-//     budget explicitly (0 disables it).
-// Budget is a per-tier UPPER bound; the shared state.maxAttempts still caps the
-// request's total upstream attempts, and FAILOVER_BUDGET_MS caps wall-clock.
-function computeTierCaps(tiers, reqDescriptor, attempted, policy) {
-  const now = Date.now();
-  const caps = {};
-  for (const t of TIER_ORDER) caps[t] = 0;
-  const dispatchable = TIER_ORDER.filter((t) =>
-    t === 1
-      ? tier1HasDispatchableNode(tiers[t], reqDescriptor, attempted, now)
-      : tierHasDispatchableNode(tiers[t], reqDescriptor, attempted, now));
-  if (dispatchable.length === 0) return caps;
-  const max = policy.maxAttempts;
-  const surplus = Math.max(0, max - dispatchable.length);
-  dispatchable.forEach((t, i) => {
-    // `t` is numeric (1/2/3); POLICIES_CONFIG tier_attempts uses string keys
-    // ('tier1'/'tier2'/'tier3').
-    caps[t] = policy.tierAttempts?.[`tier${t}`] ?? (i === 0 ? 1 + surplus : 1);
-    if (t === 1) caps[t] = Math.min(caps[t], TIER1_MAX_ATTEMPTS);
-  });
-  return caps;
-}
-
-// Number of upstream dispatches that can still happen in this request after
-// applying live availability, per-tier caps, strict tier order, and the shared
-// policy cap.  This is deliberately recomputed before every attempt because a
-// pre-dispatch deny or a concurrent request can change the live candidate set.
-function countRemainingDispatchableAttempts(tiers, reqDescriptor, attempted, tierCaps, currentTier, usedInTier, sharedRemaining) {
-  const now = Date.now();
-  let total = 0;
-  let currentReached = false;
-  for (const tierNumber of TIER_ORDER) {
-    if (tierNumber === currentTier) currentReached = true;
-    if (!currentReached) continue;
-    const capRemaining = Math.max(0,
-      (tierCaps[tierNumber] ?? 0) - (tierNumber === currentTier ? usedInTier : 0));
-    if (capRemaining === 0) continue;
-    const live = tierNumber === 1
-      ? tier1CountDispatchableNodes(tiers[tierNumber], reqDescriptor, attempted, now)
-      : countDispatchableNodes(tiers[tierNumber], reqDescriptor, attempted, now);
-    total += Math.min(capRemaining, live);
-  }
-  return Math.max(1, Math.min(Math.max(1, sharedRemaining), total || 1));
 }
 
 // ---- One attempt against one node -----------------------------------------
@@ -881,7 +634,8 @@ async function dispatchAttempt(c) {
     }
     const classification = classifyNetworkError(headersTimeoutHit);
     recordOutcome(state, node, classification, c, { latencyMs });
-    logger.debug(`upstream fetch failed on ${node.id}: ${error?.message || error}`);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    logger.debug(`upstream fetch failed on ${node.id}: ${errorMessage}`);
     // The classification kind MUST travel with the rotate outcome: hedge
     // logging reads it from the settled outcome, and dropping it here used to
     // surface as primary_kind=unknown / twin_kind=unknown even though the
@@ -968,7 +722,7 @@ async function handleSuccess(s) {
       guarded = await ensureFirstSseEvent(upstream, firstEventTimeout, request.signal, isRealOutput);
     } catch (e) {
       detach();
-      const code = e?.code || GUARD_ERROR.EMPTY;
+      const code = (e && typeof e === 'object' && 'code' in e) ? String(e.code) : GUARD_ERROR.EMPTY;
       if (request.signal?.aborted) {
         recordOutcome(state, node, classifyClientAbort(), c, {
           latencyMs: Date.now() - c.attemptStartMs,
@@ -1149,12 +903,13 @@ async function handleSuccess(s) {
       recordNodeSuccess(c, node, latencyMs);
       return { response: synthesizeResponsesFromObject(data, requestedModel, { ...extraHeaders, ...corsHeaders(request, env) }) };
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
       if (request.signal?.aborted) {
         recordOutcome(state, node, classifyClientAbort(), c, { latencyMs: elapsedSinceStart(), status: upstream.status });
         return { response: gatewayError(request, env, route, 499, 'Client closed the request during assembly.', requestId) };
       }
       const classification = classifyFirstEventFailure();
-      recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: error.message });
+      recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: errorMessage });
       return { rotate: true, kind: classification.kind };
     }
   }
@@ -1175,12 +930,13 @@ async function handleSuccess(s) {
         data.model = requestedModel;
         return { response: jsonResponse(200, data, env, request, extraHeaders) };
       } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
         if (request.signal?.aborted) {
           recordOutcome(state, node, classifyClientAbort(), c, { latencyMs: elapsedSinceStart(), status: upstream.status });
           return { response: gatewayError(request, env, route, 499, 'Client closed the request during assembly.', requestId) };
         }
         const classification = classifyFirstEventFailure();
-        recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: error.message });
+        recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: errorMessage });
         return { rotate: true, kind: classification.kind };
       }
     }
@@ -1277,12 +1033,13 @@ async function handleSuccess(s) {
       }
       return { response: jsonResponse(200, converted, env, request, extraHeaders) };
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
       if (request.signal?.aborted) {
         recordOutcome(state, node, classifyClientAbort(), c, { latencyMs: elapsedSinceStart(), status: upstream.status });
         return { response: gatewayError(request, env, route, 499, 'Client closed the request during assembly.', requestId) };
       }
       const classification = classifyFirstEventFailure();
-      recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: error.message });
+      recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: errorMessage });
       return { rotate: true, kind: classification.kind };
     }
   }
@@ -1325,12 +1082,13 @@ async function handleSuccess(s) {
     if (data && typeof data === 'object') data.model = requestedModel;
     return { response: jsonResponse(200, data, env, request, extraHeaders) };
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
     if (request.signal?.aborted) {
       recordOutcome(state, node, classifyClientAbort(), c, { latencyMs, status: upstream.status });
       return { response: gatewayError(request, env, route, 499, 'Client closed the request during assembly.', requestId) };
     }
     const classification = classifyFirstEventFailure();
-    recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: error.message });
+    recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: errorMessage });
     return { rotate: true, kind: classification.kind };
   }
 }
@@ -1492,6 +1250,13 @@ function noteFailure(state, kind) {
 //   * dispatches counts every real upstream dispatch (never a pre-dispatch deny);
 //   * logicalAttempts counts the logical attempt the dispatch belongs to — a
 //     hedge twin belongs to its primary's attempt and does not increment it.
+/**
+ * @param {Record<string, any>} state
+ * @param {Record<string, any>} node
+ * @param {Record<string, any>} classification
+ * @param {Record<string, any>} c
+ * @param {{latencyMs?: number, ttftWaitMs?: number, status?: number, diagnostic?: string}} [opts]
+ */
 function recordOutcome(state, node, classification, c, { latencyMs = -1, ttftWaitMs, status = 0, diagnostic } = {}) {
   state.attempted.add(node.id);
   state.dispatches++;

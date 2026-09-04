@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // Isolate-local runtime state for nodes: health, latency EWMA, concurrency
@@ -183,7 +184,9 @@ export function getModelPerf(nodeId, model) {
   return s?.modelPerf?.get(model) || null;
 }
 
-function updateModelPerf(s, model, { ttftMs, latencyMs, source = 'passive' } = {}, now = Date.now()) {
+/** @param {{ ttftMs?: number, latencyMs?: number, source?: string }} opts */
+function updateModelPerf(s, model, opts = {}, now = Date.now()) {
+  const { ttftMs, latencyMs, source = 'passive' } = opts;
   let entry = s.modelPerf.get(model);
   if (!entry) {
     if (s.modelPerf.size >= MODEL_PERF_MAX) {

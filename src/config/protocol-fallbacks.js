@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // PROTOCOL_FALLBACKS: cross-protocol route fallback chains.
@@ -62,7 +63,8 @@ function analyzeProtocolFallbacks(env) {
     try {
       parsed = JSON.parse(raw);
     } catch (e) {
-      errors.push(`PROTOCOL_FALLBACKS invalid JSON (${e.message}); fallbacks disabled`);
+      const msg = e instanceof Error ? e.message : String(e);
+      errors.push(`PROTOCOL_FALLBACKS invalid JSON (${msg}); fallbacks disabled`);
       cached = { config, errors };
       return cached;
     }

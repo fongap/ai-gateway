@@ -11,7 +11,7 @@
 ```text
 Client (OpenAI / Anthropic SDK)
    ↓  auth (timing-safe), route allowlist, body limits
-Request pipeline (src/request/handler.js)
+Request Orchestration (src/request/*)
    ↓  route → (protocol, surface): openai chat|responses, anthropic messages
 Config Layer (src/config)          ← parses env shards ONCE per isolate
    ↓  Runtime Node { id, tier, provider, protocol, surfaces, baseUrl, credential, priority, models, limits }

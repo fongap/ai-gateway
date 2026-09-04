@@ -196,7 +196,7 @@ export function healthResponse(request, env, requestId) {
   });
 }
 
-export function metricsResponse(request, env) {
+export function metricsResponse(request, env, requestId) {
   const config = loadGatewayConfig(env);
   const now = Date.now();
   const lines = [];

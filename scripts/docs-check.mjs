@@ -45,7 +45,7 @@ check(
 );
 
 // --- 8.2 root directory markdown whitelist ---
-const ALLOWED_ROOT_MDS = ['README.md', 'README_EN.md', 'CONTRIBUTING.md', 'SECURITY.md', 'CHANGELOG.md'];
+const ALLOWED_ROOT_MDS = ['README.md', 'README_EN.md', 'CONTRIBUTING.md', 'SECURITY.md', 'CHANGELOG.md', 'AGENTS.md', 'CLAUDE.md'];
 const rootEntries = fs.readdirSync(root, { withFileTypes: true });
 const rootMds = rootEntries.filter(e => e.isFile() && e.name.endsWith('.md')).map(e => e.name);
 const unexpectedRootMds = rootMds.filter(f => !ALLOWED_ROOT_MDS.includes(f));

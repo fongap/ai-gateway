@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // Config Layer: environment shards -> Runtime Node list.
@@ -551,7 +552,8 @@ function parseJsonVar(raw, key, diagnostics) {
   try {
     return JSON.parse(raw);
   } catch (e) {
-    diagnostics.push(`${key}: invalid JSON (${e.message})`);
+    const msg = e instanceof Error ? e.message : String(e);
+    diagnostics.push(`${key}: invalid JSON (${msg})`);
     return null;
   }
 }

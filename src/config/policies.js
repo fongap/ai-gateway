@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // POLICIES_CONFIG: policy name -> { max_attempts, tier_attempts?, hedge? }. Optional.
@@ -77,7 +78,8 @@ function analyzePolicies(env) {
     try {
       parsed = JSON.parse(raw);
     } catch (e) {
-      errors.push(`POLICIES_CONFIG invalid JSON (${e.message}); built-ins used`);
+      const msg = e instanceof Error ? e.message : String(e);
+      errors.push(`POLICIES_CONFIG invalid JSON (${msg}); built-ins used`);
       cached = { policies, errors };
       return cached;
     }

@@ -24,6 +24,10 @@ import { FIRST_EVENT_MAX_SSE_LINE } from './guard.js';
 // SSE line. Same limit as the pre-first-event guard for consistency.
 const TRACK_MAX_LINE_BUFFER = FIRST_EVENT_MAX_SSE_LINE;
 
+/**
+ * @param {Response} response
+ * @param {Record<string, any>} options
+ */
 export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFailure, onNeutral, onStreamStart, onStreamEnd, completionMarker, failureMarker, rewriteModel, rewriteModelAt, onUsage, interruptionChunk, upstreamFailureReason }) {
   if (!response.body) {
     onSuccess();
