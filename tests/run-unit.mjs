@@ -56,6 +56,7 @@ const UNIT_TESTS = [
   'scripts/calendar-heatmap-view-test.mjs',
   'scripts/migrations-check-test.mjs',
   'scripts/version-check-test.mjs',
+  'scripts/architecture-contract-test.mjs',
 ];
 
 let failed = 0;
