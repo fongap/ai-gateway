@@ -34,13 +34,12 @@ import { loadGatewayConfig } from '../config/nodes.js';
 import { loadModelsConfig } from '../config/models.js';
 import { loadPoliciesConfig, getPolicy } from '../config/policies.js';
 import { getLimits } from '../config/timeouts.js';
-import { supportsRequest } from '../scheduler/scheduler.js';
-import { TIER_ORDER } from './router.js';
 import { gatewayError } from './errors.js';
 import { authorize } from './auth.js';
 import { loadAccessKeysConfig } from '../config/access-keys.js';
 import { collectKnownModels } from '../config/registry.js';
 import { authorizeModel } from './model-authz.js';
+import { evaluateRouteFeasibility } from './route-feasibility.js';
 import { detectRoute, normalizePath, acceptsHtml } from './router.js';
 import { dashboardResponse } from '../dashboard/pages.js';
 import { corsHeaders, readBodyTextWithLimit, BodyTooLargeError } from '../protocol/http.js';
@@ -96,6 +95,7 @@ export function getRouteProtocolSurface(route) {
  *   policy: any,
  *   failoverBudgetMs: number,
  *   knownModels: Set<string>,
+ *   feasibility: { reachable: boolean, nativeSupported: boolean, fallbackSupported: boolean, fallbacks: { protocol: string, surface: string }[] },
  * }} PreflightOk
  *
  * @typedef {PreflightTerminal | PreflightOk} PreflightResult
@@ -297,12 +297,21 @@ export async function preflight(request, env, ctx) {
   const tiers = config.tiers;
   /** @type {{ model: string, protocol: 'openai' | 'anthropic', surface: 'chat_completions' | 'responses' | 'messages' }} */
   const requestDescriptor = { model: requestedModel, ...ROUTE_PROTOCOL_SURFACE[route] };
-  const supported = TIER_ORDER.some((t) => tiers[t].some((n) => supportsRequest(n, requestDescriptor, knownModels)));
-  if (!supported) {
+  // "Native First, not Native Only": a request is routable when EITHER a native
+  // candidate exists OR at least one explicitly configured, supported
+  // cross-protocol fallback has a candidate for the requested model. When
+  // neither holds, the request returns 404 and never reaches the tier loop or
+  // the fallback chain. This restores the pre-refactor feasibility gate that
+  // was lost when the candidate-existence check was extracted into preflight
+  // (the old handler.js checked native OR fallback before returning 404).
+  const feasibility = evaluateRouteFeasibility({
+    route, requestedModel, requestDescriptor, tiers, knownModels, env,
+  });
+  if (!feasibility.reachable) {
     return {
       ok: false,
       response: gatewayError(request, env, route, 404,
-        `No configured node provides model "${requestedModel}" via protocol "${requestDescriptor.protocol}" surface "${requestDescriptor.surface}". Verify the models mapping.`, requestId),
+        `No configured route can serve model "${requestedModel}" for client protocol "${requestDescriptor.protocol}" surface "${requestDescriptor.surface}". No native or configured protocol-fallback candidate is available.`, requestId),
     };
   }
 
@@ -329,5 +338,6 @@ export async function preflight(request, env, ctx) {
     policy,
     failoverBudgetMs,
     knownModels,
+    feasibility,
   };
 }

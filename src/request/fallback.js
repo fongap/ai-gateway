@@ -22,7 +22,10 @@
 //     (protocol, surface) filter excludes foreign nodes anyway, but
 //     the loop also never launches a hedge inside a fallback pass.
 //   * Each fallback step that has a supported candidate re-runs the
-//     tier loop. The first step that returns a Response wins.
+//     tier loop. The first step that returns a Response wins. The set of
+//     reachable fallback steps is precomputed by route-feasibility.js at
+//     preflight time and carried through loopCtx.feasibility; runFallbackChain
+//     iterates that set rather than re-implementing the feasibility check.
 //   * If the conversion itself throws ConversionError, the request
 //     is answered with 400 (the request was malformed for the
 //     fallback protocol). Other conversion errors propagate.
@@ -35,11 +38,8 @@
 // runFallbackChain and passes its own runTierLoop closure in,
 // avoiding a circular import.
 
-import { supportsRequest } from '../scheduler/scheduler.js';
-import { TIER_ORDER } from './router.js';
 import { anthropicErrorResponse } from '../protocol/anthropic.js';
 import { convertAnthropicToOpenAIRequest, ConversionError } from '../conversion/anthropic-to-openai.js';
-import { getFallbackChain } from '../config/protocol-fallbacks.js';
 import { buildBudgetExhaustedResponse } from './errors.js';
 import { computeTierCaps } from './tier-loop.js';
 
@@ -58,8 +58,9 @@ export async function runFallbackChain({ loopCtx, route, requestedModel, runTier
   const {
     env, requestId, exposeUpstreamInfo, request, state, policy,
     failoverBudgetMs, requestStartMs, tiers, bodyJson, knownModels,
+    feasibility,
   } = loopCtx;
-  const fallbacks = getFallbackChain(route, env);
+  const fallbacks = feasibility?.fallbacks ?? [];
   for (const fb of fallbacks) {
     if (state.logicalAttempts >= policy.maxAttempts) break;
     const remainingBudgetMs = failoverBudgetMs - (Date.now() - requestStartMs);
@@ -67,9 +68,6 @@ export async function runFallbackChain({ loopCtx, route, requestedModel, runTier
       return buildBudgetExhaustedResponse(request, env, route, requestId, requestedModel, state, exposeUpstreamInfo);
     }
     const fbReqDescriptor = { model: requestedModel, protocol: fb.protocol, surface: fb.surface };
-    const fbSupported = TIER_ORDER.some((t) =>
-      tiers[t].some((n) => supportsRequest(n, fbReqDescriptor, knownModels)));
-    if (!fbSupported) continue;
     let convertedBody;
     try {
       if (route === 'anthropic_messages' && fb.protocol === 'openai' && fb.surface === 'chat_completions') {

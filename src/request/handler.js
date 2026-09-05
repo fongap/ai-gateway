@@ -119,7 +119,7 @@ export async function handleRequest(request, env, ctx) {
     requestId, requestStartMs,
     route, requestedModel, clientWantsStream, fakeStream, bodyJson,
     limits, exposeUpstreamInfo, authResult, requestDescriptor: reqDescriptor,
-    config, tiers, policy, failoverBudgetMs,
+    config, tiers, policy, failoverBudgetMs, knownModels, feasibility,
   } = pre;
   void authResult;
   // The request / env / ctx carried by preflight are the same as our
@@ -153,6 +153,7 @@ export async function handleRequest(request, env, ctx) {
     clientWantsStream, fakeStream, bodyJson, limits, exposeUpstreamInfo, state,
     failoverBudgetMs, requestStartMs, policy, tiers,
     tier1Affinity, tier1EvaluateAffinity, tier1Rng, tier1Session,
+    knownModels, feasibility,
   };
 
   // Native tier loop: attempt every eligible node of the client's own
@@ -191,8 +192,9 @@ async function runTierLoop(loopCtx, reqDescriptor, conversionContext, overrideTi
     clientWantsStream, fakeStream, bodyJson, limits, exposeUpstreamInfo, state,
     failoverBudgetMs, requestStartMs, policy, tiers,
     tier1Affinity, tier1EvaluateAffinity, tier1Rng, tier1Session,
+    knownModels,
   } = loopCtx;
-  const tierCaps = overrideTierCaps ?? computeTierCaps(tiers, reqDescriptor, state.attempted, policy);
+  const tierCaps = overrideTierCaps ?? computeTierCaps(tiers, reqDescriptor, state.attempted, policy, knownModels);
   for (const tierNumber of TIER_ORDER) {
     const cap = tierCaps[tierNumber] ?? 0;
     let usedInTier = 0;
@@ -207,12 +209,13 @@ async function runTierLoop(loopCtx, reqDescriptor, conversionContext, overrideTi
       }
       const remainingDispatchableAttempts = countRemainingDispatchableAttempts(
         tiers, reqDescriptor, state.attempted, tierCaps,
-        tierNumber, usedInTier, policy.maxAttempts - state.logicalAttempts,
+        tierNumber, usedInTier, policy.maxAttempts - state.logicalAttempts, knownModels,
       );
       const pick = pickForTier(tierNumber, tiers[tierNumber], reqDescriptor, state.attempted, {
         affinityAccountId: tierNumber === 1 ? tier1Affinity : null,
         evaluateAffinity: tierNumber === 1 && tier1EvaluateAffinity,
         rng: tier1Rng,
+        knownModels,
       });
       if (!pick || pick.raceLost) break;
       const node = pick.node;

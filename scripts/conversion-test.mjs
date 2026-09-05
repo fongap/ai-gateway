@@ -833,6 +833,108 @@ await run('handler: conversion error does not pollute node health', async () => 
   assert.ok(openAiCall, 'OpenAI fallback was attempted');
 });
 
+// ---- Regression: Native First / Protocol Fallback reachability ----
+// The pre-refactor handler's feasibility gate checked native OR configured
+// fallback before returning 404. When preflight.js was extracted it kept only
+// the native check, so a request with NO native candidate could never reach
+// runFallbackChain and returned 404 even when an explicit, supported fallback
+// existed. These tests pin the restored "Native First, not Native Only" gate.
+
+await run('regression: no native candidate + configured fallback -> 200 via OpenAI', async () => {
+  resetMock();
+  // There is NO anthropic:messages node for claude-x at all. Only an OpenAI
+  // chat_completions node exists (and would serve the model).
+  routeHandlers['o1.example.com'] = () => jsonUpstream(okOpenAICompletion());
+  const env = makeEnv({
+    tier1: [openaiNode('o1')],
+    secrets: { o1: 'k' },
+    extraEnv: {
+      PROTOCOL_FALLBACKS: JSON.stringify({ 'anthropic:messages': ['openai:chat_completions'] }),
+      EXPOSE_UPSTREAM_INFO: 'true',
+    },
+  });
+  const res = await worker.fetch(messagesRequest({
+    model: 'claude-x', max_tokens: 64, messages: [{ role: 'user', content: 'hi' }],
+  }), env, {});
+  // Preflight must PASS (no native candidate, but a reachable fallback), then
+  // the native tier loop finds no candidate and the fallback chain converts
+  // the Anthropic request to OpenAI Chat and serves it.
+  assert.equal(res.status, 200, 'no native candidate + configured fallback must not 404');
+  const body = await res.json();
+  assert.equal(body.type, 'message', 'client still sees Anthropic-format');
+  assert.equal(body.content[0].text, 'hello');
+  const hosts = upstreamCalls.map((c) => c.host);
+  assert.deepEqual(hosts, ['o1.example.com'], 'the OpenAI fallback node served the request');
+  assert.equal(res.headers.get('x-gateway-node'), 'o1');
+  const openAiCall = upstreamCalls.find((c) => c.host === 'o1.example.com');
+  assert.equal(openAiCall.body.model, 'up-model');
+  assert.equal(openAiCall.body.max_tokens, 64);
+  assert.equal(openAiCall.body.messages[0].content, 'hi', 'the Anthropic body was converted to OpenAI chat');
+});
+
+await run('regression: no native candidate + no fallback configured -> 404', async () => {
+  resetMock();
+  // OpenAI chat node present and would serve the model, but PROTOCOL_FALLBACKS
+  // is NOT configured. No implicit cross-protocol conversion may happen.
+  routeHandlers['o1.example.com'] = () => jsonUpstream(okOpenAICompletion());
+  const env = makeEnv({
+    tier1: [openaiNode('o1')],
+    secrets: { o1: 'k' },
+  });
+  const res = await worker.fetch(messagesRequest({
+    model: 'claude-x', max_tokens: 64, messages: [{ role: 'user', content: 'hi' }],
+  }), env, {});
+  assert.equal(res.status, 404, 'no fallback configured -> fail closed with 404');
+  assert.equal(upstreamCalls.length, 0, 'no upstream is contacted');
+  const body = await res.json();
+  assert.match(body.error.message, /No configured route can serve model/);
+});
+
+await run('regression: fallback configured but target node lacks the model -> 404', async () => {
+  resetMock();
+  // OpenAI chat node exists but does NOT serve claude-x.
+  routeHandlers['o1.example.com'] = () => jsonUpstream(okOpenAICompletion());
+  const env = makeEnv({
+    tier1: [openaiNode('o1', { models: { 'other-model': 'up' } })],
+    secrets: { o1: 'k' },
+    extraEnv: {
+      PROTOCOL_FALLBACKS: JSON.stringify({ 'anthropic:messages': ['openai:chat_completions'] }),
+      EXPOSE_UPSTREAM_INFO: 'true',
+    },
+  });
+  const res = await worker.fetch(messagesRequest({
+    model: 'claude-x', max_tokens: 64, messages: [{ role: 'user', content: 'hi' }],
+  }), env, {});
+  // Neither a native candidate nor a reachable fallback candidate exists.
+  assert.equal(res.status, 404, 'a configured fallback with no candidate must still 404');
+  assert.equal(upstreamCalls.length, 0, 'no upstream is contacted');
+});
+
+await run('regression: fallback target surface unsupported (responses-only) -> 404', async () => {
+  resetMock();
+  // Only an OpenAI RESPONSES node exists. The only supported conversion is
+  // anthropic:messages -> openai:chat_completions, so a responses node is NOT
+  // a valid fallback candidate and the request must fail closed.
+  const openaiResponsesNode = (id, extra = {}) => ({
+    id, provider: 'mock', protocol: 'openai', surfaces: ['responses'],
+    base_url: `https://${id}.example.com/v1`, models: { 'claude-x': 'up-model' }, ...extra,
+  });
+  routeHandlers['o-resp.example.com'] = () => jsonUpstream({ object: 'response' });
+  const env = makeEnv({
+    tier1: [openaiResponsesNode('o-resp')],
+    secrets: { 'o-resp': 'k' },
+    extraEnv: {
+      PROTOCOL_FALLBACKS: JSON.stringify({ 'anthropic:messages': ['openai:chat_completions'] }),
+      EXPOSE_UPSTREAM_INFO: 'true',
+    },
+  });
+  const res = await worker.fetch(messagesRequest({
+    model: 'claude-x', max_tokens: 64, messages: [{ role: 'user', content: 'hi' }],
+  }), env, {});
+  assert.equal(res.status, 404, 'a responses-only node must not count as a chat_completions fallback');
+  assert.equal(upstreamCalls.length, 0, 'no upstream is contacted');
+});
+
 // ---- Tear down / summary ---------------------------------------------------
 
 console.log(`\nconversion-test: ${passed} passed, ${failed} failed.`);
