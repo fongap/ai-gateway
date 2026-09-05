@@ -24,8 +24,12 @@
 // Protocol/surface isolation is a HARD scheduler gate, not a preference: an
 // OpenAI request is never routed to an Anthropic node and vice versa, and a
 // node that only serves chat_completions never receives a /v1/responses
-// request. There is no cross-protocol conversion and no cross-protocol
-// failover anywhere in the gateway.
+// request. The scheduler itself never performs cross-protocol selection —
+// each scheduler pass is strictly scoped to one (protocol, surface, model)
+// descriptor. Cross-protocol fallback is orchestrated outside the scheduler
+// (by the request layer's fallback chain) and enters the scheduler as a new
+// explicit request descriptor; no scheduler call ever crosses the boundary
+// on its own.
 
 import { peekAvailability, acquireSlot, getNodeState, rpmUsage, isModelCooling, getModelPerf } from '../reliability/node-state.js';
 import { servesModel } from '../config/registry.js';

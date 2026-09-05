@@ -3,16 +3,11 @@
 //
 // Public re-export surface for the token-usage store.
 //
-// The actual implementation now lives in ./keys.js, ./writer.js,
+// The actual implementation lives in ./keys.js, ./writer.js,
 // ./queries.js, ./aggregation.js, and ./retention.js. This module
 // is the single import point for external consumers
 // (src/runtime/cron.js, src/dashboard/pages.js,
 // src/runtime/model-status.js, src/request/handler.js).
-//
-// PR 6 is a pure refactor: the function signatures, return shapes,
-// and SQL contracts are unchanged. Every existing import of
-// '../observability/token-usage-store.mjs' keeps working through
-// the re-exports below.
 
 export {
   // Keys / shared constants
