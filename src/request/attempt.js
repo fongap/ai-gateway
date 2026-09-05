@@ -31,13 +31,12 @@
 // tier ordering, candidate selection, hedge eligibility, or budget
 // accounting beyond a single attempt's headers / first-event slice.
 //
-// --- Implementation status (PR 3) ----------------------------------------
-// The full implementation still lives in handler.js (a behavior-preserving
-// rest stop — the move is being done in stages so each step is independently
-// validated). attempt.js re-exports the same symbols so external code can
-// already import them from this stable boundary, and the body relocation
-// proceeds incrementally from here. Nothing in handler.js should import the
-// attempt symbols from this file yet (that would re-introduce the cycle that
-// is being removed in stages).
+// The full dispatch implementation (dispatchAttempt, dispatchWithHedge,
+// handleSuccess) currently lives in handler.js. This module re-exports
+// the public symbols so external code imports them from the stable
+// attempt boundary. The body relocation to this file is planned as a
+// separate behavior-preserving refactor; until then, handler.js should
+// not import attempt symbols from this file (that would re-introduce
+// the cycle being removed in stages).
 
 export { attemptNode, dispatchWithHedge } from './handler.js';

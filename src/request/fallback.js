@@ -8,7 +8,7 @@
 // and only when PROTOCOL_FALLBACKS is explicitly configured for the
 // client route. There is no implicit cross-protocol fallback, no
 // Chat -> Anthropic direction, no OpenAI Responses -> Chat direction,
-// no Gemini conversion, and no cross-protocol hedge.
+// and no Gemini conversion.
 //
 // Contract:
 //   * Native-first: the native tier loop runs first and only when it
@@ -18,9 +18,12 @@
 //     SAME failover budget, the SAME requestStartMs, the SAME
 //     logicalAttempts counter, the SAME dispatches counter, and the
 //     SAME hedges counter. There is no fresh budget and no reset.
-//   * Hedge does not cross protocols: the scheduler's
-//     (protocol, surface) filter excludes foreign nodes anyway, but
-//     the loop also never launches a hedge inside a fallback pass.
+//   * Hedge never crosses protocol/surface: the scheduler's
+//     (protocol, surface) filter excludes foreign nodes, so a hedge
+//     twin is always same-protocol and same-surface as its primary.
+//     Whether hedge is allowed inside a fallback pass is determined
+//     by the normal policy and tier hedge rules — the fallback chain
+//     does not suppress it, nor does it launch cross-protocol twins.
 //   * Each fallback step that has a supported candidate re-runs the
 //     tier loop. The first step that returns a Response wins. The set of
 //     reachable fallback steps is precomputed by route-feasibility.js at
@@ -31,12 +34,6 @@
 //     fallback protocol). Other conversion errors propagate.
 //   * If the fallback chain is exhausted, the request falls through
 //     to the standard exhausted handler.
-//
-// PR 5 is a behavior-preserving refactor: the fallback body stays
-// in handler.js for now; this module establishes the long-term
-// boundary and the contract comment. The handler imports
-// runFallbackChain and passes its own runTierLoop closure in,
-// avoiding a circular import.
 
 import { anthropicErrorResponse } from '../protocol/anthropic.js';
 import { convertAnthropicToOpenAIRequest, ConversionError } from '../conversion/anthropic-to-openai.js';

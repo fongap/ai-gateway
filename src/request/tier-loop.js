@@ -11,9 +11,9 @@
 //
 // This module owns the pure helpers that compute per-tier budget and
 // dispatchable-count. The actual dispatchAttempt / attemptNode / handleSuccess
-// closures stay in handler.js for now; they capture the per-request
-// logger and reliability API. PR 5 will relocate the attempt body
-// into attempt.js.
+// closures stay in handler.js; they capture the per-request logger and
+// reliability API. Relocation of the attempt body into attempt.js is
+// planned as a separate behavior-preserving refactor.
 
 import { TIER_ORDER } from './router.js';
 import { pickCandidate, tierHasDispatchableNode, countDispatchableNodes } from '../scheduler/scheduler.js';

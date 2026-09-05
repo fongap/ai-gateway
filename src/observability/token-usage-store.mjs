@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
 //
-// Backward-compatibility shim. The actual implementation moved to
-// the ./token-usage-store/ directory in PR 6; this file re-exports
-// the public surface so every existing import of
+// Backward-compatibility shim. The actual implementation lives in
+// the ./token-usage-store/ directory; this file re-exports the public
+// surface so every existing import of
 // '../observability/token-usage-store.mjs' keeps working unchanged.
 //
 // The split:
