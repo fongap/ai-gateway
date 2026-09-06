@@ -12,8 +12,8 @@
 // to record outcomes that the dispatch/success paths already decided.
 
 import {
-  recordSuccess, recordNeutralEnd, applyHealthPenalty, recordTtft,
-  bumpNodeCounters, markProbeFailure, recordFailure,
+  recordSuccess, recordNeutralEnd, applyHealthPenalty,
+  bumpNodeCounters, recordFailure,
 } from '../../reliability/node-state.js';
 import {
   releaseTier1Slot,

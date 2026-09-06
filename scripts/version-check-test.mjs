@@ -7,6 +7,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const versionCheckUrl = pathToFileURL(path.join(root, 'scripts', 'version-check.mjs')).href;
+// The release version being checked — mutator regexes below must track the
+// live package version so a version bump does not break the drift tests.
+const currentVersion = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
 
 const results = [];
 
@@ -65,7 +68,7 @@ const tests = [
     });
     try {
       const out = await captureCheckFailures(reloadCheck());
-      expectFailuresInCapture(out, /package-lock\.json\.version=1\.2\.7 does not match package\.json\.version=9\.9\.9-fake/);
+      expectFailuresInCapture(out, new RegExp(`package-lock\\.json\\.version=${currentVersion.replace(/\./g, '\\.')} does not match package\\.json\\.version=9\\.9\\.9-fake`));
     } finally {
       restore();
     }
@@ -99,7 +102,9 @@ const tests = [
   }],
   ['version-check.mjs rejects APP_META.version drift', async () => {
     const restore = writeAndRestore('src/observability/diagnostic-endpoints.mjs', (text) => {
-      return text.replace(/version:\s*'1\.2\.7'/, "version: '9.9.9-fake'");
+      // Track the live package version so a version bump does not break the
+      // drift-detection tests themselves.
+      return text.replace(new RegExp(`version:\\s*'${currentVersion.replace(/\./g, '\\.')}'`), "version: '9.9.9-fake'");
     });
     try {
       const out = await captureCheckFailures(reloadCheck());
@@ -110,7 +115,7 @@ const tests = [
   }],
   ['version-check.mjs rejects a missing CHANGELOG heading', async () => {
     const restore = writeAndRestore('CHANGELOG.md', (text) => {
-      return text.replace(/## 1\.2\.7 - /, '## moved-heading-no-trailing-dash ');
+      return text.replace(new RegExp(`## ${currentVersion.replace(/\./g, '\\.')} - `), '## moved-heading-no-trailing-dash ');
     });
     try {
       const out = await captureCheckFailures(reloadCheck());

@@ -24,7 +24,6 @@
 // No external fonts, no framework, no chart library, no runtime dependency.
 
 import { loadGatewayConfig } from '../config/nodes.js';
-import { MODEL_STATUS_RECENT_WINDOW_MS } from '../runtime/model-status.js';
 import { htmlResponse } from '../protocol/http.js';
 import { escapeHtml } from './format.js';
 import { THEME_CSS } from './theme.js';

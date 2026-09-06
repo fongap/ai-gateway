@@ -14,7 +14,7 @@ import { markProbeFailure, recordTtft, recordNeutralEnd, bumpNodeCounters } from
 import { recordTier1Ttft, releaseTier1Slot } from '../../reliability/tier1-state.js';
 import { classifyUpstreamStatus, classifyFirstEventFailure, classifyClientAbort } from '../../reliability/classify.js';
 import {
-  buildTargetUrl, corsHeaders,
+  corsHeaders,
   safeReadErrorBody, trimDiagnostic,
 } from '../../protocol/http.js';
 import { synthesizeSseFromCompletion } from '../../protocol/openai.js';

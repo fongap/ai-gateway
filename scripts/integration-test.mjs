@@ -3,6 +3,7 @@
 // (auth -> scheduler -> retry -> circuit -> protocol -> stream) through
 // worker.fetch() against a mocked global fetch upstream.
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import worker from '../src/index.js';
 import { __resetAllStateForTests, getNodeState, noteRpmRequest } from '../src/reliability/node-state.js';
 import {
@@ -1707,8 +1708,9 @@ await test('/version is public and exposes only branding, no node/config topolog
   const res = await worker.fetch(new Request('https://gateway.example.com/version'), makeEnv({ tier1: [basicNode('v')], secrets: { v: 'k' } }), {});
   assert.equal(res.status, 200);
   const body = await res.json();
+  const pkgVersion = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
   assert.equal(body.name, 'ai-gateway');
-  assert.equal(body.version, '1.2.7');
+  assert.equal(body.version, pkgVersion);
   assert.equal(body.runtime, 'Cloudflare Workers');
   assert.ok(Array.isArray(body.protocols));
   const serialized = JSON.stringify(body);

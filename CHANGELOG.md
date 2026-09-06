@@ -1,6 +1,35 @@
 ﻿# Changelog
 
-## Unreleased
+## 1.3.0 - 2026-09-06
+
+> 发布安全、事实一致性与架构收口版本。本阶段不含功能扩展；目标是将既有架构原则固化为代码、CI 与测试契约。
+
+### Added — 发布链路与事实契约测试
+
+- **Deployment Workflow Contract Test `scripts/deployment-workflow-contract-test.mjs` ×7**（已纳入 `test:unit` / `validate:merge`）:01 D1 migration 必须先于 Worker deploy;02 生产部署必须依赖完整 `validate:deploy`;03 migration 失败必须阻断 deploy;04 health check 必须在 deploy 之后;05 仅在"已部署 + 后续失败"时回滚;06 Markdown-only 修改跳过生产部署;07 Fork 未显式 `DEPLOY_ENABLED=true` 不得自动部署。
+- **Model Status Recent-Evidence Window Contract `scripts/model-status-window-contract-test.mjs`**:23h 成功 = evidence / 25h = 非 evidence(默认窗口)、store/runtime 同一绑定、调用点必须传常量、证据链禁 7d/168h/604800000 字面量。
+- **TTFT Query Contract `scripts/ttft-query-contract-test.mjs` ×10**:全模型结果容器(缺数据 → insufficient/noSamples,不缺 key)、查询次数固定 1 次不随模型数增长、canonical key 大小写合并、低于最小样本 `p50/p95=null, insufficient=true`、百分位为桶上界精度、无 binding 时 fail-open。
+
+### Changed — 发布安全(P0)
+
+- **Deploy 工作流拆分为 `validate` + `deploy` 两个 job,`deploy` 显式 `needs: validate`。** Production Gate(完整 `validate:deploy` + typecheck + bundle dry-run)成功之前 Worker Deploy 绝不执行;Merge Gate(`validate-merge`)≠ Production Gate。D1 migration 步骤移至 Worker Deploy **之前**:`migration 失败 → deploy 不发生`,不再出现"新代码 + 旧 Schema"线上状态;`TOKEN_STATS_D1_ID` 未配置时 migration 步骤跳过、不阻断部署。回滚语义不变(仅已部署 + 后续步骤失败时 `wrangler rollback`,变量/Secrets/迁移不回滚)。
+- `docs/operations/deployment.md` 部署顺序同步更新;README / README_EN 标注 Production Gate 与迁移顺序。
+
+### Changed — Dashboard 事实一致性(P1)
+
+- **兑现 1.2.7 已声明但 main 未实现的两项 Dashboard 事实**(v1.2.7 从未发版;契约测试已固化防止复发):
+  - **Recent Evidence 窗口唯一事实源**:`MODEL_STATUS_RECENT_WINDOW_MS = 24h` 定义收敛至 `token-usage-store/queries.js`(紧邻 `queryRecentModelEvidence` 默认参数),`src/runtime/model-status.js` re-export 同一绑定,Dashboard 调用点传常量。此前的硬编码 `7 * 24 * 60 * 60 * 1000`(实际 7 天)已移除。
+  - **TTFT 全模型 grouped 查询**:新增 `queryAllModelsTtftPercentiles()` 单次 `GROUP BY model` D1 查询覆盖窗口内全部模型,内存计算 P50/P95/sampleCount/insufficient;Dashboard 不再 `slice(0, 4)` 依赖 Usage Top 4,不再每模型一次 D1 查询(N+1)。`ensureModelTtftContainers()` 保证每个 Public Model 都有结果容器——无数据模型渲染 `--s / -- samples` 而非缺失 key。统计维度保持 canonical key(trim + lowercase),桶上界精度与最小样本阈值(5)不变。
+- **Request Attempt Boundary 收口(P1-F)**:`src/request/attempt.js`(约 1100 行)保持稳定公共边界(handler.js 导入不变),内部按职责拆分为 `src/request/attempt/{index,dispatch,hedge,success,outcome,observability}.js`。行为保持:retry/logicalAttempts/dispatch/hedge/maxAttempts/maxDispatches/tier cap/failover budget/headers timeout/first event timeout/stream commit/penalty/cooldown/RPM/affinity/half-open/protocol fallback/response format 语义零修改,全部架构契约与测试套件原样通过。
+
+### Changed — Typed JS(P2)
+
+- **strict typecheck 范围清零并纳入门禁**:strict scope(scheduler / tier1-scheduler / tier1-affinity / node-state / tier1-state / classify / key-rpm / token-usage)109 个 strict 错误全部如实修复——合并 stacks 单标签 JSDoc 使注解真正关联、config 缓存与 registry 条目补真实形状、`clampInt`/`readEnv` 按 `string | undefined` 契约标注、nullability(`modelId`/`excludeId`/`knownModels`)如实声明;无 `@ts-ignore`、无批量 any。`npm run typecheck:strict` 加入 `validate:merge`,strict scope 不允许新增错误。
+- `src/types/domain.d.ts` 新增 ambient `RoutableRequest`(scheduler 静态过滤入参,非 DOM Request);该文件保持 global declaration script(移除 `export {}`),跨模块 typedef 重新可供 checkJs 消费。
+- 轻量清理:移除 attempt 拆分后的未使用 import(`recordTtft`/`markProbeFailure`/`buildTargetUrl`)与 dashboard 失效 import(`MODEL_STATUS_RECENT_WINDOW_MS` in pages.js)。
+
+---
+
 
 ### Changed — 协议层架构收敛（OpenAI / Anthropic 双原生协议）
 

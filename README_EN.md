@@ -66,7 +66,7 @@ Production stores fork-specific non-sensitive Worker configuration in GitHub rep
 git push origin main
 ```
 
-The workflow validates configuration, synchronizes Worker variables and Secrets, applies D1 migrations, deploys the Worker, and runs live health checks. See **[docs/operations/deployment.md](docs/operations/deployment.md)**.
+The workflow runs the full validation suite (Production Gate), then validates configuration, synchronizes Worker variables and Secrets, applies D1 migrations BEFORE deploying the Worker, and runs live health checks. See **[docs/operations/deployment.md](docs/operations/deployment.md)**.
 
 ## Config
 
