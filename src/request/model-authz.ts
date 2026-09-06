@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT
-// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // Model authorization. v1.2.7 governance model.
@@ -32,12 +31,10 @@
 // visible/callable. Otherwise the key's allowlist is intersected with the
 // catalog.
 
+type AuthzShape = { authorized?: boolean, allowAll?: boolean, allowlist?: ReadonlySet<string> };
+
 // Returns a sorted array of model names visible to the current key.
-/**
- * @param {ReadonlySet<string>} knownModels
- * @param {{ authorized?: boolean, allowAll?: boolean, allowlist?: ReadonlySet<string> }} authz
- */
-export function filterVisibleModels(knownModels, authz) {
+export function filterVisibleModels(knownModels: ReadonlySet<string>, authz: AuthzShape): string[] {
   if (!knownModels || knownModels.size === 0) return [];
   if (!authz || !authz.authorized) return [];
   if (authz.allowAll) return [...knownModels].sort();
@@ -50,13 +47,7 @@ export function filterVisibleModels(knownModels, authz) {
 // Returns { allowed: boolean, status?: 401 | 403 | 404 }.
 // When allowed is false, `status` is 401/403/404 and the handler must return
 // that response without entering the scheduler.
-/**
- * @param {string} requestedModel
- * @param {ReadonlySet<string>} knownModels
- * @param {{ authorized?: boolean, allowAll?: boolean, allowlist?: ReadonlySet<string> }} authz
- * @returns {{ allowed: true } | { allowed: false, status: 401 | 403 | 404 }}
- */
-export function authorizeModel(requestedModel, knownModels, authz) {
+export function authorizeModel(requestedModel: string, knownModels: ReadonlySet<string>, authz: AuthzShape): { allowed: true } | { allowed: false, status: 401 | 403 | 404 } {
   // No key -> handled by the auth layer (401). If we somehow get here
   // without auth, fail closed.
   if (!authz || !authz.authorized) return { allowed: false, status: 401 };

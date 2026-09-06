@@ -21,9 +21,9 @@
  * State is isolate-local best-effort (Map); no KV/D1/DO on the hot path.
  */
 
-import { handleRequest } from './request/handler.js';
+import { handleRequest } from './request/handler.ts';
 import { isCountedRoute, gatewayStats, trackClientResponse } from './observability/gateway-stats.mjs';
-import { normalizePath } from './request/router.js';
+import { normalizePath } from './request/router.ts';
 import { sanitizedInternalError } from './observability/diagnostic-endpoints.mjs';
 import { maintainUsageStats } from './observability/token-usage-store.mjs';
 

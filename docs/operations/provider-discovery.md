@@ -31,7 +31,7 @@ Human Review
 Node / Model Registry Config
 ```
 
-Catalog 供人类和 CI 共同阅读；请求热路径中没有任何模块导入它。Runtime 请求热路径（`src/request/handler.js` → `src/scheduler/` → `src/transport/`）有意不受 Discovery 影响，也从不读取 `scripts/provider-discovery/*`。
+Catalog 供人类和 CI 共同阅读；请求热路径中没有任何模块导入它。Runtime 请求热路径（`src/request/handler.ts` → `src/scheduler/` → `src/transport/`）有意不受 Discovery 影响，也从不读取 `scripts/provider-discovery/*`。
 
 ## Catalog schema (v1.1)
 

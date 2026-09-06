@@ -25,7 +25,7 @@ const RETRY_AFTER_MAX_MS = 600_000;
 export const MIN_ATTEMPT_HEADERS_MS = 20_000;
 export const MIN_ATTEMPT_FIRST_EVENT_MS = 5_000;
 
-export interface Limits {
+export type Limits = {
   headersTimeoutMs: number,
   firstEventTimeoutMs: number,
   streamIdleTimeoutMs: number,

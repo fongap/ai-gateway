@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: MIT
-// @ts-check
 // Copyright (c) 2026 Fongap Studio
-// Part of src/request/attempt.js (behavior-preserving split); see
-// attempt/index.js for the module map.
+// Part of src/request/attempt.ts (behavior-preserving split); see
+// attempt/index.ts for the module map.
 
-// dispatch.js - one attempt against one node: outbound preparation (URL,
+// dispatch.ts - one attempt against one node: outbound preparation (URL,
 // headers, body, conversion context), timeout acquisition (fair-share header
 // wait), the upstream fetch, and the classification entry points for
 // non-OK / network / client-abort outcomes. Success handling lives in
-// success.js; the hedge race lives in hedge.js.
+// success.ts; the hedge race lives in hedge.ts.
 
 import { attemptHeadersTimeoutMs, attemptBudgetSliceMs } from '../../config/timeouts.ts';
 import { recordNeutralEnd, rollbackRpmBucket, bumpNodeCounters } from '../../reliability/node-state.ts';
@@ -18,16 +17,17 @@ import { buildTargetUrl, safeReadErrorBody } from '../../protocol/http.js';
 import { isOpenAIStreamingResponse, withUsageStreamOptions } from '../../protocol/openai.js';
 import { resolveUpstreamPath, buildUpstreamHeadersFor } from '../../transport/index.js';
 import { streamUsageSupported } from '../../config/provider-quirks.ts';
-import { gatewayError, buildClientErrorResponse } from '../errors.js';
-import { upstreamModelOf } from '../response-helpers.js';
-import { handleSuccess } from './success.js';
-import { recordOutcome, rotateWithNeutralEnd, noteFailure } from './outcome.js';
+import { gatewayError, buildClientErrorResponse } from '../errors.ts';
+import { upstreamModelOf } from '../response-helpers.ts';
+import { handleSuccess } from './success.ts';
+import { recordOutcome, rotateWithNeutralEnd, noteFailure } from './outcome.ts';
+import type { AttemptContext, AttemptOutcome } from '../../types/request.ts';
 
 const DIAGNOSTIC_BYTES = 4096;
 
-// AttemptContext and AttemptOutcome are defined in src/types/domain.d.ts
-// (the cross-module source of truth). attempt.js receives its context from
-// handler.js via dispatchWithHedge(args, tierNodes).
+// AttemptContext and AttemptOutcome are defined in src/types/request.ts
+// (the cross-module source of truth). attempt.ts receives its context from
+// handler.ts via dispatchWithHedge(args, tierNodes).
 
 // ---- One attempt against one node -----------------------------------------
 
@@ -38,11 +38,7 @@ const DIAGNOSTIC_BYTES = 4096;
 // charging from a failure-kind string. Successful dispatches get one debug
 // line here (failures log their own dispatch line inside recordOutcome), so
 // every upstream dispatch emits exactly one completion record.
-/**
- * @param {AttemptContext} c
- * @returns {Promise<AttemptOutcome>}
- */
-export async function attemptNode(c) {
+export async function attemptNode(c: AttemptContext): Promise<AttemptOutcome> {
   const outcome = await dispatchAttempt(c);
   if (outcome.budgetCharged === undefined) outcome.budgetCharged = true;
   if (outcome.response?.status === 200) {
@@ -66,11 +62,7 @@ export async function attemptNode(c) {
 }
 
 
-/**
- * @param {AttemptContext} c
- * @returns {Promise<AttemptOutcome>}
- */
-async function dispatchAttempt(c) {
+async function dispatchAttempt(c: AttemptContext): Promise<AttemptOutcome> {
   const {
     request, env, logger, requestId, route, node, requestedModel, clientWantsStream,
     fakeStream, bodyJson, limits, exposeUpstreamInfo, state,
@@ -96,7 +88,7 @@ async function dispatchAttempt(c) {
   // Cross-protocol fallback path uses the converted body built by the
   // conversionContext, with only the upstream model name rewritten.
   const upstreamModel = node.models[requestedModel] || requestedModel;
-  let outboundObject;
+  let outboundObject: Record<string, any>;
   if (route === 'openai_chat' && !conversionContext) {
     outboundObject = { ...sourceBody, model: upstreamModel, ...(fakeStream ? { stream: true } : {}) };
   } else if (conversionContext && conversionContext.fallbackSurface === 'chat_completions') {
@@ -119,7 +111,7 @@ async function dispatchAttempt(c) {
   }
   const outboundBody = JSON.stringify(outboundObject);
 
-  let targetUrl;
+  let targetUrl: URL | string;
   try {
     targetUrl = buildTargetUrl(node.baseUrl, resolveUpstreamPath(upstreamProtocol, surface));
   } catch {
@@ -136,9 +128,10 @@ async function dispatchAttempt(c) {
   // (limit=N, period=60), so it cannot express a different per-node
   // limits.rpm value. Treat it as approximate distributed shaping; the local
   // hard/soft semantics remain the source of truth for exact per-node counts.
-  if (node.limits.rpmMode === 'hard' && typeof env?.QUOTA_RATE_LIMITER?.limit === 'function') {
+  const rateLimiter = env?.QUOTA_RATE_LIMITER as { limit?: (args: { key: string }) => Promise<{ success?: boolean }> } | null | undefined;
+  if (node.limits.rpmMode === 'hard' && typeof rateLimiter?.limit === 'function') {
     try {
-      const verdict = await env.QUOTA_RATE_LIMITER.limit({ key: node.id });
+      const verdict = await rateLimiter.limit({ key: node.id });
       if (verdict && verdict.success === false) {
         // Distributed-limit denied: the request never reached an upstream, so
         // it must NOT consume any failover budget — neither the shared attempt
@@ -198,7 +191,7 @@ async function dispatchAttempt(c) {
   // A hedged TWIN does not get a fresh slice: it inherits the logical
   // attempt's absolute deadline (primary + twin share ONE budget), so its
   // header wait is simply the time left until that deadline.
-  let attemptHeadersTimeout;
+  let attemptHeadersTimeout: number;
   if (c.hedgedAttempt && c.attemptDeadlineMs) {
     attemptHeadersTimeout = attemptHeadersTimeoutMs(
       limits.headersTimeoutMs,
@@ -225,7 +218,7 @@ async function dispatchAttempt(c) {
   const detach = () => request.signal?.removeEventListener('abort', onClientAbort);
 
   const startMs = Date.now();
-  let upstream;
+  let upstream: Response;
   try {
     upstream = await fetch(targetUrl, {
       method: 'POST',

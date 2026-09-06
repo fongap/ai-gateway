@@ -1,20 +1,21 @@
 // SPDX-License-Identifier: MIT
-// @ts-check
 // Copyright (c) 2026 Fongap Studio
-// Part of src/request/attempt.js (behavior-preserving split); see
-// attempt/index.js for the module map.
+// Part of src/request/attempt.ts (behavior-preserving split); see
+// attempt/index.ts for the module map.
 
-// hedge.js - reactive per-try hedge (Envoy-style): the hedge delay race,
+// hedge.ts - reactive per-try hedge (Envoy-style): the hedge delay race,
 // twin selection through the same protocol/surface-gated selector as the
 // primary, the shared logical-attempt deadline, and the winner/loser
 // lifecycle including abort of the losing side.
 
 import { pickCandidate } from '../../scheduler/scheduler.ts';
 import { pickTier1Candidate } from '../../scheduler/tier1-scheduler.ts';
-import { attemptNode } from './dispatch.js';
+import { attemptNode } from './dispatch.ts';
+import type { AttemptContext, AttemptOutcome } from '../../types/request.ts';
+import type { RuntimeNode } from '../../types/node.ts';
+import type { PickedCandidate } from '../../types/scheduler.ts';
 
-/** @param {number} ms */
-const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleepMs = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 // ---- Hedged dispatch (reactive per-try hedge, Envoy-style) -----------------
 // A slow-but-alive node is the dominant tail-latency source: the scheduler
@@ -34,23 +35,17 @@ const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // absolute attempt deadline instead of being handed a fresh one. See The Tail
 // at Scale (Dean & Barroso, 2013) for the underlying technique and its
 // overload caveat.
-/**
- * @param {AttemptContext} args
- * @param {ReadonlyArray<RuntimeNode>} tierNodes
- * @returns {Promise<AttemptOutcome>}
- */
-export async function dispatchWithHedge(args, tierNodes) {
+export async function dispatchWithHedge(args: AttemptContext, tierNodes: ReadonlyArray<RuntimeNode>): Promise<AttemptOutcome> {
   // Resolve effective hedge config: policy.hedge (per-model) overrides
   // the global env defaults. Tier 3 (paid) nodes NEVER hedge by default
   // — two paid requests in parallel is rarely worth the cost. To hedge
   // a paid tier, opt in via policy.hedge.tiers=['tier3'] or policy: 'stable'.
   const hedgePolicy = args.policy?.hedge ?? null;
-  /** @type {'tier1' | 'tier2' | 'tier3'} */
-  const tierKey = `tier${args.tierNumber}`;
+  const tierKey: 'tier1' | 'tier2' | 'tier3' = `tier${args.tierNumber}`;
   if (args.tierNumber === 3 && !(hedgePolicy && hedgePolicy.tiers && hedgePolicy.tiers.includes('tier3') && hedgePolicy.enabled !== false)) {
     return attemptNode(args);
   }
-  let hedgeDelayMs, maxHedges;
+  let hedgeDelayMs: number, maxHedges: number;
   if (hedgePolicy) {
     if (hedgePolicy.enabled === false) return attemptNode(args);
     if (hedgePolicy.tiers && !hedgePolicy.tiers.includes(tierKey)) return attemptNode(args);
@@ -99,8 +94,7 @@ export async function dispatchWithHedge(args, tierNodes) {
   // dispatch or a legitimate loser lifecycle.
   const legacyTwin = args.tierNumber === 1
     ? null : pickCandidate(tierNodes, args.reqDescriptor, args.state.attempted, Date.now(), args.node.id);
-  /** @type {PickedCandidate | null} */
-  const twinPick = args.tierNumber === 1
+  const twinPick: PickedCandidate | null = args.tierNumber === 1
     ? pickTier1Candidate(tierNodes, args.reqDescriptor, args.state.attempted, {
       excludeId: args.node.id,
       now: Date.now(),
@@ -112,7 +106,7 @@ export async function dispatchWithHedge(args, tierNodes) {
   if (!twinPick || twinPick.raceLost) return primary;
   // The raceLost guard above is exactly the "no node picked" case, so node is
   // defined here by the picker's contract.
-  const twinNode = /** @type {RuntimeNode} */ (twinPick.node);
+  const twinNode = twinPick.node as RuntimeNode;
 
   args.state.hedges++;
   primaryArgs.hedgedWithTwin = true;
@@ -125,10 +119,11 @@ export async function dispatchWithHedge(args, tierNodes) {
 
   // Both sides get an external abort handle up front so the loser can be
   // cancelled no matter which one wins the race.
-  const twinArgs = {
+  const twinArgs: AttemptContext = {
     ...args, node: twinNode, hedgeAbort: new AbortController(), hedgedAttempt: true,
-    // THE shared logical attempt deadline (absolute; not re-sliced).
-    attemptDeadlineMs: /** @type {number} */ (primaryArgs.attemptDeadlineMs),
+    // THE shared logical attempt deadline (absolute; not re-sliced). The
+    // in-flight primary has set it by the time the twin launches.
+    attemptDeadlineMs: primaryArgs.attemptDeadlineMs as number,
     tier1ReleaseToken: twinPick.releaseToken || null,
     tier1EscapedFromAffinity: !!twinPick.escapedFromAffinity,
     tier1UpdateAffinity: !!twinPick.updateAffinity,
@@ -145,14 +140,10 @@ export async function dispatchWithHedge(args, tierNodes) {
   return new Promise((resolve) => {
     let resolved = false;
     let settled = 0;
-    /** @type {AttemptOutcome | null} */
-    let firstFailure = null;
-    /** @type {AttemptOutcome | null} */
-    let primaryOutcome = null;
-    /** @type {AttemptOutcome | null} */
-    let twinOutcome = null;
-    /** @param {AttemptOutcome} outcome @param {AttemptContext} winnerArgs @param {{ abort: Function } | null} loserAbort */
-  const win = (outcome, winnerArgs, loserAbort) => {
+    let firstFailure: AttemptOutcome | null = null;
+    let primaryOutcome: AttemptOutcome | null = null;
+    let twinOutcome: AttemptOutcome | null = null;
+    const win = (outcome: AttemptOutcome, winnerArgs: AttemptContext, loserAbort: { abort: Function } | null | undefined) => {
       if (resolved) {
         // Lost after the winner was chosen: drop any committed stream so no
         // upstream keeps streaming into the void.
@@ -163,13 +154,12 @@ export async function dispatchWithHedge(args, tierNodes) {
       loserAbort?.abort();
       args.logger.info(
         `hedge winner: request=${args.requestId} logical_attempt=${logicalAttemptNo}/${args.state.maxAttempts}`
-        + ` winner=${/** @type {RuntimeNode} */ (winnerArgs.node).id} loser=${(winnerArgs === primaryArgs ? twinNode : args.node).id}`
+        + ` winner=${winnerArgs.node.id} loser=${(winnerArgs === primaryArgs ? twinNode : args.node).id}`
         + ` winner_ttft_ms=${winnerArgs.ttftMs ?? -1}`,
       );
       resolve(outcome);
     };
-    /** @param {AttemptOutcome} outcome @param {boolean} isPrimary @param {{ abort: Function } | null} loserAbort */
-    const onSettled = (outcome, isPrimary, loserAbort) => {
+    const onSettled = (outcome: AttemptOutcome, isPrimary: boolean, loserAbort: { abort: Function } | null | undefined) => {
       settled++;
       if (isPrimary) primaryOutcome = outcome; else twinOutcome = outcome;
       if (outcome.response) win(outcome, isPrimary ? primaryArgs : twinArgs, loserAbort);

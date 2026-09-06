@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT
-// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // Gateway access-key authentication. v1.2.7 governance model.
@@ -24,34 +23,25 @@
 // label is used in logs/stats.
 
 import { loadAccessKeysConfig } from '../config/access-keys.ts';
+import type { AuthResult } from '../types/request.ts';
 
-/** @type {string | null} */
-let cachedAccessKey = null;
-/** @type {Uint8Array | null} */
-let cachedAccessKeyDigest = null;
+export type { AuthResult };
 
-/** @param {unknown} text @returns {Promise<ArrayBuffer>} */
-function sha256Digest(text) {
+let cachedAccessKey: string | null = null;
+let cachedAccessKeyDigest: Uint8Array | null = null;
+
+function sha256Digest(text: unknown): Promise<ArrayBuffer> {
   return crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(text ?? '')));
 }
 
-/**
- * @param {Uint8Array} a
- * @param {Uint8Array} b
- * @returns {boolean}
- */
-function constantTimeEquals(a, b) {
+function constantTimeEquals(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false;
   let result = 0;
   for (let i = 0; i < a.length; i++) result |= a[i] ^ b[i];
   return result === 0;
 }
 
-/**
- * @param {string} accessKey
- * @returns {Promise<Uint8Array>}
- */
-function getLegacyAccessKeyDigest(accessKey) {
+function getLegacyAccessKeyDigest(accessKey: string): Promise<Uint8Array> {
   if (cachedAccessKey === accessKey && cachedAccessKeyDigest) return Promise.resolve(cachedAccessKeyDigest);
   return sha256Digest(accessKey).then((digest) => {
     cachedAccessKey = accessKey;
@@ -60,44 +50,24 @@ function getLegacyAccessKeyDigest(accessKey) {
   });
 }
 
-/**
- * @param {string | null | undefined} value
- * @returns {string}
- */
-function parseBearer(value) {
+function parseBearer(value: string | null | undefined): string {
   const raw = String(value || '').trim();
   if (!raw.toLowerCase().startsWith('bearer ')) return '';
   const token = raw.slice(7).trim();
   return token || '';
 }
 
-/**
- * @param {Request} request
- * @returns {string[]}
- */
-function presentedCredentials(request) {
+function presentedCredentials(request: Request): string[] {
   const bearer = parseBearer(request.headers.get('authorization'));
   const xApiKey = String(request.headers.get('x-api-key') || '').trim();
-  const presented = [];
+  const presented: string[] = [];
   if (bearer) presented.push(bearer);
   if (xApiKey) presented.push(xApiKey);
   return presented;
 }
 
-// Resolve the request to an auth result:
-//   { authorized, mode, group?, allowAll, allowlist }
-//
-// `mode` is 'grouped' (new system), 'legacy' (GATEWAY_ACCESS_KEY), or 'none'.
-// `group` is the credential group label ('AIR', 'PRO', 'MAX', 'ULTRA',
-// 'AGENT', or 'LEGACY'). It is the only non-secret identifier used in logs.
-// `allowlist` is a Set<string>; when undefined the key grants all models
-// (legacy behaviour or explicit GATEWAY_ACCESS_MODELS_<GROUP>="*").
-// `allowAll` is true when the group's allowlist is "*" (or legacy).
-/**
- * @param {Request} request
- * @param {Record<string, any>} env
- */
-export async function authorize(request, env) {
+// Resolve the request to an auth result (see AuthResult).
+export async function authorize(request: Request, env: Record<string, unknown>): Promise<AuthResult> {
   const presented = presentedCredentials(request);
   if (presented.length === 0) return { authorized: false, mode: 'none' };
 
@@ -126,12 +96,7 @@ export async function authorize(request, env) {
 }
 
 // Backward-compatible shim: returns true/false only (legacy callers).
-/**
- * @param {Request} request
- * @param {string | undefined} accessKey
- * @returns {Promise<boolean>}
- */
-export async function isAuthorized(request, accessKey) {
+export async function isAuthorized(request: Request, accessKey: string | undefined): Promise<boolean> {
   if (accessKey === undefined) {
     return false;
   }

@@ -18,8 +18,7 @@
     "strictNullChecks": false
   },
   "include": [
-    "src/**/*.ts",
-    "src/request/**/*.js"
+    "src/**/*.ts"
   ],
   "exclude": [
     "node_modules",
