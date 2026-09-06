@@ -16,9 +16,9 @@
 // planned as a separate behavior-preserving refactor.
 
 import { TIER_ORDER } from './router.js';
-import { pickCandidate, tierHasDispatchableNode, countDispatchableNodes } from '../scheduler/scheduler.js';
-import { pickTier1Candidate } from '../scheduler/tier1-scheduler.js';
-import { tier1HasDispatchableNode, tier1CountDispatchableNodes, TIER1_MAX_ATTEMPTS } from '../reliability/tier1-state.js';
+import { pickCandidate, tierHasDispatchableNode, countDispatchableNodes } from '../scheduler/scheduler.ts';
+import { pickTier1Candidate } from '../scheduler/tier1-scheduler.ts';
+import { tier1HasDispatchableNode, tier1CountDispatchableNodes, TIER1_MAX_ATTEMPTS } from '../reliability/tier1-state.ts';
 
 // Tier-aware picker. Tier 1 uses P2C + affinity + tier1-state eligibility;
 // Tier 2/3 use the existing node-state pickCandidate unchanged. Returns

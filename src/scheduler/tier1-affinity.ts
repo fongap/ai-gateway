@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT
-// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // Tier 1 session affinity is a soft score bias. The deployed Worker has no
@@ -13,7 +12,7 @@
 // is never stored as a Map key; a stable synchronous hash is used instead so
 // no plaintext session ID lingers in isolate memory beyond the request scope.
 
-import { TIER1_AFFINITY_FACTOR } from '../reliability/tier1-state.js';
+import { TIER1_AFFINITY_FACTOR } from '../reliability/tier1-state.ts';
 
 const KV_BINDING = 'TIER1_AFFINITY';
 const KEY_PREFIX = 'affinity:v1:';
@@ -31,26 +30,31 @@ const ESCAPE_THRESHOLD = 1.5;
 const CACHE_MAX_ENTRIES = 500;
 const ESCAPE_MAX_ENTRIES = 500;
 
+// Structural slice of the KV binding this module actually uses. The raw
+// binding arrives as an untyped env value and is validated structurally in
+// kvOf() before use.
+type AffinityKV = {
+  get(key: string, options?: unknown): Promise<string | null | undefined>,
+  put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>,
+};
+
 // ---- Bounded TTL Map ---------------------------------------------------------
 // A minimal Map wrapper with TTL + max capacity + active cleanup. Eviction
 // policy: expired entries first (any position), then oldest-inserted first
 // (Map preserves insertion order in JS). No precise LRU — see the task spec:
 // "不需要实现复杂精准 LRU".
-class BoundedTtlMap {
-  /**
-   * @param {number} maxEntries
-   * @param {number} ttlMs
-   */
-  constructor(maxEntries, ttlMs) {
+class BoundedTtlMap<V> {
+  private _map: Map<string, { value: V, expiresAt: number }>;
+  private _max: number;
+  private _ttlMs: number;
+
+  constructor(maxEntries: number, ttlMs: number) {
     this._map = new Map();
     this._max = maxEntries;
     this._ttlMs = ttlMs;
   }
 
-  /**
-   * @param {string} key
-   */
-  get(key) {
+  get(key: string): V | undefined {
     const entry = this._map.get(key);
     if (!entry) return undefined;
     if (entry.expiresAt <= Date.now()) {
@@ -60,12 +64,7 @@ class BoundedTtlMap {
     return entry.value;
   }
 
-  /**
-   * @param {string} key
-   * @param {unknown} value
-   * @param {number} [ttlMs]
-   */
-  set(key, value, ttlMs) {
+  set(key: string, value: V, ttlMs?: number): void {
     const expiresAt = Date.now() + (ttlMs ?? this._ttlMs);
     // If the key already exists, update in place (preserves insertion order).
     if (this._map.has(key)) {
@@ -77,22 +76,19 @@ class BoundedTtlMap {
     this._map.set(key, { value, expiresAt });
   }
 
-  /**
-   * @param {string} key
-   */
-  delete(key) {
+  delete(key: string): void {
     this._map.delete(key);
   }
 
-  clear() {
+  clear(): void {
     this._map.clear();
   }
 
-  get size() {
+  get size(): number {
     return this._map.size;
   }
 
-  _evict() {
+  private _evict(): void {
     const now = Date.now();
     // Pass 1: delete all expired entries.
     for (const [k, e] of this._map) {
@@ -111,29 +107,23 @@ class BoundedTtlMap {
   }
 }
 
-const cache = new BoundedTtlMap(CACHE_MAX_ENTRIES, CACHE_TTL_MS);
+const cache = new BoundedTtlMap<string | null>(CACHE_MAX_ENTRIES, CACHE_TTL_MS);
 // Escape counters have no natural TTL — they track request frequency per
 // session. Use a generous TTL (same as the escape check window) so stale
 // counters for sessions that stop sending are eventually cleaned up.
-const escapeCounters = new BoundedTtlMap(ESCAPE_MAX_ENTRIES, ESCAPE_CHECK_MS);
+const escapeCounters = new BoundedTtlMap<{ requests: number, lastCheck: number }>(ESCAPE_MAX_ENTRIES, ESCAPE_CHECK_MS);
 
 const stats = {
   reads: 0, hits: 0, misses: 0, writes: 0, writeFailures: 0,
   selections: 0, selectionHits: 0, escapes: 0,
 };
 
-/**
- * @param {Record<string, any>} env
- */
-function kvOf(env) {
-  const kv = env?.[KV_BINDING];
-  return kv && typeof kv.get === 'function' && typeof kv.put === 'function' ? kv : null;
+function kvOf(env: Record<string, unknown>): AffinityKV | null {
+  const kv = env?.[KV_BINDING] as Partial<AffinityKV> | null | undefined;
+  return kv && typeof kv.get === 'function' && typeof kv.put === 'function' ? kv as AffinityKV : null;
 }
 
-/**
- * @param {string} sessionId
- */
-async function affinityKey(sessionId) {
+async function affinityKey(sessionId: string): Promise<string> {
   const bytes = new TextEncoder().encode(sessionId);
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
   const hash = [...digest].map((byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -145,10 +135,7 @@ async function affinityKey(sessionId) {
 // async crypto call (shouldEvaluateAffinity is synchronous). FNV-1a 32-bit
 // is sufficient — it only needs to be a stable, collision-resistant-enough
 // derivation of the session ID, not a secret.
-/**
- * @param {string} sessionId
- */
-function sessionHash(sessionId) {
+function sessionHash(sessionId: string): string {
   const str = String(sessionId);
   let hash = 0x811c9dc5;
   for (let i = 0; i < str.length; i++) {
@@ -158,21 +145,14 @@ function sessionHash(sessionId) {
   return 'h' + (hash >>> 0).toString(16).padStart(8, '0');
 }
 
-/**
- * @param {Request} request
- */
-export function resolveTier1SessionId(request) {
+export function resolveTier1SessionId(request: Request): string | null {
   const raw = request?.headers?.get?.('x-session-id');
   if (typeof raw !== 'string') return null;
   const id = raw.trim();
   return id.length >= 8 && id.length <= 128 ? id : null;
 }
 
-/**
- * @param {Record<string, any>} env
- * @param {string} sessionId
- */
-export async function readTier1Affinity(env, sessionId) {
+export async function readTier1Affinity(env: Record<string, unknown>, sessionId: string): Promise<string | null> {
   if (!sessionId) return null;
   const kv = kvOf(env);
   if (!kv) return null;
@@ -181,7 +161,7 @@ export async function readTier1Affinity(env, sessionId) {
   const cached = cache.get(key);
   if (cached !== undefined) { return cached; }
   stats.reads++;
-  let accountId = null;
+  let accountId: string | null = null;
   try {
     const value = await kv.get(key);
     if (typeof value === 'string' && value.length > 0 && value.length <= 64) accountId = value;
@@ -193,13 +173,7 @@ export async function readTier1Affinity(env, sessionId) {
 
 // Called only for a cold session's first Tier 1 success or a successful
 // migration. Repeated successes on the same account perform no KV write.
-/**
- * @param {Record<string, any>} env
- * @param {{ waitUntil?: Function }} ctx
- * @param {string} sessionId
- * @param {string} accountId
- */
-export function writeTier1Affinity(env, ctx, sessionId, accountId) {
+export function writeTier1Affinity(env: Record<string, unknown>, ctx: { waitUntil?: Function }, sessionId: string, accountId: string): boolean {
   const kv = kvOf(env);
   if (!sessionId || !accountId || !kv) return false;
   const operation = (async () => {
@@ -214,11 +188,7 @@ export function writeTier1Affinity(env, ctx, sessionId, accountId) {
   return true;
 }
 
-/**
- * @param {string | null} sessionId
- * @param {number} [now]
- */
-export function shouldEvaluateAffinity(sessionId, now = Date.now()) {
+export function shouldEvaluateAffinity(sessionId: string | null, now: number = Date.now()): boolean {
   if (!sessionId) return false;
   const hashedKey = sessionHash(sessionId);
   const counter = escapeCounters.get(hashedKey);
@@ -235,33 +205,22 @@ export function shouldEvaluateAffinity(sessionId, now = Date.now()) {
   return false;
 }
 
-/**
- * @param {number} affinityScore
- * @param {number} winnerScore
- */
-export function affinityShouldEscape(affinityScore, winnerScore) {
+export function affinityShouldEscape(affinityScore: number, winnerScore: number): boolean {
   return Number.isFinite(affinityScore) && Number.isFinite(winnerScore)
     && affinityScore > winnerScore * ESCAPE_THRESHOLD;
 }
 
-/**
- * @param {string} accountId
- * @param {string | null} affinityAccountId
- */
-export function tier1AffinityFactor(accountId, affinityAccountId) {
+export function tier1AffinityFactor(accountId: string, affinityAccountId: string | null): number {
   return affinityAccountId && accountId === affinityAccountId ? TIER1_AFFINITY_FACTOR : 1;
 }
 
-export function recordTier1AffinityDecision({ affinityHit = false, escaped = false } = {}) {
+export function recordTier1AffinityDecision({ affinityHit = false, escaped = false }: { affinityHit?: boolean, escaped?: boolean } = {}): void {
   stats.selections++;
   if (affinityHit) stats.selectionHits++;
   if (escaped) stats.escapes++;
 }
 
-/**
- * @param {Record<string, any>} env
- */
-export function snapshotTier1Affinity(env) {
+export function snapshotTier1Affinity(env: Record<string, unknown>) {
   return {
     storage: 'kv',
     binding: KV_BINDING,
@@ -276,7 +235,7 @@ export function snapshotTier1Affinity(env) {
   };
 }
 
-export function __resetTier1AffinityForTests() {
+export function __resetTier1AffinityForTests(): void {
   cache.clear();
   escapeCounters.clear();
   Object.assign(stats, {

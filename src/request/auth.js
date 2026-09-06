@@ -23,7 +23,7 @@
 // Raw secrets never leave this module. Only the low-cardinality group
 // label is used in logs/stats.
 
-import { loadAccessKeysConfig } from '../config/access-keys.js';
+import { loadAccessKeysConfig } from '../config/access-keys.ts';
 
 /** @type {string | null} */
 let cachedAccessKey = null;

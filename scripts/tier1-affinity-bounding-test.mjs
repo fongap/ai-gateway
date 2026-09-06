@@ -20,7 +20,7 @@ import {
   shouldEvaluateAffinity,
   __resetTier1AffinityForTests,
   snapshotTier1Affinity,
-} from '../src/scheduler/tier1-affinity.js';
+} from '../src/scheduler/tier1-affinity.ts';
 
 let passed = 0;
 function test(name, fn) {

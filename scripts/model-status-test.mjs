@@ -16,8 +16,8 @@ import {
   MODEL_STATUS_RECENT_WINDOW_MS,
 } from '../src/runtime/model-status.js';
 import { queryRecentModelEvidence } from '../src/observability/token-usage-store.mjs';
-import { __resetTier1StateForTests, getTier1Model, recordTier1Ttft } from '../src/reliability/tier1-state.js';
-import { __resetAllStateForTests } from '../src/reliability/node-state.js';
+import { __resetTier1StateForTests, getTier1Model, recordTier1Ttft } from '../src/reliability/tier1-state.ts';
+import { __resetAllStateForTests } from '../src/reliability/node-state.ts';
 import { createMockD1 } from './mock-d1-database.mjs';
 
 const HOUR = 3_600_000;

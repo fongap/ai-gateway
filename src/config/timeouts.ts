@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: MIT
-// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // Single source of truth for every timeout / cooldown value.
 // Do not hardcode timeout defaults anywhere else.
 
-import { readEnv, clampInt } from './env.js';
-import { RUNTIME_TUNABLES } from './runtime-vars.js';
+import { readEnv, clampInt } from './env.ts';
+import { RUNTIME_TUNABLES } from './runtime-vars.ts';
 
-// Derived from the single source of truth in runtime-vars.js. Do not add
+// Derived from the single source of truth in runtime-vars.ts. Do not add
 // tunable definitions here — add them there so the deployment bridge, docs
 // and example configs stay in sync automatically.
-const LIMITS = Object.fromEntries(
+const LIMITS: Record<string, { min: number, max: number, def: number }> = Object.fromEntries(
   RUNTIME_TUNABLES.map((v) => [v.name, { min: v.min, max: v.max, def: v.def }]),
 );
 
@@ -26,26 +25,29 @@ const RETRY_AFTER_MAX_MS = 600_000;
 export const MIN_ATTEMPT_HEADERS_MS = 20_000;
 export const MIN_ATTEMPT_FIRST_EVENT_MS = 5_000;
 
+export interface Limits {
+  headersTimeoutMs: number,
+  firstEventTimeoutMs: number,
+  streamIdleTimeoutMs: number,
+  rateLimitCooldownMs: number,
+  authFailCooldownMs: number,
+  maxBodyBytes: number,
+  failoverBudgetMs: number,
+  hedgeDelayMs: number,
+  maxHedgesPerRequest: number,
+  gatewayKeyRpm: number,
+}
+
 // One dispatch gets one wall-clock slice. Response headers and the first SSE
 // event both consume this SAME slice; callers turn it into an absolute
 // deadline. Without an attempt deadline the two serial phases could each take
 // a separately calculated fair share and still starve later candidates.
-/**
- * @param {number} remainingBudgetMs
- * @param {number} remainingAttempts
- */
-export function attemptBudgetSliceMs(remainingBudgetMs, remainingAttempts) {
+export function attemptBudgetSliceMs(remainingBudgetMs: number, remainingAttempts: number): number {
   const attempts = Math.max(1, Math.trunc(remainingAttempts) || 1);
   return Math.max(1, Math.floor(Math.max(0, remainingBudgetMs) / attempts));
 }
 
-/**
- * @param {number} configuredTimeoutMs
- * @param {number} remainingBudgetMs
- * @param {number} remainingAttempts
- * @param {number} floorMs
- */
-function fairShareTimeoutMs(configuredTimeoutMs, remainingBudgetMs, remainingAttempts, floorMs) {
+function fairShareTimeoutMs(configuredTimeoutMs: number, remainingBudgetMs: number, remainingAttempts: number, floorMs: number): number {
   const attempts = Math.max(1, Math.trunc(remainingAttempts) || 1);
   const budget = Math.max(0, remainingBudgetMs);
   const share = Math.floor(budget / attempts);
@@ -65,12 +67,7 @@ function fairShareTimeoutMs(configuredTimeoutMs, remainingBudgetMs, remainingAtt
 // spent on real candidates). The result is still capped by
 // UPSTREAM_HEADERS_TIMEOUT_MS and by the remaining budget itself — a single
 // remaining attempt keeps the old behavior exactly (share = remaining).
-/**
- * @param {number} headersTimeoutMs
- * @param {number} remainingBudgetMs
- * @param {number} remainingAttempts
- */
-export function attemptHeadersTimeoutMs(headersTimeoutMs, remainingBudgetMs, remainingAttempts) {
+export function attemptHeadersTimeoutMs(headersTimeoutMs: number, remainingBudgetMs: number, remainingAttempts: number): number {
   return fairShareTimeoutMs(
     headersTimeoutMs, remainingBudgetMs, remainingAttempts, MIN_ATTEMPT_HEADERS_MS,
   );
@@ -81,23 +78,15 @@ export function attemptHeadersTimeoutMs(headersTimeoutMs, remainingBudgetMs, rem
 // otherwise an upstream that returns HTTP 200/SSE headers and then stays
 // silent can consume FIRST_EVENT_TIMEOUT_MS in full and recreate the exact
 // starvation that fair header waits prevent.
-/**
- * @param {number} firstEventTimeoutMs
- * @param {number} remainingBudgetMs
- * @param {number} remainingAttempts
- */
-export function attemptFirstEventTimeoutMs(firstEventTimeoutMs, remainingBudgetMs, remainingAttempts) {
+export function attemptFirstEventTimeoutMs(firstEventTimeoutMs: number, remainingBudgetMs: number, remainingAttempts: number): number {
   return fairShareTimeoutMs(
     firstEventTimeoutMs, remainingBudgetMs, remainingAttempts, MIN_ATTEMPT_FIRST_EVENT_MS,
   );
 }
 
-const cache = new WeakMap();
+const cache = new WeakMap<object, Limits>();
 
-/**
- * @param {Record<string, any>} env
- */
-export function getLimits(env) {
+export function getLimits(env: Record<string, unknown>): Limits {
   let cached = cache.get(env);
   if (cached) return cached;
   cached = {
@@ -118,11 +107,7 @@ export function getLimits(env) {
 
 // Parse a Retry-After header. Supports delay-seconds and HTTP-date forms.
 // Returns milliseconds clamped to [RETRY_AFTER_MIN_MS, RETRY_AFTER_MAX_MS], or 0 when absent/invalid.
-/**
- * @param {Headers} headers
- * @param {number} [now]
- */
-export function parseRetryAfterMs(headers, now = Date.now()) {
+export function parseRetryAfterMs(headers: Headers, now: number = Date.now()): number {
   const value = headers?.get('retry-after');
   if (!value) return 0;
   const seconds = Number(value);

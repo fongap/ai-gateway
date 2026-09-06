@@ -42,7 +42,7 @@
 // Public-safety: this module NEVER reads credentials, node ids, providers or
 // tiers into its outputs. The return value is a list of { id, status } only.
 
-import { loadModelRegistry, servesModel, collectKnownModels } from '../config/registry.js';
+import { loadModelRegistry, servesModel, collectKnownModels } from '../config/registry.ts';
 import { getRuntimeAvailability } from './availability.js';
 import { normalizeModelKey } from '../observability/token-usage-store.mjs';
 

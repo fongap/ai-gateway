@@ -639,7 +639,7 @@ test('Discovery does not synthesize or create Runtime Nodes', () => {
 });
 
 test('count_tokens mismatch is NOT a Runtime Node conflict (Runtime schema does not declare it)', () => {
-  // Runtime Node schema (src/config/nodes.js) does not list count_tokens
+  // Runtime Node schema (src/config/nodes.ts) does not list count_tokens
   // in any protocol's allowed surfaces. The Runtime consistency layer
   // must therefore ignore count_tokens in the conflict path. We test
   // that by submitting a runtime view that mentions count_tokens (the

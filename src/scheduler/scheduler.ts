@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT
-// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // Dynamic candidate selection.
@@ -31,8 +30,11 @@
 // explicit request descriptor; no scheduler call ever crosses the boundary
 // on its own.
 
-import { peekAvailability, acquireSlot, getNodeState, rpmUsage, isModelCooling, getModelPerf } from '../reliability/node-state.js';
-import { servesModel } from '../config/registry.js';
+import { peekAvailability, acquireSlot, getNodeState, rpmUsage, isModelCooling, getModelPerf } from '../reliability/node-state.ts';
+import { servesModel } from '../config/registry.ts';
+import type { RuntimeNode } from '../types/node.ts';
+import type { RoutableRequest } from '../types/scheduler.ts';
+import type { NodeState, ModelPerfEntry } from '../types/reliability.ts';
 
 // A request descriptor: { model, protocol, surface }. Every selection helper
 // below filters candidates through ALL THREE dimensions — a node is eligible
@@ -40,12 +42,7 @@ import { servesModel } from '../config/registry.js';
 // surface, and it serves the logical model. `knownModels` is the Known Model
 // Catalog (collectKnownModels): it bounds wildcard nodes so an empty-models
 // node serves only models that actually exist somewhere in the gateway.
-/**
- * @param {RuntimeNode} node
- * @param {RoutableRequest} req
- * @param {ReadonlySet<string> | null} [knownModels]
- */
-export function supportsRequest(node, req, knownModels) {
+export function supportsRequest(node: RuntimeNode, req: RoutableRequest, knownModels?: ReadonlySet<string> | null): boolean {
   if (!req || typeof req !== 'object') return false;
   if (node.protocol !== req.protocol) return false;
   if (!Array.isArray(node.surfaces) || !node.surfaces.includes(req.surface)) return false;
@@ -54,11 +51,7 @@ export function supportsRequest(node, req, knownModels) {
   return servesModel(node, req.model, knownModels);
 }
 
-/**
- * @param {RuntimeNode} node
- * @param {number} now
- */
-function underRpmCap(node, now) {
+function underRpmCap(node: RuntimeNode, now: number): boolean {
   const rpm = node.limits.rpm;
   if (!rpm) return true;
   return rpmUsage(node.id, now) < rpm;
@@ -67,18 +60,14 @@ function underRpmCap(node, now) {
 // A HARD rpm cap is a real upstream/account quota: once the isolate-local
 // counter reaches it the node must not be dispatched again this minute.
 // SOFT caps (explicit "rpm_mode": "soft") keep the old best-effort behavior.
-/**
- * @param {RuntimeNode} node
- * @param {number} [now]
- */
-export function isHardRpmExhausted(node, now = Date.now()) {
+export function isHardRpmExhausted(node: RuntimeNode, now: number = Date.now()): boolean {
   const rpm = node.limits.rpm;
   if (!rpm || node.limits.rpmMode === 'soft') return false;
   return rpmUsage(node.id, now) >= rpm;
 }
 
 // Seconds until the current RPM minute window resets (for Retry-After).
-export function rpmWindowRetryAfterSec(now = Date.now()) {
+export function rpmWindowRetryAfterSec(now: number = Date.now()): number {
   return Math.max(1, Math.ceil((60_000 - (now % 60_000)) / 1000));
 }
 
@@ -98,19 +87,11 @@ export function rpmWindowRetryAfterSec(now = Date.now()) {
 //   knownModels (optional) is the Known Model Catalog; it bounds wildcard
 //   nodes so an empty-models node only serves catalog models. The request path
 //   always passes it (defense in depth on top of the preflight authz gate).
-/**
- * @param {ReadonlyArray<RuntimeNode>} tierNodes
- * @param {RoutableRequest} req
- * @param {Set<string>} attempted
- * @param {number} [now]
- * @param {string | null} [excludeId]
- * @param {ReadonlySet<string> | null} [knownModels]
- */
-export function pickCandidate(tierNodes, req, attempted, now = Date.now(), excludeId = null, knownModels) {
-  let best = null;
-  let bestState = null;
-  let bestUncapped = null;
-  let bestUncappedState = null;
+export function pickCandidate(tierNodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, now: number = Date.now(), excludeId: string | null = null, knownModels?: ReadonlySet<string> | null): RuntimeNode | null {
+  let best: RuntimeNode | null = null;
+  let bestState: NodeState | null = null;
+  let bestUncapped: RuntimeNode | null = null;
+  let bestUncappedState: NodeState | null = null;
 
   for (const node of tierNodes) {
     if (node.id === excludeId) continue;
@@ -123,14 +104,16 @@ export function pickCandidate(tierNodes, req, attempted, now = Date.now(), exclu
     const s = getNodeState(node.id);
     if (s.activeRequests >= node.limits.concurrency) continue;
       if (underRpmCap(node, now)) {
-        if (!best || betterThan(s, node, bestState, best, req.model, now)) {
+        // bestState is assigned on every assignment of best (single-writer
+        // invariant of this loop), so the assertion only restates that pair.
+        if (!best || betterThan(s, node, bestState as NodeState, best, req.model, now)) {
           best = node;
           bestState = s;
         }
       }
     // Only SOFT-capped (or uncapped) nodes may serve past their counter.
     if (!isHardRpmExhausted(node, now)) {
-      if (!bestUncapped || betterThan(s, node, bestUncappedState, bestUncapped, req.model, now)) {
+      if (!bestUncapped || betterThan(s, node, bestUncappedState as NodeState, bestUncapped, req.model, now)) {
         bestUncapped = node;
         bestUncappedState = s;
       }
@@ -148,14 +131,7 @@ export function pickCandidate(tierNodes, req, attempted, now = Date.now(), exclu
 // True when this tier could serve the request if it had capacity right now
 // (every candidate busy at its concurrency limit or hard-RPM exhausted). Used
 // to distinguish "saturated" from "cooling down" in client responses.
-/**
- * @param {ReadonlyArray<RuntimeNode>} tierNodes
- * @param {RoutableRequest} req
- * @param {Set<string>} attempted
- * @param {number} [now]
- * @param {ReadonlySet<string>} [knownModels]
- */
-export function tierHasDeferredCapacity(tierNodes, req, attempted, now = Date.now(), knownModels) {
+export function tierHasDeferredCapacity(tierNodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, now: number = Date.now(), knownModels?: ReadonlySet<string> | null): boolean {
   for (const node of tierNodes) {
     if (attempted.has(node.id)) continue;
     if (!supportsRequest(node, req, knownModels)) continue;
@@ -177,14 +153,7 @@ export function tierHasDeferredCapacity(tierNodes, req, attempted, now = Date.no
 // selectable as last resort, so budget must agree with selection. Deferred
 // capacity (concurrency-saturated / hard-RPM-exhausted) belongs to
 // tierHasDeferredCapacity instead: Retry-After and diagnostics, no budget.
-/**
- * @param {ReadonlyArray<RuntimeNode>} tierNodes
- * @param {RoutableRequest} req
- * @param {Set<string>} attempted
- * @param {number} [now]
- * @param {ReadonlySet<string>} [knownModels]
- */
-export function tierHasDispatchableNode(tierNodes, req, attempted, now = Date.now(), knownModels) {
+export function tierHasDispatchableNode(tierNodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, now: number = Date.now(), knownModels?: ReadonlySet<string> | null): boolean {
   return countDispatchableNodes(tierNodes, req, attempted, now, knownModels) > 0;
 }
 
@@ -192,14 +161,7 @@ export function tierHasDispatchableNode(tierNodes, req, attempted, now = Date.no
 // claiming their slots.  The request pipeline uses this to divide its
 // remaining wall-clock budget across attempts that can actually happen,
 // rather than across a policy maximum that may be larger than the live pool.
-/**
- * @param {ReadonlyArray<RuntimeNode>} tierNodes
- * @param {RoutableRequest} req
- * @param {Set<string>} attempted
- * @param {number} [now]
- * @param {ReadonlySet<string>} [knownModels]
- */
-export function countDispatchableNodes(tierNodes, req, attempted, now = Date.now(), knownModels) {
+export function countDispatchableNodes(tierNodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, now: number = Date.now(), knownModels?: ReadonlySet<string> | null): number {
   let count = 0;
   for (const node of tierNodes) {
     if (attempted.has(node.id)) continue;
@@ -237,12 +199,7 @@ const MIN_QUALITY_SAMPLES = 3;
 // When no per-model entry exists, the node-level avgTtftMs is the fallback
 // (it lacks freshness metadata but is the only signal for a model that has
 // not been individually measured yet).
-/**
- * @param {Record<string, any>} perf
- * @param {number} nodeLevelTtft
- * @param {number} now
- */
-function effectiveTtft(perf, nodeLevelTtft, now) {
+function effectiveTtft(perf: ModelPerfEntry | null, nodeLevelTtft: number, now: number): number {
   if (!perf) return nodeLevelTtft;
   if (perf.lastTtftAt > 0) {
     const ttl = perf.passiveSamples >= MIN_QUALITY_SAMPLES ? QUALITY_TTFT_MS : STALE_TTFT_MS;
@@ -259,15 +216,7 @@ function effectiveTtft(perf, nodeLevelTtft, now) {
 // have measured a first event, TTFT decides. Header-latency EWMA stays as the
 // fallback for candidates that have not (e.g. non-stream traffic only); 0
 // remains neutral, so fresh nodes still receive traffic and learn their speed.
-/**
- * @param {Record<string, any>} a
- * @param {{ id: string, tier: string, priority: number }} aNode
- * @param {Record<string, any>} b
- * @param {{ id: string, tier: string, priority: number }} bNode
- * @param {string} model
- * @param {number} now
- */
-function latencyPreference(a, aNode, b, bNode, model, now) {
+function latencyPreference(a: NodeState, aNode: RuntimeNode, b: NodeState, bNode: RuntimeNode, model: string, now: number): boolean | null {
   const aPerf = model ? getModelPerf(aNode.id, model) : null;
   const bPerf = model ? getModelPerf(bNode.id, model) : null;
   const aTtft = effectiveTtft(aPerf, a.avgTtftMs, now);
@@ -286,15 +235,7 @@ function latencyPreference(a, aNode, b, bNode, model, now) {
   return null;
 }
 
-/**
- * @param {Record<string, any>} a
- * @param {{ id: string, tier: string, priority: number }} aNode
- * @param {Record<string, any>} b
- * @param {{ id: string, tier: string, priority: number }} bNode
- * @param {string} model
- * @param {number} now
- */
-function betterThan(a, aNode, b, bNode, model, now) {
+function betterThan(a: NodeState, aNode: RuntimeNode, b: NodeState, bNode: RuntimeNode, model: string, now: number): boolean {
   // One real timeout / network / 5xx is enough to move traffic to a healthy
   // peer immediately. Unlike a cooldown this is only a ranking preference:
   // a sole node remains eligible for recovery and for circuit probing.

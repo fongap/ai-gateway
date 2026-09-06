@@ -4,7 +4,7 @@
 // HTTP boundary helpers: CORS, error responses, upstream headers, URL
 // building, timing-safe auth, bounded body reads.
 
-import { readEnv } from '../config/env.js';
+import { readEnv } from '../config/env.ts';
 
 const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',

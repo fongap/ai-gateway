@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT
-// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // Provider quirks — known compatibility DIFFERENCES between providers that
@@ -20,11 +19,10 @@
 //      /v1/responses or /v1/messages), minus the operator's explicit
 //      per-provider off-list STREAM_USAGE_INCLUDE_OFF_PROVIDERS.
 // A provider that rejects `include_usage` can be opted out without code edits.
-/**
- * @param {{ protocol?: string, surfaces?: ReadonlyArray<string>, provider?: string }} node
- * @param {Record<string, any>} [env]
- */
-export function streamUsageSupported(node, env = {}) {
+export function streamUsageSupported(
+  node: { protocol?: string, surfaces?: ReadonlyArray<string>, provider?: string },
+  env: Record<string, unknown> = {},
+): boolean {
   const mode = String(env?.STREAM_INCLUDE_USAGE ?? '').trim().toLowerCase();
   if (mode === 'off') return false;
   if (mode === 'on') return true;

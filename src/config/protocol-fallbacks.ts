@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT
-// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // PROTOCOL_FALLBACKS: cross-protocol route fallback chains.
@@ -22,60 +21,45 @@
 // Only explicitly supported conversions are allowed. Unsupported conversions
 // produce blocking configuration errors (not warnings).
 
-import { readEnv } from './env.js';
+import { readEnv } from './env.ts';
+import type { Protocol, Surface } from '../types/protocol.ts';
 
-const PROTOCOL_SURFACES = new Map([
+const PROTOCOL_SURFACES = new Map<string, Set<string>>([
   ['openai', new Set(['chat_completions', 'responses'])],
   ['anthropic', new Set(['messages'])],
 ]);
 
 // Single source of truth for supported cross-protocol conversions.
 // Key: client route (protocol:surface), Value: array of allowed fallback targets.
-export const SUPPORTED_CONVERSIONS = Object.freeze({
+export const SUPPORTED_CONVERSIONS: Readonly<Record<string, string[]>> = Object.freeze({
   'anthropic:messages': ['openai:chat_completions'],
 });
 
-const ROUTE_PROTOCOL_SURFACE = Object.freeze({
+const ROUTE_PROTOCOL_SURFACE: Readonly<Record<string, string>> = Object.freeze({
   openai_chat: 'openai:chat_completions',
   openai_responses: 'openai:responses',
   anthropic_messages: 'anthropic:messages',
 });
 
-/** @type {Record<string, any> | undefined} */
-let cachedEnv;
-/** @type {{ config: Record<string, string[]>, errors: string[] } | undefined} */
-let cached;
+let cachedEnv: Record<string, unknown> | undefined;
+let cached: { config: Record<string, string[]>, errors: string[] } | undefined;
 
-/**
- * @param {Record<string, any>} env
- * @returns {Record<string, string[]>}
- */
-export function loadProtocolFallbacks(env) {
+export function loadProtocolFallbacks(env: Record<string, unknown>): Record<string, string[]> {
   return analyzeProtocolFallbacks(env).config;
 }
 
-/**
- * @param {Record<string, any>} env
- * @returns {string[]}
- */
-export function getProtocolFallbacksDiagnostics(env) {
+export function getProtocolFallbacksDiagnostics(env: Record<string, unknown>): string[] {
   return analyzeProtocolFallbacks(env).errors;
 }
 
-/**
- * @param {Record<string, any>} env
- * @returns {{ config: Record<string, string[]>, errors: string[] }}
- */
-function analyzeProtocolFallbacks(env) {
+function analyzeProtocolFallbacks(env: Record<string, unknown>): { config: Record<string, string[]>, errors: string[] } {
   if (cachedEnv === env && cached) return cached;
   cachedEnv = env;
   const raw = readEnv(env, 'PROTOCOL_FALLBACKS');
-  /** @type {string[]} */
-  const errors = [];
-  /** @type {Record<string, string[]>} */
-  const config = {};
+  const errors: string[] = [];
+  const config: Record<string, string[]> = {};
   if (raw) {
-    let parsed;
+    let parsed: unknown;
     try {
       parsed = JSON.parse(raw);
     } catch (e) {
@@ -87,20 +71,20 @@ function analyzeProtocolFallbacks(env) {
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       errors.push('PROTOCOL_FALLBACKS must be a JSON object { "protocol:surface": ["protocol:surface", ...] }');
     } else {
-      for (const [key, value] of Object.entries(parsed)) {
+      for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
         const parsedKey = parseSurfaceKey(key, errors, '');
         if (!parsedKey) continue;
         if (!Array.isArray(value) || value.length === 0) {
           errors.push(`PROTOCOL_FALLBACKS: "${key}" must be a non-empty array of "protocol:surface" strings`);
           continue;
         }
-        const targets = [];
+        const targets: string[] = [];
         for (const entry of value) {
           const parsedEntry = parseSurfaceKey(String(entry), errors, key);
           if (parsedEntry) targets.push(parsedEntry);
         }
         if (targets.length > 0) {
-          const allowed = /** @type {string[] | undefined} */ (/** @type {Record<string, string[]>} */ (SUPPORTED_CONVERSIONS)[parsedKey]);
+          const allowed = SUPPORTED_CONVERSIONS[parsedKey];
           if (!allowed) {
             errors.push(`PROTOCOL_FALLBACKS: "${parsedKey}" is not a supported conversion source (supported: ${Object.keys(SUPPORTED_CONVERSIONS).join(', ')})`);
           } else {
@@ -121,13 +105,7 @@ function analyzeProtocolFallbacks(env) {
   return cached;
 }
 
-/**
- * @param {string} raw
- * @param {string[]} errors
- * @param {string} parentKey
- * @returns {string | null}
- */
-function parseSurfaceKey(raw, errors, parentKey) {
+function parseSurfaceKey(raw: string, errors: string[], parentKey: string): string | null {
   const prefix = parentKey ? `PROTOCOL_FALLBACKS: "${parentKey}" entry` : 'PROTOCOL_FALLBACKS key';
   if (typeof raw !== 'string' || !raw.trim()) {
     errors.push(`${prefix} must be a non-empty "protocol:surface" string`);
@@ -157,13 +135,8 @@ function parseSurfaceKey(raw, errors, parentKey) {
 // Returns an array of { protocol, surface } objects (empty when no fallback
 // is configured for the route). The route must be one of the natively
 // supported routes (openai_chat / openai_responses / anthropic_messages).
-/**
- * @param {string} route
- * @param {Record<string, any>} env
- * @returns {Array<{ protocol: Protocol, surface: Surface }>}
- */
-export function getFallbackChain(route, env) {
-  const key = /** @type {string | undefined} */ (/** @type {Record<string, string>} */ (ROUTE_PROTOCOL_SURFACE)[route]);
+export function getFallbackChain(route: string, env: Record<string, unknown>): Array<{ protocol: Protocol, surface: Surface }> {
+  const key = ROUTE_PROTOCOL_SURFACE[route];
   if (!key) return [];
   const config = loadProtocolFallbacks(env);
   const chain = config[key];
@@ -173,8 +146,8 @@ export function getFallbackChain(route, env) {
   return chain.map((entry) => {
     const idx = entry.indexOf(':');
     return {
-      protocol: /** @type {Protocol} */ (entry.slice(0, idx)),
-      surface: /** @type {Surface} */ (entry.slice(idx + 1)),
+      protocol: entry.slice(0, idx) as Protocol,
+      surface: entry.slice(idx + 1) as Surface,
     };
   });
 }

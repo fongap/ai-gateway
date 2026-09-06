@@ -34,14 +34,14 @@ import {
   getTier1Account, getTier1Model, recordTier1Ttft, recordTier1Success, applyTier1Outcome,
   classifyTier1Failure, calculateTier1Score, snapshotTier1Runtime, recordTier1QuotaSignal,
   TIER1_FAILURE_STATES,
-} from '../src/reliability/tier1-state.js';
+} from '../src/reliability/tier1-state.ts';
 import {
   pickTier1Candidate, tier1DeadlineTooSmall,
-} from '../src/scheduler/tier1-scheduler.js';
+} from '../src/scheduler/tier1-scheduler.ts';
 import {
   readTier1Affinity, writeTier1Affinity, resolveTier1SessionId,
   shouldEvaluateAffinity, tier1AffinityFactor, __resetTier1AffinityForTests,
-} from '../src/scheduler/tier1-affinity.js';
+} from '../src/scheduler/tier1-affinity.ts';
 import {
   isOpenAIChatRealOutput, isResponsesRealOutput, isAnthropicNativeRealOutput,
   isOpenAIChatCompletionMeaningful, isOpenAIResponsesObjectMeaningful,

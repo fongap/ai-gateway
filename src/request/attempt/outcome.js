@@ -11,12 +11,12 @@
 import {
   recordNeutralEnd, rollbackRpmBucket, recordModelMissing,
   applyHealthPenalty, recordFailure, bumpNodeCounters,
-} from '../../reliability/node-state.js';
+} from '../../reliability/node-state.ts';
 import {
   releaseTier1Slot,
   applyTier1Outcome, classifyTier1Failure,
   rollbackTier1Rpm,
-} from '../../reliability/tier1-state.js';
+} from '../../reliability/tier1-state.ts';
 import { trimDiagnostic } from '../../protocol/http.js';
 import { upstreamModelOf } from '../response-helpers.js';
 

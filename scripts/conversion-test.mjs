@@ -12,9 +12,9 @@
 // Uses only node:test + node:assert. Exits 0 on success, 1 on failure.
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
-import { __resetAllStateForTests } from '../src/reliability/node-state.js';
-import { __resetTier1StateForTests } from '../src/reliability/tier1-state.js';
-import { __resetTier1AffinityForTests } from '../src/scheduler/tier1-affinity.js';
+import { __resetAllStateForTests } from '../src/reliability/node-state.ts';
+import { __resetTier1StateForTests } from '../src/reliability/tier1-state.ts';
+import { __resetTier1AffinityForTests } from '../src/scheduler/tier1-affinity.ts';
 
 import {
   convertAnthropicToOpenAIRequest,
@@ -29,7 +29,7 @@ import {
   loadProtocolFallbacks,
   getProtocolFallbacksDiagnostics,
   getFallbackChain,
-} from '../src/config/protocol-fallbacks.js';
+} from '../src/config/protocol-fallbacks.ts';
 
 const ACCESS_KEY = 'test-access-key';
 

@@ -14,10 +14,10 @@
 //   * collectConfiguredModels (node-only) is a strict subset of collectKnownModels
 
 import assert from 'node:assert/strict';
-import { collectKnownModels, collectConfiguredModels, servesModel, isWildcardNode } from '../src/config/registry.js';
+import { collectKnownModels, collectConfiguredModels, servesModel, isWildcardNode } from '../src/config/registry.ts';
 import { authorizeModel, filterVisibleModels } from '../src/request/model-authz.js';
-import { supportsRequest } from '../src/scheduler/scheduler.js';
-import { __resetAccessKeysCacheForTests } from '../src/config/access-keys.js';
+import { supportsRequest } from '../src/scheduler/scheduler.ts';
+import { __resetAccessKeysCacheForTests } from '../src/config/access-keys.ts';
 
 let passed = 0;
 function test(name, fn) {

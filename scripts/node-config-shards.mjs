@@ -25,7 +25,7 @@ const FORBIDDEN_NODE_FIELDS = ['token', 'credential', 'api_key', 'apikey', 'auth
 const ALLOWED_NODE_FIELDS = new Set(['id', 'provider', 'protocol', 'surfaces', 'base_url', 'priority', 'models', 'limits']);
 const ALLOWED_LIMITS_FIELDS = new Set(['concurrency', 'rpm', 'rpm_mode']);
 const VALID_TIER_PATTERN = /^[123]$/;
-// protocol -> valid surfaces (mirror of src/config/nodes.js).
+// protocol -> valid surfaces (mirror of src/config/nodes.ts).
 const PROTOCOL_SURFACES = new Map([
   ['openai', new Set(['chat_completions', 'responses'])],
   ['anthropic', new Set(['messages'])],

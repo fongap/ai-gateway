@@ -5,8 +5,8 @@
 // UI that needs to render a model/node status.
 //
 // Two scheduling state machines exist:
-//   Tier 1: src/reliability/tier1-state.js  (account/model, passive TTFT)
-//   Tier 2/3: src/reliability/node-state.js  (legacy circuit + cooldown)
+//   Tier 1: src/reliability/tier1-state.ts  (account/model, passive TTFT)
+//   Tier 2/3: src/reliability/node-state.ts  (legacy circuit + cooldown)
 //
 // Querying either directly from the dashboard is a bug waiting to happen:
 // a Tier 1 node that has been disabled, cooled down, or never observed
@@ -23,12 +23,12 @@
 //
 // Hot-path cost: one Map lookup per node, no allocation in the steady state.
 
-import { peekAvailability, hasBeenObserved } from '../reliability/node-state.js';
+import { peekAvailability, hasBeenObserved } from '../reliability/node-state.ts';
 import {
   isTier1Eligible,
   getTier1ModelPerf,
   TIER1_FAILURE_STATES,
-} from '../reliability/tier1-state.js';
+} from '../reliability/tier1-state.ts';
 
 /**
  * Returns one of: 'available' | 'unobserved' | 'unavailable'

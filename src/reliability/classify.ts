@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT
-// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // Upstream error classification. One function decides, per failed attempt,
@@ -9,7 +8,7 @@
 // Rules of scope: every failure here is NODE-local. Never punish a provider,
 // tier, or the whole gateway for one node's 429/401.
 
-import { parseRetryAfterMs, getLimits } from '../config/timeouts.js';
+import { parseRetryAfterMs, getLimits } from '../config/timeouts.ts';
 
 const KIND = {
   RATE_LIMIT: 'rate_limit',
@@ -26,6 +25,20 @@ const KIND = {
   // (status=200 in attempt records; the wait after headers is the TTFT wait).
   FIRST_EVENT_TIMEOUT: 'first_event_timeout',
   CLIENT_ABORT: 'client_abort',
+} as const;
+
+export type FailureKind = typeof KIND[keyof typeof KIND];
+
+// Classification result shared by every classify* function. Extra fields are
+// optional because only some paths carry them (retryAfterMs for 429,
+// modelScoped for 404 model-missing).
+export type FailureClassification = {
+  kind: FailureKind,
+  action: 'rotate' | 'stop' | 'neutral',
+  cooldownMs: number,
+  counted: boolean,
+  retryAfterMs?: number,
+  modelScoped?: boolean,
 };
 
 const CLIENT_STOP_STATUSES = new Set([400, 413, 415, 422]);
@@ -35,8 +48,7 @@ const CLIENT_STOP_STATUSES = new Set([400, 413, 415, 422]);
 // `counted` = transient failure that feeds the circuit breaker.
 // `body` (optional 5th arg) carries the upstream error text, used to tell a
 // "model not found" 404 apart from an "endpoint not found" 404.
-/** @param {number} status @param {Headers} headers @param {Record<string, any>} env @param {number} [now] @param {unknown} [body] */
-export function classifyUpstreamStatus(status, headers, env, now = Date.now(), body = '') {
+export function classifyUpstreamStatus(status: number, headers: Headers, env: Record<string, unknown>, now: number = Date.now(), body: unknown = ''): FailureClassification {
   const limits = getLimits(env);
   if (status === 429) {
     const retryAfterMs = parseRetryAfterMs(headers, now);
@@ -84,15 +96,13 @@ export function classifyUpstreamStatus(status, headers, env, now = Date.now(), b
 // not-found / unknown / does-not-exist language; a bare endpoint 404 usually
 // says only "not found" (or nothing). Conservative: only classify as a model
 // problem when the body strongly implies one.
-/** @param {unknown} body */
-function looksLikeModelMissing(body) {
+function looksLikeModelMissing(body: unknown): boolean {
   const text = String(body || '').toLowerCase();
   if (!text.includes('model')) return false;
   return /(not found|does not exist|unknown|no such|not supported|invalid model)/.test(text);
 }
 
-/** @param {boolean} kindHeadersTimeout */
-export function classifyNetworkError(kindHeadersTimeout) {
+export function classifyNetworkError(kindHeadersTimeout: boolean): FailureClassification {
   // No standalone cooldown: transient failures feed the circuit breaker,
   // which owns the open-period cooldown when the threshold trips.
   return kindHeadersTimeout
@@ -100,10 +110,10 @@ export function classifyNetworkError(kindHeadersTimeout) {
     : { kind: KIND.NETWORK, action: 'rotate', cooldownMs: 0, counted: true };
 }
 
-export function classifyFirstEventFailure() {
+export function classifyFirstEventFailure(): FailureClassification {
   return { kind: KIND.FIRST_EVENT_TIMEOUT, action: 'rotate', cooldownMs: 0, counted: true };
 }
 
-export function classifyClientAbort() {
+export function classifyClientAbort(): FailureClassification {
   return { kind: KIND.CLIENT_ABORT, action: 'neutral', cooldownMs: 0, counted: false };
 }

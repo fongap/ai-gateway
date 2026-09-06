@@ -17,7 +17,7 @@ import {
 import {
   __resetTier1StateForTests, claimTier1Slot, makeTier1ReleaseToken,
   releaseTier1Slot, tier1AccountInFlight,
-} from '../src/reliability/tier1-state.js';
+} from '../src/reliability/tier1-state.ts';
 
 let passed = 0;
 async function test(name, fn) {

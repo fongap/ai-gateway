@@ -4,15 +4,15 @@
 // Diagnostic HTTP endpoints: /health, /metrics, /version, /v1/models.
 // Responses contain node ids and runtime state only — never credentials.
 
-import { loadGatewayConfig } from '../config/nodes.js';
-import { snapshotNode } from '../reliability/node-state.js';
-import { snapshotTier1AccountRuntime } from '../reliability/tier1-state.js';
-import { snapshotTier1Affinity } from '../scheduler/tier1-affinity.js';
+import { loadGatewayConfig } from '../config/nodes.ts';
+import { snapshotNode } from '../reliability/node-state.ts';
+import { snapshotTier1AccountRuntime } from '../reliability/tier1-state.ts';
+import { snapshotTier1Affinity } from '../scheduler/tier1-affinity.ts';
 import { gatewayStats, streamStats } from './gateway-stats.mjs';
 import { tokenStats, summarizeTokenStats, tokenMetricSeries } from './token-usage.mjs';
 import { corsHeaders, jsonError } from '../protocol/http.js';
-import { modelRegistryEntry, servesModel, collectKnownModels } from '../config/registry.js';
-import { filterVisibleModels as filterModelsByKey } from '../config/access-keys.js';
+import { modelRegistryEntry, servesModel, collectKnownModels } from '../config/registry.ts';
+import { filterVisibleModels as filterModelsByKey } from '../config/access-keys.ts';
 
 export const APP_META = Object.freeze({
   name: 'ai-gateway',

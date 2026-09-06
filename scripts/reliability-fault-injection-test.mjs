@@ -17,8 +17,8 @@
 // These are pure-Node fault-injection tests — no real D1, no real KV.
 
 import assert from 'node:assert/strict';
-import { recordTtft, markProbeFailure, getNodeState, acquireSlot, recordFailure, recordNeutralEnd, recordSuccess, __resetAllStateForTests, getCooldownRemainingMs } from '../src/reliability/node-state.js';
-import { readTier1Affinity, writeTier1Affinity, __resetTier1AffinityForTests } from '../src/scheduler/tier1-affinity.js';
+import { recordTtft, markProbeFailure, getNodeState, acquireSlot, recordFailure, recordNeutralEnd, recordSuccess, __resetAllStateForTests, getCooldownRemainingMs } from '../src/reliability/node-state.ts';
+import { readTier1Affinity, writeTier1Affinity, __resetTier1AffinityForTests } from '../src/scheduler/tier1-affinity.ts';
 import { persistTokenUsage } from '../src/observability/token-usage-store.mjs';
 
 const now = 1_700_000_000_000;

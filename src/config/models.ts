@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT
-// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // MODELS_CONFIG: logical model -> { policy, capabilities?, reasoning_efforts?,
@@ -19,7 +18,7 @@
 // The parse is done once
 // per isolate and both the loaded config and its diagnostics are cached.
 
-import { readEnv } from './env.js';
+import { readEnv } from './env.ts';
 
 const CAPABILITY_KEYS = ['tools', 'reasoning', 'vision', 'stream', 'ocr'];
 const ALLOWED_ENTRY_FIELDS = new Set(['policy', 'capabilities', 'reasoning_efforts', 'modalities', 'visibility', 'display_order', 'group', 'ui_visible']);
@@ -36,54 +35,37 @@ const DEFAULT_UI_VISIBLE = true;
 /**
  * A parsed MODELS_CONFIG entry. Optional fields are only present when
  * explicitly configured (or defaulted) by the parse below.
- *
- * @typedef {{
- *   policy: string,
- *   visibility: string,
- *   ui_visible: boolean,
- *   display_order: number,
- *   group: string,
- *   capabilities?: Record<string, boolean>,
- *   reasoning_efforts?: string[],
- *   modalities?: { input: string[], output: string[] },
- * }} ModelEntry
  */
+export type ModelEntry = {
+  policy: string,
+  visibility: string,
+  ui_visible: boolean,
+  display_order: number,
+  group: string,
+  capabilities?: Record<string, boolean>,
+  reasoning_efforts?: string[],
+  modalities?: { input: string[], output: string[] },
+};
 
-/** @type {Record<string, any> | undefined} */
-let cachedEnv;
-/** @type {{ models: Record<string, ModelEntry>, errors: string[] } | undefined} */
-let cached;
+let cachedEnv: Record<string, unknown> | undefined;
+let cached: { models: Record<string, ModelEntry>, errors: string[] } | undefined;
 
-/**
- * @param {Record<string, any>} env
- * @returns {Record<string, ModelEntry>}
- */
-export function loadModelsConfig(env) {
+export function loadModelsConfig(env: Record<string, unknown>): Record<string, ModelEntry> {
   return analyzeModels(env).models;
 }
 
-/**
- * @param {Record<string, any>} env
- * @returns {string[]}
- */
-export function getModelsConfigDiagnostics(env) {
+export function getModelsConfigDiagnostics(env: Record<string, unknown>): string[] {
   return analyzeModels(env).errors;
 }
 
-/**
- * @param {Record<string, any>} env
- * @returns {{ models: Record<string, ModelEntry>, errors: string[] }}
- */
-function analyzeModels(env) {
+function analyzeModels(env: Record<string, unknown>): { models: Record<string, ModelEntry>, errors: string[] } {
   if (cachedEnv === env && cached) return cached;
   cachedEnv = env;
   const raw = readEnv(env, 'MODELS_CONFIG');
-  /** @type {string[]} */
-  const errors = [];
-  /** @type {Record<string, ModelEntry>} */
-  const models = {};
+  const errors: string[] = [];
+  const models: Record<string, ModelEntry> = {};
   if (raw) {
-    let parsed;
+    let parsed: unknown;
     try {
       parsed = JSON.parse(raw);
     } catch (e) {
@@ -95,38 +77,38 @@ function analyzeModels(env) {
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       errors.push('MODELS_CONFIG must be a JSON object { model: { policy, capabilities, reasoning_efforts } }');
     } else {
-      for (const [name, config] of Object.entries(parsed)) {
+      for (const [name, config] of Object.entries(parsed as Record<string, unknown>)) {
         if (!name.trim()) { errors.push('MODELS_CONFIG: empty model name (keys must be non-empty strings)'); continue; }
         if (!config || typeof config !== 'object' || Array.isArray(config)) {
           errors.push(`MODELS_CONFIG: "${name}" must be an object`);
           continue;
         }
-        for (const field of Object.keys(config)) {
+        const cfg = config as Record<string, unknown>;
+        for (const field of Object.keys(cfg)) {
           if (!ALLOWED_ENTRY_FIELDS.has(field)) {
             errors.push(`MODELS_CONFIG: "${name}" has unknown field "${field}" (allowed: ${[...ALLOWED_ENTRY_FIELDS].join(', ')})`);
           }
         }
         // `policy` participates only when explicitly configured; a present
         // value (null included) must be a non-empty string. Unknown policy
-        // names are cross-checked against POLICIES_CONFIG by nodes.js.
-        /** @type {ModelEntry} */
-        const entry = { policy: 'default', visibility: DEFAULT_VISIBILITY, ui_visible: DEFAULT_UI_VISIBLE, display_order: DEFAULT_DISPLAY_ORDER, group: DEFAULT_GROUP };
-        if (config.policy !== undefined) {
-          if (typeof config.policy === 'string' && config.policy.trim()) {
-            entry.policy = config.policy.trim();
+        // names are cross-checked against POLICIES_CONFIG by nodes.ts.
+        const entry: ModelEntry = { policy: 'default', visibility: DEFAULT_VISIBILITY, ui_visible: DEFAULT_UI_VISIBLE, display_order: DEFAULT_DISPLAY_ORDER, group: DEFAULT_GROUP };
+        if (cfg.policy !== undefined) {
+          if (typeof cfg.policy === 'string' && cfg.policy.trim()) {
+            entry.policy = cfg.policy.trim();
           } else {
             errors.push(`MODELS_CONFIG: model "${name}": policy must be a non-empty string`);
           }
         }
-        const vis = config.visibility;
+        const vis = cfg.visibility;
         if (vis !== undefined) {
-          if (!VALID_VISIBILITY.has(vis)) {
+          if (typeof vis !== 'string' || !VALID_VISIBILITY.has(vis)) {
             errors.push(`MODELS_CONFIG: model "${name}": visibility must be "public" or "internal"`);
           } else {
             entry.visibility = vis;
           }
         }
-        const order = config.display_order;
+        const order = cfg.display_order;
         if (order !== undefined) {
           if (typeof order !== 'number' || !Number.isFinite(order) || order < 0) {
             errors.push(`MODELS_CONFIG: model "${name}": display_order must be a non-negative finite number`);
@@ -136,7 +118,7 @@ function analyzeModels(env) {
         } else {
           entry.display_order = DEFAULT_DISPLAY_ORDER;
         }
-        const grp = config.group;
+        const grp = cfg.group;
         if (grp !== undefined) {
           if (typeof grp !== 'string' || !grp.trim()) {
             errors.push(`MODELS_CONFIG: model "${name}": group must be a non-empty string`);
@@ -146,7 +128,7 @@ function analyzeModels(env) {
         } else {
           entry.group = DEFAULT_GROUP;
         }
-        const uiv = config.ui_visible;
+        const uiv = cfg.ui_visible;
         if (uiv !== undefined) {
           if (typeof uiv !== 'boolean') {
             errors.push(`MODELS_CONFIG: model "${name}": ui_visible must be a boolean`);
@@ -154,13 +136,14 @@ function analyzeModels(env) {
             entry.ui_visible = uiv;
           }
         }
-        const caps = config.capabilities;
+        const caps = cfg.capabilities;
         if (caps !== undefined) {
           if (!caps || typeof caps !== 'object' || Array.isArray(caps)) {
             errors.push(`MODELS_CONFIG: "${name}" capabilities must be an object`);
           } else {
+            const capRec = caps as Record<string, unknown>;
             let hadValid = false;
-            for (const [key, val] of Object.entries(caps)) {
+            for (const [key, val] of Object.entries(capRec)) {
               if (!CAPABILITY_KEYS.includes(key)) {
                 errors.push(`MODELS_CONFIG: "${name}" capabilities.${key} is not a supported capability (allowed: ${CAPABILITY_KEYS.join(', ')})`);
               } else if (typeof val !== 'boolean') {
@@ -170,13 +153,15 @@ function analyzeModels(env) {
               }
             }
             if (hadValid) {
+              // The filter predicate guarantees boolean values; the assertion
+              // only re-states that for Object.fromEntries.
               entry.capabilities = Object.fromEntries(
-                Object.entries(caps).filter(([k, v]) => CAPABILITY_KEYS.includes(k) && typeof v === 'boolean'),
-              );
+                Object.entries(capRec).filter(([k, v]) => CAPABILITY_KEYS.includes(k) && typeof v === 'boolean'),
+              ) as Record<string, boolean>;
             }
           }
         }
-        const efforts = config.reasoning_efforts;
+        const efforts = cfg.reasoning_efforts;
         if (efforts !== undefined) {
           if (!Array.isArray(efforts) || !efforts.every((e) => typeof e === 'string' && e.trim())) {
             errors.push(`MODELS_CONFIG: "${name}" reasoning_efforts must be an array of non-empty strings`);
@@ -185,16 +170,16 @@ function analyzeModels(env) {
           }
         }
         // Schema reservation only: validated and carried, never routed on.
-        const mods = config.modalities;
+        const mods = cfg.modalities;
         if (mods !== undefined) {
           if (!mods || typeof mods !== 'object' || Array.isArray(mods)) {
             errors.push(`MODELS_CONFIG: "${name}" modalities must be an object { input, output }`);
           } else {
-            /** @type {{ input: string[], output: string[] }} */
-            const sides = { input: [], output: [] };
+            const modRec = mods as Record<string, unknown>;
+            const sides: { input: string[], output: string[] } = { input: [], output: [] };
             let valid = true;
-            for (const side of /** @type {const} */ (['input', 'output'])) {
-              const list = mods[side];
+            for (const side of ['input', 'output'] as const) {
+              const list = modRec[side];
               if (!Array.isArray(list) || !list.every((t) => typeof t === 'string' && MODALITY_TOKENS.has(t.trim()))) {
                 errors.push(`MODELS_CONFIG: "${name}" modalities.${side} must be an array over the closed vocabulary [${[...MODALITY_TOKENS].join(', ')}]`);
                 valid = false;

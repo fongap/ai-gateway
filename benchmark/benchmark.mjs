@@ -13,7 +13,7 @@
 //   node benchmark/benchmark.mjs --quick    # CI smoke (fewer iterations)
 import { performance } from 'node:perf_hooks';
 import worker from '../src/index.js';
-import { __resetAllStateForTests } from '../src/reliability/node-state.js';
+import { __resetAllStateForTests } from '../src/reliability/node-state.ts';
 
 const QUICK = process.argv.includes('--quick');
 const DURATION_MS = QUICK ? 400 : 2000;

@@ -80,7 +80,7 @@ console.log('ok - CONFIGURATION.md does not present legacy blob as production pa
 
 // deploy.yml must inject every runtime tunable from runtime-vars.js.
 const deployYml = readDoc('.github/workflows/deploy.yml');
-const { RUNTIME_VAR_NAMES } = await import('../src/config/runtime-vars.js');
+const { RUNTIME_VAR_NAMES } = await import('../src/config/runtime-vars.ts');
 for (const name of RUNTIME_VAR_NAMES) {
   assert.ok(
     deployYml.includes(`${name}:`),
@@ -93,7 +93,7 @@ console.log(`ok - deploy.yml injects all ${RUNTIME_VAR_NAMES.length} runtime var
   // .dev.vars.example comments must match runtime-vars.js defaults.
   // This ensures the example config doesn't silently override defaults with stale values.
   const devVarsExample = readDoc('.dev.vars.example');
-  const { RUNTIME_TUNABLES } = await import('../src/config/runtime-vars.js');
+  const { RUNTIME_TUNABLES } = await import('../src/config/runtime-vars.ts');
   for (const tunable of RUNTIME_TUNABLES) {
     const name = tunable.name;
     const expectedDefault = String(tunable.def);

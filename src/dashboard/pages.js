@@ -23,7 +23,7 @@
 //
 // No external fonts, no framework, no chart library, no runtime dependency.
 
-import { loadGatewayConfig } from '../config/nodes.js';
+import { loadGatewayConfig } from '../config/nodes.ts';
 import { htmlResponse } from '../protocol/http.js';
 import { normalizeModelKey } from '../observability/token-usage-store.mjs';
 import { escapeHtml } from './format.js';

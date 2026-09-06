@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT
-// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // Key-scoped gateway access. v1.2.7 governance model.
@@ -27,24 +26,18 @@
 //
 // Group identity is the only non-secret identifier in logs/stats.
 
-import { readEnv } from './env.js';
-import { loadGatewayConfig } from './nodes.js';
-import { collectKnownModels } from './registry.js';
+import { readEnv } from './env.ts';
+import { loadGatewayConfig } from './nodes.ts';
+import { collectKnownModels } from './registry.ts';
+import type { RuntimeNode } from '../types/node.ts';
 
-export const KEY_GROUPS = Object.freeze(['AIR', 'PRO', 'MAX', 'ULTRA', 'AGENT']);
+export const KEY_GROUPS: readonly string[] = Object.freeze(['AIR', 'PRO', 'MAX', 'ULTRA', 'AGENT']);
 
 // Parse a CSV model list. Whitespace around entries is trimmed; empty
 // entries are dropped. A single "*" entry becomes allowAll=true. Returns
 // { allowAll, allowlist, warnings, errors }.
-/**
- * @param {unknown} raw
- * @param {string} group
- * @param {ReadonlySet<string> | null} knownModels
- * @returns {{ allowAll: boolean, allowlist: Set<string>, warnings: string[], errors: string[] }}
- */
-function parseModelsField(raw, group, knownModels) {
-  /** @type {{ allowAll: boolean, allowlist: Set<string>, warnings: string[], errors: string[] }} */
-  const out = { allowAll: false, allowlist: new Set(), warnings: [], errors: [] };
+function parseModelsField(raw: unknown, group: string, knownModels: ReadonlySet<string> | null): { allowAll: boolean, allowlist: Set<string>, warnings: string[], errors: string[] } {
+  const out: { allowAll: boolean, allowlist: Set<string>, warnings: string[], errors: string[] } = { allowAll: false, allowlist: new Set(), warnings: [], errors: [] };
   if (raw === undefined || raw === null) return out; // missing -> empty allowlist (fail closed)
   if (typeof raw !== 'string') {
     out.errors.push(`GATEWAY_ACCESS_MODELS_${group} must be a CSV string ("Model1,Model2" or "*")`);
@@ -72,48 +65,38 @@ function parseModelsField(raw, group, knownModels) {
   return out;
 }
 
-// collectKnownModels and collectConfiguredModels are defined in registry.js
+// collectKnownModels and collectConfiguredModels are defined in registry.ts
 // (the model-catalog module). They are re-exported here for backward
 // compatibility with callers that imported them from this module.
-export { collectKnownModels, collectConfiguredModels } from './registry.js';
+export { collectKnownModels, collectConfiguredModels } from './registry.ts';
 
-/** @type {Record<string, any> | null | undefined} */
-let cachedEnv;
-/** Legacy shape: nested `config` plus the original top-level fields. */
-/** @type {{ config: { keys: Array<{ group: string, secret: string, allowAll: boolean, allowlist: Set<string> }>, diagnostics: string[], anyNewKey: boolean }, keys: Array<{ group: string, secret: string, allowAll: boolean, allowlist: Set<string> }>, diagnostics: string[], anyNewKey: boolean } | null | undefined} */
-let cachedConfig;
+type AccessKeyEntry = { group: string, secret: string, allowAll: boolean, allowlist: Set<string> };
+type AccessKeysAnalysis = {
+  config: { keys: AccessKeyEntry[], diagnostics: string[], anyNewKey: boolean },
+  keys: AccessKeyEntry[],
+  diagnostics: string[],
+  anyNewKey: boolean,
+};
 
-/**
- * @param {Record<string, any>} env
- * @returns {{ keys: Array<{ group: string, secret: string, allowAll: boolean, allowlist: Set<string> }>, anyNewKey: boolean }}
- */
-export function loadAccessKeysConfig(env) {
+let cachedEnv: Record<string, unknown> | null | undefined;
+let cachedConfig: AccessKeysAnalysis | null | undefined;
+
+export function loadAccessKeysConfig(env: Record<string, unknown>): { keys: AccessKeyEntry[], anyNewKey: boolean } {
   return analyzeAccessKeys(env).config;
 }
 
-/**
- * @param {Record<string, any>} env
- * @returns {string[]}
- */
-export function getAccessKeysDiagnostics(env) {
+export function getAccessKeysDiagnostics(env: Record<string, unknown>): string[] {
   return analyzeAccessKeys(env).diagnostics;
 }
 
-/**
- * @param {Record<string, any>} env
- * @returns {{ config: { keys: Array<{ group: string, secret: string, allowAll: boolean, allowlist: Set<string> }>, anyNewKey: boolean }, diagnostics: string[] }}
- */
-function analyzeAccessKeys(env) {
+function analyzeAccessKeys(env: Record<string, unknown>): AccessKeysAnalysis {
   if (cachedEnv === env && cachedConfig) return cachedConfig;
   cachedEnv = env;
-  /** @type {string[]} */
-  const diagnostics = [];
-  /** @type {Array<{ group: string, secret: string, allowAll: boolean, allowlist: Set<string> }>} */
-  const keys = [];
+  const diagnostics: string[] = [];
+  const keys: AccessKeyEntry[] = [];
   // We need to know which logical models are currently configured to cross-check
   // the per-group allowlist. loadGatewayConfig is cached too, so this is cheap.
-  /** @type {Array<RuntimeNode>} */
-  let nodes = [];
+  let nodes: RuntimeNode[] = [];
   try {
     nodes = loadGatewayConfig(env).nodes || [];
   } catch {
@@ -168,13 +151,7 @@ function analyzeAccessKeys(env) {
 // call used by the request handler — it must be paired with the live
 // `configuredModels` set so that allowAll never grants a model that is
 // not currently configured.
-/**
- * @param {{ allowAll: boolean, allowlist: Set<string> } | null | undefined} keyEntry
- * @param {string} model
- * @param {ReadonlySet<string> | null | undefined} configuredModels
- * @returns {boolean}
- */
-export function keyAllowsModel(keyEntry, model, configuredModels) {
+export function keyAllowsModel(keyEntry: { allowAll: boolean, allowlist: Set<string> } | null | undefined, model: string, configuredModels: ReadonlySet<string> | null | undefined): boolean {
   if (!keyEntry) return false;
   if (keyEntry.allowAll) {
     if (!configuredModels) return true; // permissive when no configuredModels given
@@ -185,12 +162,7 @@ export function keyAllowsModel(keyEntry, model, configuredModels) {
 
 // Filter the configured model set to the key's allowlist. This is what
 // /v1/models returns. Visible == Callable by construction.
-/**
- * @param {{ allowAll: boolean, allowlist: Set<string> } | null | undefined} keyEntry
- * @param {ReadonlySet<string> | null | undefined} configuredModels
- * @returns {string[]}
- */
-export function filterVisibleModels(keyEntry, configuredModels) {
+export function filterVisibleModels(keyEntry: { allowAll: boolean, allowlist: Set<string> } | null | undefined, configuredModels: ReadonlySet<string> | null | undefined): string[] {
   if (!configuredModels) return [];
   if (keyEntry?.allowAll) return [...configuredModels].sort();
   if (!keyEntry) return [];
@@ -198,7 +170,7 @@ export function filterVisibleModels(keyEntry, configuredModels) {
 }
 
 // Snapshot for diagnostics consumers.
-export function __resetAccessKeysCacheForTests() {
+export function __resetAccessKeysCacheForTests(): void {
   cachedEnv = null;
   cachedConfig = null;
 }

@@ -4,12 +4,12 @@
 import assert from 'node:assert/strict';
 import {
   loadGatewayConfig, collectShards, TIER_SHARD_PATTERN, SECRET_SHARD_PATTERN,
-} from '../src/config/nodes.js';
+} from '../src/config/nodes.ts';
 import {
   loadModelRegistry, modelRegistryEntry, servesModel, isWildcardNode,
-} from '../src/config/registry.js';
-import { getModelsConfigDiagnostics } from '../src/config/models.js';
-import { getPoliciesConfigDiagnostics, loadPoliciesConfig } from '../src/config/policies.js';
+} from '../src/config/registry.ts';
+import { getModelsConfigDiagnostics } from '../src/config/models.ts';
+import { getPoliciesConfigDiagnostics, loadPoliciesConfig } from '../src/config/policies.ts';
 
 let passed = 0;
 function test(name, fn) {

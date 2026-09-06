@@ -2,15 +2,15 @@
 
 ## 调度器概述
 
-调度器 (`src/scheduler/scheduler.js`) 实现 protocol + surface + model 三重过滤（`supportsRequest`）。协议、surface、model 和 tier 始终是硬性门控。OpenAI 请求永远不会到达 Anthropic 节点，Tier 2/3 永远不会进入 Tier 1 调度器。
+调度器 (`src/scheduler/scheduler.ts`) 实现 protocol + surface + model 三重过滤（`supportsRequest`）。协议、surface、model 和 tier 始终是硬性门控。OpenAI 请求永远不会到达 Anthropic 节点，Tier 2/3 永远不会进入 Tier 1 调度器。
 
 ## Model Registry
 
-Model Registry (`src/config/registry.js`) 是逻辑模型的策略和能力（`capabilities.tools/reasoning/vision/stream`、`reasoning_efforts`）的唯一事实来源，由 `MODELS_CONFIG` 驱动。`MODELS_CONFIG` 亦接受 `modalities: { input: [...], output: [...] }` schema 预留（闭集词汇 `text/image/audio/video`，语义：模型能接收/输出什么；`capabilities` 语义：模型能做什么）。该字段当前仅解析、校验并随注册表携带——**不做任何路由，也不暴露于任何公开 API surface**，供 Omni 阶段启用；未声明的模型不携带该字段（under-report 原则）。`/v1/models` 枚举至少一个节点服务的注册模型，报告 `api_backends`（provider 标签，或 `apiBackend: "mixed"`）和节点 `surfaces` 的并集——不从 provider 标签推导能力。
+Model Registry (`src/config/registry.ts`) 是逻辑模型的策略和能力（`capabilities.tools/reasoning/vision/stream`、`reasoning_efforts`）的唯一事实来源，由 `MODELS_CONFIG` 驱动。`MODELS_CONFIG` 亦接受 `modalities: { input: [...], output: [...] }` schema 预留（闭集词汇 `text/image/audio/video`，语义：模型能接收/输出什么；`capabilities` 语义：模型能做什么）。该字段当前仅解析、校验并随注册表携带——**不做任何路由，也不暴露于任何公开 API surface**，供 Omni 阶段启用；未声明的模型不携带该字段（under-report 原则）。`/v1/models` 枚举至少一个节点服务的注册模型，报告 `api_backends`（provider 标签，或 `apiBackend: "mixed"`）和节点 `surfaces` 的并集——不从 provider 标签推导能力。
 
 ## Node 与 Tier
 
-节点配置通过 `src/config/nodes.js` 合并 `TIER{1,2,3}_NODES_CONFIG_01..99` Worker 文本变量与 `TIER{1,2,3}_NODES_SECRETS_01..99` Worker Secrets 生成 Runtime Node（tier-scoped secret 与 config shard 1:1 配对）：
+节点配置通过 `src/config/nodes.ts` 合并 `TIER{1,2,3}_NODES_CONFIG_01..99` Worker 文本变量与 `TIER{1,2,3}_NODES_SECRETS_01..99` Worker Secrets 生成 Runtime Node（tier-scoped secret 与 config shard 1:1 配对）：
 
 - Tier 仅从变量前缀派生；节点 JSON 不能声明它
 - Credential lookup 在此且仅在此发生；下游模块只看到 `runtimeNode.credential`
@@ -47,7 +47,7 @@ Eligibility → soft session affinity → sample two eligible accounts
 
 ## Tier 2 / Tier 3
 
-Tier 2 和 Tier 3 继续使用旧版动态候选选择器和 `node-state.js`：priority、active requests、health band、LRU、latency preference、cooldown 和 circuit breaker。不受 Tier 1 TTFT 训练，不读写 Tier 1 affinity。
+Tier 2 和 Tier 3 继续使用旧版动态候选选择器和 `node-state.ts`：priority、active requests、health band、LRU、latency preference、cooldown 和 circuit breaker。不受 Tier 1 TTFT 训练，不读写 Tier 1 affinity。
 
 ## Priority
 

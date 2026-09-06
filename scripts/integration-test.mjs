@@ -5,12 +5,12 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import worker from '../src/index.js';
-import { __resetAllStateForTests, getNodeState, noteRpmRequest } from '../src/reliability/node-state.js';
+import { __resetAllStateForTests, getNodeState, noteRpmRequest } from '../src/reliability/node-state.ts';
 import {
   __resetTier1StateForTests, tier1AccountInFlight,
   getTier1Account, getTier1Model, snapshotTier1Runtime, recordTier1Ttft, tier1RpmUsage,
-} from '../src/reliability/tier1-state.js';
-import { __resetTier1AffinityForTests } from '../src/scheduler/tier1-affinity.js';
+} from '../src/reliability/tier1-state.ts';
+import { __resetTier1AffinityForTests } from '../src/scheduler/tier1-affinity.ts';
 import { createMockD1 } from './mock-d1-database.mjs';
 import { persistTokenUsage } from '../src/observability/token-usage-store.mjs';
 

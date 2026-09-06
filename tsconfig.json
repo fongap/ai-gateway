@@ -19,10 +19,6 @@
   },
   "include": [
     "src/**/*.ts",
-    "src/config/**/*.js",
-    "src/config/**/*.mjs",
-    "src/scheduler/**/*.js",
-    "src/reliability/**/*.js",
     "src/request/**/*.js"
   ],
   "exclude": [

@@ -26,10 +26,10 @@ Upstream providers (native endpoint of the SAME protocol + surface)
 ## 职责划分
 
 ```text
-Model Registry (src/config/registry.js)   →  logical model, its policy + capabilities
-Node (src/config/nodes.js)                →  logical model → upstream model, protocol + surfaces
+Model Registry (src/config/registry.ts)   →  logical model, its policy + capabilities
+Node (src/config/nodes.ts)                →  logical model → upstream model, protocol + surfaces
 Transport (src/transport)                 →  HOW to talk to the upstream (path, headers, stream semantics)
-Provider quirks (src/config/provider-quirks.js) → known wire-format compatibility differences
+Provider quirks (src/config/provider-quirks.ts) → known wire-format compatibility differences
 Scheduler (src/scheduler)                 →  decides WHICH node gets a request
 Reliability (src/reliability)             →  whether a node is currently usable
 ```
