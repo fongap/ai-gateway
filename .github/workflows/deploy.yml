@@ -13,9 +13,18 @@ name: Deploy
 # the full suite is executed exactly once per push (Merge Gate != Production
 # Gate; no duplicated validation).
 #
-# The gate job additionally blocks deploys whose triggering commit changed
-# ONLY markdown/docs paths (the previous `paths-ignore` policy) and commits
-# from fork head repositories.
+# Gate rules (scripts/deploy-gate-decision.mjs, unit-tested):
+#   * workflow_run from a fork head repository        -> never deploy
+#   * CI run triggered by anything other than a push  -> never deploy
+#     (scheduled nightly CI and manual CI runs are test-only)
+#   * CI conclusion != success                        -> never deploy
+#   * triggering commit touched ONLY **.md / docs/**  -> skip deploy
+#   * manual workflow_dispatch                        -> allowed, but NEVER a
+#     bypass: the `manual-validate` job runs the full validation suite
+#     (validate:deploy + typecheck + strict typecheck + bundle dry-run)
+#     inside this workflow before the deploy job may start. Only the manual
+#     path re-runs validation (it is not a high-frequency operation); the
+#     automatic main-push path reuses the already-completed CI run.
 #
 # Pipeline: preflight → validate configuration → D1 migrations (if configured)
 # → atomic Worker deploy (code + secrets in a single
@@ -59,9 +68,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Gate — decides whether a deploy may happen at all:
-  #   * manual workflow_dispatch            -> deploy
+  # Gate — decides whether a deploy may happen at all. The decision logic
+  # lives in scripts/deploy-gate-decision.mjs (unit-tested by
+  # deployment-workflow-contract-test.mjs):
+  #   * manual workflow_dispatch            -> deploy (full validation is
+  #     mandatory in the manual-validate job — never a silent bypass)
   #   * workflow_run from a fork head repo  -> never deploy
+  #   * CI run not triggered by a push (nightly / manual CI) -> never deploy
   #   * CI workflow conclusion != success   -> never deploy (Production Gate)
   #   * triggering commit touched ONLY
   #     **.md / docs/** (old paths-ignore) -> skip deploy
@@ -83,41 +96,52 @@ jobs:
         id: decide
         env:
           EVENT: ${{ github.event_name }}
+          TRIGGER_EVENT: ${{ github.event.workflow_run.event }}
           CI_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
           THIS_REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-        run: |
-          set -euo pipefail
-          if [ "$EVENT" = "workflow_dispatch" ]; then
-            echo "deploy=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [ "$HEAD_REPO" != "$THIS_REPO" ]; then
-            echo "::notice::head repository is a fork — deploy blocked"
-            echo "deploy=false" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          if [ "$CI_CONCLUSION" != "success" ]; then
-            echo "::notice::CI conclusion is '$CI_CONCLUSION' — deploy blocked (Production Gate)"
-            echo "deploy=false" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          # Markdown-only skip: reproduce the previous paths-ignore policy
-          # ('**.md', 'docs/**') against the triggering commit.
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          CHANGED=$(git diff --name-only "$HEAD_SHA^" "$HEAD_SHA" 2>/dev/null || echo "__INITIAL_COMMIT__")
-          if [ "$CHANGED" = "__INITIAL_COMMIT__" ]; then
-            echo "deploy=true" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          DEPLOYABLE=$(printf '%s\n' "$CHANGED" | grep -v -e '\.md$' -e '^docs/' || true)
-          if [ -z "$DEPLOYABLE" ]; then
-            echo "::notice::markdown/docs-only change — deploy skipped"
-            echo "deploy=false" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          echo "deploy=true" >> "$GITHUB_OUTPUT"
+        run: node scripts/deploy-gate-decision.mjs
+
+  # Manual path — full validation INSIDE the deploy workflow. A manual
+  # workflow_dispatch must never silently bypass the Production Gate
+  # ("Worker Deploy never executes before full validation succeeds"). This
+  # job runs the complete CI-equivalent suite; the deploy job below starts
+  # only after it succeeds. The automatic main-push path skips this job and
+  # reuses the already-completed CI run (validation once per push).
+  manual-validate:
+    needs: gate
+    if: needs.gate.outputs.deploy == 'true' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate (deploy suite)
+        run: npm run validate:deploy
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Strict typecheck
+        run: npm run typecheck:strict
+
+      - name: Dry-run Worker bundle
+        run: npm run check:deploy
 
   deploy:
-    needs: gate
-    if: needs.gate.outputs.deploy == 'true'
+    needs: [gate, manual-validate]
+    if: needs.gate.outputs.deploy == 'true' && (needs.manual-validate.result == 'success' || needs.manual-validate.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:

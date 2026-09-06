@@ -5,34 +5,44 @@
 // Deployment Workflow Contract Test.
 //
 // The deploy-order regressions this suite guards against: a Worker deploy that
-// runs before D1 migrations, or a production deploy that does not wait for
-// full validation. YAML semantics are not fully parsed — this test makes
-// targeted structural assertions on the workflow text (jobs, step order, step
-// conditions), which is enough to pin the release-safety facts and prevent
-// silent drift. If the workflows are restructured intentionally, update these
-// contracts in the same PR.
+// runs before D1 migrations, a production deploy that does not wait for
+// full validation, a scheduled/manual CI run that silently redeploys
+// production, or a manual deploy that bypasses the Production Gate. YAML
+// semantics are not fully parsed — this test makes targeted structural
+// assertions on the workflow text and drives the gate DECISION function
+// (scripts/deploy-gate-decision.mjs) behaviorally. If the workflows are
+// restructured intentionally, update these contracts in the same PR.
 //
 // Production gate architecture: deploy.yml is triggered by `workflow_run`
 // when the CI workflow (ci.yml) completes on main. CI success requires BOTH
 // of its jobs — validate-merge (fast gate incl. typecheck + strict + bundle
 // dry-run) and validate-deploy (full suite) — so the full validation runs
-// exactly once per push and the deploy cannot outrun it.
+// exactly once per push and the deploy cannot outrun it. A manual
+// workflow_dispatch re-runs the full suite inside the deploy workflow
+// (manual-validate job) because a manual run must never be a silent bypass.
 //
 // Contracts:
 //   01  D1 migration step runs BEFORE the Worker deploy step.
 //   02  Production deploy is gated on the CI workflow (validate-deploy +
-//       validate-merge) succeeding via workflow_run — no duplicated
-//       full-validation job inside deploy.yml.
+//       validate-merge) succeeding via workflow_run — the automatic path
+//       never duplicates full validation inside deploy.yml.
 //   03  A migration failure aborts the deploy (no continue-on-error / always()).
 //   04  The health check runs AFTER the Worker deploy.
 //   05  Rollback only fires when the Worker was deployed and a later step failed.
-//   06  Markdown/docs-only commits skip the deploy (gate job path check).
+//   06  Markdown/docs-only commits skip the deploy (gate path check).
 //   07  Forks do not auto-deploy without DEPLOY_ENABLED=true, and commits from
 //       fork head repositories are never deployed.
+//   08  push-triggered CI success on main -> deploy allowed (the ONLY
+//       automatic deploy path).
+//   09  schedule-triggered (nightly) CI success -> deploy blocked (test-only).
+//   10  workflow_dispatch-triggered CI success -> deploy blocked (test-only).
+//   11  Manual workflow_dispatch deploys ALWAYS pass through the
+//       manual-validate job (full validation inside deploy.yml) — no bypass.
 
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { decideDeploy } from './deploy-gate-decision.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
@@ -126,6 +136,7 @@ function check(name, ok, detail) {
 
 const deployJob = jobs.deploy;
 const gateJob = jobs.gate;
+const manualValidateJob = jobs['manual-validate'];
 if (!deployJob) { console.error('FAIL  deploy job not found in deploy.yml'); process.exit(1); }
 
 function stepIndex(list, namePart) {
@@ -134,6 +145,16 @@ function stepIndex(list, namePart) {
 function stepById(list, id) {
   return list.find((s) => s.id === id);
 }
+
+// The REPO constant used for behavioral gate-decision scenarios.
+const REPO = 'fongap/ai-gateway';
+const PUSH_SUCCESS_BASE = {
+  event: 'workflow_run',
+  ciConclusion: 'success',
+  headRepo: REPO,
+  thisRepo: REPO,
+  changedFiles: ['src/index.js'],
+};
 
 // ---- Contract 01: migration before Worker deploy ------------------------------
 {
@@ -148,13 +169,18 @@ function stepById(list, id) {
   // deploy.yml must trigger on CI workflow_run completion for main, completed only.
   const triggerOk = /workflow_run:\s*\n\s*workflows:\s*\[CI\]\s*\n\s*types:\s*\[completed\]\s*\n\s*branches:\s*\[main\]/.test(text);
 
-  // The deploy job must depend on the gate output (which enforces CI success).
+  // The deploy job must depend on the gate output (which enforces CI success),
+  // and on the manual-validate job with an explicit skip allowance so the
+  // automatic path (which skips manual-validate) still deploys.
   const deployWaitsOnGate = deployJob.needs.includes('gate')
-    && deployJob.if.includes("needs.gate.outputs.deploy == 'true'");
+    && deployJob.needs.includes('manual-validate')
+    && deployJob.if.includes("needs.gate.outputs.deploy == 'true'")
+    && deployJob.if.includes("needs.manual-validate.result == 'success'")
+    && deployJob.if.includes("needs.manual-validate.result == 'skipped'");
 
-  // The gate must treat any CI conclusion other than success as a blocker.
-  const gateEnforcesCi = Boolean(gateJob)
-    && /CI_CONCLUSION["']?\s*!=\s*["']?success/.test(gateJob.steps.map((s) => s.run).join('\n'));
+  // The gate decision must treat any CI conclusion other than success as a
+  // blocker (behavioral, via the decision function).
+  const gateEnforcesCi = !decideDeploy({ ...PUSH_SUCCESS_BASE, triggerEvent: 'push', ciConclusion: 'failure' }).deploy;
 
   // ci.yml must run the full validate:deploy suite on push to main, so that a
   // successful CI run is exactly the Production Gate.
@@ -162,12 +188,22 @@ function stepById(list, id) {
     && /npm run validate:deploy/.test(ciText)
     && /branches:\s*\n\s*- main/.test(ciText);
 
-  // No duplicated full validation inside deploy.yml (single execution per push).
-  const noDuplication = !/npm run validate:deploy/.test(text);
+  // No duplicated full validation on the AUTOMATIC path: `npm run
+  // validate:deploy` may appear only inside the manual-validate job (the
+  // manual path's mandatory in-workflow validation), which is explicitly
+  // gated on workflow_dispatch.
+  const jobsWithValidation = Object.entries(jobs)
+    .filter(([, j]) => j.steps.some((s) => (s.run || '').includes('npm run validate:deploy')))
+    .map(([name]) => name);
+  const validationOnlyInManualJob = jobsWithValidation.length === 1
+    && jobsWithValidation[0] === 'manual-validate'
+    && Boolean(manualValidateJob)
+    && manualValidateJob.if.includes("github.event_name == 'workflow_dispatch'")
+    && manualValidateJob.if.includes("needs.gate.outputs.deploy == 'true'");
 
-  check('C02 deploy is gated on CI (validate-deploy + validate-merge) success via workflow_run',
-    triggerOk && deployWaitsOnGate && gateEnforcesCi && ciRunsFullSuite && noDuplication,
-    `trigger=${triggerOk} needsGate=${deployWaitsOnGate} gateEnforcesCi=${gateEnforcesCi} ciFull=${ciRunsFullSuite} noDup=${noDuplication}`);
+  check('C02 deploy is gated on CI (validate-deploy + validate-merge) success via workflow_run; full validation is not duplicated on the automatic path',
+    triggerOk && deployWaitsOnGate && gateEnforcesCi && ciRunsFullSuite && validationOnlyInManualJob,
+    `trigger=${triggerOk} needsGate=${deployWaitsOnGate} gateEnforcesCi=${gateEnforcesCi} ciFull=${ciRunsFullSuite} validationJobs=${JSON.stringify(jobsWithValidation)}`);
 }
 
 // ---- Contract 03: migration failure must abort the deploy ---------------------
@@ -210,12 +246,22 @@ function stepById(list, id) {
 
 // ---- Contract 06: markdown/docs-only changes skip deploy ----------------------
 {
-  const gateRun = gateJob ? gateJob.steps.map((s) => s.run).join('\n') : '';
-  const ok = gateRun.includes("-e '\\.md$'")
-    && gateRun.includes("-e '^docs/'")
-    && gateRun.includes('deploy=false');
-  check('C06 markdown/docs-only changes skip deploy (gate path check)', ok,
-    'gate job must filter *.md and docs/** and set deploy=false');
+  // Structural: the gate decision lives in the unit-tested decision script and
+  // the workflow feeds it the triggering CI event explicitly.
+  const decideStep = gateJob && gateJob.steps.find((s) => s.name.includes('Decide deploy eligibility'));
+  const gateUsesDecisionScript = Boolean(decideStep)
+    && (decideStep.run || '').includes('node scripts/deploy-gate-decision.mjs');
+  const gatePassesTriggerEvent = /TRIGGER_EVENT: \$\{\{ github\.event\.workflow_run\.event \}\}/.test(text);
+
+  // Behavioral: docs-only changes are skipped, real changes deploy, and the
+  // initial-commit case (no diff available) deploys.
+  const docsOnly = decideDeploy({ ...PUSH_SUCCESS_BASE, triggerEvent: 'push', changedFiles: ['README.md', 'docs/operations/deployment.md'] });
+  const codeChange = decideDeploy({ ...PUSH_SUCCESS_BASE, triggerEvent: 'push', changedFiles: ['src/index.js', 'README.md'] });
+  const initialCommit = decideDeploy({ ...PUSH_SUCCESS_BASE, triggerEvent: 'push', changedFiles: null });
+  check('C06 markdown/docs-only changes skip deploy; code changes deploy; initial commit deploys',
+    gateUsesDecisionScript && gatePassesTriggerEvent
+      && !docsOnly.deploy && codeChange.deploy && initialCommit.deploy,
+    `gateUsesScript=${gateUsesDecisionScript} triggerEnv=${gatePassesTriggerEvent} docsOnly=${docsOnly.deploy} code=${codeChange.deploy} initial=${initialCommit.deploy}`);
 }
 
 // ---- Contract 07: forks do not auto-deploy ------------------------------------
@@ -223,11 +269,59 @@ function stepById(list, id) {
   const okGate = gateJob && gateJob.if.includes("vars.DEPLOY_ENABLED == 'true'")
     && gateJob.if.includes("github.repository == 'fongap/ai-gateway'");
   const okDeploy = deployJob.if.includes("needs.gate.outputs.deploy == 'true'");
-  const headRepoCheck = gateJob && gateJob.steps.map((s) => s.run).join('\n')
-    .includes('HEAD_REPO" != "$THIS_REPO"');
+  // Behavioral: a fork head repository is never deployed.
+  const forkDecision = decideDeploy({ ...PUSH_SUCCESS_BASE, triggerEvent: 'push', headRepo: 'someone/ai-gateway' });
   check('C07 forks require explicit DEPLOY_ENABLED=true; fork head repos never deploy',
-    Boolean(okGate && okDeploy && headRepoCheck),
-    `gate if="${gateJob && gateJob.if}"`);
+    Boolean(okGate && okDeploy) && !forkDecision.deploy,
+    `gate if="${gateJob && gateJob.if}" forkDeploy=${forkDecision.deploy}`);
+}
+
+// ---- Contract 08: push-triggered CI success on main -> deploy allowed ---------
+{
+  const decision = decideDeploy({ ...PUSH_SUCCESS_BASE, triggerEvent: 'push' });
+  check('C08 push/main/success -> deploy allowed (the only automatic deploy path)',
+    decision.deploy === true, `reason="${decision.reason}"`);
+}
+
+// ---- Contract 09: nightly (schedule) CI success -> deploy blocked -------------
+{
+  const decision = decideDeploy({ ...PUSH_SUCCESS_BASE, triggerEvent: 'schedule' });
+  check('C09 schedule/success -> deploy blocked (nightly CI is test-only)',
+    decision.deploy === false, `reason="${decision.reason}"`);
+}
+
+// ---- Contract 10: manually triggered CI success -> deploy blocked -------------
+{
+  const decision = decideDeploy({ ...PUSH_SUCCESS_BASE, triggerEvent: 'workflow_dispatch' });
+  check('C10 workflow_dispatch CI/success -> deploy blocked (manual CI is test-only)',
+    decision.deploy === false, `reason="${decision.reason}"`);
+}
+
+// ---- Contract 11: manual deploy always passes through full validation ---------
+{
+  // Behavioral: the gate permits a manual dispatch (so validation can run),
+  // but the deploy job may only start after the manual-validate job SUCCEEDED.
+  const gateAllowsManual = decideDeploy({ event: 'workflow_dispatch' }).deploy === true;
+  const manualValidateExists = Boolean(manualValidateJob);
+  const manualValidateGated = manualValidateExists
+    && manualValidateJob.needs.includes('gate')
+    && manualValidateJob.if.includes("github.event_name == 'workflow_dispatch'");
+  const manualValidationSteps = manualValidateExists
+    ? manualValidateJob.steps.map((s) => s.run || '').join('\n')
+    : '';
+  const fullSuiteCovered = manualValidationSteps.includes('npm run validate:deploy')
+    && manualValidationSteps.includes('npm run typecheck')
+    && manualValidationSteps.includes('npm run typecheck:strict')
+    && manualValidationSteps.includes('npm run check:deploy');
+  const deployRequiresValidation = deployJob.needs.includes('manual-validate')
+    && deployJob.if.includes("needs.manual-validate.result == 'success'")
+    && deployJob.if.includes("needs.manual-validate.result == 'skipped'");
+  // The old implicit bypass must be gone: no inline gate script may set
+  // deploy=true for workflow_dispatch without the validation job.
+  const inlineBypassGone = !/EVENT" = "workflow_dispatch"/.test(text);
+  check('C11 manual workflow_dispatch -> deploy only after manual-validate full validation (no silent bypass)',
+    gateAllowsManual && manualValidateGated && fullSuiteCovered && deployRequiresValidation && inlineBypassGone,
+    `manualValidate=${manualValidateExists} gated=${manualValidateGated} fullSuite=${fullSuiteCovered} deployRequires=${deployRequiresValidation} inlineBypassGone=${inlineBypassGone}`);
 }
 
 if (failures > 0) {

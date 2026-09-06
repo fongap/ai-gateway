@@ -1,6 +1,6 @@
 # 部署
 
-ai-gateway 通过 GitHub Actions 部署。推送到 `main`（或手动运行工作流）触发部署：验证配置、同步 Worker 变量和 Secrets、执行 D1 迁移、发布 Worker、运行线上健康检查。
+ai-gateway 通过 GitHub Actions 部署。推送到 `main` 自动触发部署;在 Actions 页手动运行 Deploy 工作流也会先执行完整验证再部署。部署流程:验证配置、同步 Worker 变量和 Secrets、执行 D1 迁移、发布 Worker、运行线上健康检查。
 
 配置来源是 GitHub 仓库的 **Variables**（非敏感）和 **Secrets**（凭据）。Cloudflare Dashboard 不是日常配置界面。
 
@@ -13,25 +13,38 @@ ai-gateway 通过 GitHub Actions 部署。推送到 `main`（或手动运行工�
 
 部署工作流先运行 **preflight** 检查。任何必需 Variable 或 Secret 缺失时，工作流**失败**并报告确切缺失项。
 
-Deploy workflow 由 CI workflow 的 `workflow_run` 完成事件触发，生产部署必须等待完整验证通过（Merge Gate ≠ Production Gate）。CI 在 push 到 main 时运行两个 job——`validate-merge`（语法/配置/unit/typecheck/strict/security/docs/bundle dry-run）与 `validate-deploy`（unit + scheduler stability + integration + stress + Codex/Claude contract + security + docs）——**两个 job 都成功 = Production Gate**，完整验证每次 push 只执行一次，不在 deploy 工作流内重复。
+Deploy workflow 由 CI workflow 的 `workflow_run` 完成事件触发,生产部署必须等待完整验证通过（Merge Gate ≠ Production Gate）。CI 在 push 到 main 时运行两个 job——`validate-merge`（语法/配置/unit/typecheck/strict/security/docs/bundle dry-run）与 `validate-deploy`（unit + scheduler stability + integration + stress + Codex/Claude contract + security + docs）——**两个 job 都成功 = Production Gate**,完整验证每次 push 只执行一次,不在 deploy 工作流内重复。
+
+**触发事件规则**(由 `scripts/deploy-gate-decision.mjs` 决定,契约测试固化):只有 **push 触发的 CI 成功** 才允许自动部署。定时 nightly CI 与手动触发的 CI 仅测试,**永不部署**——gate 显式判断 `workflow_run.event == push`,不做任何 commit message / 时间 / 分支猜测。
 
 ```
 CI workflow（push → main）:
   → job validate-merge（Merge Gate）
   → job validate-deploy（完整套件）
 
+Nightly CI（schedule）/ 手动 CI（workflow_dispatch）:
+  → 只测试,NO Deploy
+
 Deploy workflow（workflow_run: CI completed, branch main）:
-  → job gate：CI conclusion ≠ success → 阻断；fork head repo → 阻断；
-    触发 commit 仅改动 **.md / docs/** → 跳过（沿用原 paths-ignore 策略）；
-    workflow_dispatch 手动触发 → 放行
-  → job deploy（needs: gate）:
-    → Preflight deployment configuration
-    → Validate runtime configuration
-    → Apply D1 migrations（仅当 TOKEN_STATS_D1_ID 已配置；未配置时跳过，不影响部署）
-    → Deploy Worker (atomic code+secrets)
-    → Verify deployed gateway（health check）
-    → Deployment summary（失败且已部署时先执行 Worker 回滚）
+  → job gate（scripts/deploy-gate-decision.mjs）:
+      CI 触发事件 ≠ push（nightly / 手动 CI）→ 阻断；
+      CI conclusion ≠ success → 阻断（Production Gate）；fork head repo → 阻断；
+      触发 commit 仅改动 **.md / docs/** → 跳过（沿用原 paths-ignore 策略）
+  → job deploy（needs: [gate, manual-validate]）:
+      → Preflight deployment configuration
+      → Validate runtime configuration
+      → Apply D1 migrations（仅当 TOKEN_STATS_D1_ID 已配置；未配置时跳过，不影响部署）
+      → Deploy Worker (atomic code+secrets)
+      → Verify deployed gateway（health check）
+      → Deployment summary（失败且已部署时先执行 Worker 回滚）
+
+手动 Deploy（workflow_dispatch）:
+  → job gate 放行,但绝不绕过 Production Gate:
+  → job manual-validate（完整套件: validate:deploy + typecheck + strict typecheck + bundle dry-run）
+  → 全部通过后 job deploy 才开始（needs.manual-validate.result == 'success'）
 ```
+
+手动路径是唯一在 deploy 工作流内重复完整验证的路径（低频操作）；自动 main-push 路径复用已完成的 CI,验证只执行一次。
 
 任何验证步骤失败都会阻断后续步骤——Worker、Secrets 和 D1 不会被触碰。
 **D1 migration 失败时 Worker 部署不会发生**，不会出现"新代码 + 旧 Schema"的线上状态。
