@@ -8,7 +8,7 @@
 //   * persistTokenUsage (totals)    -> token_usage_totals UPSERT
 //   * queryTokenSummary             -> SELECT from totals + hourly windows
 //   * queryTokenDailySeries         -> SELECT from daily (with hourly fallback)
-//   * queryTokenModelUsage          -> token_usage_model_hourly GROUP BY model
+//   * queryTokenModelUsage          -> token_usage_model_hourly GROUP BY LOWER(TRIM(model))
 //   * aggregateHourlyToDaily        -> SELECT hourly, INSERT daily (overwrite)
 //   * aggregateDailyToWeekly        -> SELECT daily, INSERT weekly (overwrite)
 //   * cleanupUsageRetention         -> DELETE from hourly/daily/weekly
@@ -34,8 +34,15 @@ export function createMockD1({ failWrites = false, failReads = false } = {}) {
     if (idx < 0) return null;
     return { hour: key.slice(0, idx), model: key.slice(idx + 1) };
   };
+  const norm = (m) => String(m || '').trim().toLowerCase();
 
   function prepare(sql) {
+    // Simulate the canonical grouping the real D1 performs for
+    // `GROUP BY LOWER(TRIM(model))` (and, for legacy statements,
+    // plain `GROUP BY model`): rows merge by the trimmed lowercase
+    // model key and the `model` column comes back canonical.
+    const groupByModelExpr = /GROUP\s+BY\s+LOWER\s*\(\s*TRIM\s*\(\s*model\s*\)\s*\)/i.test(sql)
+      || /GROUP\s+BY\s+model/i.test(sql);
     const stmt = {
       _params: [],
       bind(...params) {
@@ -202,16 +209,17 @@ export function createMockD1({ failWrites = false, failReads = false } = {}) {
         }
 
         // queryModelUsageCoverage: SELECT model, SUM(requests), SUM(usage_reports), SUM(usage_missing)
-        // GROUP BY model WHERE hour >= ?
-        if (/usage_reports/i.test(sql) && /usage_missing/i.test(sql) && /GROUP BY model/i.test(sql)) {
+        // GROUP BY LOWER(TRIM(model)) WHERE hour >= ?
+        if (groupByModelExpr && /usage_reports/i.test(sql) && /usage_missing/i.test(sql)) {
           const startHour = this._params[0];
           const byModel = new Map();
           for (const [key, r] of modelRows) {
             const parsed = parseModelKey(key);
             if (!parsed) continue;
             if (parsed.hour < startHour) continue;
-            const cur = byModel.get(parsed.model) || { requests: 0, reports: 0, missing: 0 };
-            byModel.set(parsed.model, {
+            const model = norm(parsed.model);
+            const cur = byModel.get(model) || { requests: 0, reports: 0, missing: 0 };
+            byModel.set(model, {
               requests: cur.requests + (r.requests || 0),
               reports: cur.reports + (r.reports || 0),
               missing: cur.missing + (r.missing || 0),
@@ -256,32 +264,33 @@ export function createMockD1({ failWrites = false, failReads = false } = {}) {
         reads.push({ method: 'all', sql, params: this._params });
         if (failReads) throw new Error('mock D1 read failure');
 
-        // queryRecentModelEvidence: SELECT model FROM ... WHERE hour >= ? AND requests > 0 GROUP BY model
-        if (/GROUP BY model/i.test(sql) && /requests\s*>\s*0/i.test(sql)) {
+        // queryRecentModelEvidence: SELECT model FROM ... WHERE hour >= ? AND requests > 0 GROUP BY LOWER(TRIM(model))
+        if (groupByModelExpr && /requests\s*>\s*0/i.test(sql)) {
           const startHour = this._params[0];
           const out = new Map();
           for (const [key, r] of modelRows) {
             const parsed = parseModelKey(key);
             if (!parsed) continue;
-            const { hour, model } = parsed;
+            const { hour } = parsed;
             if (hour < startHour) continue;
             if ((r.requests || 0) <= 0) continue;
-            out.set(model, true);
+            out.set(norm(parsed.model), true);
           }
           return { results: [...out.keys()].map((model) => ({ model })) };
         }
 
         // queryAllModelsTtftPercentiles: SELECT model, SUM(successful_ttft_count), SUM(ttft_b0..b6)
-        // GROUP BY model WHERE hour >= ?
-        if (/successful_ttft_count/i.test(sql) && /ttft_b0/i.test(sql) && /GROUP BY model/i.test(sql)) {
+        // GROUP BY LOWER(TRIM(model)) WHERE hour >= ?
+        if (groupByModelExpr && /successful_ttft_count/i.test(sql) && /ttft_b0/i.test(sql)) {
           const startHour = this._params[0];
           const byModel = new Map();
           for (const [key, r] of modelRows) {
             const parsed = parseModelKey(key);
             if (!parsed) continue;
             if (parsed.hour < startHour) continue;
-            const cur = byModel.get(parsed.model) || { total_ttft: 0, b0: 0, b1: 0, b2: 0, b3: 0, b4: 0, b5: 0, b6: 0 };
-            byModel.set(parsed.model, {
+            const model = norm(parsed.model);
+            const cur = byModel.get(model) || { total_ttft: 0, b0: 0, b1: 0, b2: 0, b3: 0, b4: 0, b5: 0, b6: 0 };
+            byModel.set(model, {
               total_ttft: cur.total_ttft + (r.successful_ttft_count || 0),
               b0: cur.b0 + (r.ttft_b0 || 0),
               b1: cur.b1 + (r.ttft_b1 || 0),
@@ -296,16 +305,17 @@ export function createMockD1({ failWrites = false, failReads = false } = {}) {
         }
 
         // queryModelUsageCoverage (all): SELECT model, SUM(requests), SUM(usage_reports), SUM(usage_missing)
-        // GROUP BY model WHERE hour >= ?
-        if (/usage_reports/i.test(sql) && /usage_missing/i.test(sql) && /GROUP BY model/i.test(sql)) {
+        // GROUP BY LOWER(TRIM(model)) WHERE hour >= ?
+        if (groupByModelExpr && /usage_reports/i.test(sql) && /usage_missing/i.test(sql)) {
           const startHour = this._params[0];
           const byModel = new Map();
           for (const [key, r] of modelRows) {
             const parsed = parseModelKey(key);
             if (!parsed) continue;
             if (parsed.hour < startHour) continue;
-            const cur = byModel.get(parsed.model) || { requests: 0, reports: 0, missing: 0 };
-            byModel.set(parsed.model, {
+            const model = norm(parsed.model);
+            const cur = byModel.get(model) || { requests: 0, reports: 0, missing: 0 };
+            byModel.set(model, {
               requests: cur.requests + (r.requests || 0),
               reports: cur.reports + (r.reports || 0),
               missing: cur.missing + (r.missing || 0),
@@ -317,15 +327,16 @@ export function createMockD1({ failWrites = false, failReads = false } = {}) {
           return { results };
         }
 
-        // queryTokenModelUsage: SELECT model, SUM(...) GROUP BY model WHERE hour >= start.
-        if (/GROUP BY model/i.test(sql)) {
+        // queryTokenModelUsage: SELECT model, SUM(...) GROUP BY LOWER(TRIM(model)) WHERE hour >= start.
+        if (groupByModelExpr) {
           const startHour = this._params[0];
           const byModel = new Map();
           for (const [key, r] of modelRows) {
             const parsed = parseModelKey(key);
             if (!parsed) continue;
-            const { hour, model } = parsed;
+            const { hour } = parsed;
             if (hour < startHour) continue;
+            const model = norm(parsed.model);
             const cur = byModel.get(model) || { total: 0, requests: 0 };
             byModel.set(model, { total: cur.total + r.total, requests: cur.requests + r.requests });
           }
@@ -372,5 +383,25 @@ export function createMockD1({ failWrites = false, failReads = false } = {}) {
     return stmt;
   }
 
-  return { prepare, _rows: rows, _modelRows: modelRows, _totalsRow: totalsRow, _dailyRows: dailyRows, _weeklyRows: weeklyRows, _writes: writes, _reads: reads };
+  return {
+    prepare,
+    // Construct a raw per-model row directly in the simulated table,
+    // bypassing persistTokenUsage() — the writer canonicalizes its model
+    // key, so tests that need HISTORICAL case variants (Code-Max /
+    // CODE-MAX / padded strings) must seed rows at this level. The hour
+    // key is normalized exactly like the writer's normalizeHour() so
+    // window comparisons behave like real rows.
+    seedModelRow(hour, model, fields = {}) {
+      const hourKey = typeof hour === 'number'
+        ? new Date(Math.floor(hour / 3_600_000) * 3_600_000).toISOString()
+        : hour;
+      modelRows.set(modelKey(hourKey, model), {
+        input: 0, output: 0, total: 0, requests: 0, reports: 0, missing: 0,
+        successful_ttft_count: 0, ttft_b0: 0, ttft_b1: 0, ttft_b2: 0,
+        ttft_b3: 0, ttft_b4: 0, ttft_b5: 0, ttft_b6: 0,
+        ...fields,
+      });
+    },
+    _rows: rows, _modelRows: modelRows, _totalsRow: totalsRow, _dailyRows: dailyRows, _weeklyRows: weeklyRows, _writes: writes, _reads: reads,
+  };
 }
