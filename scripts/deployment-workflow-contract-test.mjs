@@ -4,22 +4,31 @@
 //
 // Deployment Workflow Contract Test.
 //
-// The deploy-order regression this suite guards against: a Worker deploy that
+// The deploy-order regressions this suite guards against: a Worker deploy that
 // runs before D1 migrations, or a production deploy that does not wait for
 // full validation. YAML semantics are not fully parsed — this test makes
-// targeted structural assertions on the workflow text (jobs, step order,
-// step conditions), which is enough to pin the release-safety facts and
-// prevent silent drift. If the workflow is restructured intentionally,
-// update these contracts in the same PR.
+// targeted structural assertions on the workflow text (jobs, step order, step
+// conditions), which is enough to pin the release-safety facts and prevent
+// silent drift. If the workflows are restructured intentionally, update these
+// contracts in the same PR.
+//
+// Production gate architecture: deploy.yml is triggered by `workflow_run`
+// when the CI workflow (ci.yml) completes on main. CI success requires BOTH
+// of its jobs — validate-merge (fast gate incl. typecheck + strict + bundle
+// dry-run) and validate-deploy (full suite) — so the full validation runs
+// exactly once per push and the deploy cannot outrun it.
 //
 // Contracts:
 //   01  D1 migration step runs BEFORE the Worker deploy step.
-//   02  The deploy job depends (`needs:`) on a job running full validate:deploy.
+//   02  Production deploy is gated on the CI workflow (validate-deploy +
+//       validate-merge) succeeding via workflow_run — no duplicated
+//       full-validation job inside deploy.yml.
 //   03  A migration failure aborts the deploy (no continue-on-error / always()).
 //   04  The health check runs AFTER the Worker deploy.
 //   05  Rollback only fires when the Worker was deployed and a later step failed.
-//   06  Markdown-only changes skip the production deploy (existing paths-ignore policy).
-//   07  Forks do not auto-deploy without DEPLOY_ENABLED=true.
+//   06  Markdown/docs-only commits skip the deploy (gate job path check).
+//   07  Forks do not auto-deploy without DEPLOY_ENABLED=true, and commits from
+//       fork head repositories are never deployed.
 
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -28,8 +37,10 @@ import { dirname, join } from 'node:path';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
 const workflowPath = join(root, '.github', 'workflows', 'deploy.yml');
+const ciPath = join(root, '.github', 'workflows', 'ci.yml');
 
 const text = readFileSync(workflowPath, 'utf8');
+const ciText = readFileSync(ciPath, 'utf8');
 
 // ---- Minimal structural parse ------------------------------------------------
 // Extract jobs and their ordered steps from the workflow text. Indentation in
@@ -78,10 +89,20 @@ function parseWorkflow(source) {
       continue;
     }
     if (!currentStep) continue;
+    // Continuation lines of a multi-line `run: |` block sit deeper than the
+    // property indentation (8 spaces); capture them so gate-script logic is
+    // assertable.
+    if (currentStep._inRun && /^ {10,}\S/.test(line)) {
+      currentStep.run += '\n' + line.trim();
+      continue;
+    }
     const prop = line.match(/^        (name|if|run|uses|id):\s*(.*)$/);
     if (prop) {
       const key = prop[1] === 'name' || prop[1] === 'if' || prop[1] === 'run' || prop[1] === 'uses' || prop[1] === 'id' ? prop[1] : null;
-      if (key === 'run' && currentStep.run) currentStep.run += '\n' + prop[2];
+      if (key === 'run') {
+        currentStep._inRun = prop[2] === '|' || prop[2] === '>-' || prop[2] === '>-';
+        currentStep.run = currentStep._inRun ? '' : prop[2];
+      } else if (key === 'run' && currentStep.run) currentStep.run += '\n' + prop[2];
       else if (key) currentStep[key] = prop[2];
       continue;
     }
@@ -104,7 +125,7 @@ function check(name, ok, detail) {
 }
 
 const deployJob = jobs.deploy;
-const validateJob = jobs.validate;
+const gateJob = jobs.gate;
 if (!deployJob) { console.error('FAIL  deploy job not found in deploy.yml'); process.exit(1); }
 
 function stepIndex(list, namePart) {
@@ -122,14 +143,31 @@ function stepById(list, id) {
     `migration index=${mig}, deploy index=${dep}`);
 }
 
-// ---- Contract 02: production deploy depends on full validation ----------------
+// ---- Contract 02: production deploy gated on the CI workflow ------------------
 {
-  const validateRunsFullSuite = validateJob
-    && validateJob.steps.some((s) => s.run.includes('npm run validate:deploy'));
-  const deployWaits = deployJob.needs.includes('validate');
-  check('C02 deploy job needs a job running npm run validate:deploy',
-    validateRunsFullSuite && deployWaits,
-    `needs=${JSON.stringify(deployJob.needs)}, validate:deploy present=${validateRunsFullSuite}`);
+  // deploy.yml must trigger on CI workflow_run completion for main, completed only.
+  const triggerOk = /workflow_run:\s*\n\s*workflows:\s*\[CI\]\s*\n\s*types:\s*\[completed\]\s*\n\s*branches:\s*\[main\]/.test(text);
+
+  // The deploy job must depend on the gate output (which enforces CI success).
+  const deployWaitsOnGate = deployJob.needs.includes('gate')
+    && deployJob.if.includes("needs.gate.outputs.deploy == 'true'");
+
+  // The gate must treat any CI conclusion other than success as a blocker.
+  const gateEnforcesCi = Boolean(gateJob)
+    && /CI_CONCLUSION["']?\s*!=\s*["']?success/.test(gateJob.steps.map((s) => s.run).join('\n'));
+
+  // ci.yml must run the full validate:deploy suite on push to main, so that a
+  // successful CI run is exactly the Production Gate.
+  const ciRunsFullSuite = /validate-deploy:/.test(ciText)
+    && /npm run validate:deploy/.test(ciText)
+    && /branches:\s*\n\s*- main/.test(ciText);
+
+  // No duplicated full validation inside deploy.yml (single execution per push).
+  const noDuplication = !/npm run validate:deploy/.test(text);
+
+  check('C02 deploy is gated on CI (validate-deploy + validate-merge) success via workflow_run',
+    triggerOk && deployWaitsOnGate && gateEnforcesCi && ciRunsFullSuite && noDuplication,
+    `trigger=${triggerOk} needsGate=${deployWaitsOnGate} gateEnforcesCi=${gateEnforcesCi} ciFull=${ciRunsFullSuite} noDup=${noDuplication}`);
 }
 
 // ---- Contract 03: migration failure must abort the deploy ---------------------
@@ -170,20 +208,26 @@ function stepById(list, id) {
     `rollback if="${rollback && rollback.if}"`);
 }
 
-// ---- Contract 06: markdown-only changes skip deploy ---------------------------
+// ---- Contract 06: markdown/docs-only changes skip deploy ----------------------
 {
-  const pushBlock = text.match(/on:\s*\n  push:\s*\n((?:.+\n)+?)(?=  workflow_dispatch:|  pull_request:|permissions:)/);
-  const ok = Boolean(pushBlock)
-    && pushBlock[1].includes("'**.md'")
-    && pushBlock[1].includes("'docs/**'");
-  check('C06 markdown-only changes skip production deploy (paths-ignore)', ok);
+  const gateRun = gateJob ? gateJob.steps.map((s) => s.run).join('\n') : '';
+  const ok = gateRun.includes("-e '\\.md$'")
+    && gateRun.includes("-e '^docs/'")
+    && gateRun.includes('deploy=false');
+  check('C06 markdown/docs-only changes skip deploy (gate path check)', ok,
+    'gate job must filter *.md and docs/** and set deploy=false');
 }
 
 // ---- Contract 07: forks do not auto-deploy ------------------------------------
 {
-  const ok = deployJob.if.includes("vars.DEPLOY_ENABLED == 'true'")
-    && deployJob.if.includes("github.repository == 'fongap/ai-gateway'");
-  check('C07 forks require explicit DEPLOY_ENABLED=true', ok, `deploy job if="${deployJob.if}"`);
+  const okGate = gateJob && gateJob.if.includes("vars.DEPLOY_ENABLED == 'true'")
+    && gateJob.if.includes("github.repository == 'fongap/ai-gateway'");
+  const okDeploy = deployJob.if.includes("needs.gate.outputs.deploy == 'true'");
+  const headRepoCheck = gateJob && gateJob.steps.map((s) => s.run).join('\n')
+    .includes('HEAD_REPO" != "$THIS_REPO"');
+  check('C07 forks require explicit DEPLOY_ENABLED=true; fork head repos never deploy',
+    Boolean(okGate && okDeploy && headRepoCheck),
+    `gate if="${gateJob && gateJob.if}"`);
 }
 
 if (failures > 0) {

@@ -13,23 +13,24 @@ ai-gateway 通过 GitHub Actions 部署。推送到 `main`（或手动运行工�
 
 部署工作流先运行 **preflight** 检查。任何必需 Variable 或 Secret 缺失时，工作流**失败**并报告确切缺失项。
 
-Deploy workflow 分为两个 job，生产部署必须等待完整验证通过（Merge Gate ≠ Production Gate）：
+Deploy workflow 由 CI workflow 的 `workflow_run` 完成事件触发，生产部署必须等待完整验证通过（Merge Gate ≠ Production Gate）。CI 在 push 到 main 时运行两个 job——`validate-merge`（语法/配置/unit/typecheck/strict/security/docs/bundle dry-run）与 `validate-deploy`（unit + scheduler stability + integration + stress + Codex/Claude contract + security + docs）——**两个 job 都成功 = Production Gate**，完整验证每次 push 只执行一次，不在 deploy 工作流内重复。
 
 ```
-job validate（Production Gate）:
-checkout → setup Node → npm ci
-  → npm run validate:deploy（unit + scheduler stability + integration + stress
-    + Codex/Claude contract + security + docs）
-  → npm run typecheck
-  → npm run check:deploy（Worker bundle dry-run）
+CI workflow（push → main）:
+  → job validate-merge（Merge Gate）
+  → job validate-deploy（完整套件）
 
-job deploy（needs: validate）:
-  → Preflight deployment configuration
-  → Validate runtime configuration
-  → Apply D1 migrations（仅当 TOKEN_STATS_D1_ID 已配置；未配置时跳过，不影响部署）
-  → Deploy Worker (atomic code+secrets)
-  → Verify deployed gateway（health check）
-  → Deployment summary（失败且已部署时先执行 Worker 回滚）
+Deploy workflow（workflow_run: CI completed, branch main）:
+  → job gate：CI conclusion ≠ success → 阻断；fork head repo → 阻断；
+    触发 commit 仅改动 **.md / docs/** → 跳过（沿用原 paths-ignore 策略）；
+    workflow_dispatch 手动触发 → 放行
+  → job deploy（needs: gate）:
+    → Preflight deployment configuration
+    → Validate runtime configuration
+    → Apply D1 migrations（仅当 TOKEN_STATS_D1_ID 已配置；未配置时跳过，不影响部署）
+    → Deploy Worker (atomic code+secrets)
+    → Verify deployed gateway（health check）
+    → Deployment summary（失败且已部署时先执行 Worker 回滚）
 ```
 
 任何验证步骤失败都会阻断后续步骤——Worker、Secrets 和 D1 不会被触碰。

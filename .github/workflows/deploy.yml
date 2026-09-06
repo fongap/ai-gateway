@@ -4,9 +4,18 @@ name: Deploy
 # are the deployment source; the Cloudflare Dashboard is never a second
 # configuration source.
 #
-# Production gate: the deploy job `needs:` the validate job, which runs the
-# full `validate:deploy` suite — Worker Deploy never executes before full
-# validation succeeds (Merge Gate != Production Gate).
+# Production gate: this workflow is triggered by `workflow_run` when the CI
+# workflow completes on main. CI success means BOTH of its jobs passed —
+# validate-merge (syntax + config + unit + typecheck + strict typecheck +
+# security + docs + bundle dry-run) AND validate-deploy (unit + scheduler
+# stability + integration + stress + Codex/Claude contract + security + docs).
+# Worker Deploy therefore never executes before full validation succeeds, and
+# the full suite is executed exactly once per push (Merge Gate != Production
+# Gate; no duplicated validation).
+#
+# The gate job additionally blocks deploys whose triggering commit changed
+# ONLY markdown/docs paths (the previous `paths-ignore` policy) and commits
+# from fork head repositories.
 #
 # Pipeline: preflight → validate configuration → D1 migrations (if configured)
 # → atomic Worker deploy (code + secrets in a single
@@ -36,11 +45,10 @@ name: Deploy
 # it is never skipped). Forks: opt in with DEPLOY_ENABLED=true.
 
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
   workflow_dispatch:
 
 permissions:
@@ -51,38 +59,65 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Production Gate — full validation (unit + scheduler stability + integration
-  # + stress + Codex/Claude contract + security + docs) must succeed before the
-  # deploy job may run. validate:merge alone is only the Merge Gate.
-  validate:
+  # Gate — decides whether a deploy may happen at all:
+  #   * manual workflow_dispatch            -> deploy
+  #   * workflow_run from a fork head repo  -> never deploy
+  #   * CI workflow conclusion != success   -> never deploy (Production Gate)
+  #   * triggering commit touched ONLY
+  #     **.md / docs/** (old paths-ignore) -> skip deploy
+  gate:
     if: github.repository == 'fongap/ai-gateway' || vars.DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 5
+    outputs:
+      deploy: ${{ steps.decide.outputs.deploy }}
     steps:
-      - name: Checkout
+      - name: Checkout triggering commit
+        if: github.event_name == 'workflow_run'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
-          cache: npm
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 2
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Validate (deploy)
-        run: npm run validate:deploy
-
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Dry-run Worker bundle
-        run: npm run check:deploy
+      - name: Decide deploy eligibility
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          CI_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          THIS_REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$HEAD_REPO" != "$THIS_REPO" ]; then
+            echo "::notice::head repository is a fork — deploy blocked"
+            echo "deploy=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ "$CI_CONCLUSION" != "success" ]; then
+            echo "::notice::CI conclusion is '$CI_CONCLUSION' — deploy blocked (Production Gate)"
+            echo "deploy=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Markdown-only skip: reproduce the previous paths-ignore policy
+          # ('**.md', 'docs/**') against the triggering commit.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          CHANGED=$(git diff --name-only "$HEAD_SHA^" "$HEAD_SHA" 2>/dev/null || echo "__INITIAL_COMMIT__")
+          if [ "$CHANGED" = "__INITIAL_COMMIT__" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          DEPLOYABLE=$(printf '%s\n' "$CHANGED" | grep -v -e '\.md$' -e '^docs/' || true)
+          if [ -z "$DEPLOYABLE" ]; then
+            echo "::notice::markdown/docs-only change — deploy skipped"
+            echo "deploy=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "deploy=true" >> "$GITHUB_OUTPUT"
 
   deploy:
-    needs: validate
-    if: github.repository == 'fongap/ai-gateway' || vars.DEPLOY_ENABLED == 'true'
+    needs: gate
+    if: needs.gate.outputs.deploy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:

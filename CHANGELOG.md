@@ -13,7 +13,7 @@
 
 ### Changed — 发布安全(P0)
 
-- **Deploy 工作流拆分为 `validate` + `deploy` 两个 job,`deploy` 显式 `needs: validate`。** Production Gate(完整 `validate:deploy` + typecheck + bundle dry-run)成功之前 Worker Deploy 绝不执行;Merge Gate(`validate-merge`)≠ Production Gate。D1 migration 步骤移至 Worker Deploy **之前**:`migration 失败 → deploy 不发生`,不再出现"新代码 + 旧 Schema"线上状态;`TOKEN_STATS_D1_ID` 未配置时 migration 步骤跳过、不阻断部署。回滚语义不变(仅已部署 + 后续步骤失败时 `wrangler rollback`,变量/Secrets/迁移不回滚)。
+- **Deploy 工作流由 CI 的 `workflow_run` 完成事件触发,完整验证每次 push 只执行一次。** CI 的 `validate-merge` + `validate-deploy` 两个 job 全部成功 = Production Gate——Worker Deploy 绝不在此之前执行;Merge Gate(`validate-merge`)≠ Production Gate。gate job 另行阻断 fork head repo 的 commit,并对仅改动 `**.md`/`docs/**` 的触发 commit 沿用原 `paths-ignore` 跳过策略;`workflow_dispatch` 手动触发始终放行。D1 migration 步骤移至 Worker Deploy **之前**:`migration 失败 → deploy 不发生`,不再出现"新代码 + 旧 Schema"线上状态;`TOKEN_STATS_D1_ID` 未配置时 migration 步骤跳过、不阻断部署。回滚语义不变(仅已部署 + 后续步骤失败时 `wrangler rollback`,变量/Secrets/迁移不回滚)。
 - `docs/operations/deployment.md` 部署顺序同步更新;README / README_EN 标注 Production Gate 与迁移顺序。
 
 ### Changed — Dashboard 事实一致性(P1)
