@@ -514,6 +514,47 @@ test('ui_visible=false with visibility=public still hidden from public status', 
   assert.equal(list.models.length, 0);
 });
 
+// --- 23. Evidence canonicalization: statistics key vs official model ID ------
+//
+// D1 statistics keys are trim + lowercase; official logical model IDs keep
+// their official casing. Matching must always go through the canonical
+// statistics key — a model named `Code-Max` must find its `code-max`
+// evidence row, in every case variant, without touching routing/auth
+// model-ID semantics.
+
+test('canonical evidence: logical Code-Max matches lowercase code-max evidence', () => {
+  const nodes = [node('a', { 'Code-Max': 'up-cm' })];
+  const list = getPublicModelStatus(nodes, ENV, new Set(['code-max']), now());
+  assert.equal(findModelStatus(list, 'Code-Max'), 'available',
+    'lowercase stats evidence must count as recent for the official ID');
+});
+
+test('canonical evidence: every evidence case variant yields the same result', () => {
+  const nodes = [node('a', { 'Code-Max': 'up-cm' })];
+  for (const variant of ['CODE-MAX', 'Code-Max', 'code-max', ' Code-Max ']) {
+    const list = getPublicModelStatus(nodes, ENV, new Set([variant]), now());
+    assert.equal(findModelStatus(list, 'Code-Max'), 'available', `evidence variant "${variant}"`);
+  }
+});
+
+test('canonical evidence drives the degraded state too', () => {
+  const nodes = [node('a', { 'Code-Max': 'up-cm' })];
+  const t1Model = getTier1Model('a', 'Code-Max');
+  t1Model.cooldownUntil = now() + 60_000;
+  t1Model.failureState = 'cooldown';
+  // Lowercase D1 evidence for an officially-cased model must still produce
+  // `degraded` (transient outage), not `unavailable`.
+  const list = getPublicModelStatus(nodes, ENV, new Set(['code-max']), now());
+  assert.equal(findModelStatus(list, 'Code-Max'), 'degraded');
+});
+
+test('canonicalization does not alter the official model ID surface', () => {
+  const nodes = [node('a', { 'Code-Max': 'up-cm' })];
+  const list = getPublicModelStatus(nodes, ENV, new Set(['code-max']), now());
+  assert.deepEqual(list.models.map((m) => m.id), ['Code-Max'],
+    'public output keeps the official logical ID; only evidence matching is canonical');
+});
+
 console.log(`\nmodel-status tests: ${passed} passed.`);
 if (process.exitCode) {
   console.error('Some tests FAILED.');

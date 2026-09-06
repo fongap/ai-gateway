@@ -44,6 +44,7 @@
 
 import { loadModelRegistry, servesModel, collectKnownModels } from '../config/registry.js';
 import { getRuntimeAvailability } from './availability.js';
+import { normalizeModelKey } from '../observability/token-usage-store.mjs';
 
 // Recent-evidence window. The D1 per-model table stores UTC hourly buckets
 // with a 7-day retention (cleanupModelStats prunes older rows). A 24-hour
@@ -77,9 +78,12 @@ export {
 //   nodes     : Runtime Node[] (from loadGatewayConfig(env).nodes)
 //   env       : The Worker env (used to read MODELS_CONFIG via
 //               loadModelRegistry for visibility filtering only).
-//   evidence  : Set<string> of logical model names with recent-success
-//               evidence (typically from queryRecentModelEvidence()). An
-//               empty set is the fail-open shape — never null.
+//   evidence  : Set<string> of canonical statistical model keys (trim +
+//               lowercase) with recent-success evidence (typically from
+//               queryRecentModelEvidence()). An empty set is the fail-open
+//               shape — never null. Non-canonical entries are normalized
+//               once on entry; official logical model IDs are matched via
+//               normalizeModelKey so Code-Max finds its `code-max` stats row.
 //   now       : Optional clock for deterministic tests.
 //
 // Output:
@@ -122,6 +126,16 @@ export function getPublicModelStatus(nodes, env, evidence = new Set(), now = Dat
     } catch { /* registry not loadable: everything is public + ui visible */ }
   }
   const evidenceSet = evidence instanceof Set ? evidence : new Set();
+  // Canonicalize evidence ONCE on entry: D1 statistics keys are
+  // trim + lowercase (queryRecentModelEvidence), while the public model
+  // ids below keep their official logical casing (Code-Max). Matching is
+  // always canonical-statistical-key vs canonical-statistical-key —
+  // routing/auth model-ID semantics stay exact and untouched.
+  const canonicalEvidence = new Set();
+  for (const key of evidenceSet) {
+    const canonical = normalizeModelKey(key);
+    if (canonical) canonicalEvidence.add(canonical);
+  }
   // The Known Model Catalog bounds wildcard nodes so a wildcard node only
   // serves models that actually exist in the gateway. The public name set
   // stays node-mapped (an operator declares models where they live); the
@@ -132,7 +146,7 @@ export function getPublicModelStatus(nodes, env, evidence = new Set(), now = Dat
     if (visibility[name] === 'internal') continue;
     if (uiVisible[name] === false) continue;
     const serving = (nodes || []).filter((n) => servesModel(n, name, knownModels));
-    const status = modelStatus(name, serving, evidenceSet, now);
+    const status = modelStatus(name, serving, canonicalEvidence, now);
     const entry = registry[name] || {};
     models.push({
       id: name,
@@ -155,11 +169,13 @@ export function getPublicModelStatus(nodes, env, evidence = new Set(), now = Dat
 }
 
 // Compute the status of one logical model.
-function modelStatus(name, serving, evidence, now) {
+function modelStatus(name, serving, canonicalEvidence, now) {
   if (!serving.length) return 'unavailable';
 
   const states = serving.map((n) => getRuntimeAvailability(n, name, now));
-  const hasRecent = evidence.has(name);
+  // Statistics key (trim + lowercase), never the raw official ID: a model
+  // named Code-Max must match its `code-max` D1 evidence row.
+  const hasRecent = canonicalEvidence.has(normalizeModelKey(name));
 
   // At least one candidate is currently available AND eligible.
   const anyAvailable = states.some((s) => s === 'available');

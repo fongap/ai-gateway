@@ -12,6 +12,7 @@
 - **Model Status Recent-Evidence Window Contract `scripts/model-status-window-contract-test.mjs`**:23h 成功 = evidence / 25h = 非 evidence(默认窗口)、store/runtime 同一绑定、调用点必须传常量、证据链禁 7d/168h/604800000 字面量。
 - **Modalities schema 预留（Omni phase, P2-D）**:`MODELS_CONFIG` 模型条目接受 `modalities: { input: [...], output: [...] }`(闭集词汇 `text/image/audio/video`)。仅解析、校验(FATAL on invalid)并随 Model Registry 携带;不路由、不暴露于公开 API surface,未声明模型不携带该字段。语义约定:`modalities` = 能输入/输出什么,`capabilities` = 能做什么。新增 Omni 阶段唯一入口即扩展 `MODALITY_TOKENS` 闭集。
 - **TTFT Query Contract `scripts/ttft-query-contract-test.mjs` ×10**:全模型结果容器(缺数据 → insufficient/noSamples,不缺 key)、查询次数固定 1 次不随模型数增长、canonical key 大小写合并、低于最小样本 `p50/p95=null, insufficient=true`、百分位为桶上界精度、无 binding 时 fail-open。
+- **Observability Canonicalization Contract `scripts/model-stats-canonicalization-test.mjs`**:绕过 Writer 直接向模拟 D1 写入历史 case variants(`Code-Max` / `CODE-MAX` / 带空格)构造遗留数据,固化 Reader 侧 `LOWER(TRIM(model))` 分组合并语义——Token Usage(单一 canonical 维度,true sum)、TTFT(先合并直方图再算 P50/P95,禁止 JS Map overwrite)、Recent Evidence(仅返回 canonical key)、Usage Coverage(requests/reports/missing 正确合并)。`queryRecentModelEvidence` 返回 Set 即 canonical key。
 
 ### Changed — 发布安全(P0)
 
@@ -76,7 +77,7 @@
 
 #### Fixed — 可观测性一致性收敛
 
-- **统计维度大小写归一化**：`normalizeModelKey = trim + toLowerCase`。新写入直接写入 canonical key；历史读取统一 `GROUP BY LOWER(TRIM(model))`，合并 `Code-Max` / `code-max` / `CODE-MAX` 为同一统计维度。覆盖 Token / Requests / Top-N / Percentage / Recent Evidence / TTFT / Coverage 全维度。不修改历史 D1 行，新写入走 canonical key，历史按读取时归一化聚合，7 天保留期后旧大小写自然淘汰。
+- **统计维度大小写归一化**：`normalizeModelKey = trim + toLowerCase`。新写入直接写入 canonical key；历史读取统一 `GROUP BY LOWER(TRIM(model))`，合并 `Code-Max` / `code-max` / `CODE-MAX` 为同一统计维度。覆盖 Token / Requests / Top-N / Percentage / Recent Evidence / TTFT / Coverage 全维度。不修改历史 D1 行，新写入走 canonical key，历史按读取时归一化聚合，7 天保留期后旧大小写自然淘汰。Public Model Status 消费 Recent Evidence 前统一 canonicalize,official logical ID 与 canonical statistics key 正确匹配（`Code-Max` ↔ `code-max`）,路由/鉴权 Model ID 精确语义不变。
 - **Dashboard TTFT P50/P95 统一**：`queryAllModelsTtft` 单次 grouped D1 查询（`GROUP BY LOWER(TRIM(model))`）一次性拉取所有模型的 7 桶直方图，内存算 P50/P95，不再 N+1 查询 Top 4。8 个 Public Model 均可获取 TTFT（只要有数据），不再仅限 Usage Top 4。
 - **Recent Evidence 窗口收敛 24h**：统一使用 `MODEL_STATUS_RECENT_WINDOW_MS = 24h`，不再有硬编码 7 天。
 - **Public Model Status 仅显示 8 个 Public 模型**：Omni/OCR 后台继续完整统计与监控，但 Dashboard「模型状态」与 `/v1/models`（受限 Key）不再暴露。

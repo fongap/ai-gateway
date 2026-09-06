@@ -230,30 +230,32 @@ export async function queryTokenDailySeries(env, startDayIso, now = Date.now()) 
 }
 
 // Per-model totals for the homepage's "模型使用 · 近 7 天" panel.
+//
+// Reader canonicalization: rows are grouped by LOWER(TRIM(model)) so
+// historical case variants (Code-Max / code-max / CODE-MAX) merge into ONE
+// stats dimension instead of splitting (or overwriting each other). The
+// writer already canonicalizes; the reader must not depend on that —
+// pre-normalization rows still exist in D1 until retention ages them out.
 export async function queryTokenModelUsage(env, days = 7, now = Date.now()) {
   const d1 = tokenStatsD1(env);
   if (!d1) return { available: false, error: 'TOKEN_STATS_DB binding missing' };
   const startHour = normalizeHour(now - days * DAY_MS);
   try {
     const res = await d1.prepare(
-      `SELECT model,
+      `SELECT LOWER(TRIM(model)) AS model,
               COALESCE(SUM(total_tokens), 0) AS total,
               COALESCE(SUM(requests), 0) AS requests
        FROM ${TABLE_MODEL}
        WHERE hour >= ?
-       GROUP BY model
+       GROUP BY LOWER(TRIM(model))
        ORDER BY total DESC`,
     ).bind(startHour).all();
     const rows = Array.isArray(res?.results) ? res.results : [];
     return {
       available: true,
       rows: rows
-        .filter((r) => r && typeof r.model === 'string' && r.model.length > 0)
-        .map((r) => ({
-          model: r.model,
-          total: Number(r.total) || 0,
-          requests: Number(r.requests) || 0,
-        })),
+        .map((r) => ({ model: normalizeModelKey(r?.model), total: Number(r?.total) || 0, requests: Number(r?.requests) || 0 }))
+        .filter((r) => r.model.length > 0),
     };
   } catch (e) {
     return { available: false, error: `queryTokenModelUsage: ${e?.message || e}` };
@@ -267,31 +269,33 @@ export async function queryTokenModelUsage(env, days = 7, now = Date.now()) {
 export const MODEL_STATUS_RECENT_WINDOW_MS = 24 * HOUR_MS;
 
 // Recent-success evidence for the Public Model Status layer
-// (src/runtime/model-status.js). Returns a Set<string> of logical
-// model names that have at least one request in the per-model hourly
-// aggregate within the last `windowMs` milliseconds. `requests > 0`
-// is the success-evidence signal: the per-model table is written
-// exactly once per delivered response by persistTokenUsage(), so a
-// row with requests > 0 in the recent window means the model
-// successfully completed at least one real request in that hour.
-// Fail-open: missing binding → empty Set, query failure → empty
-// Set. NEVER fabricates evidence — an empty Set is "no evidence",
-// not "evidence of failure".
+// (src/runtime/model-status.js). Returns a Set<string> of canonical
+// statistical model keys (trim + lowercase) that have at least one request
+// in the per-model hourly aggregate within the last `windowMs` milliseconds.
+// `requests > 0` is the success-evidence signal: the per-model table is
+// written exactly once per delivered response by persistTokenUsage(), so a
+// row with requests > 0 in the recent window means the model successfully
+// completed at least one real request in that hour. The Set is canonical so
+// callers can match official logical model IDs (Code-Max) against it via
+// normalizeModelKey() without case drift. Fail-open: missing binding →
+// empty Set, query failure → empty Set. NEVER fabricates evidence — an
+// empty Set is "no evidence", not "evidence of failure".
 export async function queryRecentModelEvidence(env, windowMs = MODEL_STATUS_RECENT_WINDOW_MS, now = Date.now()) {
   const d1 = tokenStatsD1(env);
   if (!d1) return new Set();
   const startHour = normalizeHour(now - windowMs);
   try {
     const res = await d1.prepare(
-      `SELECT model
+      `SELECT LOWER(TRIM(model)) AS model
        FROM ${TABLE_MODEL}
        WHERE hour >= ? AND requests > 0
-       GROUP BY model`,
+       GROUP BY LOWER(TRIM(model))`,
     ).bind(startHour).all();
     const rows = Array.isArray(res?.results) ? res.results : [];
     const out = new Set();
     for (const r of rows) {
-      if (r && typeof r.model === 'string' && r.model.length > 0) out.add(r.model);
+      const key = normalizeModelKey(r?.model);
+      if (key) out.add(key);
     }
     return out;
   } catch (e) {
@@ -303,10 +307,12 @@ export async function queryRecentModelEvidence(env, windowMs = MODEL_STATUS_RECE
 }
 
 // Query TTFT histogram aggregates for ALL models in the window with ONE
-// grouped D1 query (GROUP BY model), then compute percentiles in memory.
+// grouped D1 query, then compute percentiles in memory.
 // The dashboard must not issue one query per model (N+1) nor limit TTFT
-// visibility to Usage Top-N. Rows are keyed by the canonical statistical
-// model key (trim + lowercase). Each entry:
+// visibility to Usage Top-N. Grouping is canonical (LOWER(TRIM(model))):
+// historical case variants merge in SQL, so the in-memory pass cannot
+// overwrite one variant's histogram with another's. Rows are keyed by the
+// canonical statistical model key (trim + lowercase). Each entry:
 //   { available: true, p50, p95, sampleCount, insufficient }
 //   samples < TTFT_MIN_SAMPLES -> p50/p95 null, insufficient: true
 //   (bucket-upper-bound precision, never a fabricated precise value).
@@ -316,7 +322,7 @@ export async function queryAllModelsTtftPercentiles(env, days = 7, now = Date.no
   const startHour = normalizeHour(now - days * DAY_MS);
   try {
     const res = await d1.prepare(
-      `SELECT model,
+      `SELECT LOWER(TRIM(model)) AS model,
               COALESCE(SUM(successful_ttft_count), 0) AS total_ttft,
               COALESCE(SUM(ttft_b0), 0) AS b0,
               COALESCE(SUM(ttft_b1), 0) AS b1,
@@ -327,7 +333,7 @@ export async function queryAllModelsTtftPercentiles(env, days = 7, now = Date.no
               COALESCE(SUM(ttft_b6), 0) AS b6
        FROM ${TABLE_MODEL}
        WHERE hour >= ?
-       GROUP BY model`,
+       GROUP BY LOWER(TRIM(model))`,
     ).bind(startHour).all();
     const rows = Array.isArray(res?.results) ? res.results : [];
     const ttft = new Map();
@@ -387,40 +393,42 @@ function percentileFromBuckets(buckets, total, pct) {
 // Query per-model reliability stats from token_usage_model_hourly.
 // Returns per-model usage coverage. Provider-agnostic: this query
 // does not filter by provider — it returns aggregate per-model
-// stats. Provider-specific filtering is NOT done here.
+// stats. Provider-specific filtering is NOT done here. Grouping is
+// canonical (LOWER(TRIM(model))) so historical case variants merge
+// instead of splitting requests / reports / missing across keys.
 export async function queryModelUsageCoverage(env, days = 7, now = Date.now()) {
   const d1 = tokenStatsD1(env);
   if (!d1) return { available: false, error: 'TOKEN_STATS_DB binding missing' };
   const startHour = normalizeHour(now - days * DAY_MS);
   try {
     const res = await d1.prepare(
-      `SELECT model,
+      `SELECT LOWER(TRIM(model)) AS model,
               COALESCE(SUM(requests), 0) AS requests,
               COALESCE(SUM(usage_reports), 0) AS reports,
               COALESCE(SUM(usage_missing), 0) AS missing
        FROM ${TABLE_MODEL}
        WHERE hour >= ?
-       GROUP BY model
+       GROUP BY LOWER(TRIM(model))
        ORDER BY requests DESC`,
     ).bind(startHour).all();
     const rows = Array.isArray(res?.results) ? res.results : [];
     return {
       available: true,
       rows: rows
-        .filter((r) => r && typeof r.model === 'string' && r.model.length > 0)
         .map((r) => {
-          const requests = Number(r.requests) || 0;
-          const reports = Number(r.reports) || 0;
-          const missing = Number(r.missing) || 0;
+          const requests = Number(r?.requests) || 0;
+          const reports = Number(r?.reports) || 0;
+          const missing = Number(r?.missing) || 0;
           const denominator = reports + missing;
           return {
-            model: r.model,
+            model: normalizeModelKey(r?.model),
             requests,
             reports,
             missing,
             usageCoverage: denominator === 0 ? null : reports / denominator,
           };
-        }),
+        })
+        .filter((r) => r.model.length > 0),
     };
   } catch (e) {
     return { available: false, error: `queryModelUsageCoverage: ${e?.message || e}` };
