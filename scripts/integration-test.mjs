@@ -1761,7 +1761,7 @@ await test('public home: brand & GitHub once, model status flat list, no protoco
   // Redundant UTC+8 label removed from the usage section title.
   assert.ok(!html.includes('class="utc8"'), 'UTC+8 label removed');
   // Heatmap title updated.
-  assert.ok(html.includes('Token 活动 · 52 周'), 'heatmap title updated');
+  assert.ok(html.includes('Token 活动 · 近 52 周'), 'heatmap title updated');
   assert.ok(html.includes('次请求'), 'request count in heatmap header');
   // Redundant overall availability count removed from the section title.
   assert.ok(!html.includes('正常</span>'), 'availability count removed');
