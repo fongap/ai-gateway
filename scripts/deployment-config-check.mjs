@@ -124,7 +124,7 @@ function walk(dir) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) walk(full);
-    else if (entry.name.endsWith('.js')) srcFiles.push(full);
+    else if (entry.name.endsWith('.js') || entry.name.endsWith('.ts')) srcFiles.push(full);
   }
 }
 walk(path.join(root, 'src'));

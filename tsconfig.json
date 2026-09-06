@@ -3,6 +3,7 @@
     "allowJs": true,
     "checkJs": false,
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "strict": true,
     "target": "ES2022",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
@@ -17,7 +18,7 @@
     "strictNullChecks": false
   },
   "include": [
-    "src/types/domain.d.ts",
+    "src/**/*.ts",
     "src/config/**/*.js",
     "src/config/**/*.mjs",
     "src/scheduler/**/*.js",
