@@ -171,9 +171,13 @@ const PUSH_SUCCESS_BASE = {
 
   // The deploy job must depend on the gate output (which enforces CI success),
   // and on the manual-validate job with an explicit skip allowance so the
-  // automatic path (which skips manual-validate) still deploys.
+  // automatic path (which skips manual-validate) still deploys. The expression
+  // MUST carry always(): when a needed job is skipped, GitHub skips dependent
+  // jobs unless the if contains a status-check function that lifts the skip —
+  // a plain needs.X.result reference is not evaluated at all in that case.
   const deployWaitsOnGate = deployJob.needs.includes('gate')
     && deployJob.needs.includes('manual-validate')
+    && deployJob.if.startsWith('always()')
     && deployJob.if.includes("needs.gate.outputs.deploy == 'true'")
     && deployJob.if.includes("needs.manual-validate.result == 'success'")
     && deployJob.if.includes("needs.manual-validate.result == 'skipped'");
@@ -211,14 +215,22 @@ const PUSH_SUCCESS_BASE = {
   const mig = stepIndex(deployJob.steps, 'Apply D1 migrations');
   const migStep = deployJob.steps[mig];
   const noSwallow = migStep && !migStep.continueOnError
-    && !/always\(\)/.test(migStep.if)
-    && !/always\(\)/.test(deployJob.if);
-  // The deploy step itself must not run unconditionally after failure.
+    && !/always\(\)/.test(migStep.if);
+  // The deploy job's if uses always() ONLY as the needs-skip lift prefix
+  // (a skipped needed job otherwise skips dependents without evaluation);
+  // it must stay conditioned on the gate decision and the manual-validate
+  // whitelist, so a failed/cancelled validation or a failed gate can never
+  // let the deploy run.
+  const deployIfGuarded = deployJob.if.startsWith('always() &&')
+    && deployJob.if.includes("needs.gate.outputs.deploy == 'true'")
+    && deployJob.if.includes("needs.manual-validate.result == 'success'")
+    && deployJob.if.includes("needs.manual-validate.result == 'skipped'");
+  // The deploy STEP itself must not run unconditionally.
   const deployStep = stepById(deployJob.steps, 'deploy');
   const deployUnconditional = deployStep && /always\(\)/.test(deployStep.if);
-  check('C03 migration failure aborts deploy (no continue-on-error/always())',
-    noSwallow && !deployUnconditional,
-    `migrationStep=${JSON.stringify(migStep && { if: migStep.if, continueOnError: migStep.continueOnError })}`);
+  check('C03 migration failure aborts deploy (no continue-on-error on migration; deploy job if always guarded)',
+    noSwallow && deployIfGuarded && !deployUnconditional,
+    `migrationStep=${JSON.stringify(migStep && { if: migStep.if, continueOnError: migStep.continueOnError })} deployIf="${deployJob.if}"`);
 }
 
 // ---- Contract 04: health check after Worker deploy ----------------------------
@@ -314,6 +326,7 @@ const PUSH_SUCCESS_BASE = {
     && manualValidationSteps.includes('npm run typecheck:strict')
     && manualValidationSteps.includes('npm run check:deploy');
   const deployRequiresValidation = deployJob.needs.includes('manual-validate')
+    && deployJob.if.startsWith('always()')
     && deployJob.if.includes("needs.manual-validate.result == 'success'")
     && deployJob.if.includes("needs.manual-validate.result == 'skipped'");
   // The old implicit bypass must be gone: no inline gate script may set
