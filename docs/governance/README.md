@@ -28,6 +28,7 @@
 | [dependency-policy.md](dependency-policy.md) | 依赖更新、Dependabot、自动合并规则 |
 | [release-policy.md](release-policy.md) | 版本管理、发布流程、CHANGELOG 规则 |
 | [documentation-policy.md](documentation-policy.md) | 文档与代码同步规则、CI 约束 |
+| [typescript-migration.md](typescript-migration.md) | v1.3.0 TypeScript 迁移的冻结规则、迁移顺序、工具链与类型纪律 |
 
 ## 禁止文件名
 
