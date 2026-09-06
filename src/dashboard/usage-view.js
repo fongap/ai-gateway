@@ -116,13 +116,21 @@ function renderBars(rows) {
 }
 
 // ---- Model usage section ---------------------------------------------------
+//
+// `officialNames` maps the canonical D1 statistics key (trim + lowercase) to
+// the official logical model ID from the node mappings, so the usage panel
+// presents the SAME names as the model status section (Code-Max, not
+// code-max). Unknown keys (model not declared on any node) fall back to the
+// raw statistics key.
 
-function renderModelUsage(modelUsage) {
+function renderModelUsage(modelUsage, officialNames) {
   if (!modelUsage || modelUsage.available === false) {
     return `<div class="subhead" style="margin-bottom:32px"><b>模型使用</b></div>` +
       `<div class="model-usage-empty">—</div>`;
   }
-  const rows = Array.isArray(modelUsage.rows) ? modelUsage.rows : [];
+  const displayName = (key) => (officialNames instanceof Map && officialNames.get(key)) || key;
+  const rows = (Array.isArray(modelUsage.rows) ? modelUsage.rows : [])
+    .map((r) => ({ ...r, model: displayName(r.model) }));
   if (!rows.length) {
     return `<div class="subhead" style="margin-bottom:32px"><b>模型使用</b></div>` +
       `<div class="model-usage-empty">近 7 天暂无数据</div>`;
@@ -145,7 +153,7 @@ function renderModelUsage(modelUsage) {
 
 // ---- Full section ----------------------------------------------------------
 
-export async function usageSection(env, now = Date.now(), stats = null) {
+export async function usageSection(env, now = Date.now(), stats = null, officialNames = null) {
   const cache = stats || await getCachedDashboardStats(env, now);
   const { summary, daily, modelUsage } = cache;
   const summaryOk = summary && summary.available !== false;
@@ -190,7 +198,7 @@ export async function usageSection(env, now = Date.now(), stats = null) {
           `<div class="months" style="${weekTracks}" aria-hidden="true">${labels.join('')}</div></div>`;
       })()
     : `<div class="model-usage-empty">统计暂不可用</div>`;
-  const modelSection = renderModelUsage(modelUsage);
+  const modelSection = renderModelUsage(modelUsage, officialNames);
   return `<section id="usage">
   <div class="wrap">
     <div class="section-head"><span class="section-title">使用情况</span></div>

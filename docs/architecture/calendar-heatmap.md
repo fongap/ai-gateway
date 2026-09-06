@@ -39,10 +39,12 @@
 - **Shared week-column layout**. The `.months` row uses the SAME CSS
   grid week tracks as the `.heatmap` grid (`--week-count` variable set
   inline by the consumer; both rules use
-  `grid-template-columns:repeat(var(--week-count, 52), 10px)`). A
-  label's inline `grid-column` therefore lands exactly above its week
-  column. `display:flex` / `justify-content:space-between` would
-  silently ignore the anchoring and is contract-forbidden.
+  `grid-template-columns:repeat(var(--week-count, 52), 1fr)`). Tracks
+  are `1fr` so the heatmap fills the full content width (cells stretch,
+  height stays 10px); a label's inline `grid-column` therefore lands
+  exactly above its week column. `display:flex` /
+  `justify-content:space-between` would silently ignore the anchoring
+  and is contract-forbidden.
 
 - **Cells carry their position facts**. Every rendered cell has
   `data-week` / `data-weekday` plus an explicit inline

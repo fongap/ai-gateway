@@ -25,6 +25,7 @@
 
 import { loadGatewayConfig } from '../config/nodes.js';
 import { htmlResponse } from '../protocol/http.js';
+import { normalizeModelKey } from '../observability/token-usage-store.mjs';
 import { escapeHtml } from './format.js';
 import { THEME_CSS } from './theme.js';
 import { ensureModelTtftContainers, publicModelStatus, renderModels } from './model-status-view.js';
@@ -167,8 +168,20 @@ export async function dashboardResponse(request, env) {
     const models = publicModelStatus(config.nodes || [], env, recentEvidence, statusNow);
     const apiBase = `${new URL(request.url).origin}/v1`;
 
+    // Official display names keyed by canonical statistics key: the usage
+    // panel aggregates by the D1 key (trim + lowercase) but must present the
+    // same official logical IDs as the model status section. Node mappings
+    // are the primary source of official IDs (same as model status).
+    const officialNames = new Map();
+    for (const node of config.nodes || []) {
+      for (const id of Object.keys(node.models || {})) {
+        const key = normalizeModelKey(id);
+        if (key && !officialNames.has(key)) officialNames.set(key, id);
+      }
+    }
+
     const modelsResult = renderModels(models, ensureModelTtftContainers(stats.ttft, models));
-    const usageHtml = await usageSection(env, now, stats);
+    const usageHtml = await usageSection(env, now, stats, officialNames);
     const quickHtml = quickStartSection(apiBase);
 
     const body = [
