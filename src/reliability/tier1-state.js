@@ -148,7 +148,7 @@ export function rollbackTier1Rpm(accountId, now = Date.now()) {
 }
 
 /**
- * @param {{ id: string, tier: string, protocol: string, surfaces: string[], models: Record<string, string>, limits: { concurrency: number, rpm?: number, rpmMode?: string } }} node
+ * @param {RuntimeNode} node
  * @param {number} [now]
  * @param {string | null} [modelId]
  */
@@ -172,7 +172,7 @@ export function makeTier1ReleaseToken(accountId) {
 
 /**
  * @param {string} accountId
- * @param {{ accountId: string, released: boolean } | null} token
+ * @param {{ accountId: string, released: boolean } | null | undefined} token
  */
 export function releaseTier1Slot(accountId, token) {
   if (!token || token.accountId !== accountId || token.released) return false;
@@ -194,10 +194,10 @@ function modelBlocked(model, now) {
 // `knownModels` (the Known Model Catalog) bounds wildcard nodes: an
 // empty-models node serves only catalog models, never an arbitrary string.
 /**
- * @param {{ id: string, tier: string, protocol: string, surfaces: string[], models: Record<string, string>, limits: { concurrency: number, rpm?: number, rpmMode?: string } }} node
+ * @param {RuntimeNode} node
  * @param {RoutableRequest} req
  * @param {number} [now]
- * @param {Set<string> | null} [knownModels]
+ * @param {ReadonlySet<string> | null} [knownModels]
  */
 export function isTier1Eligible(node, req, now = Date.now(), knownModels) {
   if (!node || node.tier !== 'tier-1') return false;
@@ -230,11 +230,11 @@ export function maybeTransitionToHalfOpen(accountId, modelId, now = Date.now()) 
 }
 
 /**
- * @param {ReadonlyArray<{ id: string, tier: string, protocol: string, surfaces: string[], models: Record<string, string>, limits: { concurrency: number, rpm?: number, rpmMode?: string } }>} nodes
+ * @param {ReadonlyArray<RuntimeNode>} nodes
  * @param {RoutableRequest} req
  * @param {Set<string>} attempted
  * @param {number} [now]
- * @param {Set<string> | null} [knownModels]
+ * @param {ReadonlySet<string> | null} [knownModels]
  */
 export function tier1CountDispatchableNodes(nodes, req, attempted, now = Date.now(), knownModels) {
   let count = 0;
@@ -247,11 +247,11 @@ export function tier1CountDispatchableNodes(nodes, req, attempted, now = Date.no
 }
 
 /**
- * @param {ReadonlyArray<{ id: string, tier: string, protocol: string, surfaces: string[], models: Record<string, string>, limits: { concurrency: number, rpm?: number, rpmMode?: string } }>} nodes
+ * @param {ReadonlyArray<RuntimeNode>} nodes
  * @param {RoutableRequest} req
  * @param {Set<string>} attempted
  * @param {number} [now]
- * @param {Set<string> | null} [knownModels]
+ * @param {ReadonlySet<string> | null} [knownModels]
  */
 export function tier1HasDispatchableNode(nodes, req, attempted, now = Date.now(), knownModels) {
   return tier1CountDispatchableNodes(nodes, req, attempted, now, knownModels) > 0;
@@ -269,7 +269,7 @@ function median(values) {
 /**
  * @param {string} accountId
  * @param {string} modelId
- * @param {ReadonlyArray<{ id: string, tier: string, protocol: string, surfaces: string[], models: Record<string, string>, limits: { concurrency: number, rpm?: number, rpmMode?: string } }>} candidates
+ * @param {ReadonlyArray<RuntimeNode>} candidates
  */
 export function effectiveTier1Ttft(accountId, modelId, candidates) {
   const own = getTier1ModelPerf(accountId, modelId);
@@ -283,7 +283,7 @@ export function effectiveTier1Ttft(accountId, modelId, candidates) {
   return known.length ? median(known) : TIER1_NEUTRAL_TTFT_MS;
 }
 
-/** @param {{ id: string, tier: string, protocol: string, surfaces: string[], models: Record<string, string>, limits: { concurrency: number, rpm?: number, rpmMode?: string } }} node */
+/** @param {RuntimeNode} node */
 function loadFactor(node) {
   const capacity = node.limits?.concurrency;
   if (!capacity) return 1;
@@ -320,9 +320,9 @@ function explorationFactor(accountId, modelId) {
 }
 
 /**
- * @param {{ id: string, tier: string, protocol: string, surfaces: string[], models: Record<string, string>, limits: { concurrency: number, rpm?: number, rpmMode?: string } }} node
+ * @param {RuntimeNode} node
  * @param {string} modelId
- * @param {ReadonlyArray<{ id: string, tier: string, protocol: string, surfaces: string[], models: Record<string, string>, limits: { concurrency: number, rpm?: number, rpmMode?: string } }>} candidates
+ * @param {ReadonlyArray<RuntimeNode>} candidates
  * @param {number} [affinityFactor]
  * @param {number} [now]
  */
@@ -532,7 +532,7 @@ export function tier1FailureState(accountId, modelId) {
 }
 
 /**
- * @param {{ id: string, tier: string, protocol: string, surfaces: string[], models: Record<string, string>, limits: { concurrency: number, rpm?: number, rpmMode?: string } }} node
+ * @param {RuntimeNode} node
  * @param {string} modelId
  * @param {number} [now]
  */
@@ -551,11 +551,11 @@ export function tier1BlockingWaitMs(node, modelId, now = Date.now()) {
 }
 
 /**
- * @param {ReadonlyArray<{ id: string, tier: string, protocol: string, surfaces: string[], models: Record<string, string>, limits: { concurrency: number, rpm?: number, rpmMode?: string } }>} nodes
+ * @param {ReadonlyArray<RuntimeNode>} nodes
  * @param {RoutableRequest} req
  * @param {Set<string>} attempted
  * @param {number} [now]
- * @param {Set<string> | null} [knownModels]
+ * @param {ReadonlySet<string> | null} [knownModels]
  */
 export function tier1HasDeferredCapacity(nodes, req, attempted, now = Date.now(), knownModels) {
   for (const node of nodes ?? []) {

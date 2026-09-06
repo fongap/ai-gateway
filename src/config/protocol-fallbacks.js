@@ -41,22 +41,38 @@ const ROUTE_PROTOCOL_SURFACE = Object.freeze({
   anthropic_messages: 'anthropic:messages',
 });
 
+/** @type {Record<string, any> | undefined} */
 let cachedEnv;
+/** @type {{ config: Record<string, string[]>, errors: string[] } | undefined} */
 let cached;
 
+/**
+ * @param {Record<string, any>} env
+ * @returns {Record<string, string[]>}
+ */
 export function loadProtocolFallbacks(env) {
   return analyzeProtocolFallbacks(env).config;
 }
 
+/**
+ * @param {Record<string, any>} env
+ * @returns {string[]}
+ */
 export function getProtocolFallbacksDiagnostics(env) {
   return analyzeProtocolFallbacks(env).errors;
 }
 
+/**
+ * @param {Record<string, any>} env
+ * @returns {{ config: Record<string, string[]>, errors: string[] }}
+ */
 function analyzeProtocolFallbacks(env) {
   if (cachedEnv === env && cached) return cached;
   cachedEnv = env;
   const raw = readEnv(env, 'PROTOCOL_FALLBACKS');
+  /** @type {string[]} */
   const errors = [];
+  /** @type {Record<string, string[]>} */
   const config = {};
   if (raw) {
     let parsed;
@@ -72,7 +88,7 @@ function analyzeProtocolFallbacks(env) {
       errors.push('PROTOCOL_FALLBACKS must be a JSON object { "protocol:surface": ["protocol:surface", ...] }');
     } else {
       for (const [key, value] of Object.entries(parsed)) {
-        const parsedKey = parseSurfaceKey(key, errors);
+        const parsedKey = parseSurfaceKey(key, errors, '');
         if (!parsedKey) continue;
         if (!Array.isArray(value) || value.length === 0) {
           errors.push(`PROTOCOL_FALLBACKS: "${key}" must be a non-empty array of "protocol:surface" strings`);
@@ -80,11 +96,11 @@ function analyzeProtocolFallbacks(env) {
         }
         const targets = [];
         for (const entry of value) {
-          const parsedEntry = parseSurfaceKey(entry, errors, key);
+          const parsedEntry = parseSurfaceKey(String(entry), errors, key);
           if (parsedEntry) targets.push(parsedEntry);
         }
         if (targets.length > 0) {
-          const allowed = SUPPORTED_CONVERSIONS[parsedKey];
+          const allowed = /** @type {string[] | undefined} */ (/** @type {Record<string, string[]>} */ (SUPPORTED_CONVERSIONS)[parsedKey]);
           if (!allowed) {
             errors.push(`PROTOCOL_FALLBACKS: "${parsedKey}" is not a supported conversion source (supported: ${Object.keys(SUPPORTED_CONVERSIONS).join(', ')})`);
           } else {
@@ -105,6 +121,12 @@ function analyzeProtocolFallbacks(env) {
   return cached;
 }
 
+/**
+ * @param {string} raw
+ * @param {string[]} errors
+ * @param {string} parentKey
+ * @returns {string | null}
+ */
 function parseSurfaceKey(raw, errors, parentKey) {
   const prefix = parentKey ? `PROTOCOL_FALLBACKS: "${parentKey}" entry` : 'PROTOCOL_FALLBACKS key';
   if (typeof raw !== 'string' || !raw.trim()) {
@@ -135,14 +157,24 @@ function parseSurfaceKey(raw, errors, parentKey) {
 // Returns an array of { protocol, surface } objects (empty when no fallback
 // is configured for the route). The route must be one of the natively
 // supported routes (openai_chat / openai_responses / anthropic_messages).
+/**
+ * @param {string} route
+ * @param {Record<string, any>} env
+ * @returns {Array<{ protocol: Protocol, surface: Surface }>}
+ */
 export function getFallbackChain(route, env) {
-  const key = ROUTE_PROTOCOL_SURFACE[route];
+  const key = /** @type {string | undefined} */ (/** @type {Record<string, string>} */ (ROUTE_PROTOCOL_SURFACE)[route]);
   if (!key) return [];
   const config = loadProtocolFallbacks(env);
   const chain = config[key];
   if (!chain || chain.length === 0) return [];
+  // Entries are validated at parse time against the closed protocol/surface
+  // sets, so the slice results honor the Protocol/Surface unions.
   return chain.map((entry) => {
     const idx = entry.indexOf(':');
-    return { protocol: entry.slice(0, idx), surface: entry.slice(idx + 1) };
+    return {
+      protocol: /** @type {Protocol} */ (entry.slice(0, idx)),
+      surface: /** @type {Surface} */ (entry.slice(idx + 1)),
+    };
   });
 }

@@ -79,6 +79,7 @@ export async function runFallbackChain({ loopCtx, route, requestedModel, runTier
       throw e;
     }
     const fbTierCaps = computeTierCaps(tiers, fbReqDescriptor, state.attempted, policy, knownModels);
+    /** @type {{ fallbackProtocol: Protocol, fallbackSurface: Surface, convertedBody: Record<string, any>, clientRoute: string }} */
     const conversionContext = {
       convertedBody,
       fallbackProtocol: fb.protocol,

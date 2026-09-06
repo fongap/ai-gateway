@@ -74,6 +74,14 @@ function persistFailure(scope, cause, model = null) {
 // TTFT sample. The value is bucketed into a coarse histogram
 // (ttft_b0..ttft_b6) for percentile calculation without storing raw
 // samples.
+/**
+ * @param {Record<string, any>} env
+ * @param {{ prompt_tokens?: number, completion_tokens?: number } | null | undefined} usage
+ * @param {number} [now]
+ * @param {string | null} [model]
+ * @param {number | null} [ttftMs]
+ * @returns {Promise<void>}
+ */
 export function persistTokenUsage(env, usage, now = Date.now(), model = null, ttftMs = null) {
   const d1 = tokenStatsD1(env);
   if (!d1) return Promise.resolve();

@@ -45,7 +45,7 @@ export function tier1DeadlineTooSmall(remainingBudgetMs, p99TtftMs) {
 //     the stored binding (escape window reached).
 //   excludeId          — skip the hedge primary when picking a twin.
 /**
- * @param {any[]} tier1Nodes
+ * @param {ReadonlyArray<RuntimeNode>} tier1Nodes
  * @param {RoutableRequest} req
  * @param {Set<string>} attempted
  * @param {object} [options]
@@ -54,7 +54,8 @@ export function tier1DeadlineTooSmall(remainingBudgetMs, p99TtftMs) {
  * @param {number} [options.now]
  * @param {string | null} [options.excludeId]
  * @param {() => number} [options.rng]
- * @param {Set<string> | null} [options.knownModels]
+ * @param {ReadonlySet<string> | null} [options.knownModels]
+ * @returns {PickedCandidate | null}
  */
 export function pickTier1Candidate(tier1Nodes, req, attempted, {
   affinityAccountId = null, evaluateAffinity = false, now = Date.now(),

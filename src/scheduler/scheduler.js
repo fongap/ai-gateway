@@ -41,9 +41,9 @@ import { servesModel } from '../config/registry.js';
 // Catalog (collectKnownModels): it bounds wildcard nodes so an empty-models
 // node serves only models that actually exist somewhere in the gateway.
 /**
- * @param {{ id: string, tier: string, provider: string, protocol: string, surfaces: string[], baseUrl: string, credential: string, priority: number, models: Record<string, string>, limits: { concurrency: number, rpm?: number, rpmMode?: string } }} node
+ * @param {RuntimeNode} node
  * @param {RoutableRequest} req
- * @param {Set<string>} [knownModels]
+ * @param {ReadonlySet<string> | null} [knownModels]
  */
 export function supportsRequest(node, req, knownModels) {
   if (!req || typeof req !== 'object') return false;
@@ -55,7 +55,7 @@ export function supportsRequest(node, req, knownModels) {
 }
 
 /**
- * @param {{ id: string, tier: string, provider: string, protocol: string, surfaces: string[], baseUrl: string, credential: string, priority: number, models: Record<string, string>, limits: { concurrency: number, rpm?: number, rpmMode?: string } }} node
+ * @param {RuntimeNode} node
  * @param {number} now
  */
 function underRpmCap(node, now) {
@@ -68,7 +68,7 @@ function underRpmCap(node, now) {
 // counter reaches it the node must not be dispatched again this minute.
 // SOFT caps (explicit "rpm_mode": "soft") keep the old best-effort behavior.
 /**
- * @param {{ id: string, tier: string, provider: string, protocol: string, surfaces: string[], baseUrl: string, credential: string, priority: number, models: Record<string, string>, limits: { concurrency: number, rpm?: number, rpmMode?: string } }} node
+ * @param {RuntimeNode} node
  * @param {number} [now]
  */
 export function isHardRpmExhausted(node, now = Date.now()) {
@@ -99,12 +99,12 @@ export function rpmWindowRetryAfterSec(now = Date.now()) {
 //   nodes so an empty-models node only serves catalog models. The request path
 //   always passes it (defense in depth on top of the preflight authz gate).
 /**
- * @param {any[]} tierNodes
+ * @param {ReadonlyArray<RuntimeNode>} tierNodes
  * @param {RoutableRequest} req
  * @param {Set<string>} attempted
  * @param {number} [now]
  * @param {string | null} [excludeId]
- * @param {Set<string>} [knownModels]
+ * @param {ReadonlySet<string> | null} [knownModels]
  */
 export function pickCandidate(tierNodes, req, attempted, now = Date.now(), excludeId = null, knownModels) {
   let best = null;
@@ -149,11 +149,11 @@ export function pickCandidate(tierNodes, req, attempted, now = Date.now(), exclu
 // (every candidate busy at its concurrency limit or hard-RPM exhausted). Used
 // to distinguish "saturated" from "cooling down" in client responses.
 /**
- * @param {any[]} tierNodes
+ * @param {ReadonlyArray<RuntimeNode>} tierNodes
  * @param {RoutableRequest} req
  * @param {Set<string>} attempted
  * @param {number} [now]
- * @param {Set<string>} [knownModels]
+ * @param {ReadonlySet<string>} [knownModels]
  */
 export function tierHasDeferredCapacity(tierNodes, req, attempted, now = Date.now(), knownModels) {
   for (const node of tierNodes) {
@@ -178,11 +178,11 @@ export function tierHasDeferredCapacity(tierNodes, req, attempted, now = Date.no
 // capacity (concurrency-saturated / hard-RPM-exhausted) belongs to
 // tierHasDeferredCapacity instead: Retry-After and diagnostics, no budget.
 /**
- * @param {any[]} tierNodes
+ * @param {ReadonlyArray<RuntimeNode>} tierNodes
  * @param {RoutableRequest} req
  * @param {Set<string>} attempted
  * @param {number} [now]
- * @param {Set<string>} [knownModels]
+ * @param {ReadonlySet<string>} [knownModels]
  */
 export function tierHasDispatchableNode(tierNodes, req, attempted, now = Date.now(), knownModels) {
   return countDispatchableNodes(tierNodes, req, attempted, now, knownModels) > 0;
@@ -193,11 +193,11 @@ export function tierHasDispatchableNode(tierNodes, req, attempted, now = Date.no
 // remaining wall-clock budget across attempts that can actually happen,
 // rather than across a policy maximum that may be larger than the live pool.
 /**
- * @param {any[]} tierNodes
+ * @param {ReadonlyArray<RuntimeNode>} tierNodes
  * @param {RoutableRequest} req
  * @param {Set<string>} attempted
  * @param {number} [now]
- * @param {Set<string>} [knownModels]
+ * @param {ReadonlySet<string>} [knownModels]
  */
 export function countDispatchableNodes(tierNodes, req, attempted, now = Date.now(), knownModels) {
   let count = 0;

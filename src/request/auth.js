@@ -25,13 +25,21 @@
 
 import { loadAccessKeysConfig } from '../config/access-keys.js';
 
+/** @type {string | null} */
 let cachedAccessKey = null;
+/** @type {Uint8Array | null} */
 let cachedAccessKeyDigest = null;
 
+/** @param {unknown} text @returns {Promise<ArrayBuffer>} */
 function sha256Digest(text) {
   return crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(text ?? '')));
 }
 
+/**
+ * @param {Uint8Array} a
+ * @param {Uint8Array} b
+ * @returns {boolean}
+ */
 function constantTimeEquals(a, b) {
   if (a.length !== b.length) return false;
   let result = 0;
@@ -39,6 +47,10 @@ function constantTimeEquals(a, b) {
   return result === 0;
 }
 
+/**
+ * @param {string} accessKey
+ * @returns {Promise<Uint8Array>}
+ */
 function getLegacyAccessKeyDigest(accessKey) {
   if (cachedAccessKey === accessKey && cachedAccessKeyDigest) return Promise.resolve(cachedAccessKeyDigest);
   return sha256Digest(accessKey).then((digest) => {
@@ -48,6 +60,10 @@ function getLegacyAccessKeyDigest(accessKey) {
   });
 }
 
+/**
+ * @param {string | null | undefined} value
+ * @returns {string}
+ */
 function parseBearer(value) {
   const raw = String(value || '').trim();
   if (!raw.toLowerCase().startsWith('bearer ')) return '';
@@ -55,6 +71,10 @@ function parseBearer(value) {
   return token || '';
 }
 
+/**
+ * @param {Request} request
+ * @returns {string[]}
+ */
 function presentedCredentials(request) {
   const bearer = parseBearer(request.headers.get('authorization'));
   const xApiKey = String(request.headers.get('x-api-key') || '').trim();
@@ -73,6 +93,10 @@ function presentedCredentials(request) {
 // `allowlist` is a Set<string>; when undefined the key grants all models
 // (legacy behaviour or explicit GATEWAY_ACCESS_MODELS_<GROUP>="*").
 // `allowAll` is true when the group's allowlist is "*" (or legacy).
+/**
+ * @param {Request} request
+ * @param {Record<string, any>} env
+ */
 export async function authorize(request, env) {
   const presented = presentedCredentials(request);
   if (presented.length === 0) return { authorized: false, mode: 'none' };
@@ -102,6 +126,11 @@ export async function authorize(request, env) {
 }
 
 // Backward-compatible shim: returns true/false only (legacy callers).
+/**
+ * @param {Request} request
+ * @param {string | undefined} accessKey
+ * @returns {Promise<boolean>}
+ */
 export async function isAuthorized(request, accessKey) {
   if (accessKey === undefined) {
     return false;

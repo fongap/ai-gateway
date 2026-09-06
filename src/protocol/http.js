@@ -11,6 +11,11 @@ const SECURITY_HEADERS = {
   'Referrer-Policy': 'no-referrer',
 };
 
+/**
+ * @param {Request} request
+ * @param {Record<string, any>} env
+ * @returns {Record<string, string>}
+ */
 export function corsHeaders(request, env) {
   const allowedOrigin = readEnv(env, 'ALLOWED_ORIGIN');
   // Default: CORS disabled. Browser access requires explicit ALLOWED_ORIGIN.
@@ -164,6 +169,10 @@ export function trimDiagnostic(text, limit = 600) {
 // request the gateway already resolved — the gateway has internally rotated
 // across nodes, so a client-side blind retry risks re-executing a tool call.
 // Rate-limit (429) and capacity (503) responses stay retryable via Retry-After.
+/**
+ * @param {number} status
+ * @returns {Record<string, string>}
+ */
 export function shouldNotRetryHeaders(status) {
   if (status === 429 || status === 503) return {};
   return { 'x-should-retry': 'false' };

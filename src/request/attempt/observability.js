@@ -25,9 +25,15 @@ import { recordTokenUsage } from '../../observability/token-usage.mjs';
 import { persistTokenUsage } from '../../observability/token-usage-store.mjs';
 import { upstreamModelOf } from '../response-helpers.js';
 
+/**
+ * @param {AttemptContext} c
+ * @param {RuntimeNode} node
+ * @param {unknown} data
+ * @param {(data: any) => boolean} isMeaningful
+ */
 export function recordTier1NonStreamTtft(c, node, data, isMeaningful) {
   if (node.tier !== 'tier-1' || !isMeaningful(data)) return;
-  c.ttftMs = Date.now() - c.attemptStartMs;
+  c.ttftMs = Date.now() - (c.attemptStartMs ?? Date.now());
   recordTier1Ttft(node.id, c.state.requestedModel, c.ttftMs);
 }
 
@@ -43,6 +49,11 @@ export function recordTier1NonStreamTtft(c, node, data, isMeaningful) {
 //      fail-open: D1 absence, errors, timeouts and rejects are swallowed here
 //      and never change the HTTP response, fallback, node health, circuit
 //      breaker, scheduler, concurrency count or stream completion.
+/**
+ * @param {AttemptContext} c
+ * @param {RuntimeNode} node
+ * @param {{ prompt_tokens?: number, completion_tokens?: number, total_tokens?: number, input_tokens?: number, output_tokens?: number } | null | undefined} usage
+ */
 export function recordTokens(c, node, usage) {
   recordTokenUsage({ model: c.requestedModel, tier: node.tier, provider: node.provider, nodeId: node.id, usage });
   scheduleD1TokenPersist(c, usage);
@@ -57,6 +68,10 @@ export function recordTokens(c, node, usage) {
 //
 // TTFT is passed only for successful requests with meaningful output.
 // Failures MUST NOT pass a TTFT value — they enter failure statistics only.
+/**
+ * @param {AttemptContext} c
+ * @param {{ prompt_tokens?: number, completion_tokens?: number, total_tokens?: number, input_tokens?: number, output_tokens?: number } | null | undefined} usage
+ */
 function scheduleD1TokenPersist(c, usage) {
   const task = persistTokenUsage(c.env, usage, Date.now(), c.requestedModel, c.ttftMs ?? null).catch((err) => {
     const scope = err?.scope === 'per-model' ? 'per-model' : 'global';
@@ -76,6 +91,11 @@ function scheduleD1TokenPersist(c, usage) {
 // the session to the winning account. Tier 2/3 keep their node-state path.
 // There is NO background probe anymore — probes were Tier-1-only and have been
 // removed entirely from the scheduling path.
+/**
+ * @param {AttemptContext} c
+ * @param {RuntimeNode} node
+ * @param {number} latencyMs
+ */
 export function recordNodeSuccess(c, node, latencyMs) {
   if (node.tier === 'tier-1') {
     recordTier1Success(node.id, c.state?.requestedModel);
@@ -94,6 +114,11 @@ export function recordNodeSuccess(c, node, latencyMs) {
 // Node-layer stream tracking: node outcome recording + stream-end telemetry.
 // The client-facing layer (gateway-stats.mjs trackClientResponse) never passes the
 // telemetry callbacks, so stream counters count each stream exactly once.
+/**
+ * @param {AttemptContext} c
+ * @param {RuntimeNode} node
+ * @param {number} latencyMs
+ */
 export function makeNodeStreamTrack(c, node, latencyMs) {
   const tier1 = node.tier === 'tier-1';
   return {
@@ -112,6 +137,7 @@ export function makeNodeStreamTrack(c, node, latencyMs) {
       ? releaseTier1Slot(node.id, c.tier1ReleaseToken)
       : recordNeutralEnd(node.id),
     onStreamStart: () => recordStreamStart(),
+    /** @param {string} outcome @param {{ reason: string, durationMs: number, chunkCount: number, receivedBytes: number, completionMarkerSeen: boolean }} d */
     onStreamEnd: (outcome, d) => {
       if (outcome === 'completed') { recordStreamCompleted(); return; }
       if (outcome !== 'interrupted') return; // neutral (client abort) is not counted

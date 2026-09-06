@@ -110,7 +110,7 @@ export function isWildcardNode(node) {
 /**
  * @param {{ models: Record<string, string> }} node
  * @param {string} model
- * @param {Set<string> | null} [knownModels]
+ * @param {ReadonlySet<string> | null} [knownModels]
  */
 export function servesModel(node, model, knownModels) {
   if (isWildcardNode(node)) return knownModels ? knownModels.has(model) : true;

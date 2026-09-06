@@ -25,7 +25,7 @@
 
 ### Changed — Typed JS(P2)
 
-- **strict typecheck 范围清零并纳入门禁**:strict scope(scheduler / tier1-scheduler / tier1-affinity / node-state / tier1-state / classify / key-rpm / token-usage)109 个 strict 错误全部如实修复——合并 stacks 单标签 JSDoc 使注解真正关联、config 缓存与 registry 条目补真实形状、`clampInt`/`readEnv` 按 `string | undefined` 契约标注、nullability(`modelId`/`excludeId`/`knownModels`)如实声明;无 `@ts-ignore`、无批量 any。`npm run typecheck:strict` 加入 `validate:merge`,strict scope 不允许新增错误。
+- **strict typecheck 范围扩展至整个优先级层并保持清零**:src/request/**(含 attempt/ 内部模块)、src/config/**、src/reliability/**、src/scheduler/** 全部 strict-clean(约 300 个错误如实修复,无 @ts-ignore/批量 any)。跨模块核心类型(Protocol/Surface/Tier/NodeTier/RuntimeNode/RequestDescriptor/PolicyConfig/LoopState/LoopContext/AttemptContext/AttemptOutcome/PickedCandidate)提升为 ambient `type` 声明(JSDoc @typedef 为文件局部,无法跨文件消费);`RuntimeNode.tier` 修正为 `NodeTier`('tier-1'|'tier-2'|'tier-3'),与运行时一致;`knownModels` 参数统一为 `ReadonlySet<string>`。此前:strict scope(scheduler / tier1-scheduler / tier1-affinity / node-state / tier1-state / classify / key-rpm / token-usage)109 个 strict 错误全部如实修复——合并 stacks 单标签 JSDoc 使注解真正关联、config 缓存与 registry 条目补真实形状、`clampInt`/`readEnv` 按 `string | undefined` 契约标注、nullability(`modelId`/`excludeId`/`knownModels`)如实声明;无 `@ts-ignore`、无批量 any。`npm run typecheck:strict` 加入 `validate:merge`,strict scope 不允许新增错误。
 - `src/types/domain.d.ts` 新增 ambient `RoutableRequest`(scheduler 静态过滤入参,非 DOM Request);该文件保持 global declaration script(移除 `export {}`),跨模块 typedef 重新可供 checkJs 消费。
 - 轻量清理:移除 attempt 拆分后的未使用 import(`recordTtft`/`markProbeFailure`/`buildTargetUrl`)与 dashboard 失效 import(`MODEL_STATUS_RECENT_WINDOW_MS` in pages.js)。
 

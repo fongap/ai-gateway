@@ -21,6 +21,17 @@ import { TIER_ORDER } from './router.js';
 
 // Unified gateway error: Anthropic-style for Anthropic routes, OpenAI
 // Responses-style for /v1/responses, OpenAI Chat-style otherwise.
+/**
+ * @param {Request} request
+ * @param {Record<string, any>} env
+ * @param {string} route
+ * @param {number} status
+ * @param {string} message
+ * @param {string} requestId
+ * @param {Record<string, unknown>} [details]
+ * @param {Record<string, string>} [extraHeaders]
+ * @returns {Response}
+ */
 export function gatewayError(request, env, route, status, message, requestId, details, extraHeaders) {
   if (route === 'anthropic_messages' || route === 'anthropic_count_tokens') {
     return new Response(JSON.stringify({
@@ -55,6 +66,16 @@ export function gatewayError(request, env, route, status, message, requestId, de
   });
 }
 
+/**
+ * @param {Request} request
+ * @param {Record<string, any>} env
+ * @param {string} route
+ * @param {string} requestId
+ * @param {string} requestedModel
+ * @param {LoopState} state
+ * @param {boolean} exposeUpstreamInfo
+ * @returns {Response}
+ */
 export function buildBudgetExhaustedResponse(request, env, route, requestId, requestedModel, state, exposeUpstreamInfo) {
   // The gateway spent the whole failover budget rotating and still has no answer.
   // Stop: return a clear, terminal error and the attempt COUNT only. Do not keep
@@ -76,14 +97,28 @@ export function buildBudgetExhaustedResponse(request, env, route, requestId, req
     `Gateway failover budget exhausted after ${state.logicalAttempts} attempt(s).`, requestId, details);
 }
 
+/**
+ * @param {Request} request
+ * @param {Record<string, any>} env
+ * @param {string} route
+ * @param {string} requestId
+ * @param {string} requestedModel
+ * @param {LoopState} state
+ * @param {Record<number, RuntimeNode[]>} tiers
+ * @param {boolean} exposeUpstreamInfo
+ * @param {RequestDescriptor} reqDescriptor
+ * @param {ReadonlySet<string>} [knownModels]
+ * @returns {Response}
+ */
 export function buildExhaustedResponse(request, env, route, requestId, requestedModel, state, tiers, exposeUpstreamInfo, reqDescriptor, knownModels) {
   const last = state.attempts[state.attempts.length - 1];
   const nothingAttempted = state.attempts.length === 0;
 
   // The Known Model Catalog bounds wildcard nodes so the exhausted-response
   // analysis (deferred capacity, blocking wait) only considers nodes that
-  // actually serve a known model. Passed in from the handler (state.knownModels
-  // is the same Set, computed once in preflight).
+  // actually serve a known model. Optional: when absent, the analysis degrades
+  // to the legacy permissive wildcard behavior. state may carry the same Set
+  // that preflight computed.
   const knownModels_ = knownModels ?? state.knownModels;
 
   // Distinguish WHY no node was available:
@@ -161,6 +196,13 @@ export function buildExhaustedResponse(request, env, route, requestId, requested
 // never contributes — only nodes that actually serve THIS request AND are
 // currently blocking it. The min across blocking reasons is returned so the
 // shortest real wait wins.
+/**
+ * @param {Record<number, RuntimeNode[]>} tiers
+ * @param {RequestDescriptor} reqDescriptor
+ * @param {number} [now]
+ * @param {ReadonlySet<string>} [knownModels]
+ * @returns {number | undefined}
+ */
 function earliestBlockingRetryAfterSec(tiers, reqDescriptor, now = Date.now(), knownModels) {
   let minMs = Infinity;
   for (const t of TIER_ORDER) {
@@ -180,6 +222,12 @@ function earliestBlockingRetryAfterSec(tiers, reqDescriptor, now = Date.now(), k
 // RPM exhaustion is bounded by the remaining minute window; concurrency
 // saturation has no timer so it estimates ~1s (slots free as in-flight
 // requests complete).
+/**
+ * @param {RuntimeNode} node
+ * @param {string} requestedModel
+ * @param {number} now
+ * @returns {number}
+ */
 function blockingWaitMs(node, requestedModel, now) {
   if (node.tier === 'tier-1') return tier1BlockingWaitMs(node, requestedModel, now);
   const nodeCd = getCooldownRemainingMs(node.id, now);
@@ -199,6 +247,18 @@ function distributedWindowRetryAfterSec(now = Date.now()) {
   return Math.max(1, Math.ceil((60_000 - (now % 60_000)) / 1000));
 }
 
+/**
+ * @param {Request} request
+ * @param {Record<string, any>} env
+ * @param {string} route
+ * @param {string} requestId
+ * @param {string} requestedModel
+ * @param {number} status
+ * @param {string | Uint8Array} errorText
+ * @param {LoopState} state
+ * @param {boolean} exposeUpstreamInfo
+ * @returns {Response}
+ */
 export function buildClientErrorResponse(request, env, route, requestId, requestedModel, status, errorText, state, exposeUpstreamInfo) {
   const detail = extractErrorMessage(errorText) || `Upstream returned HTTP ${status}.`;
   const attemptsDetail = exposeUpstreamInfo && state.attempts.length
@@ -240,6 +300,10 @@ export function buildClientErrorResponse(request, env, route, requestId, request
   });
 }
 
+/**
+ * @param {string | Uint8Array | null | undefined} text
+ * @returns {string}
+ */
 function extractErrorMessage(text) {
   const raw = String(text || '').trim();
   if (!raw) return '';
@@ -255,6 +319,10 @@ function extractErrorMessage(text) {
 //   dominant rate_limit / distributed deny -> 429 (retryable)
 //   dominant headers/first-event timeout  -> 504 (spent, terminal)
 //   otherwise (server/network/auth/model) -> 502
+/**
+ * @param {Record<string, number>} [failureKinds]
+ * @returns {string | null}
+ */
 function dominantKind(failureKinds) {
   let best = null;
   let bestN = 0;
@@ -264,6 +332,10 @@ function dominantKind(failureKinds) {
   return best;
 }
 
+/**
+ * @param {Record<string, number>} [failureKinds]
+ * @returns {number | null}
+ */
 function terminalStatus(failureKinds) {
   const dom = dominantKind(failureKinds);
   if (!dom) return null;

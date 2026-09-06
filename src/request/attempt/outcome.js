@@ -20,6 +20,14 @@ import {
 import { trimDiagnostic } from '../../protocol/http.js';
 import { upstreamModelOf } from '../response-helpers.js';
 
+/**
+ * @param {LoopState} state
+ * @param {RuntimeNode} node
+ * @param {string} reason
+ * @param {Partial<AttemptContext>} [c]
+ * @param {boolean} [preDispatch]
+ * @returns {AttemptOutcome}
+ */
 export function rotateWithNeutralEnd(state, node, reason, c = {}, preDispatch = false) {
   state.attempted.add(node.id);
   // Pre-dispatch neutrals (invalid base URL) never reached an upstream, so they
@@ -57,6 +65,10 @@ export function rotateWithNeutralEnd(state, node, reason, c = {}, preDispatch = 
 // Aggregate failure-kind counter for the exhausted response. Kinds alone (no
 // node ids / no ordering) are safe to expose to clients by default and answer
 // the only question that matters when everything failed: HOW did it fail?
+/**
+ * @param {LoopState} state
+ * @param {string} kind
+ */
 export function noteFailure(state, kind) {
   state.failureKinds[kind] = (state.failureKinds[kind] || 0) + 1;
 }
@@ -68,10 +80,10 @@ export function noteFailure(state, kind) {
 //   * logicalAttempts counts the logical attempt the dispatch belongs to — a
 //     hedge twin belongs to its primary's attempt and does not increment it.
 /**
- * @param {Record<string, any>} state
- * @param {Record<string, any>} node
- * @param {Record<string, any>} classification
- * @param {Record<string, any>} c
+ * @param {LoopState} state
+ * @param {RuntimeNode} node
+ * @param {{ kind: string, counted: boolean, action: string, cooldownMs?: number, retryAfterMs?: number, modelScoped?: boolean }} classification
+ * @param {AttemptContext} c
  * @param {{latencyMs?: number, ttftWaitMs?: number, status?: number, diagnostic?: string}} [opts]
  */
 export function recordOutcome(state, node, classification, c, { latencyMs = -1, ttftWaitMs, status = 0, diagnostic } = {}) {
@@ -118,6 +130,7 @@ export function recordOutcome(state, node, classification, c, { latencyMs = -1, 
     + `${diagnostic && c?.exposeUpstreamInfo ? ` detail=${trimDiagnostic(diagnostic, 200)}` : ''}`,
   );
 
+  /** @type {Record<string, unknown>} */
   const record = {
     attempt: state.logicalAttempts, dispatch: state.dispatches, node_id: node.id,
     provider: node.provider, protocol: c?.upstreamProtocol ?? node.protocol, surface: c?.surface,

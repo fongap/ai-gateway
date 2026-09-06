@@ -265,7 +265,11 @@ export function markProbeFailure(nodeId, model, now = Date.now()) {
 // `reason` set the node-local cooldown window. When `cooldownMs` comes from
 // an auto-computed fallback (no explicit Retry-After), a light ±10% jitter
 // is applied to avoid synchronized re-probes across isolates.
-/** @param {string} nodeId */
+/**
+ * @param {string} nodeId
+ * @param {{ counted?: boolean, cooldownMs?: number, reason?: string | null }} [opts]
+ * @param {number} [now]
+ */
 export function recordFailure(nodeId, { counted = false, cooldownMs = 0, reason = null } = {}, now = Date.now()) {
   const s = releaseAndReturn(nodeId);
   s.totalFailures++;

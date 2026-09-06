@@ -52,11 +52,15 @@ import { recordOutcome, rotateWithNeutralEnd } from './outcome.js';
 // OpenAI Chat Tier 1 uses its meaningful-output predicate while Tier 2/3 keep
 // the original parseable-event boundary. Responses uses response.*.delta.
 
+/**
+ * @param {{ upstream: Response, c: AttemptContext, targetUrl: string, latencyMs: number, detach: () => void, upstreamWasStreaming: boolean, attemptStartMs?: number }} s
+ * @returns {Promise<AttemptOutcome>}
+ */
 export async function handleSuccess(s) {
   const { upstream, c, latencyMs, detach, upstreamWasStreaming } = s;
   const { request, env, logger, requestId, route, node, requestedModel, bodyJson, clientWantsStream, fakeStream, limits, exposeUpstreamInfo, state, policy } = c;
   const surface = c.surface;
-  const elapsedSinceStart = () => Date.now() - c.attemptStartMs;
+  const elapsedSinceStart = () => Date.now() - /** @type {number} */ (c.attemptStartMs);
   // Topology-leak policy (P1): by default a successful client response carries
   // only x-request-id. Node id / tier are operational details exposed only when
   // EXPOSE_UPSTREAM_INFO=true (debugging) or via the auth-protected /health.
@@ -73,7 +77,7 @@ export async function handleSuccess(s) {
     const guardStartMs = Date.now();
     let guarded;
     try {
-      const remainingRequestBudgetMs = (c.failoverBudgetMs ?? limits.failoverBudgetMs) - (Date.now() - (c.requestStartMs || s.attemptStartMs));
+      const remainingRequestBudgetMs = (c.failoverBudgetMs ?? limits.failoverBudgetMs) - (Date.now() - (c.requestStartMs || /** @type {number} */ (s.attemptStartMs) || Date.now()));
       const remainingAttemptBudgetMs = (c.attemptDeadlineMs ?? Date.now()) - Date.now();
       // Policy-level first_event_timeout_ms overrides the global env default
       // for this model (e.g. long-reasoning needs 120s for chain-of-thought).
@@ -103,7 +107,7 @@ export async function handleSuccess(s) {
       const code = (e && typeof e === 'object' && 'code' in e) ? String(e.code) : GUARD_ERROR.EMPTY;
       if (request.signal?.aborted) {
         recordOutcome(state, node, classifyClientAbort(), c, {
-          latencyMs: Date.now() - c.attemptStartMs,
+          latencyMs: Date.now() - /** @type {number} */ (c.attemptStartMs),
           ttftWaitMs: Date.now() - guardStartMs,
           status: upstream.status,
         });
@@ -124,7 +128,7 @@ export async function handleSuccess(s) {
         } else recordNeutralEnd(node.id);
         logger.info(
           `hedge loser: request=${requestId} node=${node.id} phase=first_event`
-          + ` reason=cancelled_after_peer_commit neutral=true latency_ms=${Date.now() - c.attemptStartMs}`,
+          + ` reason=cancelled_after_peer_commit neutral=true latency_ms=${Date.now() - /** @type {number} */ (c.attemptStartMs)}`,
         );
         return { rotate: true, hedgedAway: true, kind: 'cancelled_after_peer_commit' };
       }
@@ -133,7 +137,7 @@ export async function handleSuccess(s) {
       // failure. Tier 1 has a separate passive metric and never writes here.
       if (node.tier !== 'tier-1') markProbeFailure(node.id, state.requestedModel);
       recordOutcome(state, node, classification, c, {
-        latencyMs: Date.now() - c.attemptStartMs,
+        latencyMs: Date.now() - /** @type {number} */ (c.attemptStartMs),
         ttftWaitMs: Date.now() - guardStartMs,
         status: upstream.status,
         diagnostic: code,
@@ -147,7 +151,7 @@ export async function handleSuccess(s) {
     // failed request that produced no meaningful output never reaches here
     // (it rotates through the failure pipeline instead). Tier 2/3 keep the
     // node-level EWMA in node-state for their existing latency preference.
-    c.ttftMs = Date.now() - c.attemptStartMs;
+    c.ttftMs = Date.now() - /** @type {number} */ (c.attemptStartMs);
     if (node.tier === 'tier-1') {
       recordTier1Ttft(node.id, state.requestedModel, c.ttftMs);
     } else {
@@ -169,8 +173,8 @@ export async function handleSuccess(s) {
         // passive scan. Transformed routes below report usage from the
         // transform's parse point instead (onUsage NOT passed here), keeping
         // exactly one capture per stream.
-        onUsage: (u) => recordTokens(c, node, u),
-        interruptionChunk: (reason) => streamInterruptionChunk(route, requestId, reason),
+        onUsage: (/** @type {any} */ u) => recordTokens(c, node, u),
+        interruptionChunk: (/** @type {string} */ reason) => streamInterruptionChunk(route, requestId, reason),
         upstreamFailureReason: hiddenStreamFailure,
         ...makeNodeStreamTrack(c, node, latencyMs),
       });
@@ -188,8 +192,8 @@ export async function handleSuccess(s) {
         ...(needsModelRewrite ? { rewriteModel: requestedModel, rewriteModelAt: 'response.model' } : {}),
         // Native Responses SSE carries usage inside the response.completed
         // payload; the tracked stream's passive scan reports it (onUsage).
-        onUsage: (u) => recordTokens(c, node, u),
-        interruptionChunk: (reason, details) => streamInterruptionChunk(route, requestId, reason, details),
+        onUsage: (/** @type {any} */ u) => recordTokens(c, node, u),
+        interruptionChunk: (/** @type {string} */ reason, /** @type {{ nextSequenceNumber?: number }} */ details) => streamInterruptionChunk(route, requestId, reason, details),
         upstreamFailureReason: hiddenStreamFailure,
         ...makeNodeStreamTrack(c, node, latencyMs),
       });
@@ -216,8 +220,8 @@ export async function handleSuccess(s) {
         {
           idleTimeoutMs: limits.streamIdleTimeoutMs,
           completionMarker: /event:\s*message_stop\b/,
-          onUsage: (u) => recordTokens(c, node, u),
-          interruptionChunk: (reason) => streamInterruptionChunk(route, requestId, reason),
+          onUsage: (/** @type {any} */ u) => recordTokens(c, node, u),
+          interruptionChunk: (/** @type {string} */ reason) => streamInterruptionChunk(route, requestId, reason),
           upstreamFailureReason: hiddenStreamFailure,
           ...makeNodeStreamTrack(c, node, latencyMs),
         },
@@ -235,8 +239,8 @@ export async function handleSuccess(s) {
       // must NOT be recorded as a node success.
       completionMarker: /event:\s*message_stop\b/,
       ...(needsModelRewrite ? { rewriteModel: requestedModel, rewriteModelAt: 'message.model' } : {}),
-      onUsage: (u) => recordTokens(c, node, u),
-      interruptionChunk: (reason) => streamInterruptionChunk(route, requestId, reason),
+      onUsage: (/** @type {any} */ u) => recordTokens(c, node, u),
+      interruptionChunk: (/** @type {string} */ reason) => streamInterruptionChunk(route, requestId, reason),
       upstreamFailureReason: hiddenStreamFailure,
       ...makeNodeStreamTrack(c, node, latencyMs),
     });
@@ -330,8 +334,8 @@ export async function handleSuccess(s) {
           // Defensive consistency with the streaming passthrough above (this
           // branch is mutually exclusive with the assemble path below, so the
           // scan can never double-count against a recordTokens call).
-          onUsage: (u) => recordTokens(c, node, u),
-          interruptionChunk: (reason) => streamInterruptionChunk(route, requestId, reason),
+          onUsage: (/** @type {any} */ u) => recordTokens(c, node, u),
+          interruptionChunk: (/** @type {string} */ reason) => streamInterruptionChunk(route, requestId, reason),
           ...makeNodeStreamTrack(c, node, latencyMs),
         },
       );

@@ -215,7 +215,7 @@ export function writeTier1Affinity(env, ctx, sessionId, accountId) {
 }
 
 /**
- * @param {string} sessionId
+ * @param {string | null} sessionId
  * @param {number} [now]
  */
 export function shouldEvaluateAffinity(sessionId, now = Date.now()) {

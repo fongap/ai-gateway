@@ -38,6 +38,12 @@ import { pickForTier, makeTier1Rng, computeTierCaps, countRemainingDispatchableA
 import { runFallbackChain } from './fallback.js';
 import { attemptNode, dispatchWithHedge } from './attempt.js';
 
+/**
+ * @param {Request} request
+ * @param {Record<string, any>} env
+ * @param {{ waitUntil?: Function }} ctx
+ * @returns {Promise<Response>}
+ */
 export async function handleRequest(request, env, ctx) {
   const logger = getLogger(env);
   const pre = await runPreflight(request, env, ctx);
@@ -124,6 +130,13 @@ export async function handleRequest(request, env, ctx) {
 // fallback it carries the converted outbound body and protocol/surface info.
 // `overrideTierCaps` lets the caller inject pre-computed caps (used by the
 // fallback path which recomputes for the fallback protocol).
+/**
+ * @param {LoopContext} loopCtx
+ * @param {RequestDescriptor} reqDescriptor
+ * @param {{ fallbackProtocol: Protocol, fallbackSurface: Surface, convertedBody: Record<string, any> } | null} conversionContext
+ * @param {Record<number, number>} [overrideTierCaps]
+ * @returns {Promise<Response | null>}
+ */
 async function runTierLoop(loopCtx, reqDescriptor, conversionContext, overrideTierCaps) {
   const {
     request, env, ctx, logger, requestId, route, requestedModel,
@@ -156,7 +169,8 @@ async function runTierLoop(loopCtx, reqDescriptor, conversionContext, overrideTi
         knownModels,
       });
       if (!pick || pick.raceLost) break;
-      const node = pick.node;
+      // raceLost is guarded above, so the picker always returned a node.
+      const node = /** @type {RuntimeNode} */ (pick.node);
       if (tierNumber === 1) {
         recordTier1AffinityDecision({
           affinityHit: pick.tier1AffinityHit,

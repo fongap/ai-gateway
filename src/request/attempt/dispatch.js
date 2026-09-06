@@ -38,6 +38,10 @@ const DIAGNOSTIC_BYTES = 4096;
 // charging from a failure-kind string. Successful dispatches get one debug
 // line here (failures log their own dispatch line inside recordOutcome), so
 // every upstream dispatch emits exactly one completion record.
+/**
+ * @param {AttemptContext} c
+ * @returns {Promise<AttemptOutcome>}
+ */
 export async function attemptNode(c) {
   const outcome = await dispatchAttempt(c);
   if (outcome.budgetCharged === undefined) outcome.budgetCharged = true;
@@ -62,6 +66,10 @@ export async function attemptNode(c) {
 }
 
 
+/**
+ * @param {AttemptContext} c
+ * @returns {Promise<AttemptOutcome>}
+ */
 async function dispatchAttempt(c) {
   const {
     request, env, logger, requestId, route, node, requestedModel, clientWantsStream,

@@ -33,17 +33,29 @@
 // catalog.
 
 // Returns a sorted array of model names visible to the current key.
+/**
+ * @param {ReadonlySet<string>} knownModels
+ * @param {{ authorized?: boolean, allowAll?: boolean, allowlist?: ReadonlySet<string> }} authz
+ */
 export function filterVisibleModels(knownModels, authz) {
   if (!knownModels || knownModels.size === 0) return [];
   if (!authz || !authz.authorized) return [];
   if (authz.allowAll) return [...knownModels].sort();
   if (!authz.allowlist || authz.allowlist.size === 0) return [];
-  return [...knownModels].filter((m) => authz.allowlist.has(m)).sort();
+  // Hoist: property narrowing does not survive into the filter closure.
+  const allowlist = authz.allowlist;
+  return [...knownModels].filter((m) => allowlist.has(m)).sort();
 }
 
 // Returns { allowed: boolean, status?: 401 | 403 | 404 }.
 // When allowed is false, `status` is 401/403/404 and the handler must return
 // that response without entering the scheduler.
+/**
+ * @param {string} requestedModel
+ * @param {ReadonlySet<string>} knownModels
+ * @param {{ authorized?: boolean, allowAll?: boolean, allowlist?: ReadonlySet<string> }} authz
+ * @returns {{ allowed: true } | { allowed: false, status: 401 | 403 | 404 }}
+ */
 export function authorizeModel(requestedModel, knownModels, authz) {
   // No key -> handled by the auth layer (401). If we somehow get here
   // without auth, fail closed.
