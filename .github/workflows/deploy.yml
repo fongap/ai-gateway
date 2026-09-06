@@ -141,7 +141,14 @@ jobs:
 
   deploy:
     needs: [gate, manual-validate]
-    if: needs.gate.outputs.deploy == 'true' && (needs.manual-validate.result == 'success' || needs.manual-validate.result == 'skipped')
+    # `always()` is REQUIRED here: when a needed job is skipped (the
+    # automatic path skips manual-validate), GitHub skips dependent jobs
+    # unless the if expression carries a status-check function that lifts
+    # the skip. Safety comes from the explicit guards, not from the
+    # default: gate must have decided deploy=true, and on the manual path
+    # manual-validate must have SUCCEEDED (a cancelled or failed
+    # validation is neither success nor skipped, so it still blocks).
+    if: always() && needs.gate.outputs.deploy == 'true' && (needs.manual-validate.result == 'success' || needs.manual-validate.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
