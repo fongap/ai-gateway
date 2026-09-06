@@ -32,7 +32,26 @@
 - **Month labels**. Each label is anchored to the **week column that
   contains the 1st day of the month**, NOT to the column whose
   Monday is in that month. This keeps "9月" on the right column when
-  the month starts mid-week.
+  the month starts mid-week. Labels are date semantics: the renderer
+  NEVER drops a label near the left or right edge (e.g. 9月 anchored
+  to the last rolling column) — layout concerns are solved in CSS.
+
+- **Shared week-column layout**. The `.months` row uses the SAME CSS
+  grid week tracks as the `.heatmap` grid (`--week-count` variable set
+  inline by the consumer; both rules use
+  `grid-template-columns:repeat(var(--week-count, 52), 10px)`). A
+  label's inline `grid-column` therefore lands exactly above its week
+  column. `display:flex` / `justify-content:space-between` would
+  silently ignore the anchoring and is contract-forbidden.
+
+- **Cells carry their position facts**. Every rendered cell has
+  `data-week` / `data-weekday` plus an explicit inline
+  `grid-column` / `grid-row` placement derived from the `HeatmapDay`
+  itself — layout never depends on DOM order or `grid-auto-flow`, so
+  52 / 53 / 54-column grids all use the same renderer. Three visual
+  states are distinguished in CSS: real 0-activity days (level-0
+  background), future days (`data-future="1"`, empty), and
+  out-of-range padding (`data-inrange="0"`, nearly transparent).
 
 - **Data lookup is by date, not position**. The renderer reads the
   `daily` Map by the cell's `date` key. Never use a visual position
@@ -86,18 +105,27 @@ buildCalendarHeatmap({
 
 The renderer (`src/dashboard/heatmap-view.js`) is the single source
 of truth for the HTML output. It emits a `<i class="cell" ...>`
-tag per day with `data-level`, `data-date`, `data-future`,
-`data-inrange`, `data-tooltip`, and `aria-label` attributes that
-the dashboard's tooltip layer and future CSS can hook into without
-touching the date / weekday logic.
+tag per day with `data-week`, `data-weekday`, an explicit inline
+`grid-column` / `grid-row` placement, `data-level`, `data-date`,
+`data-future`, `data-inrange`, `data-tooltip`, and `aria-label`
+attributes that the dashboard's tooltip layer and CSS hook into
+without touching the date / weekday logic. Month labels are emitted
+as `<span style="grid-column:N">M月</span>` — real grid positions
+inside the shared `.months` week tracks.
 
 ## Tests
 
 - `scripts/calendar-heatmap-test.mjs` — utility contract:
-  rolling-52-weeks, calendar-year, month-label anchoring, leap year,
-  in-range / out-of-range / future / historical year edges.
+  rolling-52-weeks, calendar-year (exact column counts incl. 54-column
+  years), month-label anchoring, month boundaries, leap year, UTC+8
+  day boundary, in-range / out-of-range / future / historical edges.
 - `scripts/calendar-heatmap-view-test.mjs` — HTML output contract:
-  cell count, level quantization, future-cell tooltips, attribute
-  surface.
+  cell count, level quantization, future-cell tooltips, explicit cell
+  placement, right-edge label survival, attribute surface.
+- `scripts/calendar-heatmap-contract-test.mjs` — C01–C15 spec table
+  (52 columns, Monday-first, YYYY-MM-DD keys, future ≠ zero,
+  monthStart anchoring, no edge drops, exact calendar-year counts,
+  padding/future/historical semantics, UTC+8 boundary,
+  renderer/builder same column, shared `--week-count` CSS grid).
 - `scripts/token-usage-test.mjs` — legacy 364-cell / 12-month-label
   contract is preserved through `buildHeatmap`'s thin adapter.

@@ -9,13 +9,20 @@
 // client-side `PAGE_SCRIPT` in pages.js attaches the floating tooltip
 // element); level 0/1/2/3/4 are CSS-driven via the `data-level` attribute.
 //
+// Position facts: every cell carries `data-week` / `data-weekday` AND an
+// explicit `grid-column` / `grid-row` inline placement, so the rendered
+// position is derived from the HeatmapDay itself — never from DOM order
+// or `grid-auto-flow`. The month-label row (`.months`) shares the exact
+// same week-column tracks (`--week-count` CSS grid), so a label's
+// `grid-column` lands precisely above its week column.
+//
 // Levels are quantized from `value` against the max `value` in the
 // rendered range (i.e. `inRange && !isFuture` cells). Future cells and
 // out-of-range padding cells stay at level 0 (the visual "empty" ramp
 // step) — they MUST NOT be quantized to 0 because they're not "0
-// activity" cells, they're "no business data here" cells. The CSS
-// keeps the same look for both, but the tooltip and the `data-date`
-// are the source of truth.
+// activity" cells, they're "no business data here" cells. The CSS keeps
+// the same look for both, but the tooltip and the `data-date` are the
+// source of truth.
 
 import { escapeHtml, fmtTokens, fmtInt, fmtTooltipDate } from './format.js';
 
@@ -44,7 +51,6 @@ export function renderHeatmap(heatmap, opts = {}) {
   const { valueKey = 'total', data = null, ariaLabel, unit = 'Token', showMonthLabels = true } = opts;
   const valueLabel = unit;
   const weeks = heatmap.weeks;
-  const weeksCount = weeks.length;
 
   // Max value over in-range non-future cells only.
   let max = 0;
@@ -59,7 +65,7 @@ export function renderHeatmap(heatmap, opts = {}) {
   const cells = [];
   for (const week of weeks) {
     for (const cell of week) {
-      const { date: iso, value, inRange, isFuture } = cell;
+      const { date: iso, value, inRange, isFuture, weekIndex, weekdayIndex } = cell;
       let level = 0;
       let tip;
       if (!inRange) {
@@ -81,33 +87,27 @@ export function renderHeatmap(heatmap, opts = {}) {
         tip = `${fmtTooltipDate(iso)}\n${fmtTokens(v)} ${valueLabel} · ${fmtInt(requests)} 次请求`;
       }
       cells.push(
-        `<i class="cell" data-level="${level}" data-date="${escapeHtml(iso)}" data-future="${isFuture ? '1' : '0'}" data-inrange="${inRange ? '1' : '0'}" tabindex="0" data-tooltip="${escapeHtml(tip)}" aria-label="${escapeHtml(tip)}"></i>`,
+        `<i class="cell" data-week="${weekIndex}" data-weekday="${weekdayIndex}" style="grid-column:${weekIndex + 1};grid-row:${weekdayIndex + 1}" data-level="${level}" data-date="${escapeHtml(iso)}" data-future="${isFuture ? '1' : '0'}" data-inrange="${inRange ? '1' : '0'}" tabindex="0" data-tooltip="${escapeHtml(tip)}" aria-label="${escapeHtml(tip)}"></i>`,
       );
     }
   }
 
+  // Month labels are date semantics, not decoration: every label the
+  // builder anchored (via the week column containing the month's 1st day)
+  // MUST appear in the output — including 1月 at the left edge and the
+  // right-edge month (e.g. 9月 anchored to the last rolling column).
+  // Right-edge overflow is a CSS positioning concern (the `.months` grid
+  // shares the heatmap's week tracks) and is never solved by dropping
+  // labels here.
   const labels = [];
   if (showMonthLabels) {
-    if (heatmap.mode === 'calendar-year') {
-      // Spec: 12 month labels, one per month, anchored to the column
-      // where the 1st day lives. Always 1..12 in order.
-      const seen = new Set();
-      for (const { month, weekIndex } of heatmap.monthLabels) {
-        if (seen.has(month)) continue;
-        seen.add(month);
-        if (weekIndex > weeksCount - 3) break;
-        labels.push(`<span style="grid-column:${weekIndex + 1}">${MONTH_NAMES_CN[month]}</span>`);
-      }
-    } else {
-      // rolling-52-weeks: same as the legacy logic, but sourced from
-      // monthLabels. Avoid stacking two labels closer than 3 columns.
-      let lastCol = -99;
-      for (const { month, weekIndex } of heatmap.monthLabels) {
-        if (weekIndex > weeksCount - 3) break;
-        if (labels.length && weekIndex - lastCol < 3) continue;
-        labels.push(`<span style="grid-column:${weekIndex + 1}">${MONTH_NAMES_CN[month]}</span>`);
-        lastCol = weekIndex;
-      }
+    let lastCol = -1;
+    for (const { month, weekIndex } of heatmap.monthLabels) {
+      // Defensive only: two real calendar month starts can never share a
+      // week column (they are at least 28 days apart).
+      if (weekIndex <= lastCol) continue;
+      labels.push(`<span style="grid-column:${weekIndex + 1}">${MONTH_NAMES_CN[month]}</span>`);
+      lastCol = weekIndex;
     }
   }
 

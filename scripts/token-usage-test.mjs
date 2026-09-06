@@ -330,10 +330,10 @@ await test('模型使用 folds models beyond the top 4 into one 其他 row', asy
   assert.match(html, /<div class="bar-value">50<\/div>/, '其他 row shows its aggregated total (30+20)');
 });
 
-await test('Token 活动 · 52 周 renders a full 364-cell heatmap with month labels', async () => {
+await test('Token 活动 · 近 52 周 renders a full 364-cell heatmap with month labels', async () => {
   const env = seededEnv([[{ prompt_tokens: 7, completion_tokens: 7 }]]);
   const html = await pageText(anonRequest(), env);
-  assert.ok(html.includes('Token 活动 · 52 周'), 'heatmap title updated');
+  assert.ok(html.includes('Token 活动 · 近 52 周'), 'heatmap title updated');
   assert.ok(html.includes('次请求'), 'request count shown on right');
   assert.equal(cellCount(html), 364, 'exactly 52 weeks × 7 days of square cells');
   const labels = monthLabels(html);
