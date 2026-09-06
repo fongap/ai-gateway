@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added — 治理
+
+- **TypeScript Migration 治理(v1.3.0 阶段)**:新增 `docs/governance/typescript-migration.md`,固化 v1.2.6 为最后一个 JavaScript Runtime baseline 与 rollback 基线;迁移全程 behavior-preserving,Feature / Architecture / Protocol / Scheduler Freeze 持续有效至 v1.3.0 发布。禁止新增功能、修改核心行为、借迁移重构与新增 Runtime 依赖(production dependencies 保持 0)。固定 PR0–PR7 迁移顺序与每阶段 `branch → PR → CI → merge main` 节奏(文件迁移必须 `git mv` 保 history);明确工具链(Wrangler bundler + tsc noEmit typecheck、Node 原生 type stripping、erasable-only TS、真实扩展名 import 规则)、tsconfig 最终 strict 收口、类型纪律(@ts-ignore = 0、禁批量 any / `!`)、公开 API 零变化(/version 仅可加 build/revision)、Bundle 对比与每 PR 最低验证/报告要求;测试分层:轻量行为契约入 `validate:merge`,慢速套件保留 `validate:deploy`。
+
 ### Changed — Dashboard
 
 - **热力图活动色阶对比度增强(用户反馈)**:新增热力图专属色阶 `--heat-1..4`(`#bfdcd2 → #8cc3b2 → #4f9f8a → #0f5d53`,同为 teal 色系),替代此前借用 `--teal-1..4` 的配色——旧 level 1(`#dce9e3`)与空底 `--line-soft`(`#eceae2`)明度几乎相同,低 token 活动日在图上不可辨。新色阶相邻档位明度差约 10%,level 1 清晰可辨、level 4 触达品牌深 teal,层次梯度更丰富;`--teal-*` 其他组件(如模型状态圆点)不受影响。纯 CSS token 调整,量化逻辑(level 0-4)与数据契约不变。
