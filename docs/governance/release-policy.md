@@ -60,16 +60,48 @@ CHANGELOG 只记录历史版本变化，不放长期治理规则。
 
 ## Release Workflow
 
-当前发布流程：
+本仓库使用 **Squash Merge**:PR 分支上的 commit 永远不会成为 `main` 历史的 ancestor。因此正式 release 的 tag 必须指向 **main 上的 squash commit**——指向 PR 分支 commit 的 tag 不在 `main` 的可达历史内,不是合法的 release 基线。
 
-1. 更新版本号（`package.json`、`APP_META.version`）
+正式 release 生命周期(每一步依赖上一步成功):
+
+```text
+PR Merge (squash)
+↓
+main 完整 CI(validate-merge + validate-deploy 全绿 = Production Gate)
+↓
+Production Deploy 成功(gate: 仅 push 触发的 CI 允许部署)
+↓
+确认 main release commit(final main SHA)
+↓
+创建 tag:vX.Y.Z → 指向该 final main SHA
+↓
+创建 GitHub Release
+```
+
+### Tag 纪律(硬性规则)
+
+1. **禁止在 PR merge 之前创建正式 release tag。** tag 不是"准备好就打"的标记,而是"该 commit 已通过完整 CI 并成功部署"的确认。
+2. tag 必须指向 `main` 的 squash commit(final main SHA);禁止在 PR 分支上打 tag 或重建 tag。
+3. 如果提前创建了 tag 但对应版本**尚未发布过 GitHub Release**(未形成不可修改的外部发布契约),必须删除并重建到正确的 main SHA:
+
+   ```bash
+   git push origin :refs/tags/vX.Y.Z
+   git tag -a vX.Y.Z <FINAL_MAIN_SHA> -m "vX.Y.Z"
+   git push origin vX.Y.Z
+   ```
+
+   已发布 GitHub Release 的 tag 视为外部契约,不得移动;需要变更时走新版本号。
+4. correctness/hardening 轮内版本号保持不变;下一功能版本的版本号单独决策,不与修复混在一起反复变更。
+
+### 流程步骤
+
+1. 更新版本号(`package.json`、`APP_META.version`,同步副本自动校验)
 2. 更新 CHANGELOG
-3. 提交并推送到 `main`
-4. 创建 Git Tag（`v*.*.*`）
-5. 维护者显式创建 GitHub Release
-6. CI / Deploy 自动化（`npm ci → npm run validate:merge → npm run check:deploy`）
-
-以后如果增加自动 Release workflow，再同步修改本文件。
+3. 通过 PR(squash)合入 `main`
+4. 等待 main 完整 CI + Production Deploy 成功
+5. 创建 Git Tag(`v*.*.*`,指向 final main SHA)
+6. 维护者显式创建 GitHub Release
+7. CI / Deploy 自动化(`npm ci → npm run validate:merge → npm run check:deploy`)
 
 ## Deployment / Release Relationship
 
