@@ -56,9 +56,12 @@ import { getRuntimeAvailability } from './availability.js';
 //   * aligned with the existing hourly bucket granularity, so the query is
 //     a single GROUP BY over a small number of rows.
 //
-// This constant is the ONLY place the window is defined — no scattered magic
-// numbers. It is testable directly through getPublicModelStatus().
-export const MODEL_STATUS_RECENT_WINDOW_MS = 24 * 3600_000;
+// Single source of truth for the Recent Evidence window lives next to the
+// query that parameterizes it (token-usage-store/queries.js); re-exported
+// here because Model Status semantics own the public surface.
+export {
+  MODEL_STATUS_RECENT_WINDOW_MS,
+} from '../observability/token-usage-store.mjs';
 
 // Pure function: compute the public four-state status for every logical
 // model known to the gateway.

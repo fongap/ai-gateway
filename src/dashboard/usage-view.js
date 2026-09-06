@@ -197,7 +197,7 @@ export async function usageSection(env, now = Date.now(), stats = null) {
 }
 
 // Re-export cache helpers used by pages.js
-import { queryRecentModelEvidence, queryModelTtftPercentiles } from '../observability/token-usage-store.mjs';
+import { MODEL_STATUS_RECENT_WINDOW_MS, queryRecentModelEvidence, queryModelTtftPercentiles } from '../observability/token-usage-store.mjs';
 
 const DASHBOARD_CACHE_TTL_MS = 45_000;
 let dashboardCaches = new WeakMap();
@@ -254,7 +254,7 @@ async function loadDashboardStats(env, now) {
     queryTokenSummary(env, now),
     queryTokenDailySeries(env, startIso, now),
     queryTokenModelUsage(env, 7, now),
-    queryRecentModelEvidence(env, 7 * 24 * 60 * 60 * 1000, now),
+    queryRecentModelEvidence(env, MODEL_STATUS_RECENT_WINDOW_MS, now),
   ]);
   const topModels = Array.isArray(modelUsage?.rows)
     ? modelUsage.rows.slice(0, 4).map((r) => r.model)

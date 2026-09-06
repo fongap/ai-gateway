@@ -260,6 +260,12 @@ export async function queryTokenModelUsage(env, days = 7, now = Date.now()) {
   }
 }
 
+// Recent Evidence window for the Public Model Status layer. This is the
+// SINGLE definition of that window (24h): the runtime constant
+// src/runtime/model-status.js re-exports this binding, and every caller
+// must pass it (or rely on this default) instead of hardcoding days.
+export const MODEL_STATUS_RECENT_WINDOW_MS = 24 * HOUR_MS;
+
 // Recent-success evidence for the Public Model Status layer
 // (src/runtime/model-status.js). Returns a Set<string> of logical
 // model names that have at least one request in the per-model hourly
@@ -271,7 +277,7 @@ export async function queryTokenModelUsage(env, days = 7, now = Date.now()) {
 // Fail-open: missing binding → empty Set, query failure → empty
 // Set. NEVER fabricates evidence — an empty Set is "no evidence",
 // not "evidence of failure".
-export async function queryRecentModelEvidence(env, windowMs = 24 * HOUR_MS, now = Date.now()) {
+export async function queryRecentModelEvidence(env, windowMs = MODEL_STATUS_RECENT_WINDOW_MS, now = Date.now()) {
   const d1 = tokenStatsD1(env);
   if (!d1) return new Set();
   const startHour = normalizeHour(now - windowMs);

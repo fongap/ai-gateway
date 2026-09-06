@@ -31,6 +31,7 @@ export {
   queryTokenSummary,
   queryTokenDailySeries,
   queryTokenModelUsage,
+  MODEL_STATUS_RECENT_WINDOW_MS,
   queryRecentModelEvidence,
   queryModelTtftPercentiles,
   queryModelUsageCoverage,
