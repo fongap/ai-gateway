@@ -34,7 +34,6 @@ export {
   MODEL_STATUS_RECENT_WINDOW_MS,
   queryAllModelsTtftPercentiles,
   queryRecentModelEvidence,
-  queryModelTtftPercentiles,
   queryModelUsageCoverage,
 } from './queries.js';
 

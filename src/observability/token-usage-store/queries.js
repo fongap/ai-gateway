@@ -19,7 +19,7 @@
 //   queryRecentModelEvidence - recent successful traffic
 //
 // TTFT percentile consumer (src/dashboard/pages.js):
-//   queryModelTtftPercentiles
+//   queryAllModelsTtftPercentiles
 
 import {
   TABLE, TABLE_MODEL, TABLE_TOTALS, TABLE_DAILY,
@@ -370,45 +370,6 @@ export async function queryAllModelsTtftPercentiles(env, days = 7, now = Date.no
 // returned so the dashboard can display "样本不足" instead of
 // misleading numbers.
 const TTFT_MIN_SAMPLES = 5;
-
-export async function queryModelTtftPercentiles(env, model, days = 7, now = Date.now()) {
-  const d1 = tokenStatsD1(env);
-  if (!d1) return { available: false, error: 'TOKEN_STATS_DB binding missing' };
-  if (typeof model !== 'string' || model.length === 0) return { available: false, error: 'model required' };
-  const startHour = normalizeHour(now - days * DAY_MS);
-  try {
-    const res = await d1.prepare(
-      `SELECT
-        COALESCE(SUM(successful_ttft_count), 0) AS total_ttft,
-        COALESCE(SUM(ttft_b0), 0) AS b0,
-        COALESCE(SUM(ttft_b1), 0) AS b1,
-        COALESCE(SUM(ttft_b2), 0) AS b2,
-        COALESCE(SUM(ttft_b3), 0) AS b3,
-        COALESCE(SUM(ttft_b4), 0) AS b4,
-        COALESCE(SUM(ttft_b5), 0) AS b5,
-        COALESCE(SUM(ttft_b6), 0) AS b6
-       FROM ${TABLE_MODEL}
-       WHERE hour >= ? AND model = ?`,
-    ).bind(startHour, model).first();
-    if (!res || typeof res !== 'object') return { available: false, error: 'no data' };
-    const total = Number(res.total_ttft) || 0;
-    if (total < TTFT_MIN_SAMPLES) return { available: true, p50: null, p95: null, sampleCount: total, insufficient: true };
-    const buckets = [
-      Number(res.b0) || 0,
-      Number(res.b1) || 0,
-      Number(res.b2) || 0,
-      Number(res.b3) || 0,
-      Number(res.b4) || 0,
-      Number(res.b5) || 0,
-      Number(res.b6) || 0,
-    ];
-    const p50 = percentileFromBuckets(buckets, total, 0.5);
-    const p95 = percentileFromBuckets(buckets, total, 0.95);
-    return { available: true, p50, p95, sampleCount: total, insufficient: false };
-  } catch (e) {
-    return { available: false, error: `queryModelTtftPercentiles: ${e?.message || e}` };
-  }
-}
 
 function percentileFromBuckets(buckets, total, pct) {
   const threshold = Math.ceil(total * pct);

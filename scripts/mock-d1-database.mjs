@@ -201,31 +201,6 @@ export function createMockD1({ failWrites = false, failReads = false } = {}) {
           };
         }
 
-        // queryModelTtftPercentiles: SELECT SUM(successful_ttft_count), SUM(ttft_b0..b6)
-        // WHERE hour >= ? AND model = ?
-        if (/successful_ttft_count/i.test(sql) && /ttft_b0/i.test(sql)) {
-          const [startHour, model] = this._params;
-          let total_ttft = 0, b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
-          let found = false;
-          for (const [key, r] of modelRows) {
-            const parsed = parseModelKey(key);
-            if (!parsed) continue;
-            if (parsed.hour < startHour) continue;
-            if (parsed.model !== model) continue;
-            found = true;
-            total_ttft += r.successful_ttft_count || 0;
-            b0 += r.ttft_b0 || 0;
-            b1 += r.ttft_b1 || 0;
-            b2 += r.ttft_b2 || 0;
-            b3 += r.ttft_b3 || 0;
-            b4 += r.ttft_b4 || 0;
-            b5 += r.ttft_b5 || 0;
-            b6 += r.ttft_b6 || 0;
-          }
-          if (!found) return null;
-          return { total_ttft, b0, b1, b2, b3, b4, b5, b6 };
-        }
-
         // queryModelUsageCoverage: SELECT model, SUM(requests), SUM(usage_reports), SUM(usage_missing)
         // GROUP BY model WHERE hour >= ?
         if (/usage_reports/i.test(sql) && /usage_missing/i.test(sql) && /GROUP BY model/i.test(sql)) {

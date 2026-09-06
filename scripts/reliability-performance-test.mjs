@@ -12,8 +12,8 @@ import assert from 'node:assert/strict';
 import { createMockD1 } from './mock-d1-database.mjs';
 import {
   persistTokenUsage,
+  queryAllModelsTtftPercentiles,
   queryModelUsageCoverage,
-  queryModelTtftPercentiles,
   ttftBucketIndex,
   TTFT_BUCKET_BOUNDARIES_MS,
 } from '../src/observability/token-usage-store.mjs';
@@ -241,9 +241,9 @@ await test('empty model returns empty rows', async () => {
   assert.equal(result.rows.length, 0);
 });
 
-// ─── queryModelTtftPercentiles ──────────────────────────────────────────────
+// ─── queryAllModelsTtftPercentiles ─────────────────────────────────────────
 
-console.log('\n── queryModelTtftPercentiles ──');
+console.log('\n── queryAllModelsTtftPercentiles ──');
 
 await test('insufficient samples returns insufficient: true', async () => {
   const d1 = createMockD1();
@@ -254,7 +254,7 @@ await test('insufficient samples returns insufficient: true', async () => {
   for (let i = 0; i < 3; i++) {
     await persistTokenUsage(env, usage, now - i * 1000, 'model-a', 1000 + i * 500);
   }
-  const result = await queryModelTtftPercentiles(env, 'model-a', 7, now);
+  const result = (await queryAllModelsTtftPercentiles(env, 7, now)).ttft.get('model-a');
   assert.equal(result.available, true);
   assert.equal(result.insufficient, true);
   assert.equal(result.sampleCount, 3);
@@ -271,7 +271,7 @@ await test('P50 and P95 are computed from histogram buckets', async () => {
   for (let i = 0; i < 10; i++) {
     await persistTokenUsage(env, usage, now - i * 1000, 'model-a', 1200);
   }
-  const result = await queryModelTtftPercentiles(env, 'model-a', 7, now);
+  const result = (await queryAllModelsTtftPercentiles(env, 7, now)).ttft.get('model-a');
   assert.equal(result.available, true);
   assert.equal(result.insufficient, false);
   assert.equal(result.sampleCount, 10);
@@ -292,7 +292,7 @@ await test('P50 in bucket 2, P95 in bucket 4', async () => {
   for (let i = 0; i < 4; i++) {
     await persistTokenUsage(env, usage, now - (6 + i) * 1000, 'model-a', 3000);
   }
-  const result = await queryModelTtftPercentiles(env, 'model-a', 7, now);
+  const result = (await queryAllModelsTtftPercentiles(env, 7, now)).ttft.get('model-a');
   assert.equal(result.available, true);
   assert.equal(result.insufficient, false);
   assert.equal(result.sampleCount, 10);
@@ -302,21 +302,17 @@ await test('P50 in bucket 2, P95 in bucket 4', async () => {
   assert.equal(result.p95, 5000);
 });
 
-await test('missing model returns available false', async () => {
-  const result = await queryModelTtftPercentiles({}, '', 7, Date.now());
-  assert.equal(result.available, false);
-});
-
 await test('missing D1 binding returns available false', async () => {
-  const result = await queryModelTtftPercentiles({}, 'model-a', 7, Date.now());
+  const result = await queryAllModelsTtftPercentiles({}, 7, Date.now());
   assert.equal(result.available, false);
 });
 
-await test('no data returns available false', async () => {
+await test('no data returns an empty map, not an error', async () => {
   const d1 = createMockD1();
   const env = { TOKEN_STATS_DB: d1 };
-  const result = await queryModelTtftPercentiles(env, 'nonexistent', 7, Date.now());
-  assert.equal(result.available, false);
+  const result = await queryAllModelsTtftPercentiles(env, 7, Date.now());
+  assert.equal(result.available, true);
+  assert.equal(result.ttft.size, 0, 'models without rows simply have no entry');
 });
 
 // ─── Provider-agnostic verification ─────────────────────────────────────────
@@ -370,7 +366,7 @@ await test('Provider A: 10 delivered with usage, TTFT 4s -> Usage Coverage 100%,
     await persistTokenUsage(env, usage, now - i * 1000, 'provider-a', 4000);
   }
   const cov = await queryModelUsageCoverage(env, 7, now);
-  const ttft = await queryModelTtftPercentiles(env, 'provider-a', 7, now);
+  const ttft = (await queryAllModelsTtftPercentiles(env, 7, now)).ttft.get('provider-a');
   const a = cov.rows.find((r) => r.model === 'provider-a');
   assert.equal(a.usageCoverage, 1, 'Usage Coverage 100%');
   assert.equal(ttft.p50, 5000, 'P50 TTFT in 2-5s bucket -> 5000ms upper bound');
@@ -389,7 +385,7 @@ await test('Provider B: 1 delivered with usage TTFT 500ms, 9 delivered without u
     await persistTokenUsage(env, null, now - (i + 1) * 1000, 'provider-b');
   }
   const cov = await queryModelUsageCoverage(env, 7, now);
-  const ttft = await queryModelTtftPercentiles(env, 'provider-b', 7, now);
+  const ttft = (await queryAllModelsTtftPercentiles(env, 7, now)).ttft.get('provider-b');
   const b = cov.rows.find((r) => r.model === 'provider-b');
   assert.equal(b.usageCoverage, 0.1, 'Usage Coverage 10%');
   // Only 1 TTFT sample (< 5 threshold) -> insufficient
@@ -412,7 +408,7 @@ await test('fast failures do not pollute TTFT', async () => {
     await persistTokenUsage(env, usage, now - (5 + i) * 1000, 'model-fast-fail', 4000);
   }
   const cov = await queryModelUsageCoverage(env, 7, now);
-  const ttft = await queryModelTtftPercentiles(env, 'model-fast-fail', 7, now);
+  const ttft = (await queryAllModelsTtftPercentiles(env, 7, now)).ttft.get('model-fast-fail');
   const m = cov.rows.find((r) => r.model === 'model-fast-fail');
   assert.equal(m.usageCoverage, 0.5, 'Usage Coverage 50%');
   assert.equal(ttft.sampleCount, 5, 'only 5 TTFT samples (failures excluded)');
