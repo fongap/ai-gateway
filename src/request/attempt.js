@@ -80,28 +80,9 @@ import { createAnthropicStreamFromOpenAI } from '../conversion/stream-converter.
 
 const DIAGNOSTIC_BYTES = 4096;
 
-/**
- * @typedef {Record<string, any>} AttemptContext
- * @description Dispatch context for a single attempt. Carried by the tier loop
- * to attempt.js. Includes: request, env, ctx, logger, requestId, route, node,
- * requestedModel, clientWantsStream, fakeStream, bodyJson, limits,
- * exposeUpstreamInfo, state, failoverBudgetMs, requestStartMs,
- * remainingDispatchableAttempts, reqDescriptor, policy, conversionContext,
- * tier1ReleaseToken, hedgedAttempt, hedgedWithTwin, hedgeAbort,
- * attemptDeadlineMs, attemptStartMs, headersMs, ttftMs, upstreamProtocol,
- * surface, rng, tier1AffinityAccountId, tier1EvaluateAffinity, tier1Session,
- * tier1EscapedFromAffinity, tier1UpdateAffinity, tierNumber.
- */
-
-/**
- * @typedef {Object} AttemptOutcome
- * @property {Response} [response] - Committed response (success or client stop)
- * @property {boolean} [rotate] - true = rotate to next candidate
- * @property {boolean} [stop] - true = stop the tier loop
- * @property {boolean} [budgetCharged] - whether this attempt charged the budget
- * @property {string} [kind] - failure classification kind
- * @property {boolean} [hedgedAway] - true if this attempt lost a hedge race
- */
+// AttemptContext and AttemptOutcome are defined in src/types/domain.d.ts
+// (the cross-module source of truth). attempt.js receives its context from
+// handler.js via dispatchWithHedge(args, tierNodes).
 
 // ---- One attempt against one node -----------------------------------------
 

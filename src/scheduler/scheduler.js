@@ -40,6 +40,11 @@ import { servesModel } from '../config/registry.js';
 // surface, and it serves the logical model. `knownModels` is the Known Model
 // Catalog (collectKnownModels): it bounds wildcard nodes so an empty-models
 // node serves only models that actually exist somewhere in the gateway.
+/**
+ * @param {{ id: string, tier: string, provider: string, protocol: string, surfaces: string[], baseUrl: string, credential: string, priority: number, models: Record<string, string>, limits: { concurrency: number, rpm?: number, rpmMode?: string } }} node
+ * @param {RoutableRequest} req
+ * @param {Set<string>} knownModels
+ */
 export function supportsRequest(node, req, knownModels) {
   if (!req || typeof req !== 'object') return false;
   if (node.protocol !== req.protocol) return false;
@@ -49,6 +54,10 @@ export function supportsRequest(node, req, knownModels) {
   return servesModel(node, req.model, knownModels);
 }
 
+/**
+ * @param {{ id: string, tier: string, provider: string, protocol: string, surfaces: string[], baseUrl: string, credential: string, priority: number, models: Record<string, string>, limits: { concurrency: number, rpm?: number, rpmMode?: string } }} node
+ * @param {number} now
+ */
 function underRpmCap(node, now) {
   const rpm = node.limits.rpm;
   if (!rpm) return true;
@@ -58,6 +67,10 @@ function underRpmCap(node, now) {
 // A HARD rpm cap is a real upstream/account quota: once the isolate-local
 // counter reaches it the node must not be dispatched again this minute.
 // SOFT caps (explicit "rpm_mode": "soft") keep the old best-effort behavior.
+/**
+ * @param {{ id: string, tier: string, provider: string, protocol: string, surfaces: string[], baseUrl: string, credential: string, priority: number, models: Record<string, string>, limits: { concurrency: number, rpm?: number, rpmMode?: string } }} node
+ * @param {number} [now]
+ */
 export function isHardRpmExhausted(node, now = Date.now()) {
   const rpm = node.limits.rpm;
   if (!rpm || node.limits.rpmMode === 'soft') return false;
@@ -85,6 +98,14 @@ export function rpmWindowRetryAfterSec(now = Date.now()) {
 //   knownModels (optional) is the Known Model Catalog; it bounds wildcard
 //   nodes so an empty-models node only serves catalog models. The request path
 //   always passes it (defense in depth on top of the preflight authz gate).
+/**
+ * @param {any[]} tierNodes
+ * @param {RoutableRequest} req
+ * @param {Set<string>} attempted
+ * @param {number} [now]
+ * @param {string} [excludeId]
+ * @param {Set<string>} [knownModels]
+ */
 export function pickCandidate(tierNodes, req, attempted, now = Date.now(), excludeId = null, knownModels) {
   let best = null;
   let bestState = null;
@@ -127,6 +148,13 @@ export function pickCandidate(tierNodes, req, attempted, now = Date.now(), exclu
 // True when this tier could serve the request if it had capacity right now
 // (every candidate busy at its concurrency limit or hard-RPM exhausted). Used
 // to distinguish "saturated" from "cooling down" in client responses.
+/**
+ * @param {any[]} tierNodes
+ * @param {RoutableRequest} req
+ * @param {Set<string>} attempted
+ * @param {number} [now]
+ * @param {Set<string>} [knownModels]
+ */
 export function tierHasDeferredCapacity(tierNodes, req, attempted, now = Date.now(), knownModels) {
   for (const node of tierNodes) {
     if (attempted.has(node.id)) continue;
@@ -149,6 +177,13 @@ export function tierHasDeferredCapacity(tierNodes, req, attempted, now = Date.no
 // selectable as last resort, so budget must agree with selection. Deferred
 // capacity (concurrency-saturated / hard-RPM-exhausted) belongs to
 // tierHasDeferredCapacity instead: Retry-After and diagnostics, no budget.
+/**
+ * @param {any[]} tierNodes
+ * @param {RoutableRequest} req
+ * @param {Set<string>} attempted
+ * @param {number} [now]
+ * @param {Set<string>} [knownModels]
+ */
 export function tierHasDispatchableNode(tierNodes, req, attempted, now = Date.now(), knownModels) {
   return countDispatchableNodes(tierNodes, req, attempted, now, knownModels) > 0;
 }
@@ -157,6 +192,13 @@ export function tierHasDispatchableNode(tierNodes, req, attempted, now = Date.no
 // claiming their slots.  The request pipeline uses this to divide its
 // remaining wall-clock budget across attempts that can actually happen,
 // rather than across a policy maximum that may be larger than the live pool.
+/**
+ * @param {any[]} tierNodes
+ * @param {RoutableRequest} req
+ * @param {Set<string>} attempted
+ * @param {number} [now]
+ * @param {Set<string>} [knownModels]
+ */
 export function countDispatchableNodes(tierNodes, req, attempted, now = Date.now(), knownModels) {
   let count = 0;
   for (const node of tierNodes) {
@@ -195,6 +237,11 @@ const MIN_QUALITY_SAMPLES = 3;
 // When no per-model entry exists, the node-level avgTtftMs is the fallback
 // (it lacks freshness metadata but is the only signal for a model that has
 // not been individually measured yet).
+/**
+ * @param {Record<string, any>} perf
+ * @param {number} nodeLevelTtft
+ * @param {number} now
+ */
 function effectiveTtft(perf, nodeLevelTtft, now) {
   if (!perf) return nodeLevelTtft;
   if (perf.lastTtftAt > 0) {
@@ -212,6 +259,14 @@ function effectiveTtft(perf, nodeLevelTtft, now) {
 // have measured a first event, TTFT decides. Header-latency EWMA stays as the
 // fallback for candidates that have not (e.g. non-stream traffic only); 0
 // remains neutral, so fresh nodes still receive traffic and learn their speed.
+/**
+ * @param {Record<string, any>} a
+ * @param {{ id: string, tier: string, priority: number }} aNode
+ * @param {Record<string, any>} b
+ * @param {{ id: string, tier: string, priority: number }} bNode
+ * @param {string} model
+ * @param {number} now
+ */
 function latencyPreference(a, aNode, b, bNode, model, now) {
   const aPerf = model ? getModelPerf(aNode.id, model) : null;
   const bPerf = model ? getModelPerf(bNode.id, model) : null;
@@ -231,6 +286,14 @@ function latencyPreference(a, aNode, b, bNode, model, now) {
   return null;
 }
 
+/**
+ * @param {Record<string, any>} a
+ * @param {{ id: string, tier: string, priority: number }} aNode
+ * @param {Record<string, any>} b
+ * @param {{ id: string, tier: string, priority: number }} bNode
+ * @param {string} model
+ * @param {number} now
+ */
 function betterThan(a, aNode, b, bNode, model, now) {
   // One real timeout / network / 5xx is enough to move traffic to a healthy
   // peer immediately. Unlike a cooldown this is only a ranking preference:

@@ -4,11 +4,20 @@
 //
 // Small env helpers shared by all config loaders.
 
+/**
+ * @param {Record<string, any>} env
+ * @param {string} name
+ */
 export function readEnv(env, name) {
   const value = env?.[name];
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
+/**
+ * @param {Record<string, any>} env
+ * @param {string} name
+ * @param {boolean} [fallback]
+ */
 export function getBool(env, name, fallback = false) {
   const raw = readEnv(env, name);
   if (raw === undefined) return fallback;
@@ -18,6 +27,12 @@ export function getBool(env, name, fallback = false) {
   return fallback;
 }
 
+/**
+ * @param {string} value
+ * @param {number} min
+ * @param {number} max
+ * @param {number} fallback
+ */
 export function clampInt(value, min, max, fallback) {
   const num = parseInt(value, 10);
   return Number.isFinite(num) ? Math.max(min, Math.min(max, num)) : fallback;

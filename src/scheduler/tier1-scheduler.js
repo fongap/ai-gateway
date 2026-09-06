@@ -26,6 +26,10 @@ const CONSERVATIVE_ATTEMPT_COST_MS = 500;
 
 // Remaining deadline too small to fit one more attempt? Tier 1 then yields to
 // the Tier Router immediately instead of burning the budget on a doomed attempt.
+/**
+ * @param {number} remainingBudgetMs
+ * @param {number | null} [p99TtftMs]
+ */
 export function tier1DeadlineTooSmall(remainingBudgetMs, p99TtftMs) {
   const cost = p99TtftMs && p99TtftMs > 0 ? p99TtftMs * 3 : CONSERVATIVE_ATTEMPT_COST_MS;
   return remainingBudgetMs < cost;
@@ -40,6 +44,18 @@ export function tier1DeadlineTooSmall(remainingBudgetMs, p99TtftMs) {
 //   evaluateAffinity  — whether a successful non-affinity winner may migrate
 //     the stored binding (escape window reached).
 //   excludeId          — skip the hedge primary when picking a twin.
+/**
+ * @param {any[]} tier1Nodes
+ * @param {RoutableRequest} req
+ * @param {Set<string>} attempted
+ * @param {object} [options]
+ * @param {string | null} [options.affinityAccountId]
+ * @param {boolean} [options.evaluateAffinity]
+ * @param {number} [options.now]
+ * @param {string | null} [options.excludeId]
+ * @param {() => number} [options.rng]
+ * @param {Set<string> | null} [options.knownModels]
+ */
 export function pickTier1Candidate(tier1Nodes, req, attempted, {
   affinityAccountId = null, evaluateAffinity = false, now = Date.now(),
   excludeId = null, rng = Math.random, knownModels = null,
@@ -121,6 +137,11 @@ export function pickTier1Candidate(tier1Nodes, req, attempted, {
 // `rng` is an injectable uniform [0,1) source for deterministic tests; in
 // production Math.random is used so behaviour stays best-effort random and
 // no new env knob is required.
+/**
+ * @param {any[]} arr
+ * @param {() => number} [rng]
+ * @param {{ id: string } | null} [affinityNode]
+ */
 function sampleTwo(arr, rng = Math.random, affinityNode = null) {
   if (affinityNode) {
     const peers = arr.filter((node) => node.id !== affinityNode.id);

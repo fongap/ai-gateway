@@ -130,6 +130,21 @@
  */
 
 /**
+ * Minimal routable request shape consumed by the scheduler's static
+ * eligibility checks (supportsRequest and the Tier 1 equivalents). The tier
+ * loop passes the RequestDescriptor of the current route plus the canonical
+ * requested model — this is NOT the DOM Request.
+ *
+ * Declared as a real type (not @typedef) so it is ambient-global and
+ * consumable from other files' JSDoc annotations.
+ */
+type RoutableRequest = {
+  model: string,
+  protocol: Protocol,
+  surface: Surface,
+};
+
+/**
  * @typedef {{
  *   id: string,
  *   route: string,
@@ -166,40 +181,137 @@
  */
 
 /**
- * @typedef {{
- *   ok: true,
- *   node: RuntimeNode,
- *   response: Response,
- *   ttftMs?: number,
- *   usage?: {
- *     inputTokens: number,
- *     outputTokens: number,
- *     totalTokens: number,
- *   } | null,
- *   attempts: number,
- * }} AttemptSuccess
- */
-
-/**
- * @typedef {{
- *   ok: false,
- *   kind: 'rate_limit' | 'server' | 'timeout' | 'first_event' |
- *         'client_abort' | 'model_missing' | 'endpoint_not_found' |
- *         'auth_fail' | 'malformed' | 'first_event_timeout' | 'unknown',
- *   status: number,
- *   counted: boolean,
- *   headersMs: number,
- *   latencyMs: number,
- *   detail?: string,
- *   nodeId?: string,
- * }} AttemptFailure
+ * Result of evaluateRouteFeasibility — the pre-orchestration check that
+ * decides whether a request has ANY reachable execution path. Computed
+ * once in preflight and carried through the pipeline via LoopContext.
  *
- *   counted=true  -> node state mutated (cooldown / circuit / RPM)
- *   counted=false -> neutral outcome (client abort, distributed-denied, etc.)
+ *   reachable       = nativeSupported || fallbackSupported
+ *   nativeSupported  = at least one node matches the client's protocol+surface+model
+ *   fallbackSupported = at least one configured fallback has a candidate
+ *   fallbacks        = the list of reachable fallback targets (protocol+surface)
+ *
+ * @typedef {{
+ *   reachable: boolean,
+ *   nativeSupported: boolean,
+ *   fallbackSupported: boolean,
+ *   fallbacks: ReadonlyArray<{ protocol: Protocol, surface: Surface }>,
+ * }} RouteFeasibilityResult
  */
 
 /**
- * @typedef {AttemptSuccess | AttemptFailure} AttemptOutcome
+ * The shared request-level state object built in handleRequest and threaded
+ * through runTierLoop and attempt.js. Carries the three separate counters
+ * (logicalAttempts, dispatches, hedges), the attempted set, the failure-kind
+ * histogram, and aliases for logging / config.
+ *
+ * @typedef {{
+ *   attempted: Set<string>,
+ *   attempts: Array<Record<string, unknown>>,
+ *   logicalAttempts: number,
+ *   dispatches: number,
+ *   hedges: number,
+ *   failureKinds: Record<string, number>,
+ *   logger: { info: Function, debug: Function, error: Function },
+ *   requestId: string,
+ *   maxAttempts: number,
+ *   maxDispatches: number,
+ *   requestedModel: string,
+ *   nodes: ReadonlyArray<RuntimeNode>,
+ *   tier1ExhaustionReason?: string,
+ * }} LoopState
+ */
+
+/**
+ * The context object carried through the native and fallback tier loops.
+ * Built once in handleRequest and passed to runTierLoop, which then threads
+ * it into attempt.js via dispatchWithHedge args.
+ *
+ * @typedef {{
+ *   request: Request,
+ *   env: Record<string, any>,
+ *   ctx: { waitUntil?: Function },
+ *   logger: { info: Function, debug: Function, error: Function },
+ *   requestId: string,
+ *   route: string,
+ *   requestedModel: string,
+ *   clientWantsStream: boolean,
+ *   fakeStream: boolean,
+ *   bodyJson: unknown,
+ *   limits: Record<string, number>,
+ *   exposeUpstreamInfo: boolean,
+ *   state: LoopState,
+ *   failoverBudgetMs: number,
+ *   requestStartMs: number,
+ *   policy: PolicyConfig,
+ *   tiers: { 1: RuntimeNode[], 2: RuntimeNode[], 3: RuntimeNode[] },
+ *   tier1Affinity: string | null,
+ *   tier1EvaluateAffinity: boolean,
+ *   tier1Rng: () => number,
+ *   tier1Session: string | null,
+ *   knownModels: Set<string>,
+ *   feasibility: RouteFeasibilityResult,
+ * }} LoopContext
+ */
+
+/**
+ * Dispatch context for a single attempt. Passed by the tier loop to
+ * attempt.js via dispatchWithHedge. Carries everything one upstream
+ * dispatch needs: the chosen node, the request descriptor, budget
+ * state, hedge handles, and conversion context.
+ *
+ * @typedef {{
+ *   request: Request,
+ *   env: Record<string, any>,
+ *   ctx: { waitUntil?: Function },
+ *   logger: { info: Function, debug: Function, error: Function },
+ *   requestId: string,
+ *   route: string,
+ *   node: RuntimeNode,
+ *   requestedModel: string,
+ *   clientWantsStream: boolean,
+ *   fakeStream: boolean,
+ *   bodyJson: unknown,
+ *   limits: Record<string, number>,
+ *   exposeUpstreamInfo: boolean,
+ *   state: LoopState,
+ *   failoverBudgetMs: number,
+ *   requestStartMs: number,
+ *   remainingDispatchableAttempts: number,
+ *   reqDescriptor: RequestDescriptor,
+ *   policy: PolicyConfig,
+ *   tierNumber: Tier,
+ *   conversionContext: { fallbackProtocol: Protocol, fallbackSurface: Surface, convertedBody: unknown } | null,
+ *   tier1ReleaseToken: unknown,
+ *   tier1EscapedFromAffinity: boolean,
+ *   tier1UpdateAffinity: boolean,
+ *   tier1AffinityAccountId: string | null,
+ *   tier1EvaluateAffinity: boolean,
+ *   tier1Session: string | null,
+ *   rng: (() => number) | null,
+ *   hedgedAttempt: boolean,
+ *   hedgedWithTwin: boolean,
+ *   hedgeAbort: { signal: { aborted: boolean, addEventListener: Function }, abort: Function } | null,
+ *   attemptDeadlineMs: number,
+ *   attemptStartMs: number,
+ *   headersMs: number,
+ *   ttftMs: number,
+ *   upstreamProtocol: Protocol,
+ *   surface: Surface,
+ * }} AttemptContext
+ */
+
+/**
+ * Outcome returned by attemptNode / dispatchWithHedge.
+ * Exactly one of: committed response, rotate, or stop.
+ *
+ * @typedef {{
+ *   response?: Response,
+ *   rotate?: boolean,
+ *   stop?: boolean,
+ *   budgetCharged?: boolean,
+ *   kind?: string,
+ *   hedgedAway?: boolean,
+ * }} AttemptOutcome
  */
 
 /**
@@ -261,5 +373,3 @@
  *   escapedFromAffinity?: boolean,
  * }} PickedCandidate
  */
-
-export {};

@@ -35,6 +35,7 @@ const CLIENT_STOP_STATUSES = new Set([400, 413, 415, 422]);
 // `counted` = transient failure that feeds the circuit breaker.
 // `body` (optional 5th arg) carries the upstream error text, used to tell a
 // "model not found" 404 apart from an "endpoint not found" 404.
+/** @param {number} status @param {Headers} headers @param {Record<string, any>} env @param {number} [now] @param {unknown} [body] */
 export function classifyUpstreamStatus(status, headers, env, now = Date.now(), body = '') {
   const limits = getLimits(env);
   if (status === 429) {
@@ -83,12 +84,14 @@ export function classifyUpstreamStatus(status, headers, env, now = Date.now(), b
 // not-found / unknown / does-not-exist language; a bare endpoint 404 usually
 // says only "not found" (or nothing). Conservative: only classify as a model
 // problem when the body strongly implies one.
+/** @param {unknown} body */
 function looksLikeModelMissing(body) {
   const text = String(body || '').toLowerCase();
   if (!text.includes('model')) return false;
   return /(not found|does not exist|unknown|no such|not supported|invalid model)/.test(text);
 }
 
+/** @param {boolean} kindHeadersTimeout */
 export function classifyNetworkError(kindHeadersTimeout) {
   // No standalone cooldown: transient failures feed the circuit breaker,
   // which owns the open-period cooldown when the threshold trips.
