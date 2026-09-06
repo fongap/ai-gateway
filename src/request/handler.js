@@ -16,23 +16,23 @@
 // Streaming rule: the first-event guard runs BEFORE any streaming Response is
 // returned to the client; after that point transparent failover is forbidden.
 
-import { loadGatewayConfig } from '../config/nodes.js';
-import { loadModelsConfig } from '../config/models.js';
-import { loadPoliciesConfig, getPolicy } from '../config/policies.js';
-import { getLimits } from '../config/timeouts.js';
+import { loadGatewayConfig } from '../config/nodes.ts';
+import { loadModelsConfig } from '../config/models.ts';
+import { loadPoliciesConfig, getPolicy } from '../config/policies.ts';
+import { getLimits } from '../config/timeouts.ts';
 import { TIER_ORDER, normalizePath, detectRoute, acceptsHtml } from './router.js';
 import { getLogger } from '../observability/logger.js';
 import { healthResponse, metricsResponse, modelsListResponse, versionResponse } from '../observability/diagnostic-endpoints.mjs';
 import { dashboardResponse } from '../dashboard/pages.js';
 import { authorize } from './auth.js';
-import { loadAccessKeysConfig, collectConfiguredModels } from '../config/access-keys.js';
+import { loadAccessKeysConfig, collectConfiguredModels } from '../config/access-keys.ts';
 import { authorizeModel, filterVisibleModels } from './model-authz.js';
 import { gatewayError, buildBudgetExhaustedResponse, buildExhaustedResponse, buildClientErrorResponse } from './errors.js';
 import {
   resolveTier1SessionId, readTier1Affinity,
   shouldEvaluateAffinity, recordTier1AffinityDecision,
-} from '../scheduler/tier1-affinity.js';
-import { tier1DeadlineTooSmall } from '../scheduler/tier1-scheduler.js';
+} from '../scheduler/tier1-affinity.ts';
+import { tier1DeadlineTooSmall } from '../scheduler/tier1-scheduler.ts';
 import { preflight as runPreflight, getRouteProtocolSurface } from './preflight.js';
 import { pickForTier, makeTier1Rng, computeTierCaps, countRemainingDispatchableAttempts } from './tier-loop.js';
 import { runFallbackChain } from './fallback.js';

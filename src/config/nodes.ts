@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT
-// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // Config Layer: environment shards -> Runtime Node list.
@@ -50,11 +49,14 @@
 // The result is cached for the isolate lifetime; env vars never change while
 // an isolate is alive.
 
-import { readEnv, getBool } from './env.js';
-import { loadModelsConfig, getModelsConfigDiagnostics } from './models.js';
-import { loadPoliciesConfig, getPoliciesConfigDiagnostics } from './policies.js';
-import { getProtocolFallbacksDiagnostics } from './protocol-fallbacks.js';
-import { loadModelRegistry } from './registry.js';
+import { readEnv, getBool } from './env.ts';
+import { loadModelsConfig, getModelsConfigDiagnostics } from './models.ts';
+import { loadPoliciesConfig, getPoliciesConfigDiagnostics } from './policies.ts';
+import { getProtocolFallbacksDiagnostics } from './protocol-fallbacks.ts';
+import { loadModelRegistry } from './registry.ts';
+import type { RegistryEntry } from './registry.ts';
+import type { RuntimeNode, NodeTier } from '../types/node.ts';
+import type { Protocol, Surface } from '../types/protocol.ts';
 
 const SHARD_MAX_BYTES = 4500; // official variable size limit is 5 KB; keep margin
 export const TIER_SHARD_PATTERN = /^TIER([123])_NODES_CONFIG_(\d{2})$/;
@@ -75,24 +77,36 @@ const ALLOWED_LIMITS_FIELDS = new Set(['concurrency', 'rpm', 'rpm_mode']);
 const RPM_MODES = new Set(['soft', 'hard', 'local_hard']);
 // protocol -> which client surfaces the node can expose, and the implicit
 // legacy default used when `surfaces` is omitted.
-const PROTOCOL_SURFACES = new Map([
+const PROTOCOL_SURFACES = new Map<string, Set<string>>([
   ['openai', new Set(['chat_completions', 'responses'])],
   ['anthropic', new Set(['messages'])],
 ]);
-const DEFAULT_SURFACES = new Map([
+const DEFAULT_SURFACES = new Map<Protocol, string[]>([
   ['openai', ['chat_completions']],
   ['anthropic', ['messages']],
 ]);
 
-/** @type {Record<string, any> | undefined} */
-let cachedEnv;
-/** @type {ReturnType<typeof buildConfig> | undefined} */
-let cachedResult;
+export type ConfigStatus = 'unconfigured' | 'invalid' | 'degraded' | 'ready';
 
-/**
- * @param {Record<string, any>} env
- */
-export function loadGatewayConfig(env) {
+export type GatewayConfig = {
+  status: ConfigStatus,
+  ready: boolean,
+  accessKeyBound: boolean,
+  nodes: RuntimeNode[],
+  tiers: Record<number, RuntimeNode[]>,
+  bindings: {
+    tierShards: string[],
+    secretShards: string[],
+  },
+  nodesTotal: number,
+  nodesUsable: number,
+  diagnostics: string[],
+};
+
+let cachedEnv: Record<string, unknown> | undefined;
+let cachedResult: GatewayConfig | undefined;
+
+export function loadGatewayConfig(env: Record<string, unknown>): GatewayConfig {
   if (cachedEnv === env && cachedResult) return cachedResult;
   cachedEnv = env;
   cachedResult = buildConfig(env);
@@ -101,11 +115,7 @@ export function loadGatewayConfig(env) {
 
 // Strict diagnostics for MODELS_CONFIG / POLICIES_CONFIG plus the cross-reference
 // check that every model's declared policy actually exists. These are FATAL.
-/**
- * @param {Record<string, any>} env
- * @returns {string[]}
- */
-function collectAuxConfigDiagnostics(env) {
+function collectAuxConfigDiagnostics(env: Record<string, unknown>): string[] {
   const diags = [
     ...getModelsConfigDiagnostics(env),
     ...getPoliciesConfigDiagnostics(env),
@@ -129,22 +139,16 @@ function collectAuxConfigDiagnostics(env) {
 // operator is notified that the visibility field is effectively a no-op for
 // any node that exposes it. We skip this entirely when MODELS_CONFIG is
 // absent (the common case for free-model deployments).
-/**
- * @param {ReadonlyArray<RuntimeNode>} nodes
- * @param {Record<string, any>} env
- * @returns {string[]}
- */
-function collectNodeModelDiagnostics(nodes, env) {
-  /** @type {string[]} */
-  const diags = [];
-  let registry;
+function collectNodeModelDiagnostics(nodes: ReadonlyArray<RuntimeNode>, env: Record<string, unknown>): string[] {
+  const diags: string[] = [];
+  let registry: Record<string, RegistryEntry>;
   try {
     registry = loadModelRegistry(env);
   } catch {
     return diags; // registry not loadable — nothing to cross-check
   }
   if (!registry || Object.keys(registry).length === 0) return diags;
-  const internalModels = new Set();
+  const internalModels = new Set<string>();
   for (const [name, entry] of Object.entries(registry)) {
     if (entry.visibility === 'internal') internalModels.add(name);
   }
@@ -160,12 +164,8 @@ function collectNodeModelDiagnostics(nodes, env) {
   return diags;
 }
 
-/**
- * @param {Record<string, any>} env
- */
-function buildConfig(env) {
-  /** @type {string[]} */
-  const diagnostics = [];
+function buildConfig(env: Record<string, unknown>): GatewayConfig {
+  const diagnostics: string[] = [];
   // Strict aux configs (MODELS_CONFIG / POLICIES_CONFIG). Any structural error
   // here is FATAL: these configs are all-or-nothing, unlike node entries that
   // can be excluded. A malformed / unknown-field / invalid-value aux config
@@ -186,9 +186,9 @@ function buildConfig(env) {
 
   const tierShards = collectShards(env, TIER_SHARD_PATTERN, 'TIER1_NODES_CONFIG_', 'TIER1_NODES_CONFIG_01', 2, diagnostics);
   const secretShards = collectShards(env, SECRET_SHARD_PATTERN, 'TIER1_NODES_SECRETS_', 'TIER1_NODES_SECRETS_01', 2, diagnostics);
-  const nodesDeclared = tierShards.reduce((sum, s) => sum + countArrayEntries(env[s.key]), 0);
+  const nodesDeclared = tierShards.reduce((sum, s) => sum + countArrayEntries(env[s.key] as string), 0);
 
-  let status = 'unconfigured';
+  let status: ConfigStatus = 'unconfigured';
   if (!accessKeyBound || tierShards.length === 0) {
     return {
       status,
@@ -210,19 +210,19 @@ function buildConfig(env) {
   // to the tier in its variable name (TIER1_NODES_SECRETS_* -> tier-1), and
   // nodeIds from one tier MUST NOT collide with nodeIds from another tier —
   // every node is uniquely identified by id regardless of tier.
-  const credentials = new Map();
-  const credentialTiers = new Map();
+  const credentials = new Map<string, string>();
+  const credentialTiers = new Map<string, string>();
   let conflict = false;
   const sortedSecretShards = [...secretShards].sort((a, b) => a.tierNumber - b.tierNumber || a.index - b.index);
   for (const shard of sortedSecretShards) {
-    const parsed = parseJsonVar(env[shard.key], shard.key, diagnostics);
+    const parsed = parseJsonVar(env[shard.key] as string, shard.key, diagnostics);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       diagnostics.push(`${shard.key}: must be a JSON object { nodeId: credential }`);
       conflict = true;
       continue;
     }
     const shardTier = `tier-${shard.tierNumber}`;
-    for (const [nodeId, credential] of Object.entries(parsed)) {
+    for (const [nodeId, credential] of Object.entries(parsed as Record<string, unknown>)) {
       if (typeof credential !== 'string' || !credential.trim()) {
         diagnostics.push(`${shard.key}: credential for "${nodeId}" is empty`);
         conflict = true;
@@ -240,13 +240,13 @@ function buildConfig(env) {
 
   // Parse and validate node configs.
   const allowInsecure = getBool(env, 'ALLOW_INSECURE_HTTP_UPSTREAM', false);
-  const seenIds = new Map();
-  const nodes = [];
+  const seenIds = new Map<string, string>();
+  const nodes: RuntimeNode[] = [];
   const sortedTierShards = [...tierShards].sort((a, b) => a.tierNumber - b.tierNumber || a.index - b.index);
   for (const shard of sortedTierShards) {
     // shard tierNumber is validated to 1..3 by the shard pattern match.
-    const tier = /** @type {NodeTier} */ (`tier-${shard.tierNumber}`);
-    const parsed = parseJsonVar(env[shard.key], shard.key, diagnostics);
+    const tier = `tier-${shard.tierNumber}` as NodeTier;
+    const parsed = parseJsonVar(env[shard.key] as string, shard.key, diagnostics);
     if (!Array.isArray(parsed)) {
       diagnostics.push(`${shard.key}: must be a JSON array of node objects`);
       conflict = true;
@@ -291,8 +291,7 @@ function buildConfig(env) {
 
   // Precompute tier groups (priority-sorted) once per isolate; the scheduler
   // must not re-group or re-sort on the request hot path.
-  /** @type {Record<number, RuntimeNode[]>} */
-  const tiers = { 1: [], 2: [], 3: [] };
+  const tiers: Record<number, RuntimeNode[]> = { 1: [], 2: [], 3: [] };
   for (const node of nodes) tiers[Number(node.tier.slice(5))].push(node);
   for (const list of Object.values(tiers)) list.sort((a, b) => a.priority - b.priority);
 
@@ -313,45 +312,37 @@ function buildConfig(env) {
 }
 
 // Build one Runtime Node or return null with a diagnostic reason.
-/**
- * @param {Record<string, any>} rawNode
- * @param {NodeTier} tier
- * @param {Map<string, string>} credentials
- * @param {boolean} allowInsecure
- * @param {string} sourceKey
- * @param {string[]} diagnostics
- * @returns {RuntimeNode | null}
- */
-function buildRuntimeNode(rawNode, tier, credentials, allowInsecure, sourceKey, diagnostics) {
+function buildRuntimeNode(rawNode: unknown, tier: NodeTier, credentials: Map<string, string>, allowInsecure: boolean, sourceKey: string, diagnostics: string[]): RuntimeNode | null {
   if (!rawNode || typeof rawNode !== 'object' || Array.isArray(rawNode)) {
     diagnostics.push(`${sourceKey}: entry is not a JSON object`);
     return null;
   }
-  const id = typeof rawNode.id === 'string' ? rawNode.id.trim() : '';
+  const rec = rawNode as Record<string, unknown>;
+  const id = typeof rec.id === 'string' ? rec.id.trim() : '';
   if (!ID_PATTERN.test(id)) {
-    diagnostics.push(`${sourceKey}: node id "${String(rawNode.id).slice(0, 40)}" is missing or invalid (lowercase letters, digits, hyphens)`);
+    diagnostics.push(`${sourceKey}: node id "${String(rec.id).slice(0, 40)}" is missing or invalid (lowercase letters, digits, hyphens)`);
     return null;
   }
-  if ('tier' in rawNode) {
+  if ('tier' in rec) {
     diagnostics.push(`node "${id}": "tier" field is not allowed; the tier comes from the variable name (${sourceKey})`);
     return null;
   }
-  const forbidden = FORBIDDEN_NODE_FIELDS.filter((f) => f in rawNode);
+  const forbidden = FORBIDDEN_NODE_FIELDS.filter((f) => f in rec);
   if (forbidden.length > 0) {
     diagnostics.push(`node "${id}": forbidden credential field(s) ${forbidden.join(', ')}; credentials belong in TIER{N}_NODES_SECRETS_*`);
     return null;
   }
   // Fail-fast: reject unknown top-level fields (e.g. `prioirty` typo) instead of
   // silently ignoring them and guessing at intent.
-  for (const key of Object.keys(rawNode)) {
+  for (const key of Object.keys(rec)) {
     if (!ALLOWED_NODE_FIELDS.has(key)) {
       diagnostics.push(`node "${id}": unknown field "${key}" (allowed: ${[...ALLOWED_NODE_FIELDS].join(', ')})`);
       return null;
     }
   }
 
-  const baseUrl = typeof rawNode.base_url === 'string' ? rawNode.base_url.trim() : '';
-  let url;
+  const baseUrl = typeof rec.base_url === 'string' ? rec.base_url.trim() : '';
+  let url: URL;
   try {
     url = new URL(baseUrl);
   } catch {
@@ -373,21 +364,21 @@ function buildRuntimeNode(rawNode, tier, credentials, allowInsecure, sourceKey, 
     return null;
   }
 
-  const models = normalizeModels(rawNode.models, id, diagnostics);
+  const models = normalizeModels(rec.models, id, diagnostics);
   if (models === null) return null;
 
-  const priority = parsePriority(rawNode.priority, id, diagnostics);
+  const priority = parsePriority(rec.priority, id, diagnostics);
   if (priority === null) return null;
 
-  const limits = parseLimits(rawNode.limits, id, diagnostics);
+  const limits = parseLimits(rec.limits, id, diagnostics);
   if (limits === null) return null;
 
-  const protocol = parseProtocol(rawNode.protocol, id, diagnostics);
+  const protocol = parseProtocol(rec.protocol, id, diagnostics);
   if (protocol === null) return null;
-  const surfaces = parseSurfaces(rawNode.surfaces, protocol, id, diagnostics);
+  const surfaces = parseSurfaces(rec.surfaces, protocol, id, diagnostics);
   if (surfaces === null) return null;
 
-  const providerLabel = typeof rawNode.provider === 'string' && rawNode.provider.trim() ? rawNode.provider.trim() : 'unknown';
+  const providerLabel = typeof rec.provider === 'string' && rec.provider.trim() ? rec.provider.trim() : 'unknown';
 
   return {
     id,
@@ -411,13 +402,7 @@ function buildRuntimeNode(rawNode, tier, credentials, allowInsecure, sourceKey, 
 
 // protocol: openai | anthropic. Missing = legacy implicit "openai" (deprecated,
 // diagnostic-only) because every pre-protocol node talked the OpenAI Chat wire.
-/**
- * @param {unknown} raw
- * @param {string} nodeId
- * @param {string[]} diagnostics
- * @returns {Protocol | null}
- */
-function parseProtocol(raw, nodeId, diagnostics) {
+function parseProtocol(raw: unknown, nodeId: string, diagnostics: string[]): Protocol | null {
   if (raw === undefined || raw === null) {
     diagnostics.push(`node "${nodeId}": protocol is implicit and defaults to "openai"; please configure it explicitly`);
     return 'openai';
@@ -427,50 +412,38 @@ function parseProtocol(raw, nodeId, diagnostics) {
     diagnostics.push(`node "${nodeId}": protocol must be "openai" or "anthropic"`);
     return null;
   }
-  return /** @type {Protocol} */ (value);
+  return value as Protocol;
 }
 
 // surfaces: which endpoints this node really serves. Missing = legacy implicit
 // default for the resolved protocol (deprecated, diagnostic-only). Explicit
 // surfaces are strictly validated against the protocol.
-/**
- * @param {unknown} raw
- * @param {Protocol} protocol
- * @param {string} nodeId
- * @param {string[]} diagnostics
- * @returns {Surface[] | null}
- */
-function parseSurfaces(raw, protocol, nodeId, diagnostics) {
+function parseSurfaces(raw: unknown, protocol: Protocol, nodeId: string, diagnostics: string[]): Surface[] | null {
   if (raw === undefined || raw === null) {
-    const def = /** @type {string[]} */ (DEFAULT_SURFACES.get(protocol));
+    // protocol is a closed union and DEFAULT_SURFACES carries an entry for
+    // each of its members.
+    const def = DEFAULT_SURFACES.get(protocol) as string[];
     diagnostics.push(`node "${nodeId}": surfaces is implicit and defaults to [${def.map((s) => `"${s}"`).join(', ')}]; please configure it explicitly`);
-    return /** @type {Surface[]} */ (def.slice());
+    return def.slice() as Surface[];
   }
   if (!Array.isArray(raw) || raw.length === 0) {
     diagnostics.push(`node "${nodeId}": surfaces must be a non-empty array`);
     return null;
   }
-  const allowed = /** @type {Set<string>} */ (PROTOCOL_SURFACES.get(protocol));
-  /** @type {Surface[]} */
-  const out = [];
+  const allowed = PROTOCOL_SURFACES.get(protocol) as Set<string>;
+  const out: Surface[] = [];
   for (const entry of raw) {
     const value = typeof entry === 'string' ? entry.trim().toLowerCase() : '';
     if (!allowed.has(value)) {
       diagnostics.push(`node "${nodeId}": surfaces entry "${String(entry).slice(0, 40)}" is not valid for protocol "${protocol}" (allowed: ${[...allowed].join(', ')})`);
       return null;
     }
-    if (!out.includes(/** @type {Surface} */ (value))) out.push(/** @type {Surface} */ (value));
+    if (!out.includes(value as Surface)) out.push(value as Surface);
   }
   return out;
 }
 
-/**
- * @param {unknown} raw
- * @param {string} nodeId
- * @param {string[]} diagnostics
- * @returns {number | null}
- */
-function parsePriority(raw, nodeId, diagnostics) {
+function parsePriority(raw: unknown, nodeId: string, diagnostics: string[]): number | null {
   if (raw === undefined) return 100;
   const n = typeof raw === 'number' ? raw : (typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN);
   if (!Number.isFinite(n) || n < 0) {
@@ -480,41 +453,37 @@ function parsePriority(raw, nodeId, diagnostics) {
   return Math.trunc(n);
 }
 
-/**
- * @param {Record<string, any>} raw
- * @param {string} nodeId
- * @param {string[]} diagnostics
- * @returns {{ concurrency: number, rpm?: number, rpmMode?: 'soft' | 'hard' } | null}
- */
-function parseLimits(raw, nodeId, diagnostics) {
-  /** @type {{ concurrency: number, rpm?: number, rpmMode?: 'soft' | 'hard' }} */
-  const out = {};
+// Runtime note: concurrency is optional in the parsed result (absent field ->
+// default applied by the caller via `?? 2`), so the type reflects the real
+// runtime instead of the original JSDoc's required `concurrency: number`.
+function parseLimits(raw: unknown, nodeId: string, diagnostics: string[]): { concurrency?: number, rpm?: number, rpmMode?: 'soft' | 'hard' } | null {
+  const out: { concurrency?: number, rpm?: number, rpmMode?: 'soft' | 'hard' } = {};
   if (raw === undefined || raw === null) return out;
   if (typeof raw !== 'object' || Array.isArray(raw)) {
     diagnostics.push(`node "${nodeId}": limits must be an object { concurrency, rpm }`);
     return null;
   }
-  for (const key of Object.keys(raw)) {
+  const rec = raw as Record<string, unknown>;
+  for (const key of Object.keys(rec)) {
     if (!ALLOWED_LIMITS_FIELDS.has(key)) {
       diagnostics.push(`node "${nodeId}": limits.${key} is not a supported limit (allowed: ${[...ALLOWED_LIMITS_FIELDS].join(', ')})`);
       return null;
     }
   }
-  /** @param {unknown} value */
-  const positiveInt = (value) => {
+  const positiveInt = (value: unknown): number | null => {
     const n = typeof value === 'number' ? value : (typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN);
     return Number.isFinite(n) && n >= 1 ? Math.trunc(n) : null;
   };
-  if ('concurrency' in raw) {
-    const c = positiveInt(raw.concurrency);
+  if ('concurrency' in rec) {
+    const c = positiveInt(rec.concurrency);
     if (c === null) {
       diagnostics.push(`node "${nodeId}": limits.concurrency must be an integer >= 1`);
       return null;
     }
     out.concurrency = c;
   }
-  if ('rpm' in raw) {
-    const r = positiveInt(raw.rpm);
+  if ('rpm' in rec) {
+    const r = positiveInt(rec.rpm);
     if (r === null) {
       diagnostics.push(`node "${nodeId}": limits.rpm must be an integer >= 1`);
       return null;
@@ -527,8 +496,8 @@ function parseLimits(raw, nodeId, diagnostics) {
     // "local_hard" — both normalize to the internal 'hard' value.
     out.rpmMode = 'hard';
   }
-  if ('rpm_mode' in raw) {
-    const mode = typeof raw.rpm_mode === 'string' ? raw.rpm_mode.trim().toLowerCase() : '';
+  if ('rpm_mode' in rec) {
+    const mode = typeof rec.rpm_mode === 'string' ? rec.rpm_mode.trim().toLowerCase() : '';
     if (!RPM_MODES.has(mode)) {
       diagnostics.push(`node "${nodeId}": limits.rpm_mode must be "soft", "hard", or "local_hard"`);
       return null;
@@ -539,15 +508,8 @@ function parseLimits(raw, nodeId, diagnostics) {
   return out;
 }
 
-/**
- * @param {unknown} models
- * @param {string} nodeId
- * @param {string[]} diagnostics
- * @returns {Record<string, string> | null}
- */
-function normalizeModels(models, nodeId, diagnostics) {
-  /** @type {Record<string, string>} */
-  const out = {};
+function normalizeModels(models: unknown, nodeId: string, diagnostics: string[]): Record<string, string> | null {
+  const out: Record<string, string> = {};
   // Missing (`undefined`) => serve every configured logical model.
   if (models === undefined || models === null) return out;
 
@@ -579,7 +541,7 @@ function normalizeModels(models, nodeId, diagnostics) {
       diagnostics.push(`node "${nodeId}": models keys must be non-empty strings`);
       return null;
     }
-    const value = /** @type {Record<string, unknown>} */ (models)[key];
+    const value = (models as Record<string, unknown>)[key];
     if (typeof value !== 'string' || !value.trim()) {
       diagnostics.push(`node "${nodeId}": models["${key}"] must map to a non-empty upstream model string`);
       return null;
@@ -593,17 +555,8 @@ function normalizeModels(models, nodeId, diagnostics) {
 // 1-based capture group holding the numeric shard index (tier pattern has the
 // index in group 2, secret pattern in group 1). Using the wrong group silently
 // yields NaN and breaks ordering, so it is passed explicitly per pattern.
-/**
- * @param {Record<string, any>} env
- * @param {RegExp} pattern
- * @param {string} loosePrefix
- * @param {string} expectedExample
- * @param {number} indexGroup
- * @param {string[]} diagnostics
- * @returns {Array<{ key: string, index: number, tierNumber: number }>}
- */
-export function collectShards(env, pattern, loosePrefix, expectedExample, indexGroup, diagnostics) {
-  const shards = [];
+export function collectShards(env: Record<string, unknown>, pattern: RegExp, loosePrefix: string, expectedExample: string, indexGroup: number, diagnostics: string[]): Array<{ key: string, index: number, tierNumber: number }> {
+  const shards: Array<{ key: string, index: number, tierNumber: number }> = [];
   for (const key of Object.keys(env || {})) {
     const match = pattern.exec(key);
     if (match) {
@@ -622,13 +575,7 @@ export function collectShards(env, pattern, loosePrefix, expectedExample, indexG
   return shards;
 }
 
-/**
- * @param {string} raw
- * @param {string} key
- * @param {string[]} diagnostics
- * @returns {unknown}
- */
-function parseJsonVar(raw, key, diagnostics) {
+function parseJsonVar(raw: string, key: string, diagnostics: string[]): unknown {
   try {
     return JSON.parse(raw);
   } catch (e) {
@@ -638,11 +585,7 @@ function parseJsonVar(raw, key, diagnostics) {
   }
 }
 
-/**
- * @param {string} raw
- * @returns {number}
- */
-function countArrayEntries(raw) {
+function countArrayEntries(raw: string): number {
   try {
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed.length : 0;

@@ -14,12 +14,12 @@
 import {
   recordSuccess, recordNeutralEnd, applyHealthPenalty,
   bumpNodeCounters, recordFailure,
-} from '../../reliability/node-state.js';
+} from '../../reliability/node-state.ts';
 import {
   releaseTier1Slot,
   recordTier1Ttft, recordTier1Success, applyTier1Outcome, classifyTier1Failure,
-} from '../../reliability/tier1-state.js';
-import { writeTier1Affinity } from '../../scheduler/tier1-affinity.js';
+} from '../../reliability/tier1-state.ts';
+import { writeTier1Affinity } from '../../scheduler/tier1-affinity.ts';
 import { recordStreamStart, recordStreamCompleted, recordStreamInterrupted } from '../../observability/gateway-stats.mjs';
 import { recordTokenUsage } from '../../observability/token-usage.mjs';
 import { persistTokenUsage } from '../../observability/token-usage-store.mjs';

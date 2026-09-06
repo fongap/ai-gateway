@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT
-// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // Isolate-local adaptive state for Tier 1 only. Performance is learned from
 // real requests at (account, model) scope. Tier 2/3 continue to use
-// node-state.js and never read this module.
+// node-state.ts and never read this module.
 
-import { servesModel } from '../config/registry.js';
+import { servesModel } from '../config/registry.ts';
+import type { RuntimeNode } from '../types/node.ts';
+import type { RoutableRequest } from '../types/scheduler.ts';
 
 export const TIER1_EWMA_ALPHA = 0.25;
 export const TIER1_OUTLIER_MULTIPLIER = 4;
@@ -40,12 +41,67 @@ const FAILURE_STATE = Object.freeze({
   COOLDOWN: 'cooldown',
   HALF_OPEN: 'half_open',
   DISABLED: 'disabled',
-});
+} as const);
 
-const accounts = new Map();
-const rpmBuckets = new Map();
+export type Tier1FailureState = typeof FAILURE_STATE[keyof typeof FAILURE_STATE];
 
-function newModelRuntime() {
+export type Tier1ModelRuntime = {
+  supported: boolean,
+  disabled: boolean,
+  cooldownUntil: number,
+  cooldownReason: string | null,
+  failureState: Tier1FailureState,
+  consecutiveFailures: number,
+  consecutiveRateLimits: number,
+  consecutiveOutliers: number,
+  halfOpenSuccesses: number,
+  ttftEwma: number | null,
+  sampleCount: number,
+  lastObservedAt: number,
+  scopeAmbiguous429: boolean,
+};
+
+export type Tier1QuotaState = 'normal' | 'near_limit' | 'exhausted_until';
+
+export type Tier1AccountRuntime = {
+  accountId: string,
+  inFlight: number,
+  accountDisabled: boolean,
+  accountCooldownUntil: number,
+  accountCooldownReason: string | null,
+  consecutiveAccountFailures: number,
+  quotaState: Tier1QuotaState,
+  quotaResetAt: number,
+  models: Map<string, Tier1ModelRuntime>,
+};
+
+export type Tier1ReleaseToken = { accountId: string, released: boolean };
+
+/** Failure-kind classification input consumed from the reliability layer.
+ * `kind` is an open string: stream-layer kinds (e.g. 'stream_interrupted')
+ * also flow through here, carrying the stream-layer `streamReason`. */
+export type Tier1FailureInput = {
+  kind?: string,
+  cooldownMs?: number,
+  retryAfterMs?: number,
+  rateLimitScope?: string,
+  streamReason?: unknown,
+} | null | undefined;
+
+export type Tier1Outcome = {
+  scope: 'account' | 'model' | 'none',
+  action: 'disable' | 'cooldown' | 'neutral',
+  reason: string,
+  counted?: boolean,
+  cooldownMs?: number,
+  backoff?: 'rate_limit' | 'timeout' | 'server' | 'default',
+  scopeAmbiguous?: boolean,
+};
+
+const accounts = new Map<string, Tier1AccountRuntime>();
+const rpmBuckets = new Map<string, { minute: number, count: number }>();
+
+function newModelRuntime(): Tier1ModelRuntime {
   return {
     supported: true,
     disabled: false,
@@ -63,8 +119,7 @@ function newModelRuntime() {
   };
 }
 
-/** @param {string} accountId */
-function newAccountRuntime(accountId) {
+function newAccountRuntime(accountId: string): Tier1AccountRuntime {
   return {
     accountId,
     inFlight: 0,
@@ -78,8 +133,7 @@ function newAccountRuntime(accountId) {
   };
 }
 
-/** @param {string} accountId */
-export function getTier1Account(accountId) {
+export function getTier1Account(accountId: string): Tier1AccountRuntime {
   let account = accounts.get(accountId);
   if (!account) {
     account = newAccountRuntime(accountId);
@@ -88,11 +142,7 @@ export function getTier1Account(accountId) {
   return account;
 }
 
-/**
- * @param {string} accountId
- * @param {string} modelId
- */
-export function getTier1Model(accountId, modelId) {
+export function getTier1Model(accountId: string, modelId: string): Tier1ModelRuntime {
   const account = getTier1Account(accountId);
   let model = account.models.get(modelId);
   if (!model) {
@@ -102,57 +152,34 @@ export function getTier1Model(accountId, modelId) {
   return model;
 }
 
-/**
- * @param {string} accountId
- * @param {string} modelId
- */
-export function getTier1ModelPerf(accountId, modelId) {
+export function getTier1ModelPerf(accountId: string, modelId: string): Tier1ModelRuntime | null {
   return accounts.get(accountId)?.models.get(modelId) ?? null;
 }
 
-/** @param {string} accountId */
-export function tier1AccountInFlight(accountId) {
+export function tier1AccountInFlight(accountId: string): number {
   return accounts.get(accountId)?.inFlight ?? 0;
 }
 
-/** @param {number} now */
-function minuteOf(now) { return Math.floor(now / 60_000); }
+function minuteOf(now: number): number { return Math.floor(now / 60_000); }
 
-/**
- * @param {string} accountId
- * @param {number} now
- */
-function noteTier1Rpm(accountId, now) {
+function noteTier1Rpm(accountId: string, now: number): void {
   const minute = minuteOf(now);
   const bucket = rpmBuckets.get(accountId);
   if (!bucket || bucket.minute !== minute) rpmBuckets.set(accountId, { minute, count: 1 });
   else bucket.count++;
 }
 
-/**
- * @param {string} accountId
- * @param {number} [now]
- */
-export function tier1RpmUsage(accountId, now = Date.now()) {
+export function tier1RpmUsage(accountId: string, now: number = Date.now()): number {
   const bucket = rpmBuckets.get(accountId);
   return bucket?.minute === minuteOf(now) ? bucket.count : 0;
 }
 
-/**
- * @param {string} accountId
- * @param {number} [now]
- */
-export function rollbackTier1Rpm(accountId, now = Date.now()) {
+export function rollbackTier1Rpm(accountId: string, now: number = Date.now()): void {
   const bucket = rpmBuckets.get(accountId);
   if (bucket?.minute === minuteOf(now)) bucket.count = Math.max(0, bucket.count - 1);
 }
 
-/**
- * @param {RuntimeNode} node
- * @param {number} [now]
- * @param {string | null} [modelId]
- */
-export function claimTier1Slot(node, now = Date.now(), modelId = null) {
+export function claimTier1Slot(node: RuntimeNode, now: number = Date.now(), modelId: string | null = null): boolean {
   const account = getTier1Account(node.id);
   if (account.accountDisabled || account.accountCooldownUntil > now) return false;
   const model = modelId ? account.models.get(modelId) : null;
@@ -165,16 +192,11 @@ export function claimTier1Slot(node, now = Date.now(), modelId = null) {
   return true;
 }
 
-/** @param {string} accountId */
-export function makeTier1ReleaseToken(accountId) {
+export function makeTier1ReleaseToken(accountId: string): Tier1ReleaseToken {
   return { accountId, released: false };
 }
 
-/**
- * @param {string} accountId
- * @param {{ accountId: string, released: boolean } | null | undefined} token
- */
-export function releaseTier1Slot(accountId, token) {
+export function releaseTier1Slot(accountId: string, token: Tier1ReleaseToken | null | undefined): boolean {
   if (!token || token.accountId !== accountId || token.released) return false;
   token.released = true;
   const account = accounts.get(accountId);
@@ -182,24 +204,14 @@ export function releaseTier1Slot(accountId, token) {
   return true;
 }
 
-/**
- * @param {Record<string, any>} model
- * @param {number} now
- */
-function modelBlocked(model, now) {
+function modelBlocked(model: Tier1ModelRuntime | null | undefined, now: number): boolean {
   return model?.disabled || (model?.cooldownUntil ?? 0) > now;
 }
 
 // Read-only eligibility filter. Missing runtime state means UNKNOWN, not bad.
 // `knownModels` (the Known Model Catalog) bounds wildcard nodes: an
 // empty-models node serves only catalog models, never an arbitrary string.
-/**
- * @param {RuntimeNode} node
- * @param {RoutableRequest} req
- * @param {number} [now]
- * @param {ReadonlySet<string> | null} [knownModels]
- */
-export function isTier1Eligible(node, req, now = Date.now(), knownModels) {
+export function isTier1Eligible(node: RuntimeNode, req: RoutableRequest, now: number = Date.now(), knownModels?: ReadonlySet<string> | null): boolean {
   if (!node || node.tier !== 'tier-1') return false;
   if (node.protocol !== req.protocol) return false;
   if (!Array.isArray(node.surfaces) || !node.surfaces.includes(req.surface)) return false;
@@ -216,12 +228,7 @@ export function isTier1Eligible(node, req, now = Date.now(), knownModels) {
   return true;
 }
 
-/**
- * @param {string} accountId
- * @param {string} modelId
- * @param {number} [now]
- */
-export function maybeTransitionToHalfOpen(accountId, modelId, now = Date.now()) {
+export function maybeTransitionToHalfOpen(accountId: string, modelId: string, now: number = Date.now()): void {
   const model = accounts.get(accountId)?.models.get(modelId);
   if (model?.failureState === FAILURE_STATE.COOLDOWN && model.cooldownUntil <= now) {
     model.failureState = FAILURE_STATE.HALF_OPEN;
@@ -229,14 +236,7 @@ export function maybeTransitionToHalfOpen(accountId, modelId, now = Date.now()) 
   }
 }
 
-/**
- * @param {ReadonlyArray<RuntimeNode>} nodes
- * @param {RoutableRequest} req
- * @param {Set<string>} attempted
- * @param {number} [now]
- * @param {ReadonlySet<string> | null} [knownModels]
- */
-export function tier1CountDispatchableNodes(nodes, req, attempted, now = Date.now(), knownModels) {
+export function tier1CountDispatchableNodes(nodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, now: number = Date.now(), knownModels?: ReadonlySet<string> | null): number {
   let count = 0;
   for (const node of nodes ?? []) {
     if (attempted.has(node.id)) continue;
@@ -246,19 +246,11 @@ export function tier1CountDispatchableNodes(nodes, req, attempted, now = Date.no
   return count;
 }
 
-/**
- * @param {ReadonlyArray<RuntimeNode>} nodes
- * @param {RoutableRequest} req
- * @param {Set<string>} attempted
- * @param {number} [now]
- * @param {ReadonlySet<string> | null} [knownModels]
- */
-export function tier1HasDispatchableNode(nodes, req, attempted, now = Date.now(), knownModels) {
+export function tier1HasDispatchableNode(nodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, now: number = Date.now(), knownModels?: ReadonlySet<string> | null): boolean {
   return tier1CountDispatchableNodes(nodes, req, attempted, now, knownModels) > 0;
 }
 
-/** @param {ReadonlyArray<number>} values */
-function median(values) {
+function median(values: ReadonlyArray<number>): number {
   const ordered = [...values].sort((a, b) => a - b);
   const middle = Math.floor(ordered.length / 2);
   return ordered.length % 2
@@ -266,15 +258,10 @@ function median(values) {
     : (ordered[middle - 1] + ordered[middle]) / 2;
 }
 
-/**
- * @param {string} accountId
- * @param {string} modelId
- * @param {ReadonlyArray<RuntimeNode>} candidates
- */
-export function effectiveTier1Ttft(accountId, modelId, candidates) {
+export function effectiveTier1Ttft(accountId: string, modelId: string, candidates: ReadonlyArray<RuntimeNode>): number {
   const own = getTier1ModelPerf(accountId, modelId);
   if (own?.ttftEwma != null && own.sampleCount > 0) return own.ttftEwma;
-  const known = [];
+  const known: number[] = [];
   for (const candidate of candidates ?? []) {
     if (candidate.id === accountId) continue;
     const metric = getTier1ModelPerf(candidate.id, modelId);
@@ -283,50 +270,30 @@ export function effectiveTier1Ttft(accountId, modelId, candidates) {
   return known.length ? median(known) : TIER1_NEUTRAL_TTFT_MS;
 }
 
-/** @param {RuntimeNode} node */
-function loadFactor(node) {
+function loadFactor(node: RuntimeNode): number {
   const capacity = node.limits?.concurrency;
   if (!capacity) return 1;
   return 1 + 0.5 * Math.min(1, tier1AccountInFlight(node.id) / capacity);
 }
 
-/**
- * @param {string} accountId
- * @param {string} modelId
- */
-function failureFactor(accountId, modelId) {
+function failureFactor(accountId: string, modelId: string): number {
   return getTier1ModelPerf(accountId, modelId)?.failureState === FAILURE_STATE.HALF_OPEN
     ? TIER1_HALF_OPEN_SCORE_PENALTY : 1;
 }
 
-/**
- * @param {string} accountId
- * @param {number} now
- */
-function quotaFactor(accountId, now) {
+function quotaFactor(accountId: string, now: number): number {
   const account = accounts.get(accountId);
   if (!account || (account.quotaState === 'exhausted_until' && account.quotaResetAt <= now)) return 1;
   return account.quotaState === 'near_limit' ? 1.2 : 1;
 }
 
-/**
- * @param {string} accountId
- * @param {string} modelId
- */
-function explorationFactor(accountId, modelId) {
+function explorationFactor(accountId: string, modelId: string): number {
   const metric = getTier1ModelPerf(accountId, modelId);
   return !metric || metric.ttftEwma == null || metric.sampleCount === 0
     ? TIER1_EXPLORATION_FACTOR : 1;
 }
 
-/**
- * @param {RuntimeNode} node
- * @param {string} modelId
- * @param {ReadonlyArray<RuntimeNode>} candidates
- * @param {number} [affinityFactor]
- * @param {number} [now]
- */
-export function calculateTier1Score(node, modelId, candidates, affinityFactor = 1, now = Date.now()) {
+export function calculateTier1Score(node: RuntimeNode, modelId: string, candidates: ReadonlyArray<RuntimeNode>, affinityFactor: number = 1, now: number = Date.now()): number {
   return Math.max(1,
     effectiveTier1Ttft(node.id, modelId, candidates)
     * loadFactor(node)
@@ -336,13 +303,7 @@ export function calculateTier1Score(node, modelId, candidates, affinityFactor = 
     * explorationFactor(node.id, modelId));
 }
 
-/**
- * @param {string} accountId
- * @param {string} modelId
- * @param {number} observedMs
- * @param {number} [now]
- */
-export function recordTier1Ttft(accountId, modelId, observedMs, now = Date.now()) {
+export function recordTier1Ttft(accountId: string, modelId: string, observedMs: number, now: number = Date.now()): boolean {
   if (!Number.isFinite(observedMs) || observedMs < 0) return false;
   const model = getTier1Model(accountId, modelId);
   if (model.ttftEwma == null || model.sampleCount === 0) {
@@ -365,17 +326,13 @@ export function recordTier1Ttft(accountId, modelId, observedMs, now = Date.now()
   return true;
 }
 
-/**
- * @param {Record<string, any>} classification
- * @param {{ retryAfterMs?: number }} opts
- */
-export function classifyTier1Failure(classification, opts = {}) {
+export function classifyTier1Failure(classification: Tier1FailureInput, opts: { retryAfterMs?: number } = {}): Tier1Outcome {
   const { retryAfterMs } = opts;
   const kind = classification?.kind;
   if (kind === 'auth') return { scope: 'account', action: 'disable', reason: kind };
   if (kind === 'model_missing') return { scope: 'model', action: 'disable', reason: kind };
   if (kind === 'endpoint_not_found') {
-    return { scope: 'account', action: 'cooldown', counted: false, cooldownMs: classification.cooldownMs || 5_000, reason: kind };
+    return { scope: 'account', action: 'cooldown', counted: false, cooldownMs: classification?.cooldownMs || 5_000, reason: kind };
   }
   if (kind === 'rate_limit') {
     const explicit = retryAfterMs ?? classification?.retryAfterMs ?? 0;
@@ -398,12 +355,7 @@ export function classifyTier1Failure(classification, opts = {}) {
   return { scope: 'model', action: 'cooldown', counted: true, cooldownMs: 0, backoff: 'default', reason: kind || 'unknown' };
 }
 
-/**
- * @param {number} base
- * @param {number} max
- * @param {number} count
- */
-function exponential(base, max, count) {
+function exponential(base: number, max: number, count: number): number {
   return Math.min(max, base * 2 ** Math.max(0, count - 1));
 }
 
@@ -412,32 +364,21 @@ function exponential(base, max, count) {
 // exact same instant. Explicit Retry-After values are NOT jittered — only
 // auto-computed backoffs are.
 const JITTER_FACTOR = 0.1;
-/** @param {number} ms */
-function jitter(ms) {
+function jitter(ms: number): number {
   if (ms <= 0) return ms;
   const delta = ms * JITTER_FACTOR;
   return Math.round(ms + (Math.random() * 2 - 1) * delta);
 }
 
-/**
- * @param {Record<string, any>} model
- * @param {Record<string, any>} outcome
- */
-function modelCooldownMs(model, outcome) {
-  if (outcome.cooldownMs > 0) return Math.min(outcome.cooldownMs, TIER1_COOLDOWN_MAX_MS);
+function modelCooldownMs(model: Tier1ModelRuntime, outcome: Tier1Outcome): number {
+  if ((outcome.cooldownMs ?? 0) > 0) return Math.min(outcome.cooldownMs ?? 0, TIER1_COOLDOWN_MAX_MS);
   if (outcome.backoff === 'rate_limit') return jitter(exponential(TIER1_429_BASE_MS, TIER1_429_MAX_MS, model.consecutiveRateLimits));
   if (outcome.backoff === 'timeout') return jitter(exponential(TIER1_TIMEOUT_BASE_MS, TIER1_TIMEOUT_MAX_MS, model.consecutiveFailures));
   if (outcome.backoff === 'server') return jitter(exponential(TIER1_5XX_BASE_MS, TIER1_5XX_MAX_MS, model.consecutiveFailures));
   return jitter(exponential(TIER1_COOLDOWN_DEFAULT_MS, TIER1_COOLDOWN_MAX_MS, model.consecutiveFailures));
 }
 
-/**
- * @param {string} accountId
- * @param {string} modelId
- * @param {Record<string, any>} outcome
- * @param {number} [now]
- */
-export function applyTier1Outcome(accountId, modelId, outcome, now = Date.now()) {
+export function applyTier1Outcome(accountId: string, modelId: string, outcome: Tier1Outcome | null | undefined, now: number = Date.now()): void {
   if (!outcome || outcome.action === 'neutral' || outcome.scope === 'none') return;
   const account = getTier1Account(accountId);
   if (outcome.action === 'disable') {
@@ -490,9 +431,9 @@ export function applyTier1Outcome(accountId, modelId, outcome, now = Date.now())
   if (outcome.counted) model.consecutiveFailures++;
 
   const halfOpenFailure = model.failureState === FAILURE_STATE.HALF_OPEN;
-  const thresholdReached = outcome.counted && model.consecutiveFailures >= TIER1_FAILURE_THRESHOLD;
+  const thresholdReached = outcome.counted === true && model.consecutiveFailures >= TIER1_FAILURE_THRESHOLD;
   const rateLimited = outcome.backoff === 'rate_limit';
-  if (halfOpenFailure || thresholdReached || rateLimited || outcome.cooldownMs > 0) {
+  if (halfOpenFailure || thresholdReached || rateLimited || (outcome.cooldownMs ?? 0) > 0) {
     model.cooldownUntil = now + modelCooldownMs(model, outcome);
     model.cooldownReason = outcome.reason;
     if (halfOpenFailure || thresholdReached) {
@@ -502,11 +443,7 @@ export function applyTier1Outcome(accountId, modelId, outcome, now = Date.now())
   }
 }
 
-/**
- * @param {string} accountId
- * @param {string} modelId
- */
-export function recordTier1Success(accountId, modelId) {
+export function recordTier1Success(accountId: string, modelId: string): void {
   const account = getTier1Account(accountId);
   const model = getTier1Model(accountId, modelId);
   account.consecutiveAccountFailures = 0;
@@ -523,26 +460,17 @@ export function recordTier1Success(accountId, modelId) {
   }
 }
 
-/**
- * @param {string} accountId
- * @param {string} modelId
- */
-export function tier1FailureState(accountId, modelId) {
+export function tier1FailureState(accountId: string, modelId: string): Tier1FailureState {
   return getTier1ModelPerf(accountId, modelId)?.failureState ?? FAILURE_STATE.NORMAL;
 }
 
-/**
- * @param {RuntimeNode} node
- * @param {string} modelId
- * @param {number} [now]
- */
-export function tier1BlockingWaitMs(node, modelId, now = Date.now()) {
+export function tier1BlockingWaitMs(node: RuntimeNode, modelId: string, now: number = Date.now()): number {
   const account = accounts.get(node.id);
   if (!account || account.accountDisabled) return Infinity;
   if (account.accountCooldownUntil > now) return account.accountCooldownUntil - now;
   const model = account.models.get(modelId);
   if (model?.disabled) return Infinity;
-  if (model?.cooldownUntil > now) return model.cooldownUntil - now;
+  if (model && model.cooldownUntil > now) return model.cooldownUntil - now;
   if (model?.failureState === FAILURE_STATE.HALF_OPEN && account.inFlight > 0) return 1_000;
   if (node.limits.rpm && node.limits.rpmMode !== 'soft'
     && tier1RpmUsage(node.id, now) >= node.limits.rpm) return Math.max(1, 60_000 - (now % 60_000));
@@ -550,14 +478,7 @@ export function tier1BlockingWaitMs(node, modelId, now = Date.now()) {
   return Infinity;
 }
 
-/**
- * @param {ReadonlyArray<RuntimeNode>} nodes
- * @param {RoutableRequest} req
- * @param {Set<string>} attempted
- * @param {number} [now]
- * @param {ReadonlySet<string> | null} [knownModels]
- */
-export function tier1HasDeferredCapacity(nodes, req, attempted, now = Date.now(), knownModels) {
+export function tier1HasDeferredCapacity(nodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, now: number = Date.now(), knownModels?: ReadonlySet<string> | null): boolean {
   for (const node of nodes ?? []) {
     if (attempted.has(node.id) || node.tier !== 'tier-1') continue;
     if (node.protocol !== req.protocol || !node.surfaces?.includes(req.surface) || !servesModel(node, req.model, knownModels)) continue;
@@ -574,12 +495,7 @@ export function tier1HasDeferredCapacity(nodes, req, attempted, now = Date.now()
 }
 
 // Only explicit, comparable provider data may call this interface.
-/**
- * @param {string} accountId
- * @param {{ remainingRatio?: number, resetAtMs?: number }} [signal]
- * @param {number} [now]
- */
-export function recordTier1QuotaSignal(accountId, signal = {}, now = Date.now()) {
+export function recordTier1QuotaSignal(accountId: string, signal: { remainingRatio?: number, resetAtMs?: number } = {}, now: number = Date.now()): boolean {
   const { remainingRatio, resetAtMs = 0 } = signal;
   if (typeof remainingRatio !== 'number' || !Number.isFinite(remainingRatio) || remainingRatio < 0 || remainingRatio > 1) return false;
   const account = getTier1Account(accountId);
@@ -595,11 +511,7 @@ export function recordTier1QuotaSignal(accountId, signal = {}, now = Date.now())
   return true;
 }
 
-/**
- * @param {Record<string, any>} model
- * @param {number} now
- */
-function modelDiagnosticState(model, now) {
+function modelDiagnosticState(model: Tier1ModelRuntime | null | undefined, now: number): string {
   if (!model) return 'configured';
   if (model.disabled || model.failureState === FAILURE_STATE.DISABLED) return 'disabled';
   if (model.cooldownUntil > now || model.failureState === FAILURE_STATE.COOLDOWN) return 'cooldown';
@@ -608,63 +520,53 @@ function modelDiagnosticState(model, now) {
   return 'unknown';
 }
 
-/**
- * @param {string} accountId
- * @param {string} modelId
- * @param {number} [now]
- */
-export function snapshotTier1Runtime(accountId, modelId, now = Date.now()) {
+export function snapshotTier1Runtime(accountId: string, modelId: string, now: number = Date.now()) {
   const account = accounts.get(accountId);
   const model = account?.models.get(modelId);
   return {
     account_id: accountId,
     model: modelId,
     state: account?.accountDisabled ? 'disabled'
-      : account?.accountCooldownUntil > now ? 'cooldown'
+      : account && account.accountCooldownUntil > now ? 'cooldown'
       : modelDiagnosticState(model, now),
     account_disabled: account?.accountDisabled ?? false,
-    account_cooldown_remaining_ms: account?.accountCooldownUntil > now ? account.accountCooldownUntil - now : 0,
+    account_cooldown_remaining_ms: account && account.accountCooldownUntil > now ? account.accountCooldownUntil - now : 0,
     in_flight: account?.inFlight ?? 0,
-    quota_state: account?.quotaState === 'exhausted_until' && account.quotaResetAt <= now
+    quota_state: account?.quotaState === 'exhausted_until' && (account?.quotaResetAt ?? 0) <= now
       ? 'normal' : account?.quotaState ?? 'normal',
-    quota_reset_at: account?.quotaResetAt > now ? new Date(account.quotaResetAt).toISOString() : null,
+    quota_reset_at: account && account.quotaResetAt > now ? new Date(account.quotaResetAt).toISOString() : null,
     failure_state: model?.failureState ?? FAILURE_STATE.NORMAL,
     consecutive_failures: model?.consecutiveFailures ?? 0,
     consecutive_rate_limits: model?.consecutiveRateLimits ?? 0,
     consecutive_outliers: model?.consecutiveOutliers ?? 0,
     half_open_successes: model?.halfOpenSuccesses ?? 0,
-    cooldown_remaining_ms: model?.cooldownUntil > now ? model.cooldownUntil - now : 0,
-    cooldown_reason: model?.cooldownUntil > now ? model.cooldownReason : null,
+    cooldown_remaining_ms: model && model.cooldownUntil > now ? model.cooldownUntil - now : 0,
+    cooldown_reason: model && model.cooldownUntil > now ? model.cooldownReason : null,
     ttft_ewma_ms: model?.ttftEwma == null ? null : Math.round(model.ttftEwma),
     sample_count: model?.sampleCount ?? 0,
-    last_observed_at: model?.lastObservedAt > 0 ? new Date(model.lastObservedAt).toISOString() : null,
+    last_observed_at: model && model.lastObservedAt > 0 ? new Date(model.lastObservedAt).toISOString() : null,
     scope_ambiguous_429: model?.scopeAmbiguous429 ?? false,
   };
 }
 
-/**
- * @param {string} accountId
- * @param {ReadonlyArray<string>} [modelIds]
- * @param {number} [now]
- */
-export function snapshotTier1AccountRuntime(accountId, modelIds = [], now = Date.now()) {
+export function snapshotTier1AccountRuntime(accountId: string, modelIds: ReadonlyArray<string> = [], now: number = Date.now()) {
   const account = accounts.get(accountId);
   const ids = new Set(modelIds);
   for (const id of account?.models.keys() ?? []) ids.add(id);
   const models = [...ids].sort().map((id) => snapshotTier1Runtime(accountId, id, now));
   return {
     state: account?.accountDisabled ? 'disabled'
-      : account?.accountCooldownUntil > now ? 'cooldown'
+      : account && account.accountCooldownUntil > now ? 'cooldown'
       : models.some((m) => m.state === 'observed_healthy') ? 'observed_healthy'
       : account ? 'unknown' : 'configured',
     in_flight: account?.inFlight ?? 0,
     account_disabled: account?.accountDisabled ?? false,
-    account_cooldown_remaining_ms: account?.accountCooldownUntil > now ? account.accountCooldownUntil - now : 0,
+    account_cooldown_remaining_ms: account && account.accountCooldownUntil > now ? account.accountCooldownUntil - now : 0,
     models,
   };
 }
 
-export function __resetTier1StateForTests() {
+export function __resetTier1StateForTests(): void {
   accounts.clear();
   rpmBuckets.clear();
 }

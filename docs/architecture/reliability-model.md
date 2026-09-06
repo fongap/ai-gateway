@@ -2,7 +2,7 @@
 
 ## 概述
 
-Tier 1 使用 `tier1-state.js`；Tier 2/3 继续使用 `node-state.js`。两个状态系统有意分离。所有短期运行时状态均为 isolate-local best-effort，随 isolate 重启丢失。
+Tier 1 使用 `tier1-state.ts`；Tier 2/3 继续使用 `node-state.ts`。两个状态系统有意分离。所有短期运行时状态均为 isolate-local best-effort，随 isolate 重启丢失。
 
 ## Tier 1 可靠性
 
@@ -36,7 +36,7 @@ Streaming 在 headers 后、首个 token 后和完整流期间保持 Tier 1 in-f
 
 ## 错误分类
 
-Error classification (`classify.js`) 共享。分类表：
+Error classification (`classify.ts`) 共享。分类表：
 
 | 结果 | 动作 | Cooldown | 计入 circuit |
 |---|---|---|---|

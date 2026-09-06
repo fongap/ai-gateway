@@ -66,7 +66,7 @@ Catalog 供人类和 CI 共同阅读；请求热路径中没有任何模块导�
 | `openai` | `chat_completions`, `responses` |
 | `anthropic` | `messages`, `count_tokens` |
 
-`count_tokens` 在 Catalog 中仅供参考：Runtime Node schema（`src/config/nodes.js`）目前未将其建模为 `surfaces` 条目，因此 Runtime 一致性层不会在 `count_tokens` 不匹配时发出 Runtime 冲突。Catalog 仍会记录它。
+`count_tokens` 在 Catalog 中仅供参考：Runtime Node schema（`src/config/nodes.ts`）目前未将其建模为 `surfaces` 条目，因此 Runtime 一致性层不会在 `count_tokens` 不匹配时发出 Runtime 冲突。Catalog 仍会记录它。
 
 ### 证据级别
 

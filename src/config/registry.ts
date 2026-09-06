@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT
-// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // Model Registry — the single source of truth for logical-model policy and
@@ -17,38 +16,42 @@
 // as the model-capability truth: a provider only describes transport/protocol,
 // not what every model under it does.
 
-import { loadModelsConfig } from './models.js';
+import { loadModelsConfig } from './models.ts';
+import type { ModelEntry } from './models.ts';
 
 // Under-report capabilities, never over-report: an unlisted model is assumed to
 // support nothing beyond streaming. Only an explicit MODELS_CONFIG declaration
 // turns a capability on. This keeps /v1/models from promising tools/reasoning
 // for third-party OpenAI-compatible models that may not have them.
 const DEFAULT_CAPABILITIES = Object.freeze({ tools: false, reasoning: false, vision: false, stream: true, ocr: false });
-/** @type {readonly string[]} */
-const DEFAULT_REASONING_EFFORTS = Object.freeze([]);
+const DEFAULT_REASONING_EFFORTS: readonly string[] = Object.freeze([]);
 const DEFAULT_POLICY = 'default';
 const DEFAULT_VISIBILITY = 'public';
 const DEFAULT_DISPLAY_ORDER = 100;
 const DEFAULT_GROUP = 'general';
 const DEFAULT_UI_VISIBLE = true;
 
-/** @type {Record<string, any> | undefined} */
-let cachedEnv;
-/** @type {Record<string, { policy: string, visibility: string, capabilities: Record<string, boolean>, reasoning_efforts: string[], modalities?: { input: string[], output: string[] }, display_order: number, group: string, ui_visible: boolean }> | undefined} */
-let cachedRegistry;
+export type RegistryEntry = {
+  policy: string,
+  visibility: string,
+  capabilities: Record<string, boolean>,
+  reasoning_efforts: string[],
+  modalities?: { input: string[], output: string[] },
+  display_order: number,
+  group: string,
+  ui_visible: boolean,
+};
+
+let cachedEnv: Record<string, unknown> | undefined;
+let cachedRegistry: Record<string, RegistryEntry> | undefined;
 
 // Build the authoritative registry object: { logicalModel: { policy,
 // capabilities, reasoning_efforts, visibility } }.
-/**
- * @param {Record<string, any>} env
- * @returns {Record<string, { policy: string, visibility: string, capabilities: Record<string, boolean>, reasoning_efforts: string[], modalities?: { input: string[], output: string[] }, display_order: number, group: string, ui_visible: boolean }>}
- */
-export function loadModelRegistry(env) {
+export function loadModelRegistry(env: Record<string, unknown>): Record<string, RegistryEntry> {
   if (cachedEnv === env && cachedRegistry) return cachedRegistry;
   cachedEnv = env;
   const models = loadModelsConfig(env);
-  /** @type {Record<string, { policy: string, visibility: string, capabilities: Record<string, boolean>, reasoning_efforts: string[], modalities?: { input: string[], output: string[] }, display_order: number, group: string, ui_visible: boolean }>} */
-  const registry = {};
+  const registry: Record<string, RegistryEntry> = {};
   for (const [name, cfg] of Object.entries(models)) {
     registry[name] = {
       policy: cfg.policy || DEFAULT_POLICY,
@@ -73,11 +76,7 @@ export function loadModelRegistry(env) {
 // Resolve the registry entry for a logical model, filling conservative defaults
 // for models not declared in the registry (so /v1/models never has to guess
 // capability from a provider quirk).
-/**
- * @param {Record<string, any>} env
- * @param {string} model
- */
-export function modelRegistryEntry(env, model) {
+export function modelRegistryEntry(env: Record<string, unknown>, model: string): RegistryEntry {
   const registry = loadModelRegistry(env);
   return registry[model] || {
     policy: DEFAULT_POLICY,
@@ -90,13 +89,11 @@ export function modelRegistryEntry(env, model) {
   };
 }
 
-/** @param {Record<string, any>} env */
-export function listRegistryModels(env) {
+export function listRegistryModels(env: Record<string, unknown>): string[] {
   return Object.keys(loadModelRegistry(env)).sort();
 }
 
-/** @param {{ models?: Record<string, string> }} node */
-export function isWildcardNode(node) {
+export function isWildcardNode(node: { models?: Record<string, string> }): boolean {
   return !node.models || Object.keys(node.models).length === 0;
 }
 
@@ -107,12 +104,7 @@ export function isWildcardNode(node) {
 //     build raw nodes without an env), the legacy permissive behavior is
 //     preserved — the request path always passes the catalog, so the
 //     gateway itself is always closed.
-/**
- * @param {{ models: Record<string, string> }} node
- * @param {string} model
- * @param {ReadonlySet<string> | null} [knownModels]
- */
-export function servesModel(node, model, knownModels) {
+export function servesModel(node: { models: Record<string, string> }, model: string, knownModels?: ReadonlySet<string> | null): boolean {
   if (isWildcardNode(node)) return knownModels ? knownModels.has(model) : true;
   return Object.hasOwn(node.models, model);
 }
@@ -123,13 +115,8 @@ export function servesModel(node, model, knownModels) {
 // wildcard eligibility, /v1/models, diagnostics, health, metrics, the model
 // status projection and the scheduler. No other module should reassemble its
 // own model set.
-/**
- * @param {ReadonlyArray<{ models?: Record<string, string> } | null | undefined>} [nodes]
- * @param {Record<string, any>} [env]
- * @returns {Set<string>}
- */
-export function collectKnownModels(nodes, env) {
-  const set = new Set();
+export function collectKnownModels(nodes?: ReadonlyArray<{ models?: Record<string, string> } | null | undefined>, env?: Record<string, unknown>): Set<string> {
+  const set = new Set<string>();
   for (const n of nodes || []) {
     for (const k of Object.keys(n?.models || {})) set.add(k);
   }
@@ -146,9 +133,8 @@ export function collectKnownModels(nodes, env) {
 // Wildcard nodes (empty `models`) do NOT contribute names. This is a subset
 // of collectKnownModels and is kept for backward compatibility with callers
 // that need only the node-mapped set.
-/** @param {ReadonlyArray<{ models?: Record<string, string> } | null | undefined>} [nodes] */
-export function collectConfiguredModels(nodes) {
-  const set = new Set();
+export function collectConfiguredModels(nodes?: ReadonlyArray<{ models?: Record<string, string> } | null | undefined>): Set<string> {
+  const set = new Set<string>();
   for (const n of nodes || []) {
     for (const k of Object.keys(n?.models || {})) set.add(k);
   }

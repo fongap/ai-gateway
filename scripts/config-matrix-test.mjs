@@ -23,9 +23,9 @@
 import assert from 'node:assert/strict';
 import { getPublicModelStatus } from '../src/runtime/model-status.js';
 import { renderModels } from '../src/dashboard/model-status-view.js';
-import { supportsRequest } from '../src/scheduler/scheduler.js';
-import { __resetTier1StateForTests, recordTier1Ttft } from '../src/reliability/tier1-state.js';
-import { __resetAllStateForTests } from '../src/reliability/node-state.js';
+import { supportsRequest } from '../src/scheduler/scheduler.ts';
+import { __resetTier1StateForTests, recordTier1Ttft } from '../src/reliability/tier1-state.ts';
+import { __resetAllStateForTests } from '../src/reliability/node-state.ts';
 
 let passed = 0;
 function test(name, fn) {

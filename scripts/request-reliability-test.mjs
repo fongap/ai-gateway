@@ -7,14 +7,14 @@ import {
   getNodeState, getCooldownRemainingMs, applyHealthPenalty,
   rollbackRpmBucket, rpmUsage,
   CIRCUIT_FAILURE_THRESHOLD, CIRCUIT_OPEN_MS,
-} from '../src/reliability/node-state.js';
+} from '../src/reliability/node-state.ts';
 import {
   parseRetryAfterMs, attemptBudgetSliceMs, attemptHeadersTimeoutMs, attemptFirstEventTimeoutMs,
   MIN_ATTEMPT_HEADERS_MS, MIN_ATTEMPT_FIRST_EVENT_MS,
-} from '../src/config/timeouts.js';
-import { classifyUpstreamStatus, classifyNetworkError, classifyFirstEventFailure, classifyClientAbort } from '../src/reliability/classify.js';
-import { getLimits } from '../src/config/timeouts.js';
-import { countDispatchableNodes } from '../src/scheduler/scheduler.js';
+} from '../src/config/timeouts.ts';
+import { classifyUpstreamStatus, classifyNetworkError, classifyFirstEventFailure, classifyClientAbort } from '../src/reliability/classify.ts';
+import { getLimits } from '../src/config/timeouts.ts';
+import { countDispatchableNodes } from '../src/scheduler/scheduler.ts';
 
 const ENV = {};
 let now = 1_000_000;

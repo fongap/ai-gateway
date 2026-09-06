@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT
-// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // POLICIES_CONFIG: policy name -> { max_attempts, tier_attempts?, hedge? }. Optional.
@@ -18,18 +17,21 @@
 // fields, invalid max_attempts, and invalid tier_attempts produce diagnostics
 // instead of silently falling back to defaults. The parse is cached per isolate.
 
-import { readEnv } from './env.js';
+import { readEnv } from './env.ts';
+import type { PolicyConfig } from '../types/policy.ts';
 
 const MIN_ATTEMPTS = 1;
 const MAX_ATTEMPTS = 8;
 const TIER_KEYS = ['tier1', 'tier2', 'tier3'];
 const ALLOWED_FIELDS = new Set(['max_attempts', 'tier_attempts', 'hedge', 'first_event_timeout_ms']);
 
+type HedgePolicy = { enabled?: boolean, delayMs?: number, tiers?: Array<'tier1' | 'tier2' | 'tier3'> } | null;
+type TierAttempts = { tier1?: number, tier2?: number, tier3?: number } | null;
+
 // Built-in policies — always present, user config merges on top.
 // These are the single source of truth; no runtime fallback needed.
 // All built-ins now explicitly declare hedge behavior (no undefined).
-/** @type {Record<string, PolicyConfig>} */
-const BUILTIN_POLICIES = Object.freeze({
+const BUILTIN_POLICIES: Record<string, PolicyConfig> = Object.freeze({
   default: {
     maxAttempts: 5,
     tierAttempts: null,
@@ -56,42 +58,26 @@ const BUILTIN_POLICIES = Object.freeze({
   },
 });
 
-/** @type {Record<string, any> | undefined} */
-let cachedEnv;
-/** @type {{ policies: Record<string, PolicyConfig>, errors: string[] } | undefined} */
-let cached;
+let cachedEnv: Record<string, unknown> | undefined;
+let cached: { policies: Record<string, PolicyConfig>, errors: string[] } | undefined;
 
-/**
- * @param {Record<string, any>} env
- * @returns {Record<string, PolicyConfig>}
- */
-export function loadPoliciesConfig(env) {
+export function loadPoliciesConfig(env: Record<string, unknown>): Record<string, PolicyConfig> {
   return analyzePolicies(env).policies;
 }
 
-/**
- * @param {Record<string, any>} env
- * @returns {string[]}
- */
-export function getPoliciesConfigDiagnostics(env) {
+export function getPoliciesConfigDiagnostics(env: Record<string, unknown>): string[] {
   return analyzePolicies(env).errors;
 }
 
-/**
- * @param {Record<string, any>} env
- * @returns {{ policies: Record<string, PolicyConfig>, errors: string[] }}
- */
-function analyzePolicies(env) {
+function analyzePolicies(env: Record<string, unknown>): { policies: Record<string, PolicyConfig>, errors: string[] } {
   if (cachedEnv === env && cached) return cached;
   cachedEnv = env;
   const raw = readEnv(env, 'POLICIES_CONFIG');
-  /** @type {string[]} */
-  const errors = [];
+  const errors: string[] = [];
   // Start with built-ins; user config merges on top (override).
-  /** @type {Record<string, PolicyConfig>} */
-  const policies = { ...BUILTIN_POLICIES };
+  const policies: Record<string, PolicyConfig> = { ...BUILTIN_POLICIES };
   if (raw) {
-    let parsed;
+    let parsed: unknown;
     try {
       parsed = JSON.parse(raw);
     } catch (e) {
@@ -103,29 +89,35 @@ function analyzePolicies(env) {
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       errors.push('POLICIES_CONFIG must be a JSON object { name: { max_attempts, tier_attempts?, hedge? } }');
     } else {
-      for (const [name, config] of Object.entries(parsed)) {
+      for (const [name, config] of Object.entries(parsed as Record<string, unknown>)) {
         if (!name.trim()) { errors.push('POLICIES_CONFIG: empty policy name (keys must be non-empty strings)'); continue; }
         if (!config || typeof config !== 'object' || Array.isArray(config)) {
           errors.push(`POLICIES_CONFIG: "${name}" must be an object`);
           continue;
         }
-        for (const field of Object.keys(config)) {
+        const cfg = config as Record<string, unknown>;
+        for (const field of Object.keys(cfg)) {
           if (!ALLOWED_FIELDS.has(field)) {
             errors.push(`POLICIES_CONFIG: "${name}" has unknown field "${field}" (allowed: ${[...ALLOWED_FIELDS].join(', ')})`);
           }
         }
-        const tierAttempts = parseTierAttempts(config.tier_attempts, name, errors);
-        const hedge = parseHedge(config.hedge, name, errors);
-        const firstEventTimeoutMs = parseFirstEventTimeoutMs(config.first_event_timeout_ms, name, errors);
-        let attempts;
-        if (config.max_attempts !== undefined) {
-          if (!Number.isInteger(config.max_attempts)
-            || config.max_attempts < MIN_ATTEMPTS
-            || config.max_attempts > MAX_ATTEMPTS) {
+        const tierAttempts = parseTierAttempts(cfg.tier_attempts, name, errors);
+        const hedge = parseHedge(cfg.hedge, name, errors);
+        const firstEventTimeoutMs = parseFirstEventTimeoutMs(cfg.first_event_timeout_ms, name, errors);
+        let attempts: number;
+        if (cfg.max_attempts !== undefined) {
+          // `typeof` leads the guard so the integer range checks run on a
+          // narrowed number — identical rejection behavior to the original
+          // Number.isInteger short-circuit.
+          const rawMax = cfg.max_attempts;
+          if (typeof rawMax !== 'number'
+            || !Number.isInteger(rawMax)
+            || rawMax < MIN_ATTEMPTS
+            || rawMax > MAX_ATTEMPTS) {
             errors.push(`POLICIES_CONFIG: "${name}": max_attempts must be an integer between ${MIN_ATTEMPTS} and ${MAX_ATTEMPTS}`);
             attempts = BUILTIN_POLICIES.default.maxAttempts;
           } else {
-            attempts = config.max_attempts;
+            attempts = rawMax;
           }
         } else {
           attempts = BUILTIN_POLICIES.default.maxAttempts;
@@ -151,39 +143,35 @@ function analyzePolicies(env) {
 // When the field is absent entirely (user config omits hedge), null is returned
 // and the handler falls back to the legacy global behavior (hedge enabled
 // everywhere except tier3). Built-in policies always declare hedge explicitly.
-/**
- * @param {Record<string, any> | null | undefined} value
- * @param {string} policyName
- * @param {string[]} errors
- * @returns {{ enabled?: boolean, delayMs?: number, tiers?: Array<'tier1' | 'tier2' | 'tier3'> } | null}
- */
-function parseHedge(value, policyName, errors) {
+function parseHedge(value: unknown, policyName: string, errors: string[]): HedgePolicy {
   if (value === undefined || value === null) return null;
   if (typeof value !== 'object' || Array.isArray(value)) {
     errors.push(`POLICIES_CONFIG: "${policyName}": hedge must be an object { enabled?, delay_ms?, tiers? }`);
     return null;
   }
-  /** @type {{ enabled?: boolean, delayMs?: number, tiers?: Array<'tier1' | 'tier2' | 'tier3'> }} */
-  const out = {};
-  if (value.enabled !== undefined) {
-    if (typeof value.enabled !== 'boolean') {
+  const rec = value as Record<string, unknown>;
+  const out: { enabled?: boolean, delayMs?: number, tiers?: Array<'tier1' | 'tier2' | 'tier3'> } = {};
+  if (rec.enabled !== undefined) {
+    if (typeof rec.enabled !== 'boolean') {
       errors.push(`POLICIES_CONFIG: "${policyName}": hedge.enabled must be a boolean`);
     } else {
-      out.enabled = value.enabled;
+      out.enabled = rec.enabled;
     }
   }
-  if (value.delay_ms !== undefined) {
-    if (!Number.isInteger(value.delay_ms) || value.delay_ms < 0) {
+  if (rec.delay_ms !== undefined) {
+    // `typeof` leads the guard for the same narrowing/rejection reason as
+    // max_attempts above.
+    if (typeof rec.delay_ms !== 'number' || !Number.isInteger(rec.delay_ms) || rec.delay_ms < 0) {
       errors.push(`POLICIES_CONFIG: "${policyName}": hedge.delay_ms must be a non-negative integer`);
     } else {
-      out.delayMs = value.delay_ms;
+      out.delayMs = rec.delay_ms;
     }
   }
-  if (value.tiers !== undefined) {
-    if (!Array.isArray(value.tiers) || !value.tiers.every((t) => typeof t === 'string' && TIER_KEYS.includes(t))) {
+  if (rec.tiers !== undefined) {
+    if (!Array.isArray(rec.tiers) || !rec.tiers.every((t) => typeof t === 'string' && TIER_KEYS.includes(t))) {
       errors.push(`POLICIES_CONFIG: "${policyName}": hedge.tiers must be an array of "tier1", "tier2", "tier3"`);
     } else {
-      out.tiers = value.tiers;
+      out.tiers = rec.tiers;
     }
   }
   return Object.keys(out).length ? out : null;
@@ -193,59 +181,40 @@ function parseHedge(value, policyName, errors) {
 // Each value must be an integer in [0, MAX_ATTEMPTS]; 0 explicitly disables a
 // tier. Non-integers (null included), out-of-range values and unknown keys
 // produce diagnostics instead of being clamped or truncated.
-/**
- * @param {Record<string, any> | null | undefined} value
- * @param {string} policyName
- * @param {string[]} errors
- * @returns {{ tier1?: number, tier2?: number, tier3?: number } | null}
- */
-function parseTierAttempts(value, policyName, errors) {
+function parseTierAttempts(value: unknown, policyName: string, errors: string[]): TierAttempts {
   if (value === undefined || value === null) return null;
   if (typeof value !== 'object' || Array.isArray(value)) {
     errors.push(`POLICIES_CONFIG: "${policyName}" tier_attempts must be an object { tier1, tier2, tier3 }`);
     return null;
   }
-  /** @type {{ tier1?: number, tier2?: number, tier3?: number }} */
-  const out = {};
+  const out: { tier1?: number, tier2?: number, tier3?: number } = {};
   let any = false;
-  for (const [key, val] of Object.entries(value)) {
+  for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
     if (!TIER_KEYS.includes(key)) {
       errors.push(`POLICIES_CONFIG: "${policyName}" tier_attempts.${key} is not a valid tier (allowed: ${TIER_KEYS.join(', ')})`);
       continue;
     }
-    if (!Number.isInteger(val) || val < 0 || val > MAX_ATTEMPTS) {
+    if (typeof val !== 'number' || !Number.isInteger(val) || val < 0 || val > MAX_ATTEMPTS) {
       errors.push(`POLICIES_CONFIG: "${policyName}" tier_attempts.${key} must be an integer between 0 and ${MAX_ATTEMPTS}`);
       continue;
     }
-    out[/** @type {'tier1' | 'tier2' | 'tier3'} */ (key)] = val;
+    out[key as 'tier1' | 'tier2' | 'tier3'] = val;
     any = true;
   }
   return any ? out : null;
 }
 
 // Parse an optional first-event timeout override in milliseconds.
-/**
- * @param {number | null | undefined} value
- * @param {string} policyName
- * @param {string[]} errors
- * @returns {number | null}
- */
-function parseFirstEventTimeoutMs(value, policyName, errors) {
+function parseFirstEventTimeoutMs(value: unknown, policyName: string, errors: string[]): number | null {
   if (value === undefined || value === null) return null;
-  if (!Number.isInteger(value) || value < 5_000 || value > 600_000) {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 5_000 || value > 600_000) {
     errors.push(`POLICIES_CONFIG: "${policyName}": first_event_timeout_ms must be an integer between 5000 and 600000`);
     return null;
   }
   return value;
 }
 
-/**
- * @param {string} modelName
- * @param {Record<string, { policy?: string }>} modelsConfig
- * @param {Record<string, PolicyConfig>} policiesConfig
- * @returns {PolicyConfig}
- */
-export function getPolicy(modelName, modelsConfig, policiesConfig) {
+export function getPolicy(modelName: string, modelsConfig: Record<string, { policy?: string }>, policiesConfig: Record<string, PolicyConfig>): PolicyConfig {
   const policyName = modelsConfig[modelName]?.policy || 'default';
   return policiesConfig[policyName];
 }

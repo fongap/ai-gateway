@@ -9,10 +9,10 @@
 // the per-protocol non-stream (and stream-synthesized) result handling.
 // Node success / TTFT / token recording is delegated to observability.js.
 
-import { attemptFirstEventTimeoutMs } from '../../config/timeouts.js';
-import { markProbeFailure, recordTtft, recordNeutralEnd, bumpNodeCounters } from '../../reliability/node-state.js';
-import { recordTier1Ttft, releaseTier1Slot } from '../../reliability/tier1-state.js';
-import { classifyUpstreamStatus, classifyFirstEventFailure, classifyClientAbort } from '../../reliability/classify.js';
+import { attemptFirstEventTimeoutMs } from '../../config/timeouts.ts';
+import { markProbeFailure, recordTtft, recordNeutralEnd, bumpNodeCounters } from '../../reliability/node-state.ts';
+import { recordTier1Ttft, releaseTier1Slot } from '../../reliability/tier1-state.ts';
+import { classifyUpstreamStatus, classifyFirstEventFailure, classifyClientAbort } from '../../reliability/classify.ts';
 import {
   corsHeaders,
   safeReadErrorBody, trimDiagnostic,

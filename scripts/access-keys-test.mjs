@@ -5,7 +5,7 @@
 // fail-closed CSV allowlists, legacy GATEWAY_ACCESS_KEY fallback, and no secret leakage.
 
 import assert from 'node:assert/strict';
-import { loadAccessKeysConfig, keyAllowsModel, __resetAccessKeysCacheForTests, collectConfiguredModels, collectKnownModels } from '../src/config/access-keys.js';
+import { loadAccessKeysConfig, keyAllowsModel, __resetAccessKeysCacheForTests, collectConfiguredModels, collectKnownModels } from '../src/config/access-keys.ts';
 import { authorize } from '../src/request/auth.js';
 import { filterVisibleModels } from '../src/request/model-authz.js';
 

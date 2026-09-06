@@ -4,6 +4,14 @@
 // passed through the request orchestration layer. They are consumed by
 // checkJs (via the package-level tsconfig.json) and by PR3+ refactors.
 //
+// TRANSITIONAL (v1.3.0 TypeScript migration, PR 2): module successors for the
+// shared vocabulary already live in src/types/{protocol,policy,node,scheduler,
+// reliability}.ts and are imported by migrated .ts modules. The ambient
+// declarations below are kept ONLY for checkJs consumers in not-yet-migrated
+// .js modules (request/, runtime/, dashboard/, protocol/, transport/, stream/
+// etc.); this file is deleted once the runtime migration completes (PR 7 —
+// see docs/governance/typescript-migration.md).
+//
 // Style rules:
 //   - Prefer Readonly<> over mutable shapes for cross-module data.
 //   - Union types over enums for fixed string sets (lighter weight, runtime-free).

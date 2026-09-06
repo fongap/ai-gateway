@@ -19,9 +19,9 @@
 // for the lifetime of a single request and may be computed once and carried
 // through the pipeline.
 
-import { supportsRequest } from '../scheduler/scheduler.js';
+import { supportsRequest } from '../scheduler/scheduler.ts';
 import { TIER_ORDER } from './router.js';
-import { getFallbackChain } from '../config/protocol-fallbacks.js';
+import { getFallbackChain } from '../config/protocol-fallbacks.ts';
 
 /**
  * Evaluate whether a request has any reachable execution path.

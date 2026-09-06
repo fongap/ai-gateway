@@ -26,8 +26,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadGatewayConfig } from '../src/config/nodes.js';
-import { RUNTIME_VAR_NAMES } from '../src/config/runtime-vars.js';
+import { loadGatewayConfig } from '../src/config/nodes.ts';
+import { RUNTIME_VAR_NAMES } from '../src/config/runtime-vars.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const VAR_NAME = /^[A-Z][A-Z0-9_]{0,127}$/;
@@ -41,7 +41,7 @@ const MAX_VALUE_BYTES = 4500;
 
 // Individual Worker text variables the bridge recognizes from env (besides the
 // managed TIER node shards). Derived from the single source of truth in
-// src/config/runtime-vars.js so the deployment bridge, timeout loader, docs
+// src/config/runtime-vars.ts so the deployment bridge, timeout loader, docs
 // and example configs can never drift.
 const RUNTIME_VAR_PATTERN = new RegExp(
   '^(TIER[123]_NODES_CONFIG_\\d{2}|MODELS_CONFIG|POLICIES_CONFIG|' +

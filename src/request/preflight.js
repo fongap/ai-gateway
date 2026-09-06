@@ -30,14 +30,14 @@
 // the native / fallback tier loops. No state mutation, no scheduler
 // call, no Reliability touch, no Transport call.
 
-import { loadGatewayConfig } from '../config/nodes.js';
-import { loadModelsConfig } from '../config/models.js';
-import { loadPoliciesConfig, getPolicy } from '../config/policies.js';
-import { getLimits } from '../config/timeouts.js';
+import { loadGatewayConfig } from '../config/nodes.ts';
+import { loadModelsConfig } from '../config/models.ts';
+import { loadPoliciesConfig, getPolicy } from '../config/policies.ts';
+import { getLimits } from '../config/timeouts.ts';
 import { gatewayError } from './errors.js';
 import { authorize } from './auth.js';
-import { loadAccessKeysConfig } from '../config/access-keys.js';
-import { collectKnownModels } from '../config/registry.js';
+import { loadAccessKeysConfig } from '../config/access-keys.ts';
+import { collectKnownModels } from '../config/registry.ts';
 import { authorizeModel } from './model-authz.js';
 import { evaluateRouteFeasibility } from './route-feasibility.js';
 import { detectRoute, normalizePath, acceptsHtml } from './router.js';

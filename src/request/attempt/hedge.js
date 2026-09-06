@@ -9,8 +9,8 @@
 // primary, the shared logical-attempt deadline, and the winner/loser
 // lifecycle including abort of the losing side.
 
-import { pickCandidate } from '../../scheduler/scheduler.js';
-import { pickTier1Candidate } from '../../scheduler/tier1-scheduler.js';
+import { pickCandidate } from '../../scheduler/scheduler.ts';
+import { pickTier1Candidate } from '../../scheduler/tier1-scheduler.ts';
 import { attemptNode } from './dispatch.js';
 
 /** @param {number} ms */

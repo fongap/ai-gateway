@@ -13,9 +13,9 @@
 // below therefore speaks the Anthropic wire format.
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
-import { __resetAllStateForTests, getNodeState } from '../src/reliability/node-state.js';
-import { __resetTier1StateForTests, recordTier1Ttft } from '../src/reliability/tier1-state.js';
-import { __resetTier1AffinityForTests } from '../src/scheduler/tier1-affinity.js';
+import { __resetAllStateForTests, getNodeState } from '../src/reliability/node-state.ts';
+import { __resetTier1StateForTests, recordTier1Ttft } from '../src/reliability/tier1-state.ts';
+import { __resetTier1AffinityForTests } from '../src/scheduler/tier1-affinity.ts';
 
 const ACCESS_KEY = 'test-access-key';
 

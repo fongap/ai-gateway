@@ -14,9 +14,9 @@
 import { corsHeaders, shouldNotRetryHeaders, trimDiagnostic } from '../protocol/http.js';
 import { anthropicErrorTypeForStatus } from '../protocol/anthropic.js';
 import { responsesErrorResponse } from '../protocol/responses/index.js';
-import { getCooldownRemainingMs, getModelCooldownRemainingMs, getNodeState } from '../reliability/node-state.js';
-import { tier1BlockingWaitMs, tier1HasDeferredCapacity } from '../reliability/tier1-state.js';
-import { supportsRequest, isHardRpmExhausted, tierHasDeferredCapacity } from '../scheduler/scheduler.js';
+import { getCooldownRemainingMs, getModelCooldownRemainingMs, getNodeState } from '../reliability/node-state.ts';
+import { tier1BlockingWaitMs, tier1HasDeferredCapacity } from '../reliability/tier1-state.ts';
+import { supportsRequest, isHardRpmExhausted, tierHasDeferredCapacity } from '../scheduler/scheduler.ts';
 import { TIER_ORDER } from './router.js';
 
 // Unified gateway error: Anthropic-style for Anthropic routes, OpenAI
