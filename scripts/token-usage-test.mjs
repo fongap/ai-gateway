@@ -307,6 +307,27 @@ await test('模型使用 renders one row per model with bars plus a donut ring',
   assert.match(html, /<div class="bar-value">50<\/div>/, 'ultra row shows its exact total');
 });
 
+await test('模型使用 shows official logical IDs, not lowercase statistics keys', async () => {
+  __resetDashboardCacheForTests();
+  const d1 = createMockD1();
+  const env = deepClone(ENV);
+  env.TOKEN_STATS_DB = d1;
+  env.TIER1_NODES_CONFIG_01 = JSON.stringify([
+    { id: 'node-a', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], base_url: 'https://a.example.com/v1', models: { 'Code-Max': 'up-max', 'Code-Ultra': 'up-ultra' }, limits: { concurrency: 1 } },
+  ]);
+  env.TIER1_NODES_SECRETS_01 = JSON.stringify({ 'node-a': 'test-key' });
+  const HOUR = 3_600_000;
+  const h0 = Math.floor(Date.now() / HOUR) * HOUR;
+  await persistTokenUsage(env, { prompt_tokens: 900, completion_tokens: 0 }, h0, 'code-max');
+  await persistTokenUsage(env, { prompt_tokens: 300, completion_tokens: 0 }, h0, 'CODE-ULTRA');
+  const html = await pageText(anonRequest(), env);
+  assert.ok(html.includes('>Code-Max<'), 'official logical ID shown in the bars list');
+  assert.ok(html.includes('>Code-Ultra<'), 'case-variant canonical key resolves to the official ID');
+  assert.ok(!html.includes('>code-max<'), 'lowercase statistics key is not displayed');
+  assert.ok(!html.includes('>code-ultra<'), 'lowercase statistics key is not displayed');
+  assert.ok(html.includes('Code-Max\n900 Token'), 'donut tooltip carries the official name');
+});
+
 await test('模型使用 folds models beyond the top 4 into one 其他 row', async () => {
   const d1 = createMockD1();
   const env = deepClone(ENV);

@@ -194,17 +194,21 @@ const findCell = (h, iso) => flat(h).find((c) => c.date === iso) || null;
   const css = readFileSync(join(root, 'src/dashboard/theme.js'), 'utf8');
   const monthsRule = css.match(/\.months\{[^}]*\}/)?.[0] || '';
   const heatmapRule = css.match(/\.heatmap\{[^}]*\}/)?.[0] || '';
+  const cellRule = css.match(/\.cell\{[^}]*\}/)?.[0] || '';
   const monthsGrid = monthsRule.includes('display:grid')
-    && monthsRule.includes('grid-template-columns:repeat(var(--week-count,52),10px)');
+    && monthsRule.includes('grid-template-columns:repeat(var(--week-count,52),1fr)');
   const notFlex = !monthsRule.includes('display:flex') && !monthsRule.includes('space-between');
-  const heatmapSameTracks = heatmapRule.includes('grid-template-columns:repeat(var(--week-count,52),10px)');
+  const heatmapSameTracks = heatmapRule.includes('grid-template-columns:repeat(var(--week-count,52),1fr)');
+  // The heatmap fills the content width: 1fr tracks stretch, cells must not
+  // pin a fixed width.
+  const cellsStretch = heatmapRule.includes('1fr') && !cellRule.includes('width:10px');
   const usageView = readFileSync(join(root, 'src/dashboard/usage-view.js'), 'utf8');
   const weekCountWired = /class="heatmap" style="\$\{weekTracks\}"/.test(usageView)
     && /class="months" style="\$\{weekTracks\}"/.test(usageView);
   const titleUpdated = usageView.includes('Token 活动 · 近 52 周');
-  check('C15 .months uses the same --week-count CSS grid tracks as .heatmap (no flex/space-between)',
-    monthsGrid && notFlex && heatmapSameTracks && weekCountWired && titleUpdated,
-    `monthsGrid=${monthsGrid} notFlex=${notFlex} heatmapSameTracks=${heatmapSameTracks} wired=${weekCountWired} title=${titleUpdated}`);
+  check('C15 .months uses the same --week-count CSS grid tracks as .heatmap (no flex/space-between); heatmap fills the width',
+    monthsGrid && notFlex && heatmapSameTracks && cellsStretch && weekCountWired && titleUpdated,
+    `monthsGrid=${monthsGrid} notFlex=${notFlex} heatmapSameTracks=${heatmapSameTracks} cellsStretch=${cellsStretch} wired=${weekCountWired} title=${titleUpdated}`);
 }
 
 if (failures > 0) {
