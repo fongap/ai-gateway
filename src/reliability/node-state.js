@@ -60,8 +60,10 @@ function currentMinute(now) {
   return Math.floor(now / 60_000);
 }
 
-/** @param {string} nodeId */
-/** @param {number} now */
+/**
+ * @param {string} nodeId
+ * @param {number} now
+ */
 export function noteRpmRequest(nodeId, now) {
   const minute = currentMinute(now);
   const bucket = rpmBuckets.get(nodeId);
@@ -308,8 +310,10 @@ export function recordNeutralEnd(nodeId) {
 // for every other model it serves. model_missing never counts toward the
 // circuit (a mapping mismatch is not a transient outage) and never penalizes
 // node health (it says nothing about the node's ability to serve other models).
-/** @param {string} nodeId */
-/** @param {string} model */
+/**
+ * @param {string} nodeId
+ * @param {string} model
+ */
 export function recordModelMissing(nodeId, model, cooldownMs = MODEL_MISSING_COOLDOWN_MS, now = Date.now()) {
   const s = releaseAndReturn(nodeId);
   if (cooldownMs > 0) {
@@ -320,9 +324,11 @@ export function recordModelMissing(nodeId, model, cooldownMs = MODEL_MISSING_COO
 
 // True when this (node, model) pair is in a model_missing cooldown. Used by
 // the scheduler to skip the pair without disabling the whole node.
-/** @param {string} nodeId */
-/** @param {string} model */
-/** @param {number} [now] */
+/**
+ * @param {string} nodeId
+ * @param {string} model
+ * @param {number} [now]
+ */
 export function isModelCooling(nodeId, model, now = Date.now()) {
   const s = nodeState.get(nodeId);
   if (!s?.modelCooldowns?.size) return false;
@@ -330,9 +336,11 @@ export function isModelCooling(nodeId, model, now = Date.now()) {
   return until ? until > now : false;
 }
 
-/** @param {string} nodeId */
-/** @param {string} model */
-/** @param {number} [now] */
+/**
+ * @param {string} nodeId
+ * @param {string} model
+ * @param {number} [now]
+ */
 export function getModelCooldownRemainingMs(nodeId, model, now = Date.now()) {
   const s = nodeState.get(nodeId);
   if (!s?.modelCooldowns?.size) return 0;
@@ -347,8 +355,10 @@ function releaseAndReturn(nodeId) {
   return s;
 }
 
-/** @param {Record<string, any>} s */
-/** @param {number} now */
+/**
+ * @param {Record<string, any>} s
+ * @param {number} now
+ */
 function openCircuit(s, now) {
   s.circuitState = 'open';
   s.probeInFlight = false;
@@ -383,8 +393,10 @@ const PENALTY = {
   client: 0,
 };
 
-/** @param {string} nodeId */
-/** @param {string} kind */
+/**
+ * @param {string} nodeId
+ * @param {string} kind
+ */
 export function applyHealthPenalty(nodeId, kind) {
   const s = getNodeState(nodeId);
   const amount = PENALTY[kind] ?? 8;
@@ -464,15 +476,19 @@ function maybeCleanup(now) {
   }
 }
 
-/** @param {string} nodeId */
-/** @param {number} [now] */
+/**
+ * @param {string} nodeId
+ * @param {number} [now]
+ */
 export function getCooldownRemainingMs(nodeId, now = Date.now()) {
   const s = getNodeState(nodeId);
   return s.cooldownUntil > now ? s.cooldownUntil - now : 0;
 }
 
-/** @param {string} nodeId */
-/** @param {number} [now] */
+/**
+ * @param {string} nodeId
+ * @param {number} [now]
+ */
 export function snapshotNode(nodeId, now = Date.now()) {
   const s = getNodeState(nodeId);
   const cooling = s.cooldownUntil > now;

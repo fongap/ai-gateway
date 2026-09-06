@@ -28,12 +28,12 @@ export function getBool(env, name, fallback = false) {
 }
 
 /**
- * @param {string} value
+ * @param {string | undefined} value
  * @param {number} min
  * @param {number} max
  * @param {number} fallback
  */
 export function clampInt(value, min, max, fallback) {
-  const num = parseInt(value, 10);
+  const num = parseInt(value ?? '', 10);
   return Number.isFinite(num) ? Math.max(min, Math.min(max, num)) : fallback;
 }

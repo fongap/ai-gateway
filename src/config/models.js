@@ -24,22 +24,53 @@ const DEFAULT_DISPLAY_ORDER = 100;
 const DEFAULT_GROUP = 'general';
 const DEFAULT_UI_VISIBLE = true;
 
+/**
+ * A parsed MODELS_CONFIG entry. Optional fields are only present when
+ * explicitly configured (or defaulted) by the parse below.
+ *
+ * @typedef {{
+ *   policy: string,
+ *   visibility: string,
+ *   ui_visible: boolean,
+ *   display_order: number,
+ *   group: string,
+ *   capabilities?: Record<string, boolean>,
+ *   reasoning_efforts?: string[],
+ * }} ModelEntry
+ */
+
+/** @type {Record<string, any> | undefined} */
 let cachedEnv;
+/** @type {{ models: Record<string, ModelEntry>, errors: string[] } | undefined} */
 let cached;
 
+/**
+ * @param {Record<string, any>} env
+ * @returns {Record<string, ModelEntry>}
+ */
 export function loadModelsConfig(env) {
   return analyzeModels(env).models;
 }
 
+/**
+ * @param {Record<string, any>} env
+ * @returns {string[]}
+ */
 export function getModelsConfigDiagnostics(env) {
   return analyzeModels(env).errors;
 }
 
+/**
+ * @param {Record<string, any>} env
+ * @returns {{ models: Record<string, ModelEntry>, errors: string[] }}
+ */
 function analyzeModels(env) {
   if (cachedEnv === env && cached) return cached;
   cachedEnv = env;
   const raw = readEnv(env, 'MODELS_CONFIG');
+  /** @type {string[]} */
   const errors = [];
+  /** @type {Record<string, ModelEntry>} */
   const models = {};
   if (raw) {
     let parsed;
@@ -68,7 +99,8 @@ function analyzeModels(env) {
         // `policy` participates only when explicitly configured; a present
         // value (null included) must be a non-empty string. Unknown policy
         // names are cross-checked against POLICIES_CONFIG by nodes.js.
-        const entry = { policy: 'default', visibility: DEFAULT_VISIBILITY, ui_visible: DEFAULT_UI_VISIBLE };
+        /** @type {ModelEntry} */
+        const entry = { policy: 'default', visibility: DEFAULT_VISIBILITY, ui_visible: DEFAULT_UI_VISIBLE, display_order: DEFAULT_DISPLAY_ORDER, group: DEFAULT_GROUP };
         if (config.policy !== undefined) {
           if (typeof config.policy === 'string' && config.policy.trim()) {
             entry.policy = config.policy.trim();

@@ -43,7 +43,7 @@ import { servesModel } from '../config/registry.js';
 /**
  * @param {{ id: string, tier: string, provider: string, protocol: string, surfaces: string[], baseUrl: string, credential: string, priority: number, models: Record<string, string>, limits: { concurrency: number, rpm?: number, rpmMode?: string } }} node
  * @param {RoutableRequest} req
- * @param {Set<string>} knownModels
+ * @param {Set<string>} [knownModels]
  */
 export function supportsRequest(node, req, knownModels) {
   if (!req || typeof req !== 'object') return false;
@@ -103,7 +103,7 @@ export function rpmWindowRetryAfterSec(now = Date.now()) {
  * @param {RoutableRequest} req
  * @param {Set<string>} attempted
  * @param {number} [now]
- * @param {string} [excludeId]
+ * @param {string | null} [excludeId]
  * @param {Set<string>} [knownModels]
  */
 export function pickCandidate(tierNodes, req, attempted, now = Date.now(), excludeId = null, knownModels) {
