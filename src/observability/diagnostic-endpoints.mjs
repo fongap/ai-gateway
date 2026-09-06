@@ -17,7 +17,7 @@ import { filterVisibleModels as filterModelsByKey } from '../config/access-keys.
 export const APP_META = Object.freeze({
   name: 'ai-gateway',
   displayName: 'Smart AI Gateway',
-  version: '1.3.0',
+  version: '1.2.6',
 });
 
 function sanitizePrometheusLabel(value) {

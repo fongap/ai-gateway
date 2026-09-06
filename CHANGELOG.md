@@ -1,8 +1,10 @@
 ﻿# Changelog
 
-## 1.3.0 - 2026-09-06
+## 1.2.6 - 2026-09-06
 
 > 发布安全、事实一致性与架构收口版本。本阶段不含功能扩展；目标是将既有架构原则固化为代码、CI 与测试契约。
+>
+> 版本序列说明：计划中的 "1.2.7" 版本号从未发版（tag 序列停在 v1.2.5），属版本号笔误；本次发布定版为 **1.2.6**，包含自 v1.2.5 以来的全部变更（见下方两个部分）。
 
 ### Added — 发布链路与事实契约测试
 
@@ -18,7 +20,7 @@
 
 ### Changed — Dashboard 事实一致性(P1)
 
-- **兑现 1.2.7 已声明但 main 未实现的两项 Dashboard 事实**(v1.2.7 从未发版;契约测试已固化防止复发):
+- **兑现原 "1.2.7"(未发版)已声明但 main 未实现的两项 Dashboard 事实**(契约测试已固化防止复发):
   - **Recent Evidence 窗口唯一事实源**:`MODEL_STATUS_RECENT_WINDOW_MS = 24h` 定义收敛至 `token-usage-store/queries.js`(紧邻 `queryRecentModelEvidence` 默认参数),`src/runtime/model-status.js` re-export 同一绑定,Dashboard 调用点传常量。此前的硬编码 `7 * 24 * 60 * 60 * 1000`(实际 7 天)已移除。
   - **TTFT 全模型 grouped 查询**:新增 `queryAllModelsTtftPercentiles()` 单次 `GROUP BY model` D1 查询覆盖窗口内全部模型,内存计算 P50/P95/sampleCount/insufficient;Dashboard 不再 `slice(0, 4)` 依赖 Usage Top 4,不再每模型一次 D1 查询(N+1)。`ensureModelTtftContainers()` 保证每个 Public Model 都有结果容器——无数据模型渲染 `--s / -- samples` 而非缺失 key。统计维度保持 canonical key(trim + lowercase),桶上界精度与最小样本阈值(5)不变。
 - **Request Attempt Boundary 收口(P1-F)**:`src/request/attempt.js`(约 1100 行)保持稳定公共边界(handler.js 导入不变),内部按职责拆分为 `src/request/attempt/{index,dispatch,hedge,success,outcome,observability}.js`。行为保持:retry/logicalAttempts/dispatch/hedge/maxAttempts/maxDispatches/tier cap/failover budget/headers timeout/first event timeout/stream commit/penalty/cooldown/RPM/affinity/half-open/protocol fallback/response format 语义零修改,全部架构契约与测试套件原样通过。
@@ -59,9 +61,9 @@
 - **协议矩阵测试 `scripts/protocol-matrix-test.mjs` ×16**(已纳入 `npm test`):OpenAI Chat 成功/failover/hedge;Responses 原生链路(不经 Chat 转换、chat-only 节点被排除);Anthropic 原生链路(native 路径、`x-api-key`、`anthropic-beta` 透传、无 Bearer);**跨协议隔离**双向断言(failover 不跨越 protocol boundary);hedge 同协议同 surface 断言;旧配置(无 `protocol`/`surfaces`)端到端迁移与 deprecated diagnostic 断言。
 
 ---
-## 1.2.7 - 2026-09-04
+### 自 v1.2.5 以来未发版的治理内容（原计划版本号 "1.2.7"）
 
-### Changed — 模型治理与一致性收敛（v1.2.7）
+#### Changed — 模型治理与一致性收敛（v1.2.7）
 
 - **模型目录（Model Registry）新增 `ui_visible` 字段**：控制 Dashboard 与模型选择器的显示，与 API 可见性（`visibility`）解耦。8 个 Public 模型（Air/Pro/Max/Ultra, Code-Air/Code-Pro/Code-Max/Code-Ultra）为 `true`；Agent 能力模型 Omni/OCR 为 `false`，不出现在普通用户选择器与 Dashboard「模型状态」中，但保留完整的后台统计、健康监控与 Agent 发现能力。
 - **正式逻辑模型收敛为 10 个**：8 个面向用户 + 2 个 Agent 能力（Omni/OCR）。Group 分类收敛为 `general` / `code` / `omni` / `ocr`，`deriveGroup` 仅作兼容 fallback。
@@ -72,26 +74,26 @@
 - **Tier Secret 强制校验**：Node Tier 必须与 Secret Tier 一致（Tier1 node 不得使用 Tier2 secret），不匹配直接 diagnostics / fail closed。
 - **Malformed shard 检测全覆盖**：TIER1/2/3 的 NODES_CONFIG / NODES_SECRETS 统一校验后缀格式（如 `_01`），格式错误直接报错不再静默忽略。
 
-### Fixed — 可观测性一致性收敛
+#### Fixed — 可观测性一致性收敛
 
 - **统计维度大小写归一化**：`normalizeModelKey = trim + toLowerCase`。新写入直接写入 canonical key；历史读取统一 `GROUP BY LOWER(TRIM(model))`，合并 `Code-Max` / `code-max` / `CODE-MAX` 为同一统计维度。覆盖 Token / Requests / Top-N / Percentage / Recent Evidence / TTFT / Coverage 全维度。不修改历史 D1 行，新写入走 canonical key，历史按读取时归一化聚合，7 天保留期后旧大小写自然淘汰。
 - **Dashboard TTFT P50/P95 统一**：`queryAllModelsTtft` 单次 grouped D1 查询（`GROUP BY LOWER(TRIM(model))`）一次性拉取所有模型的 7 桶直方图，内存算 P50/P95，不再 N+1 查询 Top 4。8 个 Public Model 均可获取 TTFT（只要有数据），不再仅限 Usage Top 4。
 - **Recent Evidence 窗口收敛 24h**：统一使用 `MODEL_STATUS_RECENT_WINDOW_MS = 24h`，不再有硬编码 7 天。
 - **Public Model Status 仅显示 8 个 Public 模型**：Omni/OCR 后台继续完整统计与监控，但 Dashboard「模型状态」与 `/v1/models`（受限 Key）不再暴露。
 
-### Changed — 协议文档与版本收敛
+#### Changed — 协议文档与版本收敛
 
 - **协议架构描述统一**：OpenAI / Anthropic 双原生协议，Native First；仅 Anthropic Messages 在显式配置 `PROTOCOL_FALLBACKS` 时允许单向 fallback 至 OpenAI Chat；不存在隐式跨协议 fallback；Hedge 永不跨 protocol / surface。文档与代码注释同步修正。
-- **版本统一为 1.2.7**：`package.json` / `APP_META` / `CHANGELOG` / `README` / `docs` / `example config` 统一为 1.2.7。
+- **版本序列修正**：计划中的 "1.2.7" 从未发版；连同本次治理变更，本发布定版为 **1.2.6**（`package.json` / `APP_META` / `CHANGELOG` 统一为 1.2.6）。
 
-### Removed
+#### Removed
 
 - 删除废弃的转换代码残留与未使用的兼容层。
 - 冻结 Dashboard 布局调整（宽度/像素/间距/字体），专注治理正确性。
 
 ---
 
-### Added
+#### Added
 
 - **Public Model Status 使用 Runtime + D1 recent evidence。**
 - **TTFT histogram** (7-bucket, per-model, per-hour)。
@@ -100,7 +102,7 @@
 - **模型状态性能展示** (status + TTFT P50 + P95 + sample count)。
 - 相关测试 (`reliability-performance-test.mjs` ×40)。
 
-### Changed
+#### Changed
 
 - **Dashboard 信息架构调整**：TTFT 从"使用情况"移动至"模型状态"。
 - **模型状态统一展示**当前状态和近期 TTFT (P50 / P95 / 样本数)。
@@ -108,7 +110,7 @@
 - **Reliability 指标修正为 Usage Coverage 语义** (`queryModelUsageCoverage`)。
 - npm 脚本重命名：`test:required` → `test:unit`、`test:full` → `test:all`、`verify` → `validate:merge`、`verify:full` → `validate:deploy`。
 
-### Fixed
+#### Fixed
 
 - **Public Model Status 在新 isolate 下容易全部显示"未观测"**。
 - **Provider Discovery upload-artifact SHA 错误** (`bbb15f1f` → `330a01c4`)。
