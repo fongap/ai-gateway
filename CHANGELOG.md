@@ -8,6 +8,7 @@
 
 - **Deployment Workflow Contract Test `scripts/deployment-workflow-contract-test.mjs` ×7**（已纳入 `test:unit` / `validate:merge`）:01 D1 migration 必须先于 Worker deploy;02 生产部署必须依赖完整 `validate:deploy`;03 migration 失败必须阻断 deploy;04 health check 必须在 deploy 之后;05 仅在"已部署 + 后续失败"时回滚;06 Markdown-only 修改跳过生产部署;07 Fork 未显式 `DEPLOY_ENABLED=true` 不得自动部署。
 - **Model Status Recent-Evidence Window Contract `scripts/model-status-window-contract-test.mjs`**:23h 成功 = evidence / 25h = 非 evidence(默认窗口)、store/runtime 同一绑定、调用点必须传常量、证据链禁 7d/168h/604800000 字面量。
+- **Modalities schema 预留（Omni phase, P2-D）**:`MODELS_CONFIG` 模型条目接受 `modalities: { input: [...], output: [...] }`(闭集词汇 `text/image/audio/video`)。仅解析、校验(FATAL on invalid)并随 Model Registry 携带;不路由、不暴露于公开 API surface,未声明模型不携带该字段。语义约定:`modalities` = 能输入/输出什么,`capabilities` = 能做什么。新增 Omni 阶段唯一入口即扩展 `MODALITY_TOKENS` 闭集。
 - **TTFT Query Contract `scripts/ttft-query-contract-test.mjs` ×10**:全模型结果容器(缺数据 → insufficient/noSamples,不缺 key)、查询次数固定 1 次不随模型数增长、canonical key 大小写合并、低于最小样本 `p50/p95=null, insufficient=true`、百分位为桶上界精度、无 binding 时 fail-open。
 
 ### Changed — 发布安全(P0)

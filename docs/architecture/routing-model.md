@@ -6,7 +6,7 @@
 
 ## Model Registry
 
-Model Registry (`src/config/registry.js`) 是逻辑模型的策略和能力（`capabilities.tools/reasoning/vision/stream`、`reasoning_efforts`）的唯一事实来源，由 `MODELS_CONFIG` 驱动。`/v1/models` 枚举至少一个节点服务的注册模型，报告 `api_backends`（provider 标签，或 `apiBackend: "mixed"`）和节点 `surfaces` 的并集——不从 provider 标签推导能力。
+Model Registry (`src/config/registry.js`) 是逻辑模型的策略和能力（`capabilities.tools/reasoning/vision/stream`、`reasoning_efforts`）的唯一事实来源，由 `MODELS_CONFIG` 驱动。`MODELS_CONFIG` 亦接受 `modalities: { input: [...], output: [...] }` schema 预留（闭集词汇 `text/image/audio/video`，语义：模型能接收/输出什么；`capabilities` 语义：模型能做什么）。该字段当前仅解析、校验并随注册表携带——**不做任何路由，也不暴露于任何公开 API surface**，供 Omni 阶段启用；未声明的模型不携带该字段（under-report 原则）。`/v1/models` 枚举至少一个节点服务的注册模型，报告 `api_backends`（provider 标签，或 `apiBackend: "mixed"`）和节点 `surfaces` 的并集——不从 provider 标签推导能力。
 
 ## Node 与 Tier
 

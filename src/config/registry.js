@@ -34,20 +34,20 @@ const DEFAULT_UI_VISIBLE = true;
 
 /** @type {Record<string, any> | undefined} */
 let cachedEnv;
-/** @type {Record<string, { policy: string, visibility: string, capabilities: Record<string, boolean>, reasoning_efforts: string[], display_order: number, group: string, ui_visible: boolean }> | undefined} */
+/** @type {Record<string, { policy: string, visibility: string, capabilities: Record<string, boolean>, reasoning_efforts: string[], modalities?: { input: string[], output: string[] }, display_order: number, group: string, ui_visible: boolean }> | undefined} */
 let cachedRegistry;
 
 // Build the authoritative registry object: { logicalModel: { policy,
 // capabilities, reasoning_efforts, visibility } }.
 /**
  * @param {Record<string, any>} env
- * @returns {Record<string, { policy: string, visibility: string, capabilities: Record<string, boolean>, reasoning_efforts: string[], display_order: number, group: string, ui_visible: boolean }>}
+ * @returns {Record<string, { policy: string, visibility: string, capabilities: Record<string, boolean>, reasoning_efforts: string[], modalities?: { input: string[], output: string[] }, display_order: number, group: string, ui_visible: boolean }>}
  */
 export function loadModelRegistry(env) {
   if (cachedEnv === env && cachedRegistry) return cachedRegistry;
   cachedEnv = env;
   const models = loadModelsConfig(env);
-  /** @type {Record<string, { policy: string, visibility: string, capabilities: Record<string, boolean>, reasoning_efforts: string[], display_order: number, group: string, ui_visible: boolean }>} */
+  /** @type {Record<string, { policy: string, visibility: string, capabilities: Record<string, boolean>, reasoning_efforts: string[], modalities?: { input: string[], output: string[] }, display_order: number, group: string, ui_visible: boolean }>} */
   const registry = {};
   for (const [name, cfg] of Object.entries(models)) {
     registry[name] = {
@@ -57,6 +57,10 @@ export function loadModelRegistry(env) {
       reasoning_efforts: Array.isArray(cfg.reasoning_efforts) && cfg.reasoning_efforts.length
         ? cfg.reasoning_efforts
         : [...DEFAULT_REASONING_EFFORTS],
+      // Omni-phase schema reservation: carried only when explicitly declared
+      // (under-report principle). Nothing routes on it and no public surface
+      // exposes it yet.
+      ...(cfg.modalities ? { modalities: cfg.modalities } : {}),
       display_order: cfg.display_order !== undefined ? cfg.display_order : DEFAULT_DISPLAY_ORDER,
       group: cfg.group !== undefined ? cfg.group : DEFAULT_GROUP,
       ui_visible: cfg.ui_visible !== undefined ? cfg.ui_visible : DEFAULT_UI_VISIBLE,
