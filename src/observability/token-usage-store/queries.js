@@ -19,13 +19,13 @@
 //   queryRecentModelEvidence - recent successful traffic
 //
 // TTFT percentile consumer (src/dashboard/pages.js):
-//   queryModelTtftPercentiles
+//   queryAllModelsTtftPercentiles
 
 import {
   TABLE, TABLE_MODEL, TABLE_TOTALS, TABLE_DAILY,
   HOUR_MS, DAY_MS,
   TTFT_BUCKET_BOUNDARIES_MS,
-  normalizeHour, utc8DayStartUtcMs, isoDayUtc8,
+  normalizeHour, normalizeModelKey, utc8DayStartUtcMs, isoDayUtc8,
   DISPLAY_TIMEZONE_OFFSET_MS,
   tokenStatsD1,
 } from './keys.js';
@@ -260,6 +260,12 @@ export async function queryTokenModelUsage(env, days = 7, now = Date.now()) {
   }
 }
 
+// Recent Evidence window for the Public Model Status layer. This is the
+// SINGLE definition of that window (24h): the runtime constant
+// src/runtime/model-status.js re-exports this binding, and every caller
+// must pass it (or rely on this default) instead of hardcoding days.
+export const MODEL_STATUS_RECENT_WINDOW_MS = 24 * HOUR_MS;
+
 // Recent-success evidence for the Public Model Status layer
 // (src/runtime/model-status.js). Returns a Set<string> of logical
 // model names that have at least one request in the per-model hourly
@@ -271,7 +277,7 @@ export async function queryTokenModelUsage(env, days = 7, now = Date.now()) {
 // Fail-open: missing binding → empty Set, query failure → empty
 // Set. NEVER fabricates evidence — an empty Set is "no evidence",
 // not "evidence of failure".
-export async function queryRecentModelEvidence(env, windowMs = 24 * HOUR_MS, now = Date.now()) {
+export async function queryRecentModelEvidence(env, windowMs = MODEL_STATUS_RECENT_WINDOW_MS, now = Date.now()) {
   const d1 = tokenStatsD1(env);
   if (!d1) return new Set();
   const startHour = normalizeHour(now - windowMs);
@@ -296,6 +302,66 @@ export async function queryRecentModelEvidence(env, windowMs = 24 * HOUR_MS, now
   }
 }
 
+// Query TTFT histogram aggregates for ALL models in the window with ONE
+// grouped D1 query (GROUP BY model), then compute percentiles in memory.
+// The dashboard must not issue one query per model (N+1) nor limit TTFT
+// visibility to Usage Top-N. Rows are keyed by the canonical statistical
+// model key (trim + lowercase). Each entry:
+//   { available: true, p50, p95, sampleCount, insufficient }
+//   samples < TTFT_MIN_SAMPLES -> p50/p95 null, insufficient: true
+//   (bucket-upper-bound precision, never a fabricated precise value).
+export async function queryAllModelsTtftPercentiles(env, days = 7, now = Date.now()) {
+  const d1 = tokenStatsD1(env);
+  if (!d1) return { available: false, error: 'TOKEN_STATS_DB binding missing' };
+  const startHour = normalizeHour(now - days * DAY_MS);
+  try {
+    const res = await d1.prepare(
+      `SELECT model,
+              COALESCE(SUM(successful_ttft_count), 0) AS total_ttft,
+              COALESCE(SUM(ttft_b0), 0) AS b0,
+              COALESCE(SUM(ttft_b1), 0) AS b1,
+              COALESCE(SUM(ttft_b2), 0) AS b2,
+              COALESCE(SUM(ttft_b3), 0) AS b3,
+              COALESCE(SUM(ttft_b4), 0) AS b4,
+              COALESCE(SUM(ttft_b5), 0) AS b5,
+              COALESCE(SUM(ttft_b6), 0) AS b6
+       FROM ${TABLE_MODEL}
+       WHERE hour >= ?
+       GROUP BY model`,
+    ).bind(startHour).all();
+    const rows = Array.isArray(res?.results) ? res.results : [];
+    const ttft = new Map();
+    for (const row of rows) {
+      const key = normalizeModelKey(row?.model);
+      if (!key) continue;
+      const total = Number(row.total_ttft) || 0;
+      if (total < TTFT_MIN_SAMPLES) {
+        ttft.set(key, { available: true, p50: null, p95: null, sampleCount: total, insufficient: true });
+        continue;
+      }
+      const buckets = [
+        Number(row.b0) || 0,
+        Number(row.b1) || 0,
+        Number(row.b2) || 0,
+        Number(row.b3) || 0,
+        Number(row.b4) || 0,
+        Number(row.b5) || 0,
+        Number(row.b6) || 0,
+      ];
+      ttft.set(key, {
+        available: true,
+        p50: percentileFromBuckets(buckets, total, 0.5),
+        p95: percentileFromBuckets(buckets, total, 0.95),
+        sampleCount: total,
+        insufficient: false,
+      });
+    }
+    return { available: true, ttft };
+  } catch (e) {
+    return { available: false, error: `queryAllModelsTtftPercentiles: ${e?.message || e}` };
+  }
+}
+
 // Query TTFT percentiles from the histogram buckets for a given model.
 // Returns the UPPER BOUND of the bucket containing the percentile
 // (matching the bucket precision contract — no fake precise values).
@@ -303,44 +369,7 @@ export async function queryRecentModelEvidence(env, windowMs = 24 * HOUR_MS, now
 // meaningful percentiles. Below that, `insufficient: true` is
 // returned so the dashboard can display "样本不足" instead of
 // misleading numbers.
-export async function queryModelTtftPercentiles(env, model, days = 7, now = Date.now()) {
-  const d1 = tokenStatsD1(env);
-  if (!d1) return { available: false, error: 'TOKEN_STATS_DB binding missing' };
-  if (typeof model !== 'string' || model.length === 0) return { available: false, error: 'model required' };
-  const startHour = normalizeHour(now - days * DAY_MS);
-  try {
-    const res = await d1.prepare(
-      `SELECT
-        COALESCE(SUM(successful_ttft_count), 0) AS total_ttft,
-        COALESCE(SUM(ttft_b0), 0) AS b0,
-        COALESCE(SUM(ttft_b1), 0) AS b1,
-        COALESCE(SUM(ttft_b2), 0) AS b2,
-        COALESCE(SUM(ttft_b3), 0) AS b3,
-        COALESCE(SUM(ttft_b4), 0) AS b4,
-        COALESCE(SUM(ttft_b5), 0) AS b5,
-        COALESCE(SUM(ttft_b6), 0) AS b6
-       FROM ${TABLE_MODEL}
-       WHERE hour >= ? AND model = ?`,
-    ).bind(startHour, model).first();
-    if (!res || typeof res !== 'object') return { available: false, error: 'no data' };
-    const total = Number(res.total_ttft) || 0;
-    if (total < 5) return { available: true, p50: null, p95: null, sampleCount: total, insufficient: true };
-    const buckets = [
-      Number(res.b0) || 0,
-      Number(res.b1) || 0,
-      Number(res.b2) || 0,
-      Number(res.b3) || 0,
-      Number(res.b4) || 0,
-      Number(res.b5) || 0,
-      Number(res.b6) || 0,
-    ];
-    const p50 = percentileFromBuckets(buckets, total, 0.5);
-    const p95 = percentileFromBuckets(buckets, total, 0.95);
-    return { available: true, p50, p95, sampleCount: total, insufficient: false };
-  } catch (e) {
-    return { available: false, error: `queryModelTtftPercentiles: ${e?.message || e}` };
-  }
-}
+const TTFT_MIN_SAMPLES = 5;
 
 function percentileFromBuckets(buckets, total, pct) {
   const threshold = Math.ceil(total * pct);

@@ -36,7 +36,14 @@ export const KEY_GROUPS = Object.freeze(['AIR', 'PRO', 'MAX', 'ULTRA', 'AGENT'])
 // Parse a CSV model list. Whitespace around entries is trimmed; empty
 // entries are dropped. A single "*" entry becomes allowAll=true. Returns
 // { allowAll, allowlist, warnings, errors }.
+/**
+ * @param {unknown} raw
+ * @param {string} group
+ * @param {ReadonlySet<string> | null} knownModels
+ * @returns {{ allowAll: boolean, allowlist: Set<string>, warnings: string[], errors: string[] }}
+ */
 function parseModelsField(raw, group, knownModels) {
+  /** @type {{ allowAll: boolean, allowlist: Set<string>, warnings: string[], errors: string[] }} */
   const out = { allowAll: false, allowlist: new Set(), warnings: [], errors: [] };
   if (raw === undefined || raw === null) return out; // missing -> empty allowlist (fail closed)
   if (typeof raw !== 'string') {
@@ -70,24 +77,42 @@ function parseModelsField(raw, group, knownModels) {
 // compatibility with callers that imported them from this module.
 export { collectKnownModels, collectConfiguredModels } from './registry.js';
 
+/** @type {Record<string, any> | null | undefined} */
 let cachedEnv;
+/** Legacy shape: nested `config` plus the original top-level fields. */
+/** @type {{ config: { keys: Array<{ group: string, secret: string, allowAll: boolean, allowlist: Set<string> }>, diagnostics: string[], anyNewKey: boolean }, keys: Array<{ group: string, secret: string, allowAll: boolean, allowlist: Set<string> }>, diagnostics: string[], anyNewKey: boolean } | null | undefined} */
 let cachedConfig;
 
+/**
+ * @param {Record<string, any>} env
+ * @returns {{ keys: Array<{ group: string, secret: string, allowAll: boolean, allowlist: Set<string> }>, anyNewKey: boolean }}
+ */
 export function loadAccessKeysConfig(env) {
   return analyzeAccessKeys(env).config;
 }
 
+/**
+ * @param {Record<string, any>} env
+ * @returns {string[]}
+ */
 export function getAccessKeysDiagnostics(env) {
   return analyzeAccessKeys(env).diagnostics;
 }
 
+/**
+ * @param {Record<string, any>} env
+ * @returns {{ config: { keys: Array<{ group: string, secret: string, allowAll: boolean, allowlist: Set<string> }>, anyNewKey: boolean }, diagnostics: string[] }}
+ */
 function analyzeAccessKeys(env) {
   if (cachedEnv === env && cachedConfig) return cachedConfig;
   cachedEnv = env;
+  /** @type {string[]} */
   const diagnostics = [];
+  /** @type {Array<{ group: string, secret: string, allowAll: boolean, allowlist: Set<string> }>} */
   const keys = [];
   // We need to know which logical models are currently configured to cross-check
   // the per-group allowlist. loadGatewayConfig is cached too, so this is cheap.
+  /** @type {Array<RuntimeNode>} */
   let nodes = [];
   try {
     nodes = loadGatewayConfig(env).nodes || [];
@@ -143,6 +168,12 @@ function analyzeAccessKeys(env) {
 // call used by the request handler — it must be paired with the live
 // `configuredModels` set so that allowAll never grants a model that is
 // not currently configured.
+/**
+ * @param {{ allowAll: boolean, allowlist: Set<string> } | null | undefined} keyEntry
+ * @param {string} model
+ * @param {ReadonlySet<string> | null | undefined} configuredModels
+ * @returns {boolean}
+ */
 export function keyAllowsModel(keyEntry, model, configuredModels) {
   if (!keyEntry) return false;
   if (keyEntry.allowAll) {
@@ -154,6 +185,11 @@ export function keyAllowsModel(keyEntry, model, configuredModels) {
 
 // Filter the configured model set to the key's allowlist. This is what
 // /v1/models returns. Visible == Callable by construction.
+/**
+ * @param {{ allowAll: boolean, allowlist: Set<string> } | null | undefined} keyEntry
+ * @param {ReadonlySet<string> | null | undefined} configuredModels
+ * @returns {string[]}
+ */
 export function filterVisibleModels(keyEntry, configuredModels) {
   if (!configuredModels) return [];
   if (keyEntry?.allowAll) return [...configuredModels].sort();

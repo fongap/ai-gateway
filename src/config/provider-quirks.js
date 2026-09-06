@@ -20,6 +20,10 @@
 //      /v1/responses or /v1/messages), minus the operator's explicit
 //      per-provider off-list STREAM_USAGE_INCLUDE_OFF_PROVIDERS.
 // A provider that rejects `include_usage` can be opted out without code edits.
+/**
+ * @param {{ protocol?: string, surfaces?: ReadonlyArray<string>, provider?: string }} node
+ * @param {Record<string, any>} [env]
+ */
 export function streamUsageSupported(node, env = {}) {
   const mode = String(env?.STREAM_INCLUDE_USAGE ?? '').trim().toLowerCase();
   if (mode === 'off') return false;

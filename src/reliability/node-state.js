@@ -26,6 +26,7 @@
 // affects auto-computed defaults (fallback cooldowns like rateLimitCooldownMs,
 // authFailCooldownMs, model missing, etc.).
 const JITTER_FACTOR = 0.1;
+/** @param {number} cooldownMs */
 function maybeJitter(cooldownMs) {
   if (cooldownMs <= 0) return cooldownMs;
   const delta = cooldownMs * JITTER_FACTOR;
@@ -54,10 +55,15 @@ const MODEL_PERF_MAX = 16; // per-node model perf entries before LRU eviction
 // last-resort fallback. The counter is isolate-local and never a global quota.
 const rpmBuckets = new Map(); // nodeId -> { minute, count }
 
+/** @param {number} now */
 function currentMinute(now) {
   return Math.floor(now / 60_000);
 }
 
+/**
+ * @param {string} nodeId
+ * @param {number} now
+ */
 export function noteRpmRequest(nodeId, now) {
   const minute = currentMinute(now);
   const bucket = rpmBuckets.get(nodeId);
@@ -69,6 +75,7 @@ export function noteRpmRequest(nodeId, now) {
 }
 // eslint-disable-next-line
 // Requests already issued by this node within the current minute.
+/** @param {string} nodeId @param {number} [now] */
 export function rpmUsage(nodeId, now = Date.now()) {
   const bucket = rpmBuckets.get(nodeId);
   if (!bucket || bucket.minute !== currentMinute(now)) return 0;
@@ -84,6 +91,7 @@ export function rpmUsage(nodeId, now = Date.now()) {
 // If the minute window has rolled over since the reservation was made, the old
 // bucket is already gone (or will be pruned) and there is nothing to roll back
 // in the current window — the reservation aged out naturally.
+/** @param {string} nodeId @param {number} [now] */
 export function rollbackRpmBucket(nodeId, now = Date.now()) {
   const bucket = rpmBuckets.get(nodeId);
   if (bucket && bucket.minute === currentMinute(now)) {
@@ -130,6 +138,7 @@ function createState() {
   };
 }
 
+/** @param {string} nodeId */
 export function getNodeState(nodeId) {
   let s = nodeState.get(nodeId);
   if (!s) {
@@ -143,6 +152,7 @@ export function getNodeState(nodeId) {
 
 // Pure check used by candidate scoring; does not mutate anything.
 // Returns 'yes', 'probe' (circuit ready for its single half-open probe), or 'no'.
+/** @param {string} nodeId @param {number} [now] */
 export function peekAvailability(nodeId, now = Date.now()) {
   const s = getNodeState(nodeId);
   if (s.cooldownUntil > now) return 'no';
@@ -155,6 +165,7 @@ export function peekAvailability(nodeId, now = Date.now()) {
 // Commit a selection: claims a concurrency slot. When the node was ready to
 // be probed, this request becomes THE single half-open probe.
 // Must only be called after peekAvailability returned 'yes'|'probe'.
+/** @param {string} nodeId @param {number} [now] */
 export function acquireSlot(nodeId, now = Date.now()) {
   const s = getNodeState(nodeId);
   if (peekAvailability(nodeId, now) === 'no') return false;
@@ -174,6 +185,7 @@ export function acquireSlot(nodeId, now = Date.now()) {
 
 // ---- Outcomes --------------------------------------------------------------
 
+/** @param {string} nodeId @param {number} latencyMs @param {string} model @param {number} [now] */
 export function recordSuccess(nodeId, latencyMs, model, now = Date.now()) {
   const s = releaseAndReturn(nodeId);
   s.totalSuccesses++;
@@ -187,6 +199,7 @@ export function recordSuccess(nodeId, latencyMs, model, now = Date.now()) {
   recoverFromHalfOpen(s);
 }
 
+/** @param {string} nodeId @param {number} ttftMs @param {string} model */
 export function recordTtft(nodeId, ttftMs, model, { source = 'passive' } = {}) {
   const s = getNodeState(nodeId);
   const alpha = source === 'probe' ? PROBE_EWMA_ALPHA : LATENCY_EWMA_ALPHA;
@@ -196,12 +209,13 @@ export function recordTtft(nodeId, ttftMs, model, { source = 'passive' } = {}) {
   if (model) updateModelPerf(s, model, { ttftMs, source });
 }
 
+/** @param {string} nodeId @param {string} model */
 export function getModelPerf(nodeId, model) {
   const s = nodeState.get(nodeId);
   return s?.modelPerf?.get(model) || null;
 }
 
-/** @param {{ ttftMs?: number, latencyMs?: number, source?: string }} opts */
+/** @param {Record<string, any>} s @param {string} model @param {{ ttftMs?: number, latencyMs?: number, source?: string }} opts @param {number} [now] */
 function updateModelPerf(s, model, opts = {}, now = Date.now()) {
   const { ttftMs, latencyMs, source = 'passive' } = opts;
   let entry = s.modelPerf.get(model);
@@ -238,6 +252,7 @@ function updateModelPerf(s, model, opts = {}, now = Date.now()) {
   }
 }
 
+/** @param {string} nodeId @param {string} model @param {number} [now] */
 export function markProbeFailure(nodeId, model, now = Date.now()) {
   const s = getNodeState(nodeId);
   let entry = s.modelPerf.get(model);
@@ -250,6 +265,11 @@ export function markProbeFailure(nodeId, model, now = Date.now()) {
 // `reason` set the node-local cooldown window. When `cooldownMs` comes from
 // an auto-computed fallback (no explicit Retry-After), a light ±10% jitter
 // is applied to avoid synchronized re-probes across isolates.
+/**
+ * @param {string} nodeId
+ * @param {{ counted?: boolean, cooldownMs?: number, reason?: string | null }} [opts]
+ * @param {number} [now]
+ */
 export function recordFailure(nodeId, { counted = false, cooldownMs = 0, reason = null } = {}, now = Date.now()) {
   const s = releaseAndReturn(nodeId);
   s.totalFailures++;
@@ -280,6 +300,7 @@ export function recordFailure(nodeId, { counted = false, cooldownMs = 0, reason 
   }
 }
 
+/** @param {string} nodeId */
 export function recordNeutralEnd(nodeId) {
   const s = releaseAndReturn(nodeId);
   // A neutral end (client abort / no-charge) during a half-open probe must not
@@ -293,6 +314,10 @@ export function recordNeutralEnd(nodeId) {
 // for every other model it serves. model_missing never counts toward the
 // circuit (a mapping mismatch is not a transient outage) and never penalizes
 // node health (it says nothing about the node's ability to serve other models).
+/**
+ * @param {string} nodeId
+ * @param {string} model
+ */
 export function recordModelMissing(nodeId, model, cooldownMs = MODEL_MISSING_COOLDOWN_MS, now = Date.now()) {
   const s = releaseAndReturn(nodeId);
   if (cooldownMs > 0) {
@@ -303,6 +328,11 @@ export function recordModelMissing(nodeId, model, cooldownMs = MODEL_MISSING_COO
 
 // True when this (node, model) pair is in a model_missing cooldown. Used by
 // the scheduler to skip the pair without disabling the whole node.
+/**
+ * @param {string} nodeId
+ * @param {string} model
+ * @param {number} [now]
+ */
 export function isModelCooling(nodeId, model, now = Date.now()) {
   const s = nodeState.get(nodeId);
   if (!s?.modelCooldowns?.size) return false;
@@ -310,6 +340,11 @@ export function isModelCooling(nodeId, model, now = Date.now()) {
   return until ? until > now : false;
 }
 
+/**
+ * @param {string} nodeId
+ * @param {string} model
+ * @param {number} [now]
+ */
 export function getModelCooldownRemainingMs(nodeId, model, now = Date.now()) {
   const s = nodeState.get(nodeId);
   if (!s?.modelCooldowns?.size) return 0;
@@ -317,12 +352,17 @@ export function getModelCooldownRemainingMs(nodeId, model, now = Date.now()) {
   return until && until > now ? until - now : 0;
 }
 
+/** @param {string} nodeId */
 function releaseAndReturn(nodeId) {
   const s = getNodeState(nodeId);
   s.activeRequests = Math.max(0, s.activeRequests - 1);
   return s;
 }
 
+/**
+ * @param {Record<string, any>} s
+ * @param {number} now
+ */
 function openCircuit(s, now) {
   s.circuitState = 'open';
   s.probeInFlight = false;
@@ -336,6 +376,7 @@ function openCircuit(s, now) {
 // release the probe slot, and clear the consecutive-failure chain so the node
 // can be scheduled again after any node-local cooldown expires. This is the ONLY
 // place that recovers from half-open; it guarantees probeInFlight can never leak.
+/** @param {Record<string, any>} s */
 function recoverFromHalfOpen(s) {
   if (s.circuitState === 'half-open' || s.probeInFlight) {
     s.circuitState = 'closed';
@@ -346,6 +387,7 @@ function recoverFromHalfOpen(s) {
 
 // ---- Health penalty helper -------------------------------------------------
 
+/** @type {Record<string, number>} */
 const PENALTY = {
   rate_limit: 10,
   auth: 30,
@@ -355,6 +397,10 @@ const PENALTY = {
   client: 0,
 };
 
+/**
+ * @param {string} nodeId
+ * @param {string} kind
+ */
 export function applyHealthPenalty(nodeId, kind) {
   const s = getNodeState(nodeId);
   const amount = PENALTY[kind] ?? 8;
@@ -370,6 +416,7 @@ export function applyHealthPenalty(nodeId, kind) {
 // stay driven by the real outcome path for Tier 2/3 and stay neutral for
 // Tier 1 (whose slot/concurrency is owned by tier1-state). Mirroring business
 // stats here is explicitly allowed: "D1/KV 中与业务统计相关的现有能力" stays.
+/** @param {string} nodeId */
 export function bumpNodeCounters(nodeId, { requests = 0, successes = 0, failures = 0 } = {}, now = Date.now()) {
   const s = getNodeState(nodeId);
   if (requests) { s.totalRequests += requests; s.lastUsedAt = now; }
@@ -379,6 +426,7 @@ export function bumpNodeCounters(nodeId, { requests = 0, successes = 0, failures
 
 // ---- Maintenance & snapshots ----------------------------------------------
 
+/** @param {number} now */
 function maybeCleanup(now) {
   if (now - lastCleanup < CLEANUP_INTERVAL_MS) return;
   lastCleanup = now;
@@ -432,11 +480,19 @@ function maybeCleanup(now) {
   }
 }
 
+/**
+ * @param {string} nodeId
+ * @param {number} [now]
+ */
 export function getCooldownRemainingMs(nodeId, now = Date.now()) {
   const s = getNodeState(nodeId);
   return s.cooldownUntil > now ? s.cooldownUntil - now : 0;
 }
 
+/**
+ * @param {string} nodeId
+ * @param {number} [now]
+ */
 export function snapshotNode(nodeId, now = Date.now()) {
   const s = getNodeState(nodeId);
   const cooling = s.cooldownUntil > now;
@@ -461,6 +517,7 @@ export function snapshotNode(nodeId, now = Date.now()) {
 // Used by availability.js to distinguish 'unobserved' from 'available' for
 // Tier 2/3 — a fresh isolate's default circuitState==='closed' must NOT be
 // reported as 'available' without at least one observed success.
+/** @param {string} nodeId */
 export function hasBeenObserved(nodeId) {
   const s = nodeState.get(nodeId);
   return Boolean(s && s.totalSuccesses > 0);

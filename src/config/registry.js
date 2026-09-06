@@ -24,6 +24,7 @@ import { loadModelsConfig } from './models.js';
 // turns a capability on. This keeps /v1/models from promising tools/reasoning
 // for third-party OpenAI-compatible models that may not have them.
 const DEFAULT_CAPABILITIES = Object.freeze({ tools: false, reasoning: false, vision: false, stream: true, ocr: false });
+/** @type {readonly string[]} */
 const DEFAULT_REASONING_EFFORTS = Object.freeze([]);
 const DEFAULT_POLICY = 'default';
 const DEFAULT_VISIBILITY = 'public';
@@ -31,15 +32,22 @@ const DEFAULT_DISPLAY_ORDER = 100;
 const DEFAULT_GROUP = 'general';
 const DEFAULT_UI_VISIBLE = true;
 
+/** @type {Record<string, any> | undefined} */
 let cachedEnv;
+/** @type {Record<string, { policy: string, visibility: string, capabilities: Record<string, boolean>, reasoning_efforts: string[], modalities?: { input: string[], output: string[] }, display_order: number, group: string, ui_visible: boolean }> | undefined} */
 let cachedRegistry;
 
 // Build the authoritative registry object: { logicalModel: { policy,
 // capabilities, reasoning_efforts, visibility } }.
+/**
+ * @param {Record<string, any>} env
+ * @returns {Record<string, { policy: string, visibility: string, capabilities: Record<string, boolean>, reasoning_efforts: string[], modalities?: { input: string[], output: string[] }, display_order: number, group: string, ui_visible: boolean }>}
+ */
 export function loadModelRegistry(env) {
   if (cachedEnv === env && cachedRegistry) return cachedRegistry;
   cachedEnv = env;
   const models = loadModelsConfig(env);
+  /** @type {Record<string, { policy: string, visibility: string, capabilities: Record<string, boolean>, reasoning_efforts: string[], modalities?: { input: string[], output: string[] }, display_order: number, group: string, ui_visible: boolean }>} */
   const registry = {};
   for (const [name, cfg] of Object.entries(models)) {
     registry[name] = {
@@ -49,6 +57,10 @@ export function loadModelRegistry(env) {
       reasoning_efforts: Array.isArray(cfg.reasoning_efforts) && cfg.reasoning_efforts.length
         ? cfg.reasoning_efforts
         : [...DEFAULT_REASONING_EFFORTS],
+      // Omni-phase schema reservation: carried only when explicitly declared
+      // (under-report principle). Nothing routes on it and no public surface
+      // exposes it yet.
+      ...(cfg.modalities ? { modalities: cfg.modalities } : {}),
       display_order: cfg.display_order !== undefined ? cfg.display_order : DEFAULT_DISPLAY_ORDER,
       group: cfg.group !== undefined ? cfg.group : DEFAULT_GROUP,
       ui_visible: cfg.ui_visible !== undefined ? cfg.ui_visible : DEFAULT_UI_VISIBLE,
@@ -61,6 +73,10 @@ export function loadModelRegistry(env) {
 // Resolve the registry entry for a logical model, filling conservative defaults
 // for models not declared in the registry (so /v1/models never has to guess
 // capability from a provider quirk).
+/**
+ * @param {Record<string, any>} env
+ * @param {string} model
+ */
 export function modelRegistryEntry(env, model) {
   const registry = loadModelRegistry(env);
   return registry[model] || {
@@ -74,10 +90,12 @@ export function modelRegistryEntry(env, model) {
   };
 }
 
+/** @param {Record<string, any>} env */
 export function listRegistryModels(env) {
   return Object.keys(loadModelRegistry(env)).sort();
 }
 
+/** @param {{ models?: Record<string, string> }} node */
 export function isWildcardNode(node) {
   return !node.models || Object.keys(node.models).length === 0;
 }
@@ -89,6 +107,11 @@ export function isWildcardNode(node) {
 //     build raw nodes without an env), the legacy permissive behavior is
 //     preserved — the request path always passes the catalog, so the
 //     gateway itself is always closed.
+/**
+ * @param {{ models: Record<string, string> }} node
+ * @param {string} model
+ * @param {ReadonlySet<string> | null} [knownModels]
+ */
 export function servesModel(node, model, knownModels) {
   if (isWildcardNode(node)) return knownModels ? knownModels.has(model) : true;
   return Object.hasOwn(node.models, model);
@@ -100,6 +123,11 @@ export function servesModel(node, model, knownModels) {
 // wildcard eligibility, /v1/models, diagnostics, health, metrics, the model
 // status projection and the scheduler. No other module should reassemble its
 // own model set.
+/**
+ * @param {ReadonlyArray<{ models?: Record<string, string> } | null | undefined>} [nodes]
+ * @param {Record<string, any>} [env]
+ * @returns {Set<string>}
+ */
 export function collectKnownModels(nodes, env) {
   const set = new Set();
   for (const n of nodes || []) {
@@ -118,6 +146,7 @@ export function collectKnownModels(nodes, env) {
 // Wildcard nodes (empty `models`) do NOT contribute names. This is a subset
 // of collectKnownModels and is kept for backward compatibility with callers
 // that need only the node-mapped set.
+/** @param {ReadonlyArray<{ models?: Record<string, string> } | null | undefined>} [nodes] */
 export function collectConfiguredModels(nodes) {
   const set = new Set();
   for (const n of nodes || []) {

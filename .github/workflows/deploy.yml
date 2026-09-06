@@ -1,11 +1,28 @@
-﻿name: Deploy
+name: Deploy
 
 # Push-to-main auto deploy. Fork-specific GitHub Variables plus GitHub Secrets
 # are the deployment source; the Cloudflare Dashboard is never a second
-# configuration source. Pipeline: preflight → verify → validate configuration
-# → dry-run → auth → D1 migrations (if configured) → atomic Worker deploy
-# (code + secrets in a single `wrangler deploy --secrets-file` operation)
-# → authenticated health checks.
+# configuration source.
+#
+# Production gate: this workflow is triggered by `workflow_run` when the CI
+# workflow completes on main. CI success means BOTH of its jobs passed —
+# validate-merge (syntax + config + unit + typecheck + strict typecheck +
+# security + docs + bundle dry-run) AND validate-deploy (unit + scheduler
+# stability + integration + stress + Codex/Claude contract + security + docs).
+# Worker Deploy therefore never executes before full validation succeeds, and
+# the full suite is executed exactly once per push (Merge Gate != Production
+# Gate; no duplicated validation).
+#
+# The gate job additionally blocks deploys whose triggering commit changed
+# ONLY markdown/docs paths (the previous `paths-ignore` policy) and commits
+# from fork head repositories.
+#
+# Pipeline: preflight → validate configuration → D1 migrations (if configured)
+# → atomic Worker deploy (code + secrets in a single
+# `wrangler deploy --secrets-file` operation) → authenticated health checks
+# → rollback on post-deploy failure. D1 migrations always run BEFORE the new
+# Worker is deployed: a migration failure aborts the deploy instead of leaving
+# new code running against an old schema.
 #
 # Configuration is read from INDIVIDUAL GitHub Variables / Secrets (long-term
 # target). The legacy GATEWAY_CONFIG / GATEWAY_SECRETS_CONFIG blobs remain
@@ -28,11 +45,10 @@
 # it is never skipped). Forks: opt in with DEPLOY_ENABLED=true.
 
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
   workflow_dispatch:
 
 permissions:
@@ -43,8 +59,65 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  # Gate — decides whether a deploy may happen at all:
+  #   * manual workflow_dispatch            -> deploy
+  #   * workflow_run from a fork head repo  -> never deploy
+  #   * CI workflow conclusion != success   -> never deploy (Production Gate)
+  #   * triggering commit touched ONLY
+  #     **.md / docs/** (old paths-ignore) -> skip deploy
+  gate:
     if: github.repository == 'fongap/ai-gateway' || vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      deploy: ${{ steps.decide.outputs.deploy }}
+    steps:
+      - name: Checkout triggering commit
+        if: github.event_name == 'workflow_run'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 2
+
+      - name: Decide deploy eligibility
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          CI_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          THIS_REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$HEAD_REPO" != "$THIS_REPO" ]; then
+            echo "::notice::head repository is a fork — deploy blocked"
+            echo "deploy=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ "$CI_CONCLUSION" != "success" ]; then
+            echo "::notice::CI conclusion is '$CI_CONCLUSION' — deploy blocked (Production Gate)"
+            echo "deploy=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Markdown-only skip: reproduce the previous paths-ignore policy
+          # ('**.md', 'docs/**') against the triggering commit.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          CHANGED=$(git diff --name-only "$HEAD_SHA^" "$HEAD_SHA" 2>/dev/null || echo "__INITIAL_COMMIT__")
+          if [ "$CHANGED" = "__INITIAL_COMMIT__" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          DEPLOYABLE=$(printf '%s\n' "$CHANGED" | grep -v -e '\.md$' -e '^docs/' || true)
+          if [ -z "$DEPLOYABLE" ]; then
+            echo "::notice::markdown/docs-only change — deploy skipped"
+            echo "deploy=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "deploy=true" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: gate
+    if: needs.gate.outputs.deploy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -164,24 +237,12 @@ jobs:
       - name: Preflight deployment configuration
         run: node scripts/github-deployment-config.mjs preflight
 
-      - name: Validate project
-        run: npm run validate:merge
-
       - name: Validate runtime configuration
         run: |
           node scripts/github-deployment-config.mjs prepare --from-env \
             --wrangler "$RUNNER_TEMP/wrangler.github.json" \
             --secrets "$RUNNER_TEMP/gateway-secrets.json" \
             --summary "$RUNNER_TEMP/deployment-summary.txt"
-
-      - name: Deploy Worker (atomic code+secrets)
-        id: deploy
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx --yes wrangler@4.114.0 deploy --secrets-file "$RUNNER_TEMP/gateway-secrets.json" -c "$RUNNER_TEMP/wrangler.github.json"
-
-
 
       - name: Apply D1 migrations
         if: env.TOKEN_STATS_D1_ID != ''
@@ -190,6 +251,14 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           TOKEN_STATS_D1_ID: ${{ vars.TOKEN_STATS_D1_ID }}
         run: npx --yes wrangler@4.114.0 d1 migrations apply ai-gateway-stats --remote -c "$RUNNER_TEMP/wrangler.github.json"
+
+      - name: Deploy Worker (atomic code+secrets)
+        id: deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx --yes wrangler@4.114.0 deploy --secrets-file "$RUNNER_TEMP/gateway-secrets.json" -c "$RUNNER_TEMP/wrangler.github.json"
+
 
 
       - name: Verify deployed gateway

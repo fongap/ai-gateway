@@ -258,6 +258,7 @@ export function buildCalendarHeatmap(opts) {
  * @returns {MonthLabel[]}
  */
 function computeMonthLabels(weeks, mode, year, todayIso) {
+  /** @type {MonthLabel[]} */
   const labels = [];
   if (mode === 'calendar-year') {
     const y = year ?? Number(todayIso.slice(0, 4));

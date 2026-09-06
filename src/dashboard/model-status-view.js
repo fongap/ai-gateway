@@ -9,6 +9,7 @@
 // name or prefix carries any business meaning.
 
 import { getPublicModelStatus } from '../runtime/model-status.js';
+import { normalizeModelKey } from '../observability/token-usage-store.mjs';
 import { escapeHtml, fmtTtft } from './format.js';
 
 const STATE_LABEL = { available: '可用', unobserved: '未观测', degraded: '波动', unavailable: '不可用' };
@@ -36,6 +37,22 @@ function fmtTtftSeconds(s) {
   return `${s}s`;
 }
 
+// Guarantee one TTFT result container per public model, even when the D1
+// window has no rows for it: missing keys become { insufficient, noSamples }
+// so the dashboard renders '--s / -- samples' instead of dropping the model.
+// Lookup key is the canonical statistical model key (trim + lowercase),
+// matching how the observability store aggregates model rows.
+export function ensureModelTtftContainers(ttft, models) {
+  const map = ttft instanceof Map ? ttft : new Map();
+  const rows = Array.isArray(models) ? models : (Array.isArray(models?.models) ? models.models : []);
+  for (const m of rows) {
+    const key = normalizeModelKey(m?.id);
+    if (!key || map.has(key)) continue;
+    map.set(key, { available: true, p50: null, p95: null, sampleCount: 0, insufficient: true });
+  }
+  return map;
+}
+
 export function fmtModelTtft(modelTtft) {
   if (!modelTtft || modelTtft.available === false) return { p50: '--s', p95: '--s', samples: 0, insufficient: true, noSamples: true };
   if (modelTtft.insufficient) return { p50: '--s', p95: '--s', samples: modelTtft.sampleCount || 0, insufficient: true, noSamples: true };
@@ -51,7 +68,7 @@ export function fmtModelTtft(modelTtft) {
 function renderModelRow(m, ttft) {
   const label = STATE_LABEL[m.status] || '不可用';
   const style = STATE_STYLE[m.status] ?? ' down';
-  const t = fmtModelTtft(ttft?.get?.(m.id));
+  const t = fmtModelTtft(ttft?.get?.(normalizeModelKey(m.id)));
   const samplesText = t.noSamples ? '-- samples' : `${t.samples} samples`;
   const sampleTitle = t.insufficient ? 'TTFT 样本不足' : `${t.samples} 个 TTFT 样本`;
   return `<div class="model-row">

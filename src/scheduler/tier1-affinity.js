@@ -37,12 +37,19 @@ const ESCAPE_MAX_ENTRIES = 500;
 // (Map preserves insertion order in JS). No precise LRU — see the task spec:
 // "不需要实现复杂精准 LRU".
 class BoundedTtlMap {
+  /**
+   * @param {number} maxEntries
+   * @param {number} ttlMs
+   */
   constructor(maxEntries, ttlMs) {
     this._map = new Map();
     this._max = maxEntries;
     this._ttlMs = ttlMs;
   }
 
+  /**
+   * @param {string} key
+   */
   get(key) {
     const entry = this._map.get(key);
     if (!entry) return undefined;
@@ -53,6 +60,11 @@ class BoundedTtlMap {
     return entry.value;
   }
 
+  /**
+   * @param {string} key
+   * @param {unknown} value
+   * @param {number} [ttlMs]
+   */
   set(key, value, ttlMs) {
     const expiresAt = Date.now() + (ttlMs ?? this._ttlMs);
     // If the key already exists, update in place (preserves insertion order).
@@ -65,6 +77,9 @@ class BoundedTtlMap {
     this._map.set(key, { value, expiresAt });
   }
 
+  /**
+   * @param {string} key
+   */
   delete(key) {
     this._map.delete(key);
   }
@@ -107,11 +122,17 @@ const stats = {
   selections: 0, selectionHits: 0, escapes: 0,
 };
 
+/**
+ * @param {Record<string, any>} env
+ */
 function kvOf(env) {
   const kv = env?.[KV_BINDING];
   return kv && typeof kv.get === 'function' && typeof kv.put === 'function' ? kv : null;
 }
 
+/**
+ * @param {string} sessionId
+ */
 async function affinityKey(sessionId) {
   const bytes = new TextEncoder().encode(sessionId);
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
@@ -124,6 +145,9 @@ async function affinityKey(sessionId) {
 // async crypto call (shouldEvaluateAffinity is synchronous). FNV-1a 32-bit
 // is sufficient — it only needs to be a stable, collision-resistant-enough
 // derivation of the session ID, not a secret.
+/**
+ * @param {string} sessionId
+ */
 function sessionHash(sessionId) {
   const str = String(sessionId);
   let hash = 0x811c9dc5;
@@ -134,6 +158,9 @@ function sessionHash(sessionId) {
   return 'h' + (hash >>> 0).toString(16).padStart(8, '0');
 }
 
+/**
+ * @param {Request} request
+ */
 export function resolveTier1SessionId(request) {
   const raw = request?.headers?.get?.('x-session-id');
   if (typeof raw !== 'string') return null;
@@ -141,6 +168,10 @@ export function resolveTier1SessionId(request) {
   return id.length >= 8 && id.length <= 128 ? id : null;
 }
 
+/**
+ * @param {Record<string, any>} env
+ * @param {string} sessionId
+ */
 export async function readTier1Affinity(env, sessionId) {
   if (!sessionId) return null;
   const kv = kvOf(env);
@@ -162,6 +193,12 @@ export async function readTier1Affinity(env, sessionId) {
 
 // Called only for a cold session's first Tier 1 success or a successful
 // migration. Repeated successes on the same account perform no KV write.
+/**
+ * @param {Record<string, any>} env
+ * @param {{ waitUntil?: Function }} ctx
+ * @param {string} sessionId
+ * @param {string} accountId
+ */
 export function writeTier1Affinity(env, ctx, sessionId, accountId) {
   const kv = kvOf(env);
   if (!sessionId || !accountId || !kv) return false;
@@ -177,6 +214,10 @@ export function writeTier1Affinity(env, ctx, sessionId, accountId) {
   return true;
 }
 
+/**
+ * @param {string | null} sessionId
+ * @param {number} [now]
+ */
 export function shouldEvaluateAffinity(sessionId, now = Date.now()) {
   if (!sessionId) return false;
   const hashedKey = sessionHash(sessionId);
@@ -194,11 +235,19 @@ export function shouldEvaluateAffinity(sessionId, now = Date.now()) {
   return false;
 }
 
+/**
+ * @param {number} affinityScore
+ * @param {number} winnerScore
+ */
 export function affinityShouldEscape(affinityScore, winnerScore) {
   return Number.isFinite(affinityScore) && Number.isFinite(winnerScore)
     && affinityScore > winnerScore * ESCAPE_THRESHOLD;
 }
 
+/**
+ * @param {string} accountId
+ * @param {string | null} affinityAccountId
+ */
 export function tier1AffinityFactor(accountId, affinityAccountId) {
   return affinityAccountId && accountId === affinityAccountId ? TIER1_AFFINITY_FACTOR : 1;
 }
@@ -209,6 +258,9 @@ export function recordTier1AffinityDecision({ affinityHit = false, escaped = fal
   if (escaped) stats.escapes++;
 }
 
+/**
+ * @param {Record<string, any>} env
+ */
 export function snapshotTier1Affinity(env) {
   return {
     storage: 'kv',

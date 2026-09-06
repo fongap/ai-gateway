@@ -2,10 +2,15 @@
 // @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
-// MODELS_CONFIG: logical model -> { policy, capabilities?, reasoning_efforts? }.
+// MODELS_CONFIG: logical model -> { policy, capabilities?, reasoning_efforts?,
+// modalities? }.
 // This doubles as the Model Registry's config source. `policy` is the failover
 // policy name; `capabilities` (tools / reasoning / vision / stream) and
-// `reasoning_efforts` optionally override the registry defaults. Parsed once per
+// `reasoning_efforts` optionally override the registry defaults. `modalities`
+// is a SCHEMA RESERVATION for the Omni phase (what a model can accept/emit:
+// input/output token arrays over a closed vocabulary); it is parsed, validated
+// and carried in the registry, but nothing routes on it yet and it is NOT
+// exposed on any public API surface. Parsed once per
 // isolate; env vars are immutable at runtime.
 //
 // Like the node config, MODELS_CONFIG is strict: unknown fields, an invalid
@@ -17,29 +22,65 @@
 import { readEnv } from './env.js';
 
 const CAPABILITY_KEYS = ['tools', 'reasoning', 'vision', 'stream', 'ocr'];
-const ALLOWED_ENTRY_FIELDS = new Set(['policy', 'capabilities', 'reasoning_efforts', 'visibility', 'display_order', 'group', 'ui_visible']);
+const ALLOWED_ENTRY_FIELDS = new Set(['policy', 'capabilities', 'reasoning_efforts', 'modalities', 'visibility', 'display_order', 'group', 'ui_visible']);
+// Closed modality vocabulary for the Omni-phase schema reservation. Extending
+// this list is the ONLY way to introduce a new modality token — free-form
+// strings never enter the registry.
+const MODALITY_TOKENS = new Set(['text', 'image', 'audio', 'video']);
 const VALID_VISIBILITY = new Set(['public', 'internal']);
 const DEFAULT_VISIBILITY = 'public';
 const DEFAULT_DISPLAY_ORDER = 100;
 const DEFAULT_GROUP = 'general';
 const DEFAULT_UI_VISIBLE = true;
 
+/**
+ * A parsed MODELS_CONFIG entry. Optional fields are only present when
+ * explicitly configured (or defaulted) by the parse below.
+ *
+ * @typedef {{
+ *   policy: string,
+ *   visibility: string,
+ *   ui_visible: boolean,
+ *   display_order: number,
+ *   group: string,
+ *   capabilities?: Record<string, boolean>,
+ *   reasoning_efforts?: string[],
+ *   modalities?: { input: string[], output: string[] },
+ * }} ModelEntry
+ */
+
+/** @type {Record<string, any> | undefined} */
 let cachedEnv;
+/** @type {{ models: Record<string, ModelEntry>, errors: string[] } | undefined} */
 let cached;
 
+/**
+ * @param {Record<string, any>} env
+ * @returns {Record<string, ModelEntry>}
+ */
 export function loadModelsConfig(env) {
   return analyzeModels(env).models;
 }
 
+/**
+ * @param {Record<string, any>} env
+ * @returns {string[]}
+ */
 export function getModelsConfigDiagnostics(env) {
   return analyzeModels(env).errors;
 }
 
+/**
+ * @param {Record<string, any>} env
+ * @returns {{ models: Record<string, ModelEntry>, errors: string[] }}
+ */
 function analyzeModels(env) {
   if (cachedEnv === env && cached) return cached;
   cachedEnv = env;
   const raw = readEnv(env, 'MODELS_CONFIG');
+  /** @type {string[]} */
   const errors = [];
+  /** @type {Record<string, ModelEntry>} */
   const models = {};
   if (raw) {
     let parsed;
@@ -68,7 +109,8 @@ function analyzeModels(env) {
         // `policy` participates only when explicitly configured; a present
         // value (null included) must be a non-empty string. Unknown policy
         // names are cross-checked against POLICIES_CONFIG by nodes.js.
-        const entry = { policy: 'default', visibility: DEFAULT_VISIBILITY, ui_visible: DEFAULT_UI_VISIBLE };
+        /** @type {ModelEntry} */
+        const entry = { policy: 'default', visibility: DEFAULT_VISIBILITY, ui_visible: DEFAULT_UI_VISIBLE, display_order: DEFAULT_DISPLAY_ORDER, group: DEFAULT_GROUP };
         if (config.policy !== undefined) {
           if (typeof config.policy === 'string' && config.policy.trim()) {
             entry.policy = config.policy.trim();
@@ -140,6 +182,27 @@ function analyzeModels(env) {
             errors.push(`MODELS_CONFIG: "${name}" reasoning_efforts must be an array of non-empty strings`);
           } else {
             entry.reasoning_efforts = efforts.map((e) => e.trim());
+          }
+        }
+        // Schema reservation only: validated and carried, never routed on.
+        const mods = config.modalities;
+        if (mods !== undefined) {
+          if (!mods || typeof mods !== 'object' || Array.isArray(mods)) {
+            errors.push(`MODELS_CONFIG: "${name}" modalities must be an object { input, output }`);
+          } else {
+            /** @type {{ input: string[], output: string[] }} */
+            const sides = { input: [], output: [] };
+            let valid = true;
+            for (const side of /** @type {const} */ (['input', 'output'])) {
+              const list = mods[side];
+              if (!Array.isArray(list) || !list.every((t) => typeof t === 'string' && MODALITY_TOKENS.has(t.trim()))) {
+                errors.push(`MODELS_CONFIG: "${name}" modalities.${side} must be an array over the closed vocabulary [${[...MODALITY_TOKENS].join(', ')}]`);
+                valid = false;
+              } else {
+                sides[side] = [...new Set(list.map((t) => t.trim()))];
+              }
+            }
+            if (valid) entry.modalities = { input: sides.input, output: sides.output };
           }
         }
         models[name.trim()] = entry;

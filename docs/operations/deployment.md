@@ -13,26 +13,34 @@ ai-gateway 通过 GitHub Actions 部署。推送到 `main`（或手动运行工�
 
 部署工作流先运行 **preflight** 检查。任何必需 Variable 或 Secret 缺失时，工作流**失败**并报告确切缺失项。
 
-部署顺序：
+Deploy workflow 由 CI workflow 的 `workflow_run` 完成事件触发，生产部署必须等待完整验证通过（Merge Gate ≠ Production Gate）。CI 在 push 到 main 时运行两个 job——`validate-merge`（语法/配置/unit/typecheck/strict/security/docs/bundle dry-run）与 `validate-deploy`（unit + scheduler stability + integration + stress + Codex/Claude contract + security + docs）——**两个 job 都成功 = Production Gate**，完整验证每次 push 只执行一次，不在 deploy 工作流内重复。
 
 ```
-checkout → setup Node → npm ci
-  → Preflight deployment configuration
-  → npm run validate:merge
-  → Validate runtime configuration
-  → Wrangler deploy --dry-run
-  → Cloudflare authentication check
-  → Deploy Worker (atomic code+secrets)
-  → Apply D1 migrations (if TOKEN_STATS_D1_ID is set)
-  → Verify deployed gateway
-  → Deployment summary
+CI workflow（push → main）:
+  → job validate-merge（Merge Gate）
+  → job validate-deploy（完整套件）
+
+Deploy workflow（workflow_run: CI completed, branch main）:
+  → job gate：CI conclusion ≠ success → 阻断；fork head repo → 阻断；
+    触发 commit 仅改动 **.md / docs/** → 跳过（沿用原 paths-ignore 策略）；
+    workflow_dispatch 手动触发 → 放行
+  → job deploy（needs: gate）:
+    → Preflight deployment configuration
+    → Validate runtime configuration
+    → Apply D1 migrations（仅当 TOKEN_STATS_D1_ID 已配置；未配置时跳过，不影响部署）
+    → Deploy Worker (atomic code+secrets)
+    → Verify deployed gateway（health check）
+    → Deployment summary（失败且已部署时先执行 Worker 回滚）
 ```
 
 任何验证步骤失败都会阻断后续步骤——Worker、Secrets 和 D1 不会被触碰。
+**D1 migration 失败时 Worker 部署不会发生**，不会出现"新代码 + 旧 Schema"的线上状态。
 
-部署现在是原子的：代码和 Secret 在同一次 `wrangler deploy --secrets-file` 操作中更新，确保它们属于同一 Worker version。
+部署是原子的：代码和 Secret 在同一次 `wrangler deploy --secrets-file` 操作中更新，确保它们属于同一 Worker version。
 
-**D1 迁移在 Worker 部署之后运行**（rolling deploy 安全性由 fail-open fallback 保障：Dashboard 累计 KPI 读取 totals 并回退到 hourly；热力图读取 daily 并回退到 hourly + 今日叠加；Model Status 继续读取 model_hourly 24h 窗口）。迁移文件按顺序应用（0001–0007），新增表 `token_usage_totals`、`token_usage_daily`、`token_usage_weekly`，`token_usage_hourly` 现为 7 天保留，冗余主键索引已移除。本地部署路径自动执行远端 D1 migrations（当 `TOKEN_STATS_DB` binding 存在时）。迁移失败阻断部署。
+**D1 迁移在 Worker 部署之前运行**。迁移文件按顺序应用（0001–0007），新增表 `token_usage_totals`、`token_usage_daily`、`token_usage_weekly`，`token_usage_hourly` 现为 7 天保留，冗余主键索引已移除。本地部署路径自动执行远端 D1 migrations（当 `TOKEN_STATS_DB` binding 存在时）。迁移失败阻断部署。
+
+部署顺序由 `scripts/deployment-workflow-contract-test.mjs`（unit 套件内）固化为契约测试，防止再次漂移。
 
 ## GitHub Variables
 

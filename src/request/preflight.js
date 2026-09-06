@@ -64,6 +64,9 @@ const ROUTE_PROTOCOL_SURFACE = Object.freeze({
   anthropic_messages: { protocol: /** @type {'anthropic'} */ ('anthropic'), surface: /** @type {'messages'} */ ('messages') },
 });
 
+/**
+ * @param {keyof typeof ROUTE_PROTOCOL_SURFACE} route
+ */
 export function getRouteProtocolSurface(route) {
   return ROUTE_PROTOCOL_SURFACE[route];
 }
@@ -89,9 +92,9 @@ export function getRouteProtocolSurface(route) {
  *   limits: any,
  *   exposeUpstreamInfo: boolean,
  *   authResult: any,
- *   requestDescriptor: { model: string, protocol: 'openai' | 'anthropic', surface: 'chat_completions' | 'responses' | 'messages' },
+ *   requestDescriptor: RequestDescriptor,
  *   config: any,
- *   tiers: { 1: any[], 2: any[], 3: any[] },
+ *   tiers: Record<number, RuntimeNode[]>,
  *   policy: any,
  *   failoverBudgetMs: number,
  *   knownModels: Set<string>,
@@ -274,9 +277,12 @@ export async function preflight(request, env, ctx) {
   const knownModels = collectKnownModels(gatewayConfigForAuth.nodes, env);
   const modelAuthz = authorizeModel(requestedModel, knownModels, authResult);
   if (!modelAuthz.allowed) {
+    // JSDoc widens the `allowed` literal to boolean, so TS cannot
+    // discriminate the union; assert the deny variant the branch guarantees.
+    const denyStatus = /** @type {{ status: 401 | 403 | 404 }} */ (modelAuthz).status;
     return {
       ok: false,
-      response: gatewayError(request, env, route, modelAuthz.status, modelAuthz.status === 403
+      response: gatewayError(request, env, route, denyStatus, denyStatus === 403
         ? 'Forbidden: the provided key is not permitted to use this model.'
         : 'Model not found for this key.', requestId,
         { configuration_status: gatewayConfigForAuth.status, known_model_count: knownModels.size, ...(exposeUpstreamInfo ? { diagnostics: gatewayConfigForAuth.diagnostics.slice(0, 5) } : {}) }),
@@ -294,9 +300,17 @@ export async function preflight(request, env, ctx) {
         { configuration_status: config.status, ...(exposeUpstreamInfo ? { diagnostics: config.diagnostics.slice(0, 5) } : {}) }),
     };
   }
+  /** @type {Record<number, RuntimeNode[]>} */
   const tiers = config.tiers;
-  /** @type {{ model: string, protocol: 'openai' | 'anthropic', surface: 'chat_completions' | 'responses' | 'messages' }} */
-  const requestDescriptor = { model: requestedModel, ...ROUTE_PROTOCOL_SURFACE[route] };
+  // Only the three dispatch routes reach this point (GET surfaces and
+  // anthropic_count_tokens return earlier), so the route narrow below is
+  // runtime-proven, not a guess.
+  /** @type {RequestDescriptor} */
+  const requestDescriptor = {
+    route: /** @type {'openai_chat' | 'openai_responses' | 'anthropic_messages'} */ (route),
+    model: requestedModel,
+    ...ROUTE_PROTOCOL_SURFACE[route],
+  };
   // "Native First, not Native Only": a request is routable when EITHER a native
   // candidate exists OR at least one explicitly configured, supported
   // cross-protocol fallback has a candidate for the requested model. When

@@ -66,7 +66,7 @@ sh scripts/install.sh     # Windows: powershell scripts/install.ps1
 git push origin main
 ```
 
-将 KV namespace ID 配置为 GitHub Variable `TIER1_AFFINITY_KV_ID`。工作流会自动校验配置、生成 KV binding、同步 Worker 文本变量和 Worker 密钥、执行 D1 数据库迁移、部署 Worker，并对 `/health`、`/v1/models` 和 Claude `count_tokens` 执行线上健康检查。部署不会保留 Cloudflare 控制台中的旧文本变量。一次性初始化步骤见 **[docs/operations/deployment.md](docs/operations/deployment.md)**。
+将 KV namespace ID 配置为 GitHub Variable `TIER1_AFFINITY_KV_ID`。工作流先运行完整验证套件（Production Gate），随后自动校验配置、生成 KV binding、同步 Worker 文本变量和 Worker 密钥、**先执行 D1 数据库迁移再部署 Worker**，并对 `/health`、`/v1/models` 和 Claude `count_tokens` 执行线上健康检查。部署不会保留 Cloudflare 控制台中的旧文本变量。一次性初始化步骤见 **[docs/operations/deployment.md](docs/operations/deployment.md)**。
 
 ## 配置
 

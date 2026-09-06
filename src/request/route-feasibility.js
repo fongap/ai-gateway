@@ -29,8 +29,8 @@ import { getFallbackChain } from '../config/protocol-fallbacks.js';
  * @param {{
  *   route: string,
  *   requestedModel: string,
- *   requestDescriptor: { model: string, protocol: string, surface: string },
- *   tiers: { 1: any[], 2: any[], 3: any[] },
+ *   requestDescriptor: RequestDescriptor,
+ *   tiers: Record<number, RuntimeNode[]>,
  *   knownModels: Set<string>,
  *   env: any,
  * }} args
@@ -38,7 +38,7 @@ import { getFallbackChain } from '../config/protocol-fallbacks.js';
  *   reachable: boolean,
  *   nativeSupported: boolean,
  *   fallbackSupported: boolean,
- *   fallbacks: { protocol: string, surface: string }[],
+ *   fallbacks: { protocol: Protocol, surface: Surface }[],
  * }}
  */
 export function evaluateRouteFeasibility({ route, requestedModel, requestDescriptor, tiers, knownModels, env }) {

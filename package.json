@@ -1,6 +1,6 @@
 {
   "name": "ai-gateway",
-  "version": "1.2.7",
+  "version": "1.2.6",
   "private": true,
   "description": "AI aggregation gateway for Cloudflare Workers: many APIs, keys, and models behind one stable endpoint — node-local cooldowns, tier fallback, circuit-breaker recovery.",
   "type": "module",
@@ -24,7 +24,7 @@
     "security:scan": "node scripts/secret-scan.mjs",
     "typecheck": "npx tsc --noEmit",
     "typecheck:strict": "npx tsc --noEmit -p tsconfig.strict.json",
-    "validate:merge": "npm run check && npm run check:version && npm run check:deployment-config && npm run migrations:check && npm run test:unit && npm run security:scan && npm run check:docs && npm run typecheck",
+    "validate:merge": "npm run check && npm run check:version && npm run check:deployment-config && npm run migrations:check && npm run test:unit && npm run security:scan && npm run check:docs && npm run typecheck && npm run typecheck:strict",
     "validate:deploy": "npm run check && npm run check:version && npm run check:deployment-config && npm run migrations:check && npm run test:all && npm run security:scan && npm run check:docs",
     "dev": "node scripts/cloudflare-wrangler.mjs dev",
     "deploy": "node scripts/cloudflare-wrangler.mjs deploy --keep-vars",

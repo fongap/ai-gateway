@@ -222,6 +222,38 @@ test('registry builds capability + policy from MODELS_CONFIG and fills conservat
   assert.deepEqual(def.reasoning_efforts, [], 'no reasoning efforts without a declaration');
 });
 
+// ---- Modalities schema reservation (Omni phase) -----------------------------
+// modalities is parsed + validated + carried in the registry, but nothing
+// routes on it and no public API surface exposes it yet.
+
+test('MODELS_CONFIG accepts a valid modalities declaration and the registry carries it', () => {
+  const env = makeEnv({
+    tier1: [node('a', { models: {} })],
+    secrets: { a: 'x' },
+    extraEnv: {
+      MODELS_CONFIG: JSON.stringify({
+        'omni-pro': { policy: 'default', modalities: { input: ['text', 'image', 'audio'], output: ['text', 'audio'] } },
+      }),
+    },
+  });
+  const reg = loadModelRegistry(env);
+  assert.deepEqual(reg['omni-pro'].modalities, { input: ['text', 'image', 'audio'], output: ['text', 'audio'] });
+  // Declaration-only reservation: undeclared models carry no modalities.
+  const def = modelRegistryEntry(env, 'unknown-model');
+  assert.equal(def.modalities, undefined, 'undeclared models must not claim modalities');
+  // Duplicate tokens dedupe; vocabulary stays closed.
+  const reg2 = loadModelRegistry(makeEnv({
+    tier1: [node('a', { models: {} })],
+    secrets: { a: 'x' },
+    extraEnv: {
+      MODELS_CONFIG: JSON.stringify({
+        'dedupe': { modalities: { input: ['text', 'text'], output: ['text'] } },
+      }),
+    },
+  }));
+  assert.deepEqual(reg2['dedupe'].modalities, { input: ['text'], output: ['text'] });
+});
+
 test('servesModel treats empty models as wildcard, mapped as explicit', () => {
   assert.equal(isWildcardNode(node('w', { models: {} })), true);
   assert.equal(servesModel(node('w', { models: {} }), 'anything'), true);
@@ -307,6 +339,22 @@ const policyDiags = (policies) => getPoliciesConfigDiagnostics(makeEnv({
 const modelDiags = (models) => getModelsConfigDiagnostics(makeEnv({
   extraEnv: { MODELS_CONFIG: JSON.stringify(models) },
 }));
+
+test('MODELS_CONFIG rejects malformed modalities with isolated diagnostics', () => {
+  const one = (mods) => modelDiags({ 'm': { modalities: mods } });
+  assert.match(one('nope')[0], /modalities must be an object \{ input, output \}/);
+  assert.match(one({ input: ['text'] })[0], /modalities\.output must be an array over the closed vocabulary/);
+  assert.match(one({ input: ['smell'], output: ['text'] })[0], /modalities\.input must be an array over the closed vocabulary/);
+  assert.match(one({ input: ['text'], output: 'text' })[0], /modalities\.output must be an array over the closed vocabulary/);
+  // Malformed modalities must be FATAL (config refuses service), like every
+  // other MODELS_CONFIG field error.
+  const cfg = loadGatewayConfig(makeEnv({
+    tier1: [node('a', { models: {} })],
+    secrets: { a: 'x' },
+    extraEnv: { MODELS_CONFIG: JSON.stringify({ 'm': { modalities: { input: ['hologram'], output: ['text'] } } }) },
+  }));
+  assert.equal(cfg.status, 'invalid', 'an invalid modalities token must refuse service, not degrade');
+});
 
 const MAX_ATTEMPTS_TEXT = /max_attempts must be an integer between 1 and 8/;
 const TIER_ATTEMPTS_TEXT = /tier_attempts\.tier1 must be an integer between 0 and 8/;

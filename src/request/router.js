@@ -5,12 +5,18 @@
 // Route detection for the gateway surface. Only the allowlisted paths below are
 // ever proxied or answered; everything else is a plain 404.
 
+/** @type {readonly [1, 2, 3]} */
 export const TIER_ORDER = [1, 2, 3];
 
+/** @param {string | undefined} pathname */
 export function normalizePath(pathname) {
   return String(pathname || '/').replace(/\/+$/, '').toLowerCase() || '/';
 }
 
+/**
+ * @param {string} method
+ * @param {string} pathname
+ */
 export function detectRoute(method, pathname) {
   const verb = String(method).toUpperCase();
   if (verb === 'GET') {
@@ -28,6 +34,7 @@ export function detectRoute(method, pathname) {
   return 'other';
 }
 
+/** @param {Request} request */
 export function acceptsHtml(request) {
   return (request.headers.get('accept') || '').includes('text/html');
 }

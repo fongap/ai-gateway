@@ -84,9 +84,14 @@ const DEFAULT_SURFACES = new Map([
   ['anthropic', ['messages']],
 ]);
 
+/** @type {Record<string, any> | undefined} */
 let cachedEnv;
+/** @type {ReturnType<typeof buildConfig> | undefined} */
 let cachedResult;
 
+/**
+ * @param {Record<string, any>} env
+ */
 export function loadGatewayConfig(env) {
   if (cachedEnv === env && cachedResult) return cachedResult;
   cachedEnv = env;
@@ -96,6 +101,10 @@ export function loadGatewayConfig(env) {
 
 // Strict diagnostics for MODELS_CONFIG / POLICIES_CONFIG plus the cross-reference
 // check that every model's declared policy actually exists. These are FATAL.
+/**
+ * @param {Record<string, any>} env
+ * @returns {string[]}
+ */
 function collectAuxConfigDiagnostics(env) {
   const diags = [
     ...getModelsConfigDiagnostics(env),
@@ -120,7 +129,13 @@ function collectAuxConfigDiagnostics(env) {
 // operator is notified that the visibility field is effectively a no-op for
 // any node that exposes it. We skip this entirely when MODELS_CONFIG is
 // absent (the common case for free-model deployments).
+/**
+ * @param {ReadonlyArray<RuntimeNode>} nodes
+ * @param {Record<string, any>} env
+ * @returns {string[]}
+ */
 function collectNodeModelDiagnostics(nodes, env) {
+  /** @type {string[]} */
   const diags = [];
   let registry;
   try {
@@ -145,7 +160,11 @@ function collectNodeModelDiagnostics(nodes, env) {
   return diags;
 }
 
+/**
+ * @param {Record<string, any>} env
+ */
 function buildConfig(env) {
+  /** @type {string[]} */
   const diagnostics = [];
   // Strict aux configs (MODELS_CONFIG / POLICIES_CONFIG). Any structural error
   // here is FATAL: these configs are all-or-nothing, unlike node entries that
@@ -225,7 +244,8 @@ function buildConfig(env) {
   const nodes = [];
   const sortedTierShards = [...tierShards].sort((a, b) => a.tierNumber - b.tierNumber || a.index - b.index);
   for (const shard of sortedTierShards) {
-    const tier = `tier-${shard.tierNumber}`;
+    // shard tierNumber is validated to 1..3 by the shard pattern match.
+    const tier = /** @type {NodeTier} */ (`tier-${shard.tierNumber}`);
     const parsed = parseJsonVar(env[shard.key], shard.key, diagnostics);
     if (!Array.isArray(parsed)) {
       diagnostics.push(`${shard.key}: must be a JSON array of node objects`);
@@ -271,6 +291,7 @@ function buildConfig(env) {
 
   // Precompute tier groups (priority-sorted) once per isolate; the scheduler
   // must not re-group or re-sort on the request hot path.
+  /** @type {Record<number, RuntimeNode[]>} */
   const tiers = { 1: [], 2: [], 3: [] };
   for (const node of nodes) tiers[Number(node.tier.slice(5))].push(node);
   for (const list of Object.values(tiers)) list.sort((a, b) => a.priority - b.priority);
@@ -292,6 +313,15 @@ function buildConfig(env) {
 }
 
 // Build one Runtime Node or return null with a diagnostic reason.
+/**
+ * @param {Record<string, any>} rawNode
+ * @param {NodeTier} tier
+ * @param {Map<string, string>} credentials
+ * @param {boolean} allowInsecure
+ * @param {string} sourceKey
+ * @param {string[]} diagnostics
+ * @returns {RuntimeNode | null}
+ */
 function buildRuntimeNode(rawNode, tier, credentials, allowInsecure, sourceKey, diagnostics) {
   if (!rawNode || typeof rawNode !== 'object' || Array.isArray(rawNode)) {
     diagnostics.push(`${sourceKey}: entry is not a JSON object`);
@@ -381,6 +411,12 @@ function buildRuntimeNode(rawNode, tier, credentials, allowInsecure, sourceKey, 
 
 // protocol: openai | anthropic. Missing = legacy implicit "openai" (deprecated,
 // diagnostic-only) because every pre-protocol node talked the OpenAI Chat wire.
+/**
+ * @param {unknown} raw
+ * @param {string} nodeId
+ * @param {string[]} diagnostics
+ * @returns {Protocol | null}
+ */
 function parseProtocol(raw, nodeId, diagnostics) {
   if (raw === undefined || raw === null) {
     diagnostics.push(`node "${nodeId}": protocol is implicit and defaults to "openai"; please configure it explicitly`);
@@ -391,23 +427,31 @@ function parseProtocol(raw, nodeId, diagnostics) {
     diagnostics.push(`node "${nodeId}": protocol must be "openai" or "anthropic"`);
     return null;
   }
-  return value;
+  return /** @type {Protocol} */ (value);
 }
 
 // surfaces: which endpoints this node really serves. Missing = legacy implicit
 // default for the resolved protocol (deprecated, diagnostic-only). Explicit
 // surfaces are strictly validated against the protocol.
+/**
+ * @param {unknown} raw
+ * @param {Protocol} protocol
+ * @param {string} nodeId
+ * @param {string[]} diagnostics
+ * @returns {Surface[] | null}
+ */
 function parseSurfaces(raw, protocol, nodeId, diagnostics) {
   if (raw === undefined || raw === null) {
-    const def = DEFAULT_SURFACES.get(protocol);
+    const def = /** @type {string[]} */ (DEFAULT_SURFACES.get(protocol));
     diagnostics.push(`node "${nodeId}": surfaces is implicit and defaults to [${def.map((s) => `"${s}"`).join(', ')}]; please configure it explicitly`);
-    return def.slice();
+    return /** @type {Surface[]} */ (def.slice());
   }
   if (!Array.isArray(raw) || raw.length === 0) {
     diagnostics.push(`node "${nodeId}": surfaces must be a non-empty array`);
     return null;
   }
-  const allowed = PROTOCOL_SURFACES.get(protocol);
+  const allowed = /** @type {Set<string>} */ (PROTOCOL_SURFACES.get(protocol));
+  /** @type {Surface[]} */
   const out = [];
   for (const entry of raw) {
     const value = typeof entry === 'string' ? entry.trim().toLowerCase() : '';
@@ -415,11 +459,17 @@ function parseSurfaces(raw, protocol, nodeId, diagnostics) {
       diagnostics.push(`node "${nodeId}": surfaces entry "${String(entry).slice(0, 40)}" is not valid for protocol "${protocol}" (allowed: ${[...allowed].join(', ')})`);
       return null;
     }
-    if (!out.includes(value)) out.push(value);
+    if (!out.includes(/** @type {Surface} */ (value))) out.push(/** @type {Surface} */ (value));
   }
   return out;
 }
 
+/**
+ * @param {unknown} raw
+ * @param {string} nodeId
+ * @param {string[]} diagnostics
+ * @returns {number | null}
+ */
 function parsePriority(raw, nodeId, diagnostics) {
   if (raw === undefined) return 100;
   const n = typeof raw === 'number' ? raw : (typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN);
@@ -430,7 +480,14 @@ function parsePriority(raw, nodeId, diagnostics) {
   return Math.trunc(n);
 }
 
+/**
+ * @param {Record<string, any>} raw
+ * @param {string} nodeId
+ * @param {string[]} diagnostics
+ * @returns {{ concurrency: number, rpm?: number, rpmMode?: 'soft' | 'hard' } | null}
+ */
 function parseLimits(raw, nodeId, diagnostics) {
+  /** @type {{ concurrency: number, rpm?: number, rpmMode?: 'soft' | 'hard' }} */
   const out = {};
   if (raw === undefined || raw === null) return out;
   if (typeof raw !== 'object' || Array.isArray(raw)) {
@@ -443,6 +500,7 @@ function parseLimits(raw, nodeId, diagnostics) {
       return null;
     }
   }
+  /** @param {unknown} value */
   const positiveInt = (value) => {
     const n = typeof value === 'number' ? value : (typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN);
     return Number.isFinite(n) && n >= 1 ? Math.trunc(n) : null;
@@ -481,7 +539,14 @@ function parseLimits(raw, nodeId, diagnostics) {
   return out;
 }
 
+/**
+ * @param {unknown} models
+ * @param {string} nodeId
+ * @param {string[]} diagnostics
+ * @returns {Record<string, string> | null}
+ */
 function normalizeModels(models, nodeId, diagnostics) {
+  /** @type {Record<string, string>} */
   const out = {};
   // Missing (`undefined`) => serve every configured logical model.
   if (models === undefined || models === null) return out;
@@ -514,7 +579,7 @@ function normalizeModels(models, nodeId, diagnostics) {
       diagnostics.push(`node "${nodeId}": models keys must be non-empty strings`);
       return null;
     }
-    const value = models[key];
+    const value = /** @type {Record<string, unknown>} */ (models)[key];
     if (typeof value !== 'string' || !value.trim()) {
       diagnostics.push(`node "${nodeId}": models["${key}"] must map to a non-empty upstream model string`);
       return null;
@@ -528,6 +593,15 @@ function normalizeModels(models, nodeId, diagnostics) {
 // 1-based capture group holding the numeric shard index (tier pattern has the
 // index in group 2, secret pattern in group 1). Using the wrong group silently
 // yields NaN and breaks ordering, so it is passed explicitly per pattern.
+/**
+ * @param {Record<string, any>} env
+ * @param {RegExp} pattern
+ * @param {string} loosePrefix
+ * @param {string} expectedExample
+ * @param {number} indexGroup
+ * @param {string[]} diagnostics
+ * @returns {Array<{ key: string, index: number, tierNumber: number }>}
+ */
 export function collectShards(env, pattern, loosePrefix, expectedExample, indexGroup, diagnostics) {
   const shards = [];
   for (const key of Object.keys(env || {})) {
@@ -548,6 +622,12 @@ export function collectShards(env, pattern, loosePrefix, expectedExample, indexG
   return shards;
 }
 
+/**
+ * @param {string} raw
+ * @param {string} key
+ * @param {string[]} diagnostics
+ * @returns {unknown}
+ */
 function parseJsonVar(raw, key, diagnostics) {
   try {
     return JSON.parse(raw);
@@ -558,6 +638,10 @@ function parseJsonVar(raw, key, diagnostics) {
   }
 }
 
+/**
+ * @param {string} raw
+ * @returns {number}
+ */
 function countArrayEntries(raw) {
   try {
     const parsed = JSON.parse(raw);

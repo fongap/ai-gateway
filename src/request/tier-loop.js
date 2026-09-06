@@ -26,6 +26,14 @@ import { tier1HasDispatchableNode, tier1CountDispatchableNodes, TIER1_MAX_ATTEMP
 // An optional deterministic RNG (from TIER1_SCHEDULER_SEED) makes P2C sampling
 // reproducible in tests without adding a production env knob — when the seed
 // is absent (production), Math.random is used and behaviour stays random.
+/**
+ * @param {Tier} tierNumber
+ * @param {ReadonlyArray<RuntimeNode>} tierNodes
+ * @param {RoutableRequest} req
+ * @param {Set<string>} attempted
+ * @param {{ knownModels?: ReadonlySet<string> | null, affinityAccountId?: string | null, evaluateAffinity?: boolean, now?: number, rng?: () => number, excludeId?: string | null }} [opts]
+ * @returns {{ node?: RuntimeNode, raceLost?: boolean, tier1ReleaseToken?: { accountId: string, released: boolean } | null, tier1EscapedFromAffinity?: boolean, tier1UpdateAffinity?: boolean, tier1AffinityHit?: boolean } | null}
+ */
 export function pickForTier(tierNumber, tierNodes, req, attempted, opts = {}) {
   const { knownModels } = opts;
   if (tierNumber !== 1) {
@@ -47,6 +55,10 @@ export function pickForTier(tierNumber, tierNodes, req, attempted, opts = {}) {
 // Mulberry32 — a tiny deterministic PRNG for test reproducibility only. It is
 // only wired in when env.TIER1_SCHEDULER_SEED is a non-empty string; production
 // leaves it unset and P2C uses Math.random.
+/**
+ * @param {Record<string, any>} env
+ * @returns {() => number}
+ */
 export function makeTier1Rng(env) {
   const seedRaw = String(env?.TIER1_SCHEDULER_SEED ?? '').trim();
   if (!seedRaw) return Math.random;
@@ -84,8 +96,17 @@ export function makeTier1Rng(env) {
 //     budget explicitly (0 disables it).
 // Budget is a per-tier UPPER bound; the shared state.maxAttempts still caps the
 // request's total upstream attempts, and FAILOVER_BUDGET_MS caps wall-clock.
+/**
+ * @param {Record<number, RuntimeNode[]>} tiers
+ * @param {{ model: string, protocol: Protocol, surface: Surface }} reqDescriptor
+ * @param {Set<string>} attempted
+ * @param {PolicyConfig} policy
+ * @param {ReadonlySet<string>} knownModels
+ * @returns {Record<number, number>}
+ */
 export function computeTierCaps(tiers, reqDescriptor, attempted, policy, knownModels) {
   const now = Date.now();
+  /** @type {Record<number, number>} */
   const caps = {};
   for (const t of TIER_ORDER) caps[t] = 0;
   const dispatchable = TIER_ORDER.filter((t) =>
@@ -108,6 +129,17 @@ export function computeTierCaps(tiers, reqDescriptor, attempted, policy, knownMo
 // applying live availability, per-tier caps, strict tier order, and the shared
 // policy cap.  This is deliberately recomputed before every attempt because a
 // pre-dispatch deny or a concurrent request can change the live candidate set.
+/**
+ * @param {Record<number, RuntimeNode[]>} tiers
+ * @param {{ model: string, protocol: Protocol, surface: Surface }} reqDescriptor
+ * @param {Set<string>} attempted
+ * @param {Record<number, number>} tierCaps
+ * @param {Tier} currentTier
+ * @param {number} usedInTier
+ * @param {number} sharedRemaining
+ * @param {ReadonlySet<string>} knownModels
+ * @returns {number}
+ */
 export function countRemainingDispatchableAttempts(tiers, reqDescriptor, attempted, tierCaps, currentTier, usedInTier, sharedRemaining, knownModels) {
   const now = Date.now();
   let total = 0;

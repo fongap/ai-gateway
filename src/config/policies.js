@@ -28,6 +28,7 @@ const ALLOWED_FIELDS = new Set(['max_attempts', 'tier_attempts', 'hedge', 'first
 // Built-in policies — always present, user config merges on top.
 // These are the single source of truth; no runtime fallback needed.
 // All built-ins now explicitly declare hedge behavior (no undefined).
+/** @type {Record<string, PolicyConfig>} */
 const BUILTIN_POLICIES = Object.freeze({
   default: {
     maxAttempts: 5,
@@ -55,23 +56,39 @@ const BUILTIN_POLICIES = Object.freeze({
   },
 });
 
+/** @type {Record<string, any> | undefined} */
 let cachedEnv;
+/** @type {{ policies: Record<string, PolicyConfig>, errors: string[] } | undefined} */
 let cached;
 
+/**
+ * @param {Record<string, any>} env
+ * @returns {Record<string, PolicyConfig>}
+ */
 export function loadPoliciesConfig(env) {
   return analyzePolicies(env).policies;
 }
 
+/**
+ * @param {Record<string, any>} env
+ * @returns {string[]}
+ */
 export function getPoliciesConfigDiagnostics(env) {
   return analyzePolicies(env).errors;
 }
 
+/**
+ * @param {Record<string, any>} env
+ * @returns {{ policies: Record<string, PolicyConfig>, errors: string[] }}
+ */
 function analyzePolicies(env) {
   if (cachedEnv === env && cached) return cached;
   cachedEnv = env;
   const raw = readEnv(env, 'POLICIES_CONFIG');
+  /** @type {string[]} */
   const errors = [];
   // Start with built-ins; user config merges on top (override).
+  /** @type {Record<string, PolicyConfig>} */
   const policies = { ...BUILTIN_POLICIES };
   if (raw) {
     let parsed;
@@ -134,12 +151,19 @@ function analyzePolicies(env) {
 // When the field is absent entirely (user config omits hedge), null is returned
 // and the handler falls back to the legacy global behavior (hedge enabled
 // everywhere except tier3). Built-in policies always declare hedge explicitly.
+/**
+ * @param {Record<string, any> | null | undefined} value
+ * @param {string} policyName
+ * @param {string[]} errors
+ * @returns {{ enabled?: boolean, delayMs?: number, tiers?: Array<'tier1' | 'tier2' | 'tier3'> } | null}
+ */
 function parseHedge(value, policyName, errors) {
   if (value === undefined || value === null) return null;
   if (typeof value !== 'object' || Array.isArray(value)) {
     errors.push(`POLICIES_CONFIG: "${policyName}": hedge must be an object { enabled?, delay_ms?, tiers? }`);
     return null;
   }
+  /** @type {{ enabled?: boolean, delayMs?: number, tiers?: Array<'tier1' | 'tier2' | 'tier3'> }} */
   const out = {};
   if (value.enabled !== undefined) {
     if (typeof value.enabled !== 'boolean') {
@@ -169,12 +193,19 @@ function parseHedge(value, policyName, errors) {
 // Each value must be an integer in [0, MAX_ATTEMPTS]; 0 explicitly disables a
 // tier. Non-integers (null included), out-of-range values and unknown keys
 // produce diagnostics instead of being clamped or truncated.
+/**
+ * @param {Record<string, any> | null | undefined} value
+ * @param {string} policyName
+ * @param {string[]} errors
+ * @returns {{ tier1?: number, tier2?: number, tier3?: number } | null}
+ */
 function parseTierAttempts(value, policyName, errors) {
   if (value === undefined || value === null) return null;
   if (typeof value !== 'object' || Array.isArray(value)) {
     errors.push(`POLICIES_CONFIG: "${policyName}" tier_attempts must be an object { tier1, tier2, tier3 }`);
     return null;
   }
+  /** @type {{ tier1?: number, tier2?: number, tier3?: number }} */
   const out = {};
   let any = false;
   for (const [key, val] of Object.entries(value)) {
@@ -186,13 +217,19 @@ function parseTierAttempts(value, policyName, errors) {
       errors.push(`POLICIES_CONFIG: "${policyName}" tier_attempts.${key} must be an integer between 0 and ${MAX_ATTEMPTS}`);
       continue;
     }
-    out[key] = val;
+    out[/** @type {'tier1' | 'tier2' | 'tier3'} */ (key)] = val;
     any = true;
   }
   return any ? out : null;
 }
 
 // Parse an optional first-event timeout override in milliseconds.
+/**
+ * @param {number | null | undefined} value
+ * @param {string} policyName
+ * @param {string[]} errors
+ * @returns {number | null}
+ */
 function parseFirstEventTimeoutMs(value, policyName, errors) {
   if (value === undefined || value === null) return null;
   if (!Number.isInteger(value) || value < 5_000 || value > 600_000) {
@@ -202,6 +239,12 @@ function parseFirstEventTimeoutMs(value, policyName, errors) {
   return value;
 }
 
+/**
+ * @param {string} modelName
+ * @param {Record<string, { policy?: string }>} modelsConfig
+ * @param {Record<string, PolicyConfig>} policiesConfig
+ * @returns {PolicyConfig}
+ */
 export function getPolicy(modelName, modelsConfig, policiesConfig) {
   const policyName = modelsConfig[modelName]?.policy || 'default';
   return policiesConfig[policyName];

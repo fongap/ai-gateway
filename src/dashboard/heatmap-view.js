@@ -73,7 +73,8 @@ export function renderHeatmap(heatmap, opts = {}) {
         // Re-derive the human tooltip here so we don't need to ship the
         // `data` Map through the build pipeline twice. The `requests`
         // field always comes from the same `data` Map.
-        const requests = data && data.get(iso) ? data.get(iso).requests : 0;
+        const dayEntry = data && data.get(iso);
+        const requests = dayEntry ? dayEntry.requests : 0;
         if (v > 0 && max > 0) {
           level = Math.min(4, Math.max(1, Math.ceil((v / max) * 4)));
         }
@@ -117,6 +118,9 @@ export function renderHeatmap(heatmap, opts = {}) {
   };
 }
 
+/**
+ * @param {{ mode: string, rangeStart: string }} heatmap
+ */
 function defaultAriaLabel(heatmap) {
   if (heatmap.mode === 'rolling-52-weeks') return '近 52 周 Token 活动热力图';
   return `${heatmap.rangeStart.slice(0, 4)} 年 Token 活动热力图`;
