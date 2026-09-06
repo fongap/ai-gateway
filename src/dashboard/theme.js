@@ -25,6 +25,15 @@ export const THEME_CSS = `
   --teal-2:#a9d0c4;
   --teal-3:#7cb4a5;
   --teal-4:#3f8b7c;
+  /* Heatmap activity ramp — dedicated tokens (kept separate from --teal-*
+     so other components are unaffected). Stepped for even contrast against
+     the neutral empty cell (--line-soft): level 1 must be clearly tinted
+     (low-activity days are real activity, not empty), level 4 hits the
+     brand teal for the maximum bucket. */
+  --heat-1:#bfdcd2;
+  --heat-2:#8cc3b2;
+  --heat-3:#4f9f8a;
+  --heat-4:#0f5d53;
   --amber:#b4793b;
   --red:#a75b58;
   --radius:14px;
@@ -108,10 +117,10 @@ section{padding:32px 0;border-top:1px solid var(--line)}
    DOM order. */
 .heatmap{display:grid;grid-template-columns:repeat(var(--week-count,52),1fr);grid-template-rows:repeat(7,10px);gap:3px;min-width:760px}
 .cell{height:10px;border-radius:2px;background:var(--line-soft);outline:none}
-.cell[data-level="1"]{background:var(--teal-1)}
-.cell[data-level="2"]{background:var(--teal-2)}
-.cell[data-level="3"]{background:var(--teal-3)}
-.cell[data-level="4"]{background:var(--teal-4)}
+.cell[data-level="1"]{background:var(--heat-1)}
+.cell[data-level="2"]{background:var(--heat-2)}
+.cell[data-level="3"]{background:var(--heat-3)}
+.cell[data-level="4"]{background:var(--heat-4)}
 .cell:focus-visible{outline:2px solid var(--teal);outline-offset:1px}
 /* Same week tracks as .heatmap — never flex/space-between, which would
    ignore the labels' grid-column anchoring (date semantics must win). */
