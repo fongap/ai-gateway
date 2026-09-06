@@ -213,6 +213,8 @@ TypeScript compiler
 
 作为第一阶段。
 
+v1.3.0 TypeScript 迁移阶段的专项治理（冻结规则、迁移顺序、工具链与类型纪律）见 [typescript-migration.md](typescript-migration.md)。
+
 正式迁移原则：
 
 ```text
