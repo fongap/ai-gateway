@@ -51,7 +51,7 @@ import {
 } from '../protocol/anthropic.js';
 import { validateOpenAIResponsesRequest } from '../protocol/responses/index.js';
 import { jsonResponse } from './response-helpers.js';
-import { admitKeyRequest } from '../ratelimit/key-rpm.js';
+import { admitKeyRequest } from '../ratelimit/key-rpm.ts';
 
 // (protocol, surface) keyed by the client route. The same map lives in
 // handler.js for now; this is a long-term import path. Until the rest of

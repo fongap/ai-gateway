@@ -8,11 +8,11 @@
   },
   "include": [
     "src/types/domain.d.ts",
+    "src/**/*.ts",
     "src/scheduler/**/*.js",
     "src/reliability/**/*.js",
     "src/config/**/*.js",
     "src/request/**/*.js",
-    "src/ratelimit/key-rpm.js",
     "src/observability/token-usage.mjs"
   ]
 }

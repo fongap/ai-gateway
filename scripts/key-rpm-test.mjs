@@ -15,7 +15,7 @@
 //   6. the bounded key map does not leak under 10000 unique keys
 
 import assert from 'node:assert/strict';
-import { admitKeyRequest, getKeyRpmSnapshot, __resetKeyRpmForTests } from '../src/ratelimit/key-rpm.js';
+import { admitKeyRequest, getKeyRpmSnapshot, __resetKeyRpmForTests } from '../src/ratelimit/key-rpm.ts';
 
 const now = 1_700_000_000_000;
 const WINDOW = 60_000;

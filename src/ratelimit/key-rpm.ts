@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT
-// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // Per-key in-isolate sliding-window rate limiter for the gateway
@@ -24,40 +23,29 @@
 //     in the current isolate — the map is capped and old keys are
 //     evicted.
 
-/**
- * @typedef {{
- *   stamps: number[],
- *   lastSeen: number,
- * }} KeyStateEntry
- */
+type KeyStateEntry = {
+  stamps: number[],
+  lastSeen: number,
+};
 
-/** @typedef {{ ok: true } | { ok: false, retryAfterSec: number }} KeyAdmissionVerdict */
+type KeyAdmissionVerdict = { ok: true } | { ok: false, retryAfterSec: number };
 
 const WINDOW_MS = 60_000;
 const MAX_TRACKED_KEYS = 5_000;
 
-/** @type {Map<string, KeyStateEntry>} */
-const keyState = new Map();
+const keyState: Map<string, KeyStateEntry> = new Map();
 
-/**
- * @param {number} now
- */
-function evictStale(now) {
+function evictStale(now: number): void {
   if (keyState.size <= MAX_TRACKED_KEYS) return;
   // Drop the entry with the smallest lastSeen (oldest un-observed key).
-  /** @type {[string, KeyStateEntry] | null} */
-  let oldest = null;
+  let oldest: [string, KeyStateEntry] | null = null;
   for (const [k, v] of keyState) {
     if (oldest === null || v.lastSeen < oldest[1].lastSeen) oldest = [k, v];
   }
   if (oldest) keyState.delete(oldest[0]);
 }
 
-/**
- * @param {number[]} stamps
- * @param {number} now
- */
-function pruneWindow(stamps, now) {
+function pruneWindow(stamps: number[], now: number): void {
   const cutoff = now - WINDOW_MS;
   let drop = 0;
   while (drop < stamps.length && stamps[drop] < cutoff) drop += 1;
@@ -73,13 +61,8 @@ function pruneWindow(stamps, now) {
  * `auth.js` for how the fingerprint is derived.
  *
  * `cap` is the RPM cap (0 = disabled). `now` is injectable for tests.
- *
- * @param {string} keyFingerprint
- * @param {number} cap
- * @param {number} [now]
- * @returns {KeyAdmissionVerdict}
  */
-export function admitKeyRequest(keyFingerprint, cap, now = Date.now()) {
+export function admitKeyRequest(keyFingerprint: string, cap: number, now: number = Date.now()): KeyAdmissionVerdict {
   if (!cap || cap <= 0) return { ok: true };
   let entry = keyState.get(keyFingerprint);
   if (!entry) {
@@ -98,18 +81,13 @@ export function admitKeyRequest(keyFingerprint, cap, now = Date.now()) {
   return { ok: true };
 }
 
-/**
- * @param {string} keyFingerprint
- * @param {number} [now]
- * @returns {{ used: number, cap: number }}
- */
-export function getKeyRpmSnapshot(keyFingerprint, now = Date.now()) {
+export function getKeyRpmSnapshot(keyFingerprint: string, now: number = Date.now()): { used: number, cap: number } {
   const entry = keyState.get(keyFingerprint);
   if (!entry) return { used: 0, cap: 0 };
   pruneWindow(entry.stamps, now);
   return { used: entry.stamps.length, cap: 0 };
 }
 
-export function __resetKeyRpmForTests() {
+export function __resetKeyRpmForTests(): void {
   keyState.clear();
 }
