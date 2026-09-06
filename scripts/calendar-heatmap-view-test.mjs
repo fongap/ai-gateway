@@ -19,7 +19,9 @@ import { buildCalendarHeatmap } from '../src/dashboard/heatmap.js';
 import { renderHeatmap } from '../src/dashboard/heatmap-view.js';
 
 function dateAtIso(iso) {
-  return new Date(`${iso}T00:00:00Z`).getTime();
+  // TRUE UTC+8 midnight (= 16:00Z the previous day), NOT `${iso}T00:00:00Z`
+  // (which is 08:00 UTC+8) — see calendar-heatmap-test.mjs for the rationale.
+  return Date.parse(`${iso}T00:00:00+08:00`);
 }
 
 async function test(name, fn) {
@@ -128,6 +130,42 @@ await test('renderer rolling-52-weeks: month labels never crowd closer than 3 co
     }
     lastCol = col;
   }
+});
+
+await test('renderer rolling-52-weeks: the right-edge 9月 label is NOT dropped and binds to week 51', () => {
+  const today = dateAtIso('2026-09-04');
+  const heatmap = buildCalendarHeatmap({ mode: 'rolling-52-weeks', today });
+  const { labels } = renderHeatmap(heatmap);
+  // 2026-09-01 sits in the LAST week column (weekIndex 51). The renderer
+  // must not drop the label near the right boundary — it is date
+  // semantics, and the shared CSS grid positions it.
+  const sep = labels.find((l) => l.includes('>9月<'));
+  assert.ok(sep, '9月 label present in renderer output');
+  assert.match(sep, /grid-column:52/, '9月 binds to weekIndex 51 (grid-column 52), the real position of 2026-09-01');
+});
+
+await test('renderer: cells carry data-week/data-weekday and explicit grid placement from the HeatmapDay', () => {
+  const today = dateAtIso('2026-09-04');
+  const heatmap = buildCalendarHeatmap({ mode: 'rolling-52-weeks', today });
+  const { cells } = renderHeatmap(heatmap);
+  const sep1 = cells.find((c) => c.includes('data-date="2026-09-01"'));
+  assert.ok(sep1, 'cell for 2026-09-01 exists');
+  assert.match(sep1, /data-week="51"/, 'data-week comes from the HeatmapDay');
+  assert.match(sep1, /data-weekday="1"/, 'data-weekday comes from the HeatmapDay');
+  assert.match(sep1, /style="grid-column:52;grid-row:2"/, 'explicit placement — position never depends on DOM order');
+  for (const c of cells) {
+    assert.match(c, /style="grid-column:\d+;grid-row:\d+"/, 'every cell positions itself explicitly');
+    assert.match(c, /data-week="\d+" data-weekday="\d+"/, 'every cell carries its position facts');
+  }
+});
+
+await test('renderer calendar-year 2026: 1月 at column 1 and 12月 present — no edge drops', () => {
+  const today = dateAtIso('2026-09-04');
+  const heatmap = buildCalendarHeatmap({ mode: 'calendar-year', today, year: 2026 });
+  const { labels } = renderHeatmap(heatmap);
+  assert.equal(labels.length, 12, 'all 12 month labels render — edges included');
+  assert.match(labels[0], /grid-column:1">1月</, '1月 anchors to the padding column containing 2026-01-01');
+  assert.ok(labels.some((l) => l.includes('>12月<')), '12月 never dropped near the right edge');
 });
 
 await test('renderer: HTML escaping of tooltip payloads with special chars', () => {

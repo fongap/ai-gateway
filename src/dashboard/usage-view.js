@@ -55,7 +55,9 @@ export function buildHeatmap(daily, now) {
     data: daily,
     valueKey: 'total',
   });
-  return { cells, labels, ariaLabel };
+  // weekCount feeds the shared `--week-count` CSS variable: the heatmap
+  // grid and the month-label row MUST use the same week-column tracks.
+  return { cells, labels, ariaLabel, weekCount: heatmap.weeks.length };
 }
 
 // ---- KPI -------------------------------------------------------------------
@@ -177,11 +179,15 @@ export async function usageSection(env, now = Date.now(), stats = null) {
   }
   const activity = available
     ? (() => {
-        const { cells, labels, ariaLabel } = buildHeatmap(daily, now);
+        const { cells, labels, ariaLabel, weekCount } = buildHeatmap(daily, now);
+        // `--week-count` makes `.months` share the heatmap's exact week
+        // column tracks, so each label's grid-column anchoring is real
+        // positioning, not a flex approximation.
+        const weekTracks = `--week-count:${weekCount}`;
         return `<div class="heatmap-wrap" tabindex="0" role="img" ` +
           `aria-label="${escapeHtml(ariaLabel)}">` +
-          `<div class="heatmap" aria-hidden="true">${cells.join('')}</div>` +
-          `<div class="months" aria-hidden="true">${labels.join('')}</div></div>`;
+          `<div class="heatmap" style="${weekTracks}" aria-hidden="true">${cells.join('')}</div>` +
+          `<div class="months" style="${weekTracks}" aria-hidden="true">${labels.join('')}</div></div>`;
       })()
     : `<div class="model-usage-empty">统计暂不可用</div>`;
   const modelSection = renderModelUsage(modelUsage);
@@ -189,7 +195,7 @@ export async function usageSection(env, now = Date.now(), stats = null) {
   <div class="wrap">
     <div class="section-head"><span class="section-title">使用情况</span></div>
     <div class="stat-row">${kpis}</div>
-    <div class="subhead"><b>Token 活动 · 52 周</b><span>${fmtInt(totalRequests)} 次请求</span></div>
+    <div class="subhead"><b>Token 活动 · 近 52 周</b><span>${fmtInt(totalRequests)} 次请求</span></div>
     ${activity}
     ${modelSection}
   </div>

@@ -57,6 +57,7 @@ const UNIT_TESTS = [
   'scripts/key-rpm-test.mjs',
   'scripts/calendar-heatmap-test.mjs',
   'scripts/calendar-heatmap-view-test.mjs',
+  'scripts/calendar-heatmap-contract-test.mjs',
   'scripts/migrations-check-test.mjs',
   'scripts/version-check-test.mjs',
   'scripts/architecture-contract-test.mjs',

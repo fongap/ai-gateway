@@ -13,10 +13,13 @@ import assert from 'node:assert/strict';
 import { buildCalendarHeatmap } from '../src/dashboard/heatmap.js';
 
 function dateAtIso(iso) {
-  // Build a UTC ms value for a UTC+8 "midnight" so the utility's
-  // `utc8DayStartUtcMs` snaps to the right calendar day in the
-  // display timezone.
-  return new Date(`${iso}T00:00:00Z`).getTime();
+  // TRUE UTC+8 midnight for the business date `iso` (= 16:00Z on the
+  // previous day). Deliberately NOT `${iso}T00:00:00Z`: that instant is
+  // 08:00 UTC+8 on the same business day, so boundary tests would pass by
+  // coincidence ("the day is still the same") without ever exercising the
+  // timezone conversion. Starting from the real UTC+8 midnight makes the
+  // builder's day-boundary math part of every assertion below.
+  return Date.parse(`${iso}T00:00:00+08:00`);
 }
 
 async function test(name, fn) {
@@ -202,31 +205,128 @@ await test('calendar-year historical year: no future days', () => {
   }
 });
 
-await test('calendar-year: 2026 has 53 columns (Jan 1 is Thursday -> 53 weeks)', () => {
+await test('calendar-year: 2026 has EXACTLY 53 columns and 365 in-range days', () => {
   const today = dateAtIso('2026-09-04');
   const heatmap = buildCalendarHeatmap({ mode: 'calendar-year', today, year: 2026 });
-  // We do NOT hard-code 52 — the spec says: depends on the year layout.
-  // 2026-01-01 is Thursday so the year spans 53 week columns.
-  assert.ok(heatmap.weeks.length === 53 || heatmap.weeks.length === 54, `got ${heatmap.weeks.length} weeks (53 expected, 54 acceptable)`);
+  // 2026-01-01 is Thursday (Mon-first dow 3), 2026 is not a leap year:
+  // the year spans exactly 53 Monday-first calendar week columns. For a
+  // given year the count is deterministic — "53 or 54" is not a contract.
+  assert.equal(heatmap.weeks.length, 53, `got ${heatmap.weeks.length} weeks`);
+  const inRange = heatmap.weeks.flat().filter((c) => c.inRange).length;
+  assert.equal(inRange, 365, '365 in-range days (53*7=371 cells, 6 padding)');
 });
 
-await test('calendar-year: leap year 2028 includes 2028-02-29 in range', () => {
+await test('calendar-year: a leap year starting on Sunday spans EXACTLY 54 columns (2012)', () => {
+  // 2012-01-01 is a Sunday (Mon-first dow 6) and 2012 is a leap year, so
+  // Dec 31 lands in a week whose Monday is exactly 53 weeks after the
+  // first column's Monday: 54 real columns, 366 in-range days.
+  const today = dateAtIso('2012-06-15');
+  const heatmap = buildCalendarHeatmap({ mode: 'calendar-year', today, year: 2012 });
+  assert.equal(heatmap.weeks.length, 54, `got ${heatmap.weeks.length} weeks`);
+  const inRange = heatmap.weeks.flat().filter((c) => c.inRange).length;
+  assert.equal(inRange, 366);
+});
+
+await test('calendar-year: 2040 is also an EXACT 54-column year (leap + Sunday Jan 1)', () => {
+  const today = dateAtIso('2040-06-15');
+  const heatmap = buildCalendarHeatmap({ mode: 'calendar-year', today, year: 2040 });
+  assert.equal(heatmap.weeks.length, 54, `got ${heatmap.weeks.length} weeks`);
+});
+
+await test('calendar-year: non-leap years have EXACTLY 53 columns (2019)', () => {
+  // 2019-01-01 is a Tuesday — the non-trivial layout case.
+  const today = dateAtIso('2019-06-15');
+  const heatmap = buildCalendarHeatmap({ mode: 'calendar-year', today, year: 2019 });
+  assert.equal(heatmap.weeks.length, 53, `got ${heatmap.weeks.length} weeks`);
+});
+
+await test('calendar-year: leap year 2028 includes 2028-02-29 and has EXACTLY 53 columns / 366 days', () => {
   const today = dateAtIso('2028-02-29');
   const heatmap = buildCalendarHeatmap({ mode: 'calendar-year', today, year: 2028 });
+  assert.equal(heatmap.weeks.length, 53, `got ${heatmap.weeks.length} weeks`);
   let leap = null;
   for (const week of heatmap.weeks) for (const c of week) {
     if (c.date === '2028-02-29') { leap = c; break; }
   }
   assert.ok(leap, '2028-02-29 cell exists');
   assert.equal(leap.inRange, true, '2028-02-29 is in 2028 range');
+  const inRange = heatmap.weeks.flat().filter((c) => c.inRange).length;
+  assert.equal(inRange, 366, 'leap year has 366 in-range days');
 });
 
-await test('calendar-year: a year whose Jan 1 is a Monday has 53 columns (52 + 53rd)', () => {
-  // 2019-01-01 is a Tuesday (weekdayIndex 1). Use it to confirm the
-  // non-trivial layout calculation: Tuesday -> 53 weeks.
-  const today = dateAtIso('2019-06-15');
-  const heatmap = buildCalendarHeatmap({ mode: 'calendar-year', today, year: 2019 });
-  assert.ok(heatmap.weeks.length >= 53, `2019 should have at least 53 columns, got ${heatmap.weeks.length}`);
+// === Month-boundary anchoring ==============================================
+
+await test('rolling-52-weeks: 8月31日 (Mon) and 9月1日 (Tue) share the last column; 9月 anchors there', () => {
+  const today = dateAtIso('2026-09-04');
+  const heatmap = buildCalendarHeatmap({ mode: 'rolling-52-weeks', today });
+  const last = heatmap.weeks[51];
+  assert.equal(last[0].date, '2026-08-31', 'last column starts Monday 8月31日');
+  assert.equal(last[1].date, '2026-09-01', '9月1日 sits in the SAME column');
+  const sep = heatmap.monthLabels.find((l) => l.year === 2026 && l.month === 8);
+  assert.ok(sep, 'September label exists');
+  assert.equal(sep.weekIndex, 51, '9月 anchors to weekIndex 51 (the column containing 2026-09-01), NOT to the column whose Monday is in August');
+});
+
+await test('calendar-year: month starting on Monday anchors to its own week column (2027-02-01)', () => {
+  const today = dateAtIso('2027-02-01');
+  const heatmap = buildCalendarHeatmap({ mode: 'calendar-year', today, year: 2027 });
+  const feb = heatmap.monthLabels.find((l) => l.month === 1);
+  assert.ok(feb, 'February label exists');
+  assert.equal(heatmap.weeks[feb.weekIndex][0].date, '2027-02-01',
+    '2027-02-01 is a Monday -> the February label column starts on it');
+});
+
+await test('calendar-year: month starting on Sunday anchors to the PREVIOUS week column (2026-02-01)', () => {
+  const today = dateAtIso('2026-02-01');
+  const heatmap = buildCalendarHeatmap({ mode: 'calendar-year', today, year: 2026 });
+  const feb = heatmap.monthLabels.find((l) => l.month === 1);
+  assert.ok(feb, 'February label exists');
+  const col = heatmap.weeks[feb.weekIndex].map((c) => c.date);
+  assert.ok(col.includes('2026-02-01'), 'label column contains 2026-02-01');
+  assert.equal(heatmap.weeks[feb.weekIndex][0].date, '2026-01-26',
+    '2026-02-01 is a Sunday -> column Monday is 2026-01-26 (label is NOT pushed to the next column)');
+});
+
+await test('rolling-52-weeks: labels span the 12月 → 1月 year boundary', () => {
+  const today = dateAtIso('2026-09-04');
+  const heatmap = buildCalendarHeatmap({ mode: 'rolling-52-weeks', today });
+  const dec = heatmap.monthLabels.find((l) => l.year === 2025 && l.month === 11);
+  const jan = heatmap.monthLabels.find((l) => l.year === 2026 && l.month === 0);
+  assert.ok(dec, '2025-12 label exists');
+  assert.ok(jan, '2026-01 label exists');
+  assert.ok(dec.weekIndex < jan.weekIndex, 'each label anchors at its own month start');
+});
+
+// === UTC+8 day-boundary =====================================================
+
+await test('UTC+8 midnight boundary: 15:59:59Z vs 16:00:00Z split the business day', () => {
+  // 2026-09-03T15:59:59Z = 2026-09-03 23:59:59 UTC+8; 2026-09-03T16:00:00Z
+  // = 2026-09-04 00:00:00 UTC+8. The business date advances by one day,
+  // the weekday follows the business date (Thu -> Fri), the month does
+  // not shift.
+  const before = buildCalendarHeatmap({ mode: 'rolling-52-weeks', today: Date.parse('2026-09-03T15:59:59Z') });
+  const after = buildCalendarHeatmap({ mode: 'rolling-52-weeks', today: Date.parse('2026-09-03T16:00:00Z') });
+  assert.equal(before.weeks[51][3].date, '2026-09-03', 'business today is Thursday 2026-09-03 before the boundary');
+  assert.equal(before.weeks[51][3].weekdayIndex, 3, 'Thursday is weekday 3 — no weekday offset');
+  assert.equal(before.weeks[51][4].isFuture, true, '2026-09-04 is future before the boundary');
+  assert.equal(after.weeks[51][4].date, '2026-09-04', 'business today is Friday 2026-09-04 after the boundary');
+  assert.equal(after.weeks[51][4].weekdayIndex, 4, 'Friday is weekday 4 — no weekday offset');
+  assert.equal(after.weeks[51][4].isFuture, false, '2026-09-04 is today after the boundary');
+  assert.equal(after.monthLabels[after.monthLabels.length - 1].month, 8, 'month label does not shift with the boundary');
+});
+
+await test('UTC+8 month/week boundary: 2026-08-31T16:00:00Z rolls date AND month with correct weekday math', () => {
+  const before = buildCalendarHeatmap({ mode: 'rolling-52-weeks', today: Date.parse('2026-08-31T15:59:59Z') });
+  const after = buildCalendarHeatmap({ mode: 'rolling-52-weeks', today: Date.parse('2026-08-31T16:00:00Z') });
+  assert.equal(before.weeks[51][0].date, '2026-08-31', 'business today is Monday 8月31日 before the boundary');
+  assert.equal(before.weeks[51][0].weekdayIndex, 0);
+  assert.equal(after.weeks[51][1].date, '2026-09-01', 'business today is Tuesday 9月1日 after the boundary');
+  assert.equal(after.weeks[51][1].weekdayIndex, 1, 'Tuesday is weekday 1 — no weekday offset');
+  assert.equal(after.weeks[51][0].date, '2026-08-31', 'both sides share the same current-week Monday');
+  const sepBefore = before.monthLabels.find((l) => l.year === 2026 && l.month === 8);
+  const sepAfter = after.monthLabels.find((l) => l.year === 2026 && l.month === 8);
+  assert.equal(sepBefore.weekIndex, 51, '9月 anchors to the last column before the boundary');
+  assert.equal(sepAfter.weekIndex, 51, '9月 anchors to the last column after the boundary');
 });
 
 await test('rolling-52-weeks: Date input also works (not just number ms)', () => {

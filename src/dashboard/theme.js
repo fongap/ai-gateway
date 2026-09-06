@@ -99,14 +99,26 @@ section{padding:32px 0;border-top:1px solid var(--line)}
 .subhead b{color:var(--ink-2);font-size:13px;font-weight:500}
 .subhead span{color:var(--ink-3);font-size:12px}
 .heatmap-wrap{overflow-x:auto;padding-bottom:4px;margin-bottom:48px}
-.heatmap{display:grid;grid-auto-flow:column;grid-template-rows:repeat(7,10px);gap:3px;min-width:760px}
+/* Week-column tracks are shared by the heatmap grid AND the month-label row
+   via --week-count (set inline by the renderer's consumer), so a label's
+   grid-column lands exactly above its week column. Cell positions come from
+   the HeatmapDay (explicit grid-column/grid-row inline placement), never
+   from DOM order. */
+.heatmap{display:grid;grid-template-columns:repeat(var(--week-count,52),10px);grid-template-rows:repeat(7,10px);gap:3px;min-width:760px}
 .cell{width:10px;height:10px;border-radius:2px;background:var(--line-soft);outline:none}
 .cell[data-level="1"]{background:var(--teal-1)}
 .cell[data-level="2"]{background:var(--teal-2)}
 .cell[data-level="3"]{background:var(--teal-3)}
 .cell[data-level="4"]{background:var(--teal-4)}
 .cell:focus-visible{outline:2px solid var(--teal);outline-offset:1px}
-.months{display:flex;justify-content:space-between;min-width:760px;margin-top:10px;color:var(--ink-3);font-size:10.5px}
+/* Same week tracks as .heatmap — never flex/space-between, which would
+   ignore the labels' grid-column anchoring (date semantics must win). */
+.months{display:grid;grid-template-columns:repeat(var(--week-count,52),10px);column-gap:3px;min-width:760px;margin-top:10px;color:var(--ink-3);font-size:10.5px}
+.months span{grid-row:1;justify-self:start;white-space:nowrap}
+/* Future cells stay visually empty; out-of-range padding is nearly disabled;
+   a real 0-activity day keeps the normal level-0 background. */
+.cell[data-future="1"]{background:transparent;box-shadow:inset 0 0 0 1px var(--line-soft)}
+.cell[data-inrange="0"]{opacity:.25}
 
 /* usage split */
 .usage-split{display:grid;grid-template-columns:180px 1fr;gap:58px;align-items:center}
