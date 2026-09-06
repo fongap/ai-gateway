@@ -560,7 +560,7 @@ await test('dashboard D1 cache coalesces concurrent requests within TTL', async 
   // New query count: queryTokenSummary (2 reads: totals + hourly windows),
   // queryTokenDailySeries (3 reads: daily table + today overlay + fallback),
   // queryTokenModelUsage (1), queryRecentModelEvidence (1),
-  // queryModelTtftPercentiles (1 for top model) = 8 total.
+  // queryAllModelsTtftPercentiles (1 grouped query, all models) = 8 total.
   assert.equal(d1._reads.length, 8, 'two concurrent pages issue summary + series + evidence + ttft queries');
   await pageText(anonRequest(), env);
   assert.equal(d1._reads.length, 8, 'a later request inside the TTL performs no additional reads');
@@ -593,8 +593,9 @@ await test('dashboard D1 cache refreshes after TTL expires', async () => {
     const refreshed = await pageText(anonRequest(), env);
     assert.ok(refreshed.includes('>200<'), 'new model data appears after TTL expiry');
     assert.ok(refreshed.includes('code-max'), 'old model remains after refresh');
-    // After TTL expiry: 8 initial + 9 new reads (8 refresh + 1 extra model) = 17 total.
-    assert.equal(d1._reads.length, 17, 'TTL expiry performs exactly one new query set');
+    // After TTL expiry: 8 initial + 8 refresh reads = 16 total. The grouped
+    // TTFT query is 1 read regardless of how many models now have rows.
+    assert.equal(d1._reads.length, 16, 'TTL expiry performs exactly one new query set');
   } finally {
     Date.now = realNow;
   }

@@ -45,6 +45,7 @@ const UNIT_TESTS = [
   'scripts/provider-discovery/ssrf-guard-test.mjs',
   'scripts/model-status-test.mjs',
   'scripts/model-status-window-contract-test.mjs',
+  'scripts/ttft-query-contract-test.mjs',
   'scripts/reliability-performance-test.mjs',
   'scripts/conversion-test.mjs',
   'scripts/config-matrix-test.mjs',

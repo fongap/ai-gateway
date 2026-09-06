@@ -197,7 +197,7 @@ export async function usageSection(env, now = Date.now(), stats = null) {
 }
 
 // Re-export cache helpers used by pages.js
-import { MODEL_STATUS_RECENT_WINDOW_MS, queryRecentModelEvidence, queryModelTtftPercentiles } from '../observability/token-usage-store.mjs';
+import { MODEL_STATUS_RECENT_WINDOW_MS, queryAllModelsTtftPercentiles, queryRecentModelEvidence } from '../observability/token-usage-store.mjs';
 
 const DASHBOARD_CACHE_TTL_MS = 45_000;
 let dashboardCaches = new WeakMap();
@@ -250,21 +250,16 @@ async function loadDashboardStats(env, now) {
   const dow = (new Date(isoDayUtc8(gridStartUtc8)).getUTCDay() + 6) % 7;
   const currentWeekStartUtc8 = gridStartUtc8 - dow * DAY_MS;
   const startIso = isoDayUtc8(currentWeekStartUtc8 - (HEATMAP_WEEKS - 1) * 7 * DAY_MS);
-  const [summary, daily, modelUsage, recentEvidence] = await Promise.all([
+  const [summary, daily, modelUsage, recentEvidence, ttftQuery] = await Promise.all([
     queryTokenSummary(env, now),
     queryTokenDailySeries(env, startIso, now),
     queryTokenModelUsage(env, 7, now),
     queryRecentModelEvidence(env, MODEL_STATUS_RECENT_WINDOW_MS, now),
+    queryAllModelsTtftPercentiles(env, 7, now),
   ]);
-  const topModels = Array.isArray(modelUsage?.rows)
-    ? modelUsage.rows.slice(0, 4).map((r) => r.model)
-    : [];
-  const ttftResults = await Promise.all(
-    topModels.map((m) => queryModelTtftPercentiles(env, m, 7, now)),
-  );
-  const ttft = new Map();
-  for (let i = 0; i < topModels.length; i++) {
-    ttft.set(topModels[i], ttftResults[i]);
-  }
+  // One grouped D1 query covers ALL models in the window — no Top-4 slice,
+  // no per-model N+1. Entries are keyed by the canonical statistical model
+  // key; models without rows are filled per-public-catalog in pages.js.
+  const ttft = ttftQuery?.available && ttftQuery.ttft instanceof Map ? ttftQuery.ttft : new Map();
   return { summary, daily, modelUsage, recentEvidence, ttft, observedAt: new Date(now).toISOString() };
 }

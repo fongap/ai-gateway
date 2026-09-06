@@ -28,7 +28,7 @@ import { MODEL_STATUS_RECENT_WINDOW_MS } from '../runtime/model-status.js';
 import { htmlResponse } from '../protocol/http.js';
 import { escapeHtml } from './format.js';
 import { THEME_CSS } from './theme.js';
-import { publicModelStatus, renderModels } from './model-status-view.js';
+import { ensureModelTtftContainers, publicModelStatus, renderModels } from './model-status-view.js';
 import { getCachedDashboardStats, usageSection } from './usage-view.js';
 import { quickStartSection } from './quick-start-view.js';
 
@@ -168,7 +168,7 @@ export async function dashboardResponse(request, env) {
     const models = publicModelStatus(config.nodes || [], env, recentEvidence, statusNow);
     const apiBase = `${new URL(request.url).origin}/v1`;
 
-    const modelsResult = renderModels(models, stats.ttft);
+    const modelsResult = renderModels(models, ensureModelTtftContainers(stats.ttft, models));
     const usageHtml = await usageSection(env, now, stats);
     const quickHtml = quickStartSection(apiBase);
 
