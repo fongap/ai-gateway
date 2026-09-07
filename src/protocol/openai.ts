@@ -38,12 +38,12 @@ export function isOpenAIStreamingResponse(response: Response): boolean {
 //   * if the client already included stream_options with other keys, they stay.
 // A non-object stream_options (or a JSON-serializable primitive) is normalized
 // into a fresh object so the request stays valid.
-export function withUsageStreamOptions(body: Record<string, any>): Record<string, any> {
+export function withUsageStreamOptions(body: Record<string, unknown>): Record<string, unknown> {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return body;
   const existing = body.stream_options && typeof body.stream_options === 'object' && !Array.isArray(body.stream_options)
     ? body.stream_options
     : {};
-  const streamOptions = { ...existing };
+  const streamOptions: Record<string, unknown> = { ...existing };
   if (streamOptions.include_usage === undefined) streamOptions.include_usage = true;
   return { ...body, stream_options: streamOptions };
 }
@@ -52,7 +52,7 @@ export function withUsageStreamOptions(body: Record<string, any>): Record<string
 // (delta chunks + finish chunk + [DONE]) for clients that requested streaming
 // but received JSON from the upstream. Pure synthesis: it does not wrap an
 // upstream stream, so it can be called freely from the success path.
-export function synthesizeSseFromCompletion(data: Record<string, any> | null | undefined, env: Record<string, unknown>, request: Request, extraHeaders?: Record<string, string>): Response {
+export function synthesizeSseFromCompletion(data: Record<string, unknown> | null | undefined, env: Record<string, unknown>, request: Request, extraHeaders?: Record<string, string>): Response {
   const encoder = new TextEncoder();
   const choices = Array.isArray(data?.choices) ? data.choices : [];
   const base = {
@@ -66,7 +66,7 @@ export function synthesizeSseFromCompletion(data: Record<string, any> | null | u
       const emit = (obj: unknown) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
       for (const choice of choices) {
         const msg = choice.message || {};
-        const delta: Record<string, any> = { role: msg.role || 'assistant' };
+        const delta: Record<string, unknown> = { role: msg.role || 'assistant' };
         if (msg.content) delta.content = msg.content;
         if (msg.reasoning_content) delta.reasoning_content = msg.reasoning_content;
         if (Array.isArray(msg.tool_calls) && msg.tool_calls.length) delta.tool_calls = msg.tool_calls;

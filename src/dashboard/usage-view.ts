@@ -19,7 +19,6 @@ import type { TtftEntry } from './model-status-view.ts';
 
 const DAY_MS = 86_400_000;
 const HEATMAP_WEEKS = 52;
-const HEATMAP_DAYS = HEATMAP_WEEKS * 7;
 
 // Teal ramp shared by the donut ring and the bar list.  Rank 1 gets the
 // deepest teal, later ranks fade towards a light tint.

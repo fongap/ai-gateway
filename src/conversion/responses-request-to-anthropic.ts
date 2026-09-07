@@ -33,6 +33,7 @@
 // custom headers, store, metadata, logprobs, prompt_cache_key, etc.
 
 import { ConversionError } from './anthropic-to-openai.ts';
+import { assertFields, assertSampling, parseToolArguments } from './validation.ts';
 
 export { ConversionError };
 
@@ -75,38 +76,16 @@ function convertUserContent(content: unknown): string | Array<Record<string, unk
   return content.map((p) => ({ type: 'text', text: extractTextFromContentPart(p) }));
 }
 
-function parseToolArgumentsAsObject(argumentsField: unknown): Record<string, unknown> {
-  if (argumentsField === undefined || argumentsField === null) return {};
-  if (typeof argumentsField === 'string') {
-    if (!argumentsField) return {};
-    try {
-      const parsed = JSON.parse(argumentsField);
-      return isRecord(parsed) ? parsed : { _raw: argumentsField };
-    } catch {
-      return { _raw: argumentsField };
-    }
-  }
-  if (isRecord(argumentsField)) return argumentsField;
-  return { _raw: argumentsField };
-}
-
-function stringifyToolArguments(input: unknown): string {
-  if (input === undefined || input === null) return '{}';
-  try {
-    return JSON.stringify(input);
-  } catch {
-    return '{}';
-  }
-}
-
 function convertAssistantItem(item: Record<string, unknown>): Record<string, unknown> {
   const content: Array<Record<string, unknown>> = [];
-  if (Array.isArray(item.content)) {
+  if (typeof item.content === 'string') {
+    content.push({ type: 'text', text: item.content });
+  } else if (Array.isArray(item.content)) {
     for (const part of item.content) {
       if (isRecord(part) && (part.type === 'output_text' || part.type === 'input_text')) {
         content.push({ type: 'text', text: typeof part.text === 'string' ? part.text : '' });
       } else {
-        throw new ConversionError(`conversion_not_supported: assistant content part type "${String((part as any)?.type)}" is not supported`);
+        throw new ConversionError(`conversion_not_supported: assistant content part type "${String(isRecord(part) ? part.type : undefined)}" is not supported`);
       }
     }
   }
@@ -118,7 +97,7 @@ function convertFunctionCallItem(item: Record<string, unknown>): Record<string, 
   const name = typeof item.name === 'string' ? item.name : '';
   if (!callId) throw new ConversionError('conversion_not_supported: function_call.call_id is required');
   if (!name) throw new ConversionError('conversion_not_supported: function_call.name is required');
-  const input = parseToolArgumentsAsObject(item.arguments);
+  const input = parseToolArguments(item.arguments);
   return {
     role: 'assistant',
     content: [{ type: 'tool_use', id: callId, name, input }],
@@ -134,7 +113,8 @@ function convertFunctionCallOutputItem(item: Record<string, unknown>): Record<st
   let content: string;
   if (typeof item.output === 'string') content = item.output;
   else if (item.output === undefined || item.output === null) content = '';
-  else content = JSON.stringify(item.output);
+  else if (Array.isArray(item.output)) content = item.output.map(extractTextFromContentPart).join('\n');
+  else throw new ConversionError('conversion_not_supported: tool output must be text');
   const result: Record<string, unknown> = {
     type: 'tool_result',
     tool_use_id: callId,
@@ -154,6 +134,7 @@ function mapToolChoice(toolChoice: unknown): Record<string, unknown> | string | 
     throw new ConversionError(`conversion_not_supported: tool_choice string "${toolChoice}" is not supported`);
   }
   if (isRecord(toolChoice)) {
+    assertFields(toolChoice, ['type', 'name', 'function'], 'tool_choice');
     if (toolChoice.type === 'auto' || toolChoice.type === 'none' || toolChoice.type === 'any') return { type: toolChoice.type };
     if (toolChoice.type === 'function') {
       // Responses uses { type: "function", name: "..." } to pin a single tool.
@@ -174,11 +155,13 @@ function mapToolChoice(toolChoice: unknown): Record<string, unknown> | string | 
 
 // Convert an OpenAI Responses request body to an Anthropic Messages request
 // body. Rejects inputs that cannot be losslessly represented.
-export function convertResponsesRequestToAnthropic(body: Record<string, unknown>): Record<string, any> {
+export function convertResponsesRequestToAnthropic(body: Record<string, unknown>): Record<string, unknown> {
   if (!isRecord(body)) {
     throw new ConversionError('conversion_not_supported: request body is not an object');
   }
-  const out: Record<string, any> = {};
+  assertFields(body, ['model', 'input', 'instructions', 'system', 'tools', 'tool_choice', 'temperature', 'top_p', 'max_tokens', 'max_output_tokens', 'stop', 'stream'], 'request');
+  assertSampling(body);
+  const out: Record<string, unknown> = {};
 
   if (body.model !== undefined) out.model = body.model;
   if (!out.model || typeof out.model !== 'string' || !out.model.trim()) {
@@ -188,11 +171,11 @@ export function convertResponsesRequestToAnthropic(body: Record<string, unknown>
   // max_tokens / max_output_tokens: single default policy when omitted.
   const maxTokensRaw = body.max_tokens ?? body.max_output_tokens;
   if (maxTokensRaw !== undefined) {
-    const mt = Number(maxTokensRaw);
-    if (!Number.isFinite(mt) || mt <= 0) {
-      throw new ConversionError('conversion_not_supported: max_tokens must be a positive number');
+    const mt = maxTokensRaw;
+    if (typeof mt !== 'number' || !Number.isInteger(mt) || mt <= 0) {
+      throw new ConversionError('conversion_not_supported: max_tokens must be a positive integer');
     }
-    out.max_tokens = Math.round(mt);
+    out.max_tokens = mt;
   } else {
     out.max_tokens = DEFAULT_MAX_TOKENS;
   }
@@ -214,7 +197,7 @@ export function convertResponsesRequestToAnthropic(body: Record<string, unknown>
   // tools[].input_schema. The R0.6 contract is the same as the Chat
   // reverse path: map parameters -> input_schema.
   if (Array.isArray(body.tools)) {
-    const tools: Array<Record<string, any>> = [];
+    const tools: Array<Record<string, unknown>> = [];
     for (const tool of body.tools) {
       if (!isRecord(tool)) throw new ConversionError('conversion_not_supported: tools entry is not an object');
       if (tool.type !== 'function') {
@@ -223,17 +206,13 @@ export function convertResponsesRequestToAnthropic(body: Record<string, unknown>
       const name = typeof tool.name === 'string' ? tool.name : '';
       if (!name) throw new ConversionError('conversion_not_supported: tool.name is required');
       const desc = typeof tool.description === 'string' ? tool.description : undefined;
+      assertFields(tool, ['type', 'name', 'description', 'parameters'], 'tool');
       const params = isRecord(tool.parameters) ? tool.parameters : {};
-      const result: Record<string, any> = { name, type: 'function', function: { name } };
-      // Build the Anthropic tool object. Responses does not use a wrapped
-      // `function` object — we synthesize the OpenAI Chat shape and then
-      // flatten to Anthropic. Use a stable conversion so tests can pin it.
-      const anthropicTool: Record<string, any> = { name };
+      if (params.type !== undefined && params.type !== 'object') throw new ConversionError('conversion_not_supported: tool schema must describe an object');
+      const anthropicTool: Record<string, unknown> = { name };
       if (desc !== undefined) anthropicTool.description = desc;
       anthropicTool.input_schema = { ...params, type: 'object' };
       tools.push(anthropicTool);
-      // Reference result to avoid unused-warning in strict mode.
-      void result;
     }
     out.tools = tools;
   }
@@ -257,7 +236,7 @@ export function convertResponsesRequestToAnthropic(body: Record<string, unknown>
     throw new ConversionError('conversion_not_supported: input is required');
   }
 
-  const messages: Array<Record<string, any>> = [];
+  const messages: Array<Record<string, unknown>> = [];
   const pendingToolResults: Array<Record<string, unknown>> = [];
 
   const flushToolResults = () => {
@@ -273,7 +252,8 @@ export function convertResponsesRequestToAnthropic(body: Record<string, unknown>
       if (!isRecord(raw)) {
         throw new ConversionError('conversion_not_supported: input item is not an object');
       }
-      const type = raw.type;
+      const type = raw.type ?? (typeof raw.role === 'string' ? 'message' : undefined);
+      assertFields(raw, type === 'message' ? ['type', 'role', 'content'] : type === 'function_call' ? ['type', 'call_id', 'name', 'arguments', 'id', 'status'] : ['type', 'call_id', 'output', 'id', 'status'], 'input item');
       if (type === 'message') {
         const role = raw.role;
         if (role !== 'user' && role !== 'assistant' && role !== 'system' && role !== 'developer') {
@@ -288,8 +268,9 @@ export function convertResponsesRequestToAnthropic(body: Record<string, unknown>
             for (const part of raw.content) {
               if (isRecord(part) && (part.type === 'input_text' || part.type === 'output_text')
                 && typeof part.text === 'string' && part.text) {
+                assertFields(part, ['type', 'text'], 'system content');
                 systemParts.push(part.text);
-              }
+              } else throw new ConversionError('conversion_not_supported: system content must be text');
             }
           }
           continue;
@@ -332,11 +313,6 @@ export function convertResponsesRequestToAnthropic(body: Record<string, unknown>
     throw new ConversionError('conversion_not_supported: input produced no messages');
   }
   out.messages = messages;
-
-  // Re-export the original tool name on the function object so callers that
-  // inspect the converted body for documentation get a clear shape. Tests
-  // use this as a sanity check.
-  void stringifyToolArguments;
 
   return out;
 }

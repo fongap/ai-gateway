@@ -15,27 +15,18 @@
 // Streaming rule: the first-event guard runs BEFORE any streaming Response is
 // returned to the client; after that point transparent failover is forbidden.
 
-import { loadGatewayConfig } from '../config/nodes.ts';
-import { loadModelsConfig } from '../config/models.ts';
-import { loadPoliciesConfig, getPolicy } from '../config/policies.ts';
-import { getLimits } from '../config/timeouts.ts';
-import { TIER_ORDER, normalizePath, detectRoute, acceptsHtml } from './router.ts';
+import { TIER_ORDER } from './router.ts';
 import { getLogger } from '../observability/logger.ts';
-import { healthResponse, metricsResponse, modelsListResponse, versionResponse } from '../observability/diagnostic-endpoints.ts';
-import { dashboardResponse } from '../dashboard/pages.ts';
-import { authorize } from './auth.ts';
-import { loadAccessKeysConfig, collectConfiguredModels } from '../config/access-keys.ts';
-import { authorizeModel, filterVisibleModels } from './model-authz.ts';
-import { gatewayError, buildBudgetExhaustedResponse, buildExhaustedResponse, buildClientErrorResponse } from './errors.ts';
+import { buildBudgetExhaustedResponse, buildExhaustedResponse } from './errors.ts';
 import {
   resolveTier1SessionId, readTier1Affinity,
   shouldEvaluateAffinity, recordTier1AffinityDecision,
 } from '../scheduler/tier1-affinity.ts';
 import { tier1DeadlineTooSmall } from '../scheduler/tier1-scheduler.ts';
-import { preflight as runPreflight, getRouteProtocolSurface } from './preflight.ts';
+import { preflight as runPreflight } from './preflight.ts';
 import { pickForTier, makeTier1Rng, computeTierCaps, countRemainingDispatchableAttempts } from './tier-loop.ts';
 import { runFallbackChain } from './fallback.ts';
-import { attemptNode, dispatchWithHedge } from './attempt.ts';
+import { dispatchWithHedge } from './attempt.ts';
 import type { LoopContext, ConversionContext } from '../types/request.ts';
 import type { RoutableRequest } from '../types/scheduler.ts';
 import type { RuntimeNode } from '../types/node.ts';

@@ -145,6 +145,8 @@ jobs:
       - name: Checkout (manual dispatch)
         if: github.event_name != 'workflow_run'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -300,6 +302,8 @@ jobs:
       - name: Checkout (manual dispatch)
         if: github.event_name != 'workflow_run'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -339,16 +343,17 @@ jobs:
 
       - name: Verify deployed gateway
         id: health-check
-        run: node scripts/github-deployment-config.mjs health-check --from-env
+        run: node scripts/github-deployment-config.mjs health-check --from-env --expected-build "$DEPLOYED_SHA"
 
       - name: Rollback to previous Worker version
+        id: rollback
         if: failure() && steps.deploy.outcome == 'success'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           echo "::warning::Post-deploy health check failed — rolling back Worker code to the previous version."
-           echo "Worker variables, secrets and D1 migrations are NOT rolled back (see docs/operations/deployment.md)."
+          echo "Worker variables, secrets and D1 migrations are NOT rolled back (see docs/operations/deployment.md)."
           # R1: record the SHA of the deployment that was rolled back, so the
           # rolled-back-from SHA is auditable in the workflow run log. The
           # SHA is the SAME as the validated SHA captured at the top of this
@@ -357,7 +362,7 @@ jobs:
           npx --yes wrangler@4.114.0 rollback -c "$RUNNER_TEMP/wrangler.github.json"
 
       - name: Verify rolled-back gateway
-        if: failure() && steps.deploy.outcome == 'success'
+        if: failure() && steps.rollback.outcome == 'success'
         run: |
           node scripts/github-deployment-config.mjs health-check --from-env || {
             echo "::error::Rollback health check also failed — the previous version may not be healthy either. Manual intervention required."

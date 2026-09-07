@@ -13,9 +13,9 @@ import { createSseScanner } from './guard.ts';
 const MAX_ASSEMBLED_BYTES = 2 * 1024 * 1024;
 
 type ToolCallState = { id: string, type: string, function: { name: string, arguments: string } };
-type ChoiceState = { content: string, reasoning_content: string, toolCalls: Map<number, ToolCallState>, finish_reason: any };
+type ChoiceState = { content: string, reasoning_content: string, toolCalls: Map<number, ToolCallState>, finish_reason: unknown };
 
-export async function collectOpenAIStreamObject(upstream: Response, clientSignal: AbortSignal | null | undefined): Promise<Record<string, any>> {
+export async function collectOpenAIStreamObject(upstream: Response, clientSignal: AbortSignal | null | undefined): Promise<Record<string, unknown>> {
   if (!upstream.body) throw new Error('Upstream response has no body.');
   const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
@@ -23,7 +23,7 @@ export async function collectOpenAIStreamObject(upstream: Response, clientSignal
   let id = '';
   let created = Math.floor(Date.now() / 1000);
   let model = '';
-  let usage: any = null;
+  let usage: unknown = null;
   let currentBytes = 0;
   const choices = new Map<number, ChoiceState>();
   // Count UTF-8 bytes (not JS string.length) as each part is appended, so that
@@ -113,7 +113,7 @@ export async function collectOpenAIStreamObject(upstream: Response, clientSignal
     created,
     model,
     choices: states.map(([index, s]) => {
-      const message: Record<string, any> = { role: 'assistant', content: s.content || null };
+      const message: Record<string, unknown> = { role: 'assistant', content: s.content || null };
       if (s.reasoning_content) message.reasoning_content = s.reasoning_content;
       if (s.toolCalls.size) {
         message.tool_calls = [...s.toolCalls.entries()].sort((a, b) => a[0] - b[0]).map(([, x]) => x);

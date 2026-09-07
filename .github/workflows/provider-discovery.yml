@@ -75,41 +75,23 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Resolve snapshot paths
-        id: paths
+      - name: Check snapshots and write report
+        env:
+          CATALOG_BEFORE: ${{ inputs.catalog_before }}
+          CATALOG_AFTER: ${{ inputs.catalog_after }}
+          RUNTIME_VIEW: ${{ inputs.runtime_view }}
         run: |
-          BEFORE='${{ inputs.catalog_before }}'
-          AFTER='${{ inputs.catalog_after }}'
-          RUNTIME='${{ inputs.runtime_view }}'
-          if [ -z "$BEFORE" ]; then BEFORE='scripts/provider-discovery/samples/catalog.example.json'; fi
-          if [ -z "$AFTER" ]; then AFTER='scripts/provider-discovery/samples/catalog.example.json'; fi
-          if [ -z "$RUNTIME" ]; then RUNTIME='scripts/provider-discovery/samples/runtime-view.example.json'; fi
-          echo "before=$BEFORE" >> "$GITHUB_OUTPUT"
-          echo "after=$AFTER" >> "$GITHUB_OUTPUT"
-          echo "runtime=$RUNTIME" >> "$GITHUB_OUTPUT"
-
-      - name: Check current snapshot
-        run: node scripts/provider-discovery.mjs check-snapshot "${{ steps.paths.outputs.after }}"
-
-      - name: Compute semantic diff
-        run: |
+          BEFORE="${CATALOG_BEFORE:-scripts/provider-discovery/samples/catalog.example.json}"
+          AFTER="${CATALOG_AFTER:-scripts/provider-discovery/samples/catalog.example.json}"
+          RUNTIME="${RUNTIME_VIEW:-scripts/provider-discovery/samples/runtime-view.example.json}"
           mkdir -p "$RUNNER_TEMP/discovery"
-          node scripts/provider-discovery.mjs diff \
-            "${{ steps.paths.outputs.before }}" \
-            "${{ steps.paths.outputs.after }}" \
+          node scripts/provider-discovery.mjs check-snapshot "$AFTER"
+          node scripts/provider-discovery.mjs diff "$BEFORE" "$AFTER" \
             --out "$RUNNER_TEMP/discovery/changes.md" \
             --json-out "$RUNNER_TEMP/discovery/changes.json"
-
-      - name: Run Runtime consistency check
-        run: |
-          node scripts/provider-discovery.mjs runtime-check \
-            "${{ steps.paths.outputs.after }}" \
-            "${{ steps.paths.outputs.runtime }}" \
+          node scripts/provider-discovery.mjs runtime-check "$AFTER" "$RUNTIME" \
             --json-out "$RUNNER_TEMP/discovery/runtime-warnings.json" || true
-
-      - name: Emit Action Summary
-        run: |
-          node scripts/provider-discovery.mjs summary "${{ steps.paths.outputs.after }}" \
+          node scripts/provider-discovery.mjs summary "$AFTER" \
             > "$RUNNER_TEMP/discovery/summary.txt"
           cat "$RUNNER_TEMP/discovery/summary.txt" | tee -a "$GITHUB_STEP_SUMMARY"
 

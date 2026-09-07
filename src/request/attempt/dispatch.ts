@@ -88,7 +88,7 @@ async function dispatchAttempt(c: AttemptContext): Promise<AttemptOutcome> {
   // Cross-protocol fallback path uses the converted body built by the
   // conversionContext, with only the upstream model name rewritten.
   const upstreamModel = node.models[requestedModel] || requestedModel;
-  let outboundObject: Record<string, any>;
+  let outboundObject: Record<string, unknown>;
   if (route === 'openai_chat' && !conversionContext) {
     outboundObject = { ...sourceBody, model: upstreamModel, ...(fakeStream ? { stream: true } : {}) };
   } else if (conversionContext && conversionContext.fallbackSurface === 'chat_completions') {

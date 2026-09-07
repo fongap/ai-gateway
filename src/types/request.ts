@@ -55,7 +55,7 @@ export type ConversionContext = {
   fallbackProtocol: Protocol,
   fallbackSurface: Surface,
   /** Client-controlled parsed JSON body — its shape is validated at use sites. */
-  convertedBody: Record<string, any>,
+  convertedBody: Record<string, unknown>,
   clientRoute: string,
 };
 
@@ -103,7 +103,7 @@ export type LoopContext = {
   clientWantsStream: boolean,
   fakeStream: boolean,
   /** Client-controlled parsed JSON body — its shape is validated at use sites. */
-  bodyJson: Record<string, any>,
+  bodyJson: Record<string, unknown>,
   limits: Record<string, number>,
   exposeUpstreamInfo: boolean,
   state: LoopState,
@@ -137,7 +137,7 @@ export type AttemptContext = {
   clientWantsStream: boolean,
   fakeStream: boolean,
   /** Client-controlled parsed JSON body — its shape is validated at use sites. */
-  bodyJson: Record<string, any>,
+  bodyJson: Record<string, unknown>,
   limits: Record<string, number>,
   exposeUpstreamInfo: boolean,
   state: LoopState,

@@ -27,15 +27,7 @@ import { upstreamModelOf } from '../response-helpers.ts';
 import type { AttemptContext } from '../../types/request.ts';
 import type { RuntimeNode } from '../../types/node.ts';
 
-type TokenUsageShape = {
-  prompt_tokens?: number,
-  completion_tokens?: number,
-  total_tokens?: number,
-  input_tokens?: number,
-  output_tokens?: number,
-} | null | undefined;
-
-export function recordTier1NonStreamTtft(c: AttemptContext, node: RuntimeNode, data: unknown, isMeaningful: (data: any) => boolean): void {
+export function recordTier1NonStreamTtft(c: AttemptContext, node: RuntimeNode, data: unknown, isMeaningful: (data: unknown) => boolean): void {
   if (node.tier !== 'tier-1' || !isMeaningful(data)) return;
   c.ttftMs = Date.now() - (c.attemptStartMs ?? Date.now());
   recordTier1Ttft(node.id, c.state.requestedModel, c.ttftMs);
@@ -53,7 +45,7 @@ export function recordTier1NonStreamTtft(c: AttemptContext, node: RuntimeNode, d
 //      fail-open: D1 absence, errors, timeouts and rejects are swallowed here
 //      and never change the HTTP response, fallback, node health, circuit
 //      breaker, scheduler, concurrency count or stream completion.
-export function recordTokens(c: AttemptContext, node: RuntimeNode, usage: TokenUsageShape): void {
+export function recordTokens(c: AttemptContext, node: RuntimeNode, usage: unknown): void {
   recordTokenUsage({ model: c.requestedModel, tier: node.tier, provider: node.provider, nodeId: node.id, usage });
   scheduleD1TokenPersist(c, usage);
 }
@@ -67,7 +59,7 @@ export function recordTokens(c: AttemptContext, node: RuntimeNode, usage: TokenU
 //
 // TTFT is passed only for successful requests with meaningful output.
 // Failures MUST NOT pass a TTFT value — they enter failure statistics only.
-function scheduleD1TokenPersist(c: AttemptContext, usage: TokenUsageShape): void {
+function scheduleD1TokenPersist(c: AttemptContext, usage: unknown): void {
   const task = persistTokenUsage(c.env, usage, Date.now(), c.requestedModel, c.ttftMs ?? null).catch((err) => {
     const scope = err?.scope === 'per-model' ? 'per-model' : 'global';
     try { c.logger?.error?.(`token-stats D1 ${scope} persist failed: ${err?.message || err}`); } catch { /* never throw */ }

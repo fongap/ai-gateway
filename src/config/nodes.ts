@@ -58,7 +58,6 @@ import type { RegistryEntry } from './registry.ts';
 import type { RuntimeNode, NodeTier } from '../types/node.ts';
 import type { Protocol, Surface } from '../types/protocol.ts';
 
-const SHARD_MAX_BYTES = 4500; // official variable size limit is 5 KB; keep margin
 export const TIER_SHARD_PATTERN = /^TIER([123])_NODES_CONFIG_(\d{2})$/;
 // Secrets are tier-scoped and pair 1:1 with the matching TIER*_NODES_CONFIG_*
 // shard. A TIER1 secret under a TIER2 config is a config error, not a free

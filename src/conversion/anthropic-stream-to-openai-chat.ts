@@ -24,8 +24,9 @@
 // OpenAI Chat first-event guard, so it does not close the failover
 // boundary.
 
-import { createSseScanner } from '../stream/guard.ts';
+import { convertSseStream } from './sse.ts';
 import { ConversionError } from './anthropic-to-openai.ts';
+import { isRecord } from './validation.ts';
 
 export { ConversionError };
 
@@ -141,7 +142,7 @@ function startToolBlock(
 ): void {
   // Close any open text block before a tool block starts.
   closeTextBlockIfOpen(state, controller);
-  const toolState: ToolState = { index: anthropicIndex, id: toolId, name: toolName, arguments: '', started: true };
+  const toolState: ToolState = { index: state.toolsByAnthropicIndex.size, id: toolId, name: toolName, arguments: '', started: true };
   state.toolsByAnthropicIndex.set(anthropicIndex, toolState);
   emitRoleHeader(state, controller);
   // The first tool_call delta is a meaningful-output event for the
@@ -157,7 +158,7 @@ function startToolBlock(
       index: 0,
       delta: {
         tool_calls: [{
-          index: anthropicIndex,
+          index: toolState.index,
           id: toolId,
           type: 'function',
           function: { name: toolName, arguments: '' },
@@ -188,7 +189,7 @@ function appendToolArguments(
       index: 0,
       delta: {
         tool_calls: [{
-          index: anthropicIndex,
+          index: tool.index,
           function: { arguments: partialJson },
         }],
       },
@@ -220,25 +221,26 @@ function emitFinishAndDone(state: State, controller: ReadableStreamDefaultContro
       object: 'chat.completion.chunk',
       created: Math.floor(Date.now() / 1000),
       model: state.model,
-      choices: [{ index: 0, delta: {}, finish_reason: state.finishReason ?? 'stop' }],
+      choices: [],
       usage: { prompt_tokens: prompt, completion_tokens: completion, total_tokens: total },
     });
   }
   controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
 }
 
-function processAnthropicEvent(state: State, controller: ReadableStreamDefaultController<Uint8Array>, evt: any): void {
-  if (!evt || typeof evt !== 'object') return;
+function processAnthropicEvent(state: State, controller: ReadableStreamDefaultController<Uint8Array>, evt: unknown): void {
+  if (!isRecord(evt)) throw new Error('Invalid upstream SSE event');
+  if (state.closed) return;
   const type = evt.type;
   switch (type) {
     case 'message_start': {
       // Lifecycle event — NOT a commit boundary. Just absorb and remember the
       // message id/model/input tokens for later use.
       const m = evt.message;
-      if (m && typeof m === 'object') {
+      if (isRecord(m)) {
         if (typeof m.id === 'string') state.messageId = m.id;
         if (typeof m.model === 'string') state.model = m.model;
-        if (m.usage && typeof m.usage === 'object') {
+        if (isRecord(m.usage)) {
           state.inputTokens = Number(m.usage.input_tokens ?? 0) || 0;
           state.outputTokens = Number(m.usage.output_tokens ?? 0) || 0;
         }
@@ -248,7 +250,7 @@ function processAnthropicEvent(state: State, controller: ReadableStreamDefaultCo
     case 'content_block_start': {
       // Lifecycle event — NOT a commit boundary.
       const block = evt.content_block;
-      if (block && typeof block === 'object' && block.type === 'tool_use') {
+      if (isRecord(block) && block.type === 'tool_use') {
         const anthropicIndex = Number(evt.index ?? 0) || 0;
         const toolId = typeof block.id === 'string' ? block.id : '';
         const toolName = typeof block.name === 'string' ? block.name : '';
@@ -256,14 +258,14 @@ function processAnthropicEvent(state: State, controller: ReadableStreamDefaultCo
           throw new ConversionError('conversion_not_supported: tool_use content_block_start missing id/name');
         }
         startToolBlock(state, controller, anthropicIndex, toolId, toolName);
-      } else if (block && typeof block === 'object' && block.type === 'text') {
+      } else if (isRecord(block) && block.type === 'text') {
         openTextBlock(state, controller, Number(evt.index ?? 0) || 0);
-      }
+      } else throw new ConversionError('conversion_not_supported: unsupported Anthropic content block');
       return;
     }
     case 'content_block_delta': {
       const delta = evt.delta;
-      if (!delta || typeof delta !== 'object') return;
+      if (!isRecord(delta)) return;
       if (delta.type === 'text_delta') {
         const text = typeof delta.text === 'string' ? delta.text : '';
         if (!text) return;
@@ -290,33 +292,7 @@ function processAnthropicEvent(state: State, controller: ReadableStreamDefaultCo
         state.realOutputEmitted = true;
         return;
       }
-      if (delta.type === 'thinking_delta') {
-        // OpenAI Chat has a `reasoning` field on delta. We surface it so
-        // reasoning-aware clients can display it; the first-event guard
-        // treats non-empty reasoning as real output, which is correct.
-        const thinking = typeof delta.thinking === 'string' ? delta.thinking : '';
-        if (!thinking) return;
-        emitRoleHeader(state, controller);
-        state.realOutputEmitted = true;
-        emitChunk(controller, {
-          id: state.messageId,
-          object: 'chat.completion.chunk',
-          created: Math.floor(Date.now() / 1000),
-          model: state.model,
-          choices: [{ index: 0, delta: { reasoning: thinking }, finish_reason: null }],
-        });
-        return;
-      }
-      if (delta.type === 'signature_delta' || delta.type === 'citation_delta') {
-        // No OpenAI Chat equivalent for Anthropic signature/citation deltas.
-        // We do NOT throw here — the model produced reasoning alongside
-        // these deltas and the client already received the text. We drop the
-        // deltas and continue; the response converter is still strict (throws
-        // on thinking blocks for the non-streaming path) because the
-        // non-streaming contract demands lossless conversion.
-        return;
-      }
-      return;
+      throw new ConversionError('conversion_not_supported: unsupported Anthropic content delta');
     }
     case 'content_block_stop': {
       // Lifecycle event. Close any open text block.
@@ -325,10 +301,10 @@ function processAnthropicEvent(state: State, controller: ReadableStreamDefaultCo
     }
     case 'message_delta': {
       // Carries stop_reason + final usage.
-      if (evt.delta && typeof evt.delta === 'object' && evt.delta.stop_reason) {
+      if (isRecord(evt.delta) && evt.delta.stop_reason) {
         state.finishReason = mapStopReason(evt.delta.stop_reason);
       }
-      if (evt.usage && typeof evt.usage === 'object') {
+      if (isRecord(evt.usage)) {
         state.inputTokens = Number(evt.usage.input_tokens ?? state.inputTokens) || state.inputTokens;
         state.outputTokens = Number(evt.usage.output_tokens ?? state.outputTokens) || state.outputTokens;
         if (typeof evt.usage.total_tokens === 'number') {
@@ -345,13 +321,9 @@ function processAnthropicEvent(state: State, controller: ReadableStreamDefaultCo
     case 'ping':
       // Heartbeat. No-op.
       return;
-    case 'error': {
-      // Upstream Anthropic error envelope. We surface it to the controller so
-      // the OpenAI Chat client sees a clear final error chunk.
-      const errMsg = typeof evt.error?.message === 'string' ? evt.error.message : 'upstream_error';
-      emitChunk(controller, { error: { message: errMsg, type: evt.error?.type || 'api_error' } });
-      return;
-    }
+    case 'error':
+      throw new Error('Upstream stream error');
+
     default:
       // Unknown event types are silently dropped at the stream layer to
       // maintain forward compatibility with new Anthropic event types. The
@@ -375,54 +347,9 @@ export function createOpenAIChatStreamFromAnthropic(
     Number(inputTokens ?? 0) || 0,
   );
 
-  return new ReadableStream({
-    async start(controller) {
-      if (!anthropicResponseBody || !anthropicResponseBody.getReader) {
-        controller.error(new Error('Anthropic stream body is not readable'));
-        return;
-      }
-      const reader = anthropicResponseBody.getReader();
-      const decoder = new TextDecoder();
-      const onAnthropicEvent = (data: string) => {
-        if (!data) return;
-        let evt: any;
-        try { evt = JSON.parse(data); } catch { return; }
-        try {
-          processAnthropicEvent(state, controller, evt);
-        } catch (e) {
-          if (!state.closed) {
-            state.closed = true;
-            try { controller.error(e); } catch { /* already closed */ }
-          }
-        }
-      };
-      const scanner = createSseScanner(onAnthropicEvent);
-      try {
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          scanner.push(decoder.decode(value, { stream: true }));
-        }
-        scanner.flush();
-        // End-of-stream handling. We MUST NOT commit the first-event boundary
-        // when no real output was emitted: the First Event Guard above this
-        // converter is the layer that decides whether the request is allowed
-        // to rotate to another node. Emitting a finish + [DONE] here would
-        // tell the client the stream is done even though no model output was
-        // ever produced — that would close the failover boundary incorrectly.
-        if (!state.closed) {
-          if (state.realOutputEmitted) {
-            if (!state.finishReason) state.finishReason = 'stop';
-            emitFinishAndDone(state, controller);
-          }
-        }
-        controller.close();
-      } catch (e) {
-        if (!state.closed) {
-          state.closed = true;
-          try { controller.error(e); } catch { /* already closed */ }
-        }
-      }
-    },
-  });
+  return convertSseStream(anthropicResponseBody, (data, controller) => {
+    let event: unknown;
+    try { event = JSON.parse(data); } catch { throw new Error('Malformed upstream SSE JSON'); }
+    processAnthropicEvent(state, controller, event);
+  }, () => state.closed);
 }

@@ -4,6 +4,7 @@
 // OpenAI Chat Completions response -> Anthropic Messages response converter.
 
 import { ConversionError } from './anthropic-to-openai.ts';
+import { parseToolArguments } from './validation.ts';
 
 function mapFinishReason(reason: unknown): string {
   switch (reason) {
@@ -21,35 +22,22 @@ function mapFinishReason(reason: unknown): string {
 
 export function convertOpenAIUsageToAnthropic(usage: unknown): { input_tokens: number, output_tokens: number } {
   if (!usage || typeof usage !== 'object') return { input_tokens: 0, output_tokens: 0 };
-  const u = usage as Record<string, any>;
+  const u = usage as Record<string, unknown>;
   return {
     input_tokens: Number(u.prompt_tokens ?? 0) || 0,
     output_tokens: Number(u.completion_tokens ?? 0) || 0,
   };
 }
 
-function parseToolArguments(argumentsString: unknown): Record<string, any> {
-  if (!argumentsString) return {};
-  // Non-string arguments pass through unchanged (defensive upstream shape).
-  if (typeof argumentsString !== 'string') return (argumentsString as Record<string, any>) ?? {};
-  try {
-    const parsed = JSON.parse(argumentsString);
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
-    return { _raw: argumentsString };
-  } catch {
-    return { _raw: argumentsString };
-  }
-}
-
-export function convertOpenAIToAnthropicResponse(data: unknown): Record<string, any> {
+export function convertOpenAIToAnthropicResponse(data: unknown): Record<string, unknown> {
   if (!data || typeof data !== 'object') {
     throw new ConversionError('conversion_invalid_response', 'OpenAI response is not an object');
   }
-  const d = data as Record<string, any>;
+  const d = data as Record<string, unknown>;
   const choices = Array.isArray(d.choices) ? d.choices : [];
   const choice = choices[0] || {};
   const message = choice.message || {};
-  const content: any[] = [];
+  const content: Record<string, unknown>[] = [];
 
   if (typeof message.content === 'string' && message.content) {
     content.push({ type: 'text', text: message.content });

@@ -101,7 +101,7 @@ function buildOutputItems(content: Array<Record<string, unknown>>): Array<Record
 // Convert an Anthropic Messages response body to an OpenAI Responses
 // response body. Throws ConversionError on inputs that cannot be losslessly
 // represented.
-export function convertAnthropicResponseToResponses(data: unknown, options: { id?: string, createdAt?: number } = {}): Record<string, any> {
+export function convertAnthropicResponseToResponses(data: unknown, options: { id?: string, createdAt?: number } = {}): Record<string, unknown> {
   if (!isRecord(data)) {
     throw new ConversionError('conversion_not_supported: Anthropic response is not an object');
   }
@@ -115,8 +115,9 @@ export function convertAnthropicResponseToResponses(data: unknown, options: { id
   return {
     id,
     object: 'response',
-    created_at: options.createdAt ?? 1,
+    created_at: options.createdAt ?? Math.floor(Date.now() / 1000),
     status,
+    ...(status === 'incomplete' ? { incomplete_details: { reason: 'max_output_tokens' } } : {}),
     model,
     output,
     usage: mapUsage(data.usage),

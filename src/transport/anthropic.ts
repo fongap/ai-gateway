@@ -12,6 +12,10 @@
 //   messages -> {base_url}/v1/messages  (NATIVE — never converted to/from
 //                                         OpenAI chat completions)
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
 import type { Surface } from '../types/protocol.ts';
 
 export const ANTHROPIC_SURFACE_PATH = Object.freeze({
@@ -52,17 +56,19 @@ export function buildAnthropicHeaders(request: Request, credential: string, requ
 // deltas are real model output. Lifecycle events (message_start,
 // content_block_start, content_block_stop, ping, message_delta) are NOT
 // commit points — a node that streams them before dying can still fail over.
-export function isAnthropicNativeRealOutput(json: Record<string, any> | null | undefined): boolean {
+export function isAnthropicNativeRealOutput(json: unknown): boolean {
+  if (!isRecord(json)) return false;
   if (json?.type !== 'content_block_delta') return false;
-  const delta = json?.delta;
+  const delta = isRecord(json.delta) ? json.delta : {};
   if (delta?.type === 'text_delta') return typeof delta.text === 'string' && delta.text.trim().length > 0;
   if (delta?.type === 'thinking_delta') return typeof delta.thinking === 'string' && delta.thinking.trim().length > 0;
   if (delta?.type === 'input_json_delta') return typeof delta.partial_json === 'string' && delta.partial_json.trim().length > 0;
   return false;
 }
 
-export function isAnthropicMessageMeaningful(json: Record<string, any> | null | undefined): boolean {
-  for (const block of json?.content ?? []) {
+export function isAnthropicMessageMeaningful(json: unknown): boolean {
+  if (!isRecord(json)) return false;
+  for (const block of Array.isArray(json.content) ? json.content : []) {
     if ((block?.type === 'text' && typeof block.text === 'string' && block.text.trim().length > 0)
       || (block?.type === 'thinking' && typeof block.thinking === 'string' && block.thinking.trim().length > 0)) return true;
     if (block?.type === 'tool_use' && typeof block.name === 'string' && block.name.trim().length > 0) return true;

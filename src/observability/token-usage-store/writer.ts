@@ -78,7 +78,7 @@ function persistFailure(scope: string, cause: unknown, model: string | null = nu
 // TTFT sample. The value is bucketed into a coarse histogram
 // (ttft_b0..ttft_b6) for percentile calculation without storing raw
 // samples.
-export function persistTokenUsage(env: Record<string, unknown>, usage: { prompt_tokens?: number, completion_tokens?: number } | null | undefined, now: number = Date.now(), model: string | null = null, ttftMs: number | null = null): Promise<void> {
+export function persistTokenUsage(env: Record<string, unknown>, usage: unknown, now: number = Date.now(), model: string | null = null, ttftMs: number | null = null): Promise<void> {
   const d1 = tokenStatsD1(env);
   if (!d1) return Promise.resolve();
   const hour = normalizeHour(now);

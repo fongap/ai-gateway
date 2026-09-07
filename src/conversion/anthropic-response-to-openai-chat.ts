@@ -106,7 +106,7 @@ function mapUsage(usage: unknown): { prompt_tokens: number, completion_tokens: n
 // Convert an Anthropic Messages response body to an OpenAI Chat Completions
 // response body. Throws ConversionError on inputs that cannot be losslessly
 // represented.
-export function convertAnthropicResponseToOpenAIChat(data: unknown): Record<string, any> {
+export function convertAnthropicResponseToOpenAIChat(data: unknown): Record<string, unknown> {
   if (!isRecord(data)) {
     throw new ConversionError('conversion_not_supported: Anthropic response is not an object');
   }
