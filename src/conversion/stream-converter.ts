@@ -36,9 +36,14 @@ type ToolBlockState = {
 
 export function createAnthropicStreamFromOpenAI(
   openAiResponseBody: ReadableStream<Uint8Array> | null | undefined,
-  options: { messageId?: string, model?: string, inputTokens?: number } = {},
+  options: {
+    messageId?: string,
+    model?: string,
+    inputTokens?: number,
+    onUpstreamUsage?: (usage: unknown) => void,
+  } = {},
 ): ReadableStream<Uint8Array> {
-  const { messageId, model, inputTokens } = options;
+  const { messageId, model, inputTokens, onUpstreamUsage } = options;
   const finalMessageId = messageId || createAnthropicMessageId();
   const encoder = new TextEncoder();
 
@@ -52,6 +57,7 @@ export function createAnthropicStreamFromOpenAI(
     toolBlocks: Map<number, ToolBlockState>,
     blockIndex: number,
     usage: unknown,
+    upstreamUsage: unknown,
     finishReason: unknown,
     closed: boolean,
     textIndex?: number,
@@ -65,6 +71,7 @@ export function createAnthropicStreamFromOpenAI(
     toolBlocks: new Map(),
     blockIndex: 0,
     usage: null,
+    upstreamUsage: null,
     finishReason: null,
     closed: false,
   };
@@ -155,13 +162,14 @@ export function createAnthropicStreamFromOpenAI(
   };
 
   const emitMessageDelta = (controller: ReadableStreamDefaultController<Uint8Array>) => {
+    const anthropicUsage = convertOpenAIUsageToAnthropic(state.usage);
     emit(controller, 'message_delta', {
       type: 'message_delta',
       delta: {
         stop_reason: mapFinishReason(state.finishReason),
         stop_sequence: null,
       },
-      usage: convertOpenAIUsageToAnthropic(state.usage),
+      usage: anthropicUsage ?? { input_tokens: 0, output_tokens: 0 },
     });
   };
 
@@ -176,6 +184,12 @@ export function createAnthropicStreamFromOpenAI(
     if (chunk.error) throw new Error('Upstream stream error');
     if (chunk.usage && typeof chunk.usage === 'object') {
       state.usage = chunk.usage;
+      state.upstreamUsage = chunk.usage;
+      if (onUpstreamUsage) {
+        // Fire the callback with the RAW upstream usage (OpenAI format).
+        // This is the TRUE upstream usage for observability.
+        try { onUpstreamUsage(chunk.usage); } catch { /* observability must never break the stream */ }
+      }
     }
     const choices = Array.isArray(chunk.choices) ? chunk.choices : [];
     for (const choice of choices) {

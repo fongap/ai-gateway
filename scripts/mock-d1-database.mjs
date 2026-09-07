@@ -21,7 +21,7 @@
 export function createMockD1({ failWrites = false, failReads = false } = {}) {
   const rows = new Map(); // hour -> { input, output, total, requests, reports, missing }
   const modelRows = new Map(); // `${hour}|${model}` -> { ... }
-  const totalsRow = { input: 0, output: 0, total: 0, requests: 0, reports: 0, missing: 0, updated_at: '' };
+  const totalsRow = { input: 0, output: 0, cacheCreation: 0, cacheRead: 0, total: 0, requests: 0, reports: 0, missing: 0, updated_at: '' };
   const dailyRows = new Map(); // day (YYYY-MM-DD) -> { input, output, total, requests, reports, missing }
   const weeklyRows = new Map(); // week_start (YYYY-MM-DD) -> { input, output, total, requests, reports, missing }
   const writes = []; // every write's bind params, in order
@@ -108,10 +108,12 @@ export function createMockD1({ failWrites = false, failReads = false } = {}) {
 
         // INSERT INTO token_usage_totals (totals upsert)
         if (/INSERT\s+INTO\s+token_usage_totals/i.test(sql)) {
-          // SQL: VALUES ('global', ?, ?, ?, ?, ?, ?, ?) -- 7 params after 'global'
-          const [input, output, total, req, reports, missing, updated_at] = this._params;
+          // SQL: VALUES ('global', ?, ?, ?, ?, ?, ?, ?, ?) -- 9 params after 'global'
+          const [input, output, cacheCreation, cacheRead, total, req, reports, missing, updated_at] = this._params;
           totalsRow.input += input || 0;
           totalsRow.output += output || 0;
+          totalsRow.cacheCreation += cacheCreation || 0;
+          totalsRow.cacheRead += cacheRead || 0;
           totalsRow.total += total || 0;
           totalsRow.requests += req || 0;
           totalsRow.reports += reports || 0;
@@ -150,16 +152,18 @@ export function createMockD1({ failWrites = false, failReads = false } = {}) {
 
         // INSERT INTO token_usage_model_hourly
         if (/token_usage_model_hourly/i.test(sql)) {
-          const [hour, model, input, output, total, req, reports, missing,
+          const [hour, model, input, output, cacheCreation, cacheRead, total, req, reports, missing,
             successTtftCount, b0, b1, b2, b3, b4, b5, b6] = this._params;
           const key = modelKey(hour, model);
           const cur = modelRows.get(key)
-            || { input: 0, output: 0, total: 0, requests: 0, reports: 0, missing: 0,
+            || { input: 0, output: 0, cacheCreation: 0, cacheRead: 0, total: 0, requests: 0, reports: 0, missing: 0,
                  successful_ttft_count: 0, ttft_b0: 0, ttft_b1: 0, ttft_b2: 0,
                  ttft_b3: 0, ttft_b4: 0, ttft_b5: 0, ttft_b6: 0 };
           modelRows.set(key, {
             input: cur.input + (input || 0),
             output: cur.output + (output || 0),
+            cacheCreation: cur.cacheCreation + (cacheCreation || 0),
+            cacheRead: cur.cacheRead + (cacheRead || 0),
             total: cur.total + (total || 0),
             requests: cur.requests + (req || 0),
             reports: cur.reports + (reports || 0),
@@ -177,12 +181,14 @@ export function createMockD1({ failWrites = false, failReads = false } = {}) {
         }
 
         // Default: global hourly UPSERT
-        const [hour, input, output, total, req, reports, missing] = this._params;
+        const [hour, input, output, cacheCreation, cacheRead, total, req, reports, missing] = this._params;
         const cur = rows.get(hour)
-          || { input: 0, output: 0, total: 0, requests: 0, reports: 0, missing: 0 };
+          || { input: 0, output: 0, cacheCreation: 0, cacheRead: 0, total: 0, requests: 0, reports: 0, missing: 0 };
         rows.set(hour, {
           input: cur.input + (input || 0),
           output: cur.output + (output || 0),
+          cacheCreation: cur.cacheCreation + (cacheCreation || 0),
+          cacheRead: cur.cacheRead + (cacheRead || 0),
           total: cur.total + (total || 0),
           requests: cur.requests + (req || 0),
           reports: cur.reports + (reports || 0),
@@ -200,6 +206,8 @@ export function createMockD1({ failWrites = false, failReads = false } = {}) {
           return {
             input_tokens: totalsRow.input,
             output_tokens: totalsRow.output,
+            cache_creation_input_tokens: totalsRow.cacheCreation,
+            cache_read_input_tokens: totalsRow.cacheRead,
             total_tokens: totalsRow.total,
             requests: totalsRow.requests,
             usage_reports: totalsRow.reports,
@@ -371,12 +379,12 @@ export function createMockD1({ failWrites = false, failReads = false } = {}) {
         const byHour = new Map();
         for (const [hour, r] of rows) {
           if (hour < startHour) continue;
-          const cur = byHour.get(hour) || { total: 0, requests: 0 };
-          byHour.set(hour, { total: cur.total + r.total, requests: cur.requests + r.requests });
+          const cur = byHour.get(hour) || { total: 0, requests: 0, reports: 0, missing: 0 };
+          byHour.set(hour, { total: cur.total + r.total, requests: cur.requests + r.requests, reports: cur.reports + r.reports, missing: cur.missing + r.missing });
         }
         const results = [...byHour.entries()]
           .sort(([a], [b]) => (a < b ? -1 : 1))
-          .map(([hour, r]) => ({ hour, total: r.total, requests: r.requests }));
+          .map(([hour, r]) => ({ hour, total: r.total, requests: r.requests, reports: r.reports, missing: r.missing }));
         return { results };
       },
     };

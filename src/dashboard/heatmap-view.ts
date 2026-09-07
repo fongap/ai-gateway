@@ -28,7 +28,7 @@ import type { HeatmapResult } from './heatmap.ts';
 
 const MONTH_NAMES_CN = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'];
 
-type DailyCellData = { total: number, requests: number };
+export type DailyCellData = { total: number, requests: number, reports: number, missing: number };
 
 export function renderHeatmap(
   heatmap: HeatmapResult,
@@ -39,9 +39,10 @@ export function renderHeatmap(
     unit?: string,
     showMonthLabels?: boolean,
     colsCount?: number,
+    coverage?: number | null,
   } = {},
 ): { cells: string[], labels: string[], ariaLabel: string } {
-  const { data = null, ariaLabel, unit = 'Token', showMonthLabels = true } = opts;
+  const { data = null, ariaLabel, unit = 'Token', showMonthLabels = true, coverage = null } = opts;
   const valueLabel = unit;
   const weeks = heatmap.weeks;
 
@@ -93,11 +94,18 @@ export function renderHeatmap(
   return {
     cells,
     labels,
-    ariaLabel: ariaLabel || defaultAriaLabel(heatmap),
+    ariaLabel: ariaLabel || defaultAriaLabel(heatmap, coverage),
   };
 }
 
-function defaultAriaLabel(heatmap: { mode: string, rangeStart: string }): string {
-  if (heatmap.mode === 'rolling-52-weeks') return '近 52 周 Token 活动热力图';
+function defaultAriaLabel(heatmap: { mode: string, rangeStart: string }, coverage?: number | null): string {
+  if (heatmap.mode === 'rolling-52-weeks') {
+    const base = '近 52 周 Token 活动热力图';
+    if (coverage !== null && coverage !== undefined) {
+      const pct = Math.round(coverage * 1000) / 10;
+      return `${base} · 统计 ${pct}%`;
+    }
+    return base;
+  }
   return `${heatmap.rangeStart.slice(0, 4)} 年 Token 活动热力图`;
 }

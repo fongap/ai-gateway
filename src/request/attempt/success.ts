@@ -275,17 +275,23 @@ export async function handleSuccess(s: {
     if (route === 'anthropic_messages' && c.conversionContext) {
       const inputTokens = estimateAnthropicInputTokens(bodyJson);
       const messageId = `msg_${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`;
+      let upstreamUsage: unknown = null;
       const anthropicStream = createAnthropicStreamFromOpenAI(guarded.body, {
         messageId,
         model: requestedModel,
         inputTokens,
+        onUpstreamUsage: (u: unknown) => { upstreamUsage = u; },
       });
       const tracked = trackStreamResponse(
         new Response(anthropicStream, { status: 200, headers }),
         {
           idleTimeoutMs: limits.streamIdleTimeoutMs,
           completionMarker: /event:\s*message_stop\b/,
-          onUsage: (u: unknown) => recordTokens(c, node, u),
+          onUsage: () => {
+            // Use the TRUE upstream (OpenAI) usage for observability.
+            // The stream converter already emitted client-facing Anthropic usage.
+            if (upstreamUsage !== null) recordTokens(c, node, upstreamUsage);
+          },
           interruptionChunk: (reason: string | null) => streamInterruptionChunk(route, requestId, reason),
           upstreamFailureReason: hiddenStreamFailure,
           ...makeNodeStreamTrack(c, node, latencyMs),

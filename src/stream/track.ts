@@ -19,7 +19,7 @@
 // decoded tail text and is passive: it never injects, requests or estimates
 // usage; it only observes what the upstream volunteered.
 
-import { normalizeTokenUsage } from '../observability/token-usage.ts';
+import { normalizeTokenUsage, mergeReportedUsage } from '../observability/token-usage.ts';
 import { FIRST_EVENT_MAX_SSE_LINE } from './guard.ts';
 
 // Hard limit for the model-rewrite line buffer in the tracked stream (after
@@ -75,7 +75,8 @@ export function trackStreamResponse(response: Response, { idleTimeoutMs, onSucce
   let nextSequenceNumber = 0;
   let finished = false;
   // Passive usage scan state: lines that may still be split across chunks,
-  // the last usable reported usage object, and a once-only fire guard.
+  // the last usable reported usage object (merged cumulatively), and a
+  // once-only fire guard.
   const usageScan = typeof onUsage === 'function';
   let usageLines = '';
   let usageCandidate: unknown = null;
@@ -120,7 +121,10 @@ export function trackStreamResponse(response: Response, { idleTimeoutMs, onSucce
         //                   last usable report, per the last-wins rule below)
         const reported = json?.response?.usage !== undefined ? json.response.usage : json?.usage;
         if (reported !== undefined) {
-          if (normalizeTokenUsage(reported)) usageCandidate = reported;
+          // Merge by field (cumulative values): next field value replaces
+          // previous if present; missing fields keep previous.
+          const merged = mergeReportedUsage(usageCandidate, reported);
+          if (normalizeTokenUsage(merged)) usageCandidate = merged;
         }
       } catch { /* malformed lines are ignored — passive scan */ }
     }

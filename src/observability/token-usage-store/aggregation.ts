@@ -19,7 +19,7 @@ import {
 } from './keys.ts';
 import type { D1PreparedStatement } from '../../types/cloudflare.ts';
 
-type AggregateRow = { input: number, output: number, total: number, requests: number, reports: number, missing: number };
+type AggregateRow = { input: number, output: number, cacheCreation: number, cacheRead: number, total: number, requests: number, reports: number, missing: number };
 
 // ---- Aggregation: hourly → daily (idempotent, overwrite) ----
 // Groups all hourly rows by their UTC+8 day and overwrites the daily
@@ -31,7 +31,7 @@ export async function aggregateHourlyToDaily(env: Record<string, unknown>, now: 
     // Read all hourly rows (bounded by 7-day retention; first run
     // backfills all history).
     const res = await d1.prepare(
-      `SELECT hour, input_tokens, output_tokens, total_tokens, requests, usage_reports, usage_missing
+      `SELECT hour, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, total_tokens, requests, usage_reports, usage_missing
        FROM ${TABLE}`
     ).all();
     const rows = Array.isArray(res?.results) ? res.results : [];
@@ -44,11 +44,13 @@ export async function aggregateHourlyToDaily(env: Record<string, unknown>, now: 
       if (!Number.isFinite(ms)) continue;
       const day = isoDayUtc8(ms);
       const cur = byDay.get(day) || {
-        input: 0, output: 0, total: 0, requests: 0, reports: 0, missing: 0,
+        input: 0, output: 0, cacheCreation: 0, cacheRead: 0, total: 0, requests: 0, reports: 0, missing: 0,
       };
       byDay.set(day, {
         input: cur.input + (Number(r.input_tokens) || 0),
         output: cur.output + (Number(r.output_tokens) || 0),
+        cacheCreation: cur.cacheCreation + (Number(r.cache_creation_input_tokens) || 0),
+        cacheRead: cur.cacheRead + (Number(r.cache_read_input_tokens) || 0),
         total: cur.total + (Number(r.total_tokens) || 0),
         requests: cur.requests + (Number(r.requests) || 0),
         reports: cur.reports + (Number(r.usage_reports) || 0),
@@ -58,11 +60,13 @@ export async function aggregateHourlyToDaily(env: Record<string, unknown>, now: 
 
     // Bulk upsert (overwrite) all daily rows.
     const upsertStmt = d1.prepare(
-      `INSERT INTO ${TABLE_DAILY} (day, input_tokens, output_tokens, total_tokens, requests, usage_reports, usage_missing)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO ${TABLE_DAILY} (day, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, total_tokens, requests, usage_reports, usage_missing)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(day) DO UPDATE SET
          input_tokens = excluded.input_tokens,
          output_tokens = excluded.output_tokens,
+         cache_creation_input_tokens = excluded.cache_creation_input_tokens,
+         cache_read_input_tokens = excluded.cache_read_input_tokens,
          total_tokens = excluded.total_tokens,
          requests = excluded.requests,
          usage_reports = excluded.usage_reports,
@@ -70,7 +74,7 @@ export async function aggregateHourlyToDaily(env: Record<string, unknown>, now: 
     );
     const batch: D1PreparedStatement[] = [];
     for (const [day, v] of byDay) {
-      batch.push(upsertStmt.bind(day, v.input, v.output, v.total, v.requests, v.reports, v.missing));
+      batch.push(upsertStmt.bind(day, v.input, v.output, v.cacheCreation, v.cacheRead, v.total, v.requests, v.reports, v.missing));
     }
     if (batch.length) await d1.batch(batch);
     return { aggregatedDays: batch.length };
@@ -88,7 +92,7 @@ export async function aggregateDailyToWeekly(env: Record<string, unknown>, now: 
   if (!d1) return { skipped: true, reason: 'TOKEN_STATS_DB binding missing' };
   try {
     const res = await d1.prepare(
-      `SELECT day, input_tokens, output_tokens, total_tokens, requests, usage_reports, usage_missing
+      `SELECT day, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, total_tokens, requests, usage_reports, usage_missing
        FROM ${TABLE_DAILY}`
     ).all();
     const rows = Array.isArray(res?.results) ? res.results : [];
@@ -104,11 +108,13 @@ export async function aggregateDailyToWeekly(env: Record<string, unknown>, now: 
       if (!Number.isFinite(dayMs)) continue;
       const weekStart = new Date(getUtcWeekStartUtcMs(dayMs)).toISOString().slice(0, 10);
       const cur = byWeek.get(weekStart) || {
-        input: 0, output: 0, total: 0, requests: 0, reports: 0, missing: 0,
+        input: 0, output: 0, cacheCreation: 0, cacheRead: 0, total: 0, requests: 0, reports: 0, missing: 0,
       };
       byWeek.set(weekStart, {
         input: cur.input + (Number(r.input_tokens) || 0),
         output: cur.output + (Number(r.output_tokens) || 0),
+        cacheCreation: cur.cacheCreation + (Number(r.cache_creation_input_tokens) || 0),
+        cacheRead: cur.cacheRead + (Number(r.cache_read_input_tokens) || 0),
         total: cur.total + (Number(r.total_tokens) || 0),
         requests: cur.requests + (Number(r.requests) || 0),
         reports: cur.reports + (Number(r.usage_reports) || 0),
@@ -117,11 +123,13 @@ export async function aggregateDailyToWeekly(env: Record<string, unknown>, now: 
     }
 
     const upsertStmt = d1.prepare(
-      `INSERT INTO ${TABLE_WEEKLY} (week_start, input_tokens, output_tokens, total_tokens, requests, usage_reports, usage_missing)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO ${TABLE_WEEKLY} (week_start, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, total_tokens, requests, usage_reports, usage_missing)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(week_start) DO UPDATE SET
          input_tokens = excluded.input_tokens,
          output_tokens = excluded.output_tokens,
+         cache_creation_input_tokens = excluded.cache_creation_input_tokens,
+         cache_read_input_tokens = excluded.cache_read_input_tokens,
          total_tokens = excluded.total_tokens,
          requests = excluded.requests,
          usage_reports = excluded.usage_reports,
@@ -129,7 +137,7 @@ export async function aggregateDailyToWeekly(env: Record<string, unknown>, now: 
     );
     const batch: D1PreparedStatement[] = [];
     for (const [weekStart, v] of byWeek) {
-      batch.push(upsertStmt.bind(weekStart, v.input, v.output, v.total, v.requests, v.reports, v.missing));
+      batch.push(upsertStmt.bind(weekStart, v.input, v.output, v.cacheCreation, v.cacheRead, v.total, v.requests, v.reports, v.missing));
     }
     if (batch.length) await d1.batch(batch);
     return { aggregatedWeeks: batch.length };

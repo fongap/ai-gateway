@@ -19,6 +19,7 @@
 // still rotates to another node.
 
 import { createSseScanner } from './guard.ts';
+import { mergeReportedUsage } from '../observability/token-usage.ts';
 
 const MAX_COLLECTED_BYTES = 2 * 1024 * 1024;
 
@@ -37,7 +38,7 @@ export async function collectAnthropicMessageObject(upstream: Response, clientSi
   // keeps control-flow analysis from collapsing the type to `null`.
   let messageBase: { id: unknown, model: unknown } | null | undefined; // { id, model }
   let stopReason: unknown = null;
-  let usage = { input_tokens: 0, output_tokens: 0 };
+  let usage: Record<string, unknown> = { input_tokens: 0, output_tokens: 0 } as Record<string, unknown>;
   const blocks: Record<string, unknown>[] = [];
   // content_block_start state carries accumulated deltas per block index.
   const blockState = new Map<number, Record<string, unknown> & { text?: string, thinking?: string, signature?: string, partialJson?: string }>();
@@ -68,7 +69,8 @@ export async function collectAnthropicMessageObject(upstream: Response, clientSi
         };
         const startUsage = json.message?.usage;
         if (startUsage && typeof startUsage === 'object') {
-          usage = { ...usage, input_tokens: Number(startUsage.input_tokens ?? usage.input_tokens) || usage.input_tokens };
+          // Preserve all known usage fields from message_start
+          usage = { ...usage, ...startUsage };
         }
         break;
       }
@@ -100,10 +102,10 @@ export async function collectAnthropicMessageObject(upstream: Response, clientSi
       case 'message_delta': {
         if (json.delta?.stop_reason !== undefined) stopReason = json.delta.stop_reason;
         if (json.usage && typeof json.usage === 'object') {
-          usage = {
-            input_tokens: Number(json.usage.input_tokens ?? usage.input_tokens) || usage.input_tokens,
-            output_tokens: Number(json.usage.output_tokens ?? usage.output_tokens) || usage.output_tokens,
-          };
+          // Merge by field: message_delta may report only output_tokens,
+          // or may re-report input_tokens (cumulative). Cache tokens
+          // from message_start must not be lost.
+          usage = mergeReportedUsage(usage, json.usage) as Record<string, unknown>;
         }
         break;
       }
@@ -181,9 +183,16 @@ export function synthesizeAnthropicFromMessage(message: Record<string, unknown> 
   const emit = (chunks: string[], event: string, data: unknown) => chunks.push(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   const object: Record<string, unknown> = message && typeof message === 'object' ? message : {};
   const content = Array.isArray(object.content) ? object.content : [];
-  const usage = object.usage && typeof object.usage === 'object'
-    ? { input_tokens: Number((object.usage as Record<string, unknown>).input_tokens ?? 0) || 0, output_tokens: Number((object.usage as Record<string, unknown>).output_tokens ?? 0) || 0 }
+  const usageObj = object.usage && typeof object.usage === 'object'
+    ? object.usage as Record<string, unknown>
     : { input_tokens: 0, output_tokens: 0 };
+  // Preserve all known usage fields from the original message
+  const usage = {
+    input_tokens: Number(usageObj.input_tokens ?? 0) || 0,
+    cache_creation_input_tokens: Number(usageObj.cache_creation_input_tokens ?? 0) || 0,
+    cache_read_input_tokens: Number(usageObj.cache_read_input_tokens ?? 0) || 0,
+    output_tokens: Number(usageObj.output_tokens ?? 0) || 0,
+  };
 
   const chunks: string[] = [];
   emit(chunks, 'message_start', {
@@ -196,7 +205,7 @@ export function synthesizeAnthropicFromMessage(message: Record<string, unknown> 
       content: [],
       stop_reason: null,
       stop_sequence: null,
-      usage: { input_tokens: usage.input_tokens, output_tokens: 0 },
+      usage: { input_tokens: usage.input_tokens, cache_creation_input_tokens: usage.cache_creation_input_tokens, cache_read_input_tokens: usage.cache_read_input_tokens, output_tokens: 0 },
     },
   });
   for (let index = 0; index < content.length; index++) {

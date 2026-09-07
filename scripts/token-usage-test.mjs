@@ -65,22 +65,22 @@ await test('numeric strings and invalid numbers are rejected, never coerced', as
   assert.equal(normalizeTokenUsage({ prompt_tokens: 2, completion_tokens: '9' }), null);
   assert.equal(normalizeTokenUsage({ prompt_tokens: 2, total_tokens: -1 }), null);
   // A MISSING side is not an error — partial data beats nothing.
-  assert.deepEqual(normalizeTokenUsage({ prompt_tokens: 2 }), { input: 2, output: 0, total: 2 });
+  assert.deepEqual(normalizeTokenUsage({ prompt_tokens: 2 }), { input: 2, output: 0, cacheCreation: 0, cacheRead: 0, effectiveInput: 2, total: 2 });
 });
 
 await test('openai and anthropic/responses alias shapes both normalize', async () => {
-  assert.deepEqual(normalizeTokenUsage({ prompt_tokens: 2, completion_tokens: 3 }), { input: 2, output: 3, total: 5 });
-  assert.deepEqual(normalizeTokenUsage({ input_tokens: 4, output_tokens: 6 }), { input: 4, output: 6, total: 10 });
+  assert.deepEqual(normalizeTokenUsage({ prompt_tokens: 2, completion_tokens: 3 }), { input: 2, output: 3, cacheCreation: 0, cacheRead: 0, effectiveInput: 2, total: 5 });
+  assert.deepEqual(normalizeTokenUsage({ input_tokens: 4, output_tokens: 6 }), { input: 4, output: 6, cacheCreation: 0, cacheRead: 0, effectiveInput: 4, total: 10 });
   // One-sided reports are kept (partial data beats nothing).
-  assert.deepEqual(normalizeTokenUsage({ prompt_tokens: 2 }), { input: 2, output: 0, total: 2 });
+  assert.deepEqual(normalizeTokenUsage({ prompt_tokens: 2 }), { input: 2, output: 0, cacheCreation: 0, cacheRead: 0, effectiveInput: 2, total: 2 });
   // Fractional upstream values truncate.
-  assert.deepEqual(normalizeTokenUsage({ prompt_tokens: 1.9, completion_tokens: 2.1 }), { input: 1, output: 2, total: 3 });
+  assert.deepEqual(normalizeTokenUsage({ prompt_tokens: 1.9, completion_tokens: 2.1 }), { input: 1, output: 2, cacheCreation: 0, cacheRead: 0, effectiveInput: 1, total: 3 });
 });
 
 await test('a reported total_tokens wins verbatim over input+output', async () => {
   assert.deepEqual(
     normalizeTokenUsage({ prompt_tokens: 2, completion_tokens: 3, total_tokens: 10 }),
-    { input: 2, output: 3, total: 10 },
+    { input: 2, output: 3, cacheCreation: 0, cacheRead: 0, effectiveInput: 2, total: 10 },
   );
 });
 

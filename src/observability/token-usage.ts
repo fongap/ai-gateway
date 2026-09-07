@@ -18,7 +18,7 @@
 //     isolate-scoped.
 //   - Zero imports: a leaf module so the stream layer (track.ts) and the
 //     dashboard (pages.ts) can use it without cycles.
-
+//
 // Cardinality guard: models are registry-validated upstream of dispatch, so
 // the natural cardinality is models × tiers × providers × nodes. Past the
 // cap new buckets are dropped (totals stay exact, per-dimension rows become
@@ -35,7 +35,21 @@ const DAY_MS = 86400_000;
 const HOURS_24 = 24;
 const DAYS_7 = 7;
 
-export type NormalizedTokenUsage = { input: number, output: number, total: number };
+// Supported upstream usage fields (Anthropic + OpenAI + Responses).
+// Providers may emit partial reports; we merge by FIELD (not by addition).
+// Anthropic streaming: message_start has input tokens, message_delta has output tokens.
+// Anthropic cache: cache_creation_input_tokens, cache_read_input_tokens are separate fields.
+// OpenAI: prompt_tokens, completion_tokens, total_tokens, prompt_tokens_details.cached_tokens.
+// Cached tokens in OpenAI are already PART of prompt_tokens — do NOT add again.
+// Anthropic cache tokens are ADDITIONAL to input_tokens — they represent extra input activity.
+export type NormalizedTokenUsage = {
+  input: number,              // ordinary input tokens (prompt_tokens / input_tokens)
+  output: number,             // output tokens (completion_tokens / output_tokens)
+  cacheCreation: number,      // cache_creation_input_tokens (Anthropic only)
+  cacheRead: number,          // cache_read_input_tokens (Anthropic only)
+  effectiveInput: number,     // input + cacheCreation + cacheRead (total input activity)
+  total: number,              // effectiveInput + output
+};
 
 export type TokenUsageBucket = {
   model: string,
@@ -44,6 +58,9 @@ export type TokenUsageBucket = {
   nodeId: string,
   input: number,
   output: number,
+  cacheCreation: number,
+  cacheRead: number,
+  effectiveInput: number,
   total: number,
   reports: number,
   missing: number,
@@ -53,13 +70,13 @@ export type RollingWindowBucket = { total: number, reports: number };
 
 export const tokenStats: {
   startedAt: number,
-  totals: { input: number, output: number, total: number, reports: number, missing: number },
+  totals: { input: number, output: number, cacheCreation: number, cacheRead: number, effectiveInput: number, total: number, reports: number, missing: number },
   buckets: Map<string, TokenUsageBucket>, // "<model>|<tier>|<provider>|<nodeId>" -> bucket
   hourBuckets: Map<number, RollingWindowBucket>, // hourStartMs -> { total, reports }  (rolling 24h)
   dayBuckets: Map<number, RollingWindowBucket>, // dayStartMs  -> { total, reports }  (rolling 7d)
 } = {
   startedAt: Date.now(),
-  totals: { input: 0, output: 0, total: 0, reports: 0, missing: 0 },
+  totals: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0, effectiveInput: 0, total: 0, reports: 0, missing: 0 },
   buckets: new Map(),
   hourBuckets: new Map(),
   dayBuckets: new Map(),
@@ -72,9 +89,39 @@ function validTokenCount(value: unknown): number | null {
   return Math.trunc(value);
 }
 
-// Normalize an upstream-reported usage object (OpenAI chat shape or the
-// input_tokens/output_tokens aliases some providers emit) into
-// { input, output, total }, or null when nothing usable was reported.
+// Merge two upstream-reported usage objects by FIELD (not by addition).
+// Anthropic streaming reports are CUMULATIVE: message_delta.usage.output_tokens
+// is the running total. message_start.usage.input_tokens is the running total.
+// message_delta may also re-report input_tokens (cumulative).
+// OpenAI final chunk usage is also cumulative.
+// Therefore: next field value REPLACES previous if next has the field;
+// if next lacks a field, keep previous.
+// This is "last-field-wins per field", not "last-object-wins" and not "sum".
+export function mergeReportedUsage(previous: unknown, next: unknown): unknown {
+  if (!next || typeof next !== 'object' || Array.isArray(next)) return previous;
+  if (!previous || typeof previous !== 'object' || Array.isArray(previous)) return next;
+  const prev = previous as Record<string, unknown>;
+  const nxt = next as Record<string, unknown>;
+  const merged: Record<string, unknown> = { ...prev };
+  // All known usage fields: next's field value wins if present and valid.
+  // We copy ALL fields from next that are valid numbers; unknown fields pass through.
+  for (const key of Object.keys(nxt)) {
+    const val = nxt[key];
+    const valid = validTokenCount(val);
+    if (valid !== null) {
+      merged[key] = valid;
+    } else if (typeof val === 'object' && val !== null && !Array.isArray(val)) {
+      // Nested objects (e.g., prompt_tokens_details) - merge recursively
+      merged[key] = mergeReportedUsage(prev[key], val);
+    }
+    // Non-numeric non-object fields are ignored (not usable for token counting)
+  }
+  return merged;
+}
+
+// Normalize an upstream-reported usage object (OpenAI chat shape, Responses,
+// or Anthropic input_tokens/output_tokens) into NormalizedTokenUsage,
+// or null when nothing usable was reported.
 // This is the SINGLE reported-vs-missing gate: a reported-but-empty
 // `usage: {}` normalizes to null and is therefore counted as missing.
 //
@@ -87,24 +134,42 @@ function validTokenCount(value: unknown): number | null {
 export function normalizeTokenUsage(usage: unknown): NormalizedTokenUsage | null {
   if (!usage || typeof usage !== 'object' || Array.isArray(usage)) return null;
   const u = usage as Record<string, unknown>;
-  const inputKey = u.prompt_tokens !== undefined ? 'prompt_tokens'
-    : u.input_tokens !== undefined ? 'input_tokens' : null;
-  const outputKey = u.completion_tokens !== undefined ? 'completion_tokens'
-    : u.output_tokens !== undefined ? 'output_tokens' : null;
-  const inputRaw = inputKey === null ? undefined : u[inputKey];
-  const outputRaw = outputKey === null ? undefined : u[outputKey];
-  if ((inputKey !== null && validTokenCount(inputRaw) === null)
-      || (outputKey !== null && validTokenCount(outputRaw) === null)) return null;
-  const input = validTokenCount(inputRaw);
-  const output = validTokenCount(outputRaw);
-  if (input === null && output === null) return null; // neither side reported
-  // A reported total_tokens wins verbatim even when it disagrees with
-  // input+output: reported-first — the gateway never second-guesses upstream
-  // numbers. A provided-but-invalid total is likewise untrustworthy.
-  if (u.total_tokens !== undefined && validTokenCount(u.total_tokens) === null) return null;
-  const reportedTotal = validTokenCount(u.total_tokens);
-  const total = reportedTotal ?? (input ?? 0) + (output ?? 0);
-  return { input: input ?? 0, output: output ?? 0, total };
+
+  // Anthropic input tokens (ordinary + cache)
+  const inputRaw = u.input_tokens ?? u.prompt_tokens;
+  const cacheCreationRaw = u.cache_creation_input_tokens;
+  const cacheReadRaw = u.cache_read_input_tokens;
+  const outputRaw = u.output_tokens ?? u.completion_tokens;
+
+  // Validate all provided fields. If ANY provided field is invalid, reject entire report.
+  if (inputRaw !== undefined && validTokenCount(inputRaw) === null) return null;
+  if (cacheCreationRaw !== undefined && validTokenCount(cacheCreationRaw) === null) return null;
+  if (cacheReadRaw !== undefined && validTokenCount(cacheReadRaw) === null) return null;
+  if (outputRaw !== undefined && validTokenCount(outputRaw) === null) return null;
+
+  const input = validTokenCount(inputRaw) ?? 0;
+  const cacheCreation = validTokenCount(cacheCreationRaw) ?? 0;
+  const cacheRead = validTokenCount(cacheReadRaw) ?? 0;
+  const output = validTokenCount(outputRaw) ?? 0;
+
+  // If nothing usable was reported at all, return null (counts as missing)
+  if (inputRaw === undefined && cacheCreationRaw === undefined && cacheReadRaw === undefined && outputRaw === undefined) {
+    return null;
+  }
+
+  // total_tokens: if provided and valid, use verbatim (reported-first).
+  // Otherwise compute: effectiveInput + output.
+  let total: number;
+  if (u.total_tokens !== undefined) {
+    const reportedTotal = validTokenCount(u.total_tokens);
+    if (reportedTotal === null) return null;
+    total = reportedTotal;
+  } else {
+    total = input + cacheCreation + cacheRead + output;
+  }
+
+  const effectiveInput = input + cacheCreation + cacheRead;
+  return { input, output, cacheCreation, cacheRead, effectiveInput, total };
 }
 
 // Storage-time dimension sanitization: every value that can reach /metrics
@@ -175,7 +240,7 @@ export function recordTokenUsage({ model, tier, provider, nodeId, usage, now = D
     let b = tokenStats.buckets.get(key);
     if (!b) {
       if (tokenStats.buckets.size >= MAX_BUCKETS) return null; // totals stay exact
-      b = { ...dims, input: 0, output: 0, total: 0, reports: 0, missing: 0 };
+      b = { ...dims, input: 0, output: 0, cacheCreation: 0, cacheRead: 0, effectiveInput: 0, total: 0, reports: 0, missing: 0 };
       tokenStats.buckets.set(key, b);
     }
     return b;
@@ -190,6 +255,9 @@ export function recordTokenUsage({ model, tier, provider, nodeId, usage, now = D
   tokenStats.totals.reports += 1;
   tokenStats.totals.input += normalized.input;
   tokenStats.totals.output += normalized.output;
+  tokenStats.totals.cacheCreation += normalized.cacheCreation;
+  tokenStats.totals.cacheRead += normalized.cacheRead;
+  tokenStats.totals.effectiveInput += normalized.effectiveInput;
   tokenStats.totals.total += normalized.total;
   bumpWindow(tokenStats.hourBuckets, now, HOUR_MS, HOURS_24, normalized.total);
   bumpWindow(tokenStats.dayBuckets, now, DAY_MS, DAYS_7, normalized.total);
@@ -198,6 +266,9 @@ export function recordTokenUsage({ model, tier, provider, nodeId, usage, now = D
   b.reports += 1;
   b.input += normalized.input;
   b.output += normalized.output;
+  b.cacheCreation += normalized.cacheCreation;
+  b.cacheRead += normalized.cacheRead;
+  b.effectiveInput += normalized.effectiveInput;
   b.total += normalized.total;
 }
 
@@ -254,7 +325,7 @@ export function tokenMetricSeries(): TokenUsageBucket[] {
 
 export function __resetTokenStatsForTests(): void {
   tokenStats.startedAt = Date.now();
-  tokenStats.totals = { input: 0, output: 0, total: 0, reports: 0, missing: 0 };
+  tokenStats.totals = { input: 0, output: 0, cacheCreation: 0, cacheRead: 0, effectiveInput: 0, total: 0, reports: 0, missing: 0 };
   tokenStats.buckets = new Map();
   tokenStats.hourBuckets = new Map();
   tokenStats.dayBuckets = new Map();

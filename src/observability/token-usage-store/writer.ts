@@ -31,19 +31,30 @@ import type { NormalizedTokenUsage } from '../token-usage.ts';
 // Returns null only when a caller passes something structurally
 // unusable (defensive) — in practice the caller always passes either
 // a usage object or null/undefined.
-export function tokenUsagePayload(usage: unknown): { input: number, output: number, total: number, requests: number, reports: number, missing: number } {
+export function tokenUsagePayload(usage: unknown): {
+  input: number,
+  output: number,
+  cacheCreation: number,
+  cacheRead: number,
+  total: number,
+  requests: number,
+  reports: number,
+  missing: number,
+} {
   const normalized: NormalizedTokenUsage | null = normalizeTokenUsage(usage);
   if (normalized) {
     return {
       input: normalized.input,
       output: normalized.output,
+      cacheCreation: normalized.cacheCreation,
+      cacheRead: normalized.cacheRead,
       total: normalized.total,
       requests: 1,
       reports: 1,
       missing: 0,
     };
   }
-  return { input: 0, output: 0, total: 0, requests: 1, reports: 0, missing: 1 };
+  return { input: 0, output: 0, cacheCreation: 0, cacheRead: 0, total: 0, requests: 1, reports: 0, missing: 1 };
 }
 
 function persistFailure(scope: string, cause: unknown, model: string | null = null): Error & { scope: string, model?: string } {
@@ -90,15 +101,19 @@ export function persistTokenUsage(env: Record<string, unknown>, usage: unknown, 
         hour,
         input_tokens,
         output_tokens,
+        cache_creation_input_tokens,
+        cache_read_input_tokens,
         total_tokens,
         requests,
         usage_reports,
         usage_missing
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(hour) DO UPDATE SET
         input_tokens = ${TABLE}.input_tokens + excluded.input_tokens,
         output_tokens = ${TABLE}.output_tokens + excluded.output_tokens,
+        cache_creation_input_tokens = ${TABLE}.cache_creation_input_tokens + excluded.cache_creation_input_tokens,
+        cache_read_input_tokens = ${TABLE}.cache_read_input_tokens + excluded.cache_read_input_tokens,
         total_tokens = ${TABLE}.total_tokens + excluded.total_tokens,
         requests = ${TABLE}.requests + excluded.requests,
         usage_reports = ${TABLE}.usage_reports + excluded.usage_reports,
@@ -108,6 +123,8 @@ export function persistTokenUsage(env: Record<string, unknown>, usage: unknown, 
       hour,
       p.input,
       p.output,
+      p.cacheCreation,
+      p.cacheRead,
       p.total,
       p.requests,
       p.reports,
@@ -123,13 +140,15 @@ export function persistTokenUsage(env: Record<string, unknown>, usage: unknown, 
   try {
     const totalsStmt = d1.prepare(
       `INSERT INTO ${TABLE_TOTALS} (
-        scope, input_tokens, output_tokens, total_tokens,
+        scope, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, total_tokens,
         requests, usage_reports, usage_missing, updated_at
       )
-      VALUES ('global', ?, ?, ?, ?, ?, ?, ?)
+      VALUES ('global', ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(scope) DO UPDATE SET
         input_tokens = ${TABLE_TOTALS}.input_tokens + excluded.input_tokens,
         output_tokens = ${TABLE_TOTALS}.output_tokens + excluded.output_tokens,
+        cache_creation_input_tokens = ${TABLE_TOTALS}.cache_creation_input_tokens + excluded.cache_creation_input_tokens,
+        cache_read_input_tokens = ${TABLE_TOTALS}.cache_read_input_tokens + excluded.cache_read_input_tokens,
         total_tokens = ${TABLE_TOTALS}.total_tokens + excluded.total_tokens,
         requests = ${TABLE_TOTALS}.requests + excluded.requests,
         usage_reports = ${TABLE_TOTALS}.usage_reports + excluded.usage_reports,
@@ -139,6 +158,8 @@ export function persistTokenUsage(env: Record<string, unknown>, usage: unknown, 
     totalsTask = Promise.resolve(totalsStmt.bind(
       p.input,
       p.output,
+      p.cacheCreation,
+      p.cacheRead,
       p.total,
       p.requests,
       p.reports,
@@ -176,15 +197,17 @@ export function persistTokenUsage(env: Record<string, unknown>, usage: unknown, 
     modelTask = Promise.resolve(d1.prepare(
       `INSERT INTO ${TABLE_MODEL} (
         hour, model,
-        input_tokens, output_tokens, total_tokens,
+        input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, total_tokens,
         requests, usage_reports, usage_missing,
         successful_ttft_count,
         ttft_b0, ttft_b1, ttft_b2, ttft_b3, ttft_b4, ttft_b5, ttft_b6
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(hour, model) DO UPDATE SET
         input_tokens = ${TABLE_MODEL}.input_tokens + excluded.input_tokens,
         output_tokens = ${TABLE_MODEL}.output_tokens + excluded.output_tokens,
+        cache_creation_input_tokens = ${TABLE_MODEL}.cache_creation_input_tokens + excluded.cache_creation_input_tokens,
+        cache_read_input_tokens = ${TABLE_MODEL}.cache_read_input_tokens + excluded.cache_read_input_tokens,
         total_tokens = ${TABLE_MODEL}.total_tokens + excluded.total_tokens,
         requests = ${TABLE_MODEL}.requests + excluded.requests,
         usage_reports = ${TABLE_MODEL}.usage_reports + excluded.usage_reports,
@@ -199,7 +222,7 @@ export function persistTokenUsage(env: Record<string, unknown>, usage: unknown, 
         ttft_b6 = ${TABLE_MODEL}.ttft_b6 + excluded.ttft_b6`,
     ).bind(
       hour, canonicalModel,
-      p.input, p.output, p.total,
+      p.input, p.output, p.cacheCreation, p.cacheRead, p.total,
       p.requests, p.reports, p.missing,
       successTtftCount,
       buckets[0], buckets[1], buckets[2], buckets[3], buckets[4], buckets[5], buckets[6],
