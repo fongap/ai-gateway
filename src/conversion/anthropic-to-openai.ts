@@ -10,6 +10,13 @@ function unsupportedBlock(type: unknown): never {
   throw new ConversionError(`conversion_not_supported: ${type} blocks not supported`);
 }
 
+// `cache_control` and `metadata` are attribution / prompt-caching hints that
+// have no safe generic OpenAI Chat equivalent mapping. They never change the
+// generated content, so on the Anthropic -> OpenAI fallback they are accepted
+// and then deliberately DROPPED (see the contract in fallback.md). This is an
+// intentional drop, not an omission: the block text still reaches the upstream.
+const SAFELY_IGNORABLE_FIELDS = ['cache_control'];
+
 function systemToOpenAI(system: unknown): Record<string, unknown> | null {
   if (system === undefined || system === null) return null;
   if (typeof system === 'string') return { role: 'system', content: system };
@@ -18,7 +25,8 @@ function systemToOpenAI(system: unknown): Record<string, unknown> | null {
   for (const block of system) {
     if (typeof block === 'string') parts.push(block);
     else if (isRecord(block) && block.type === 'text' && typeof block.text === 'string') {
-      assertFields(block, ['type', 'text'], 'system');
+      // `cache_control` is intentionally ignored (see SAFELY_IGNORABLE_FIELDS).
+      assertFields(block, ['type', 'text', ...SAFELY_IGNORABLE_FIELDS], 'system');
       parts.push(block.text);
     }
     else unsupportedBlock(isRecord(block) ? block.type : 'unknown');
@@ -32,11 +40,13 @@ function convertAssistantContent(blocks: unknown[]): Record<string, unknown> {
   for (const block of blocks) {
     if (!isRecord(block)) unsupportedBlock('invalid');
     if (block.type === 'text') {
-      assertFields(block, ['type', 'text'], 'assistant text');
+      // `cache_control` is intentionally ignored (see SAFELY_IGNORABLE_FIELDS).
+      assertFields(block, ['type', 'text', ...SAFELY_IGNORABLE_FIELDS], 'assistant text');
       if (typeof block.text !== 'string') unsupportedBlock('non-text');
       text += block.text;
     } else if (block.type === 'tool_use') {
-      assertFields(block, ['type', 'id', 'name', 'input'], 'tool_use');
+      // `cache_control` is intentionally ignored (see SAFELY_IGNORABLE_FIELDS).
+      assertFields(block, ['type', 'id', 'name', 'input', ...SAFELY_IGNORABLE_FIELDS], 'tool_use');
       if (typeof block.id !== 'string' || !block.id || typeof block.name !== 'string' || !block.name || !isRecord(block.input)) unsupportedBlock('invalid tool_use');
       toolCalls.push({ id: block.id, type: 'function', function: { name: block.name, arguments: JSON.stringify(block.input) } });
     } else unsupportedBlock(block.type);
@@ -50,7 +60,10 @@ function convertUserContent(blocks: unknown): string | Record<string, unknown> |
   const parts: Array<Record<string, unknown>> = [];
   for (const block of blocks) {
     if (!isRecord(block)) unsupportedBlock('invalid');
-    assertFields(block, block.type === 'tool_result' ? ['type', 'tool_use_id', 'content', 'is_error'] : ['type', 'text'], 'user content');
+    // `cache_control` is intentionally ignored (see SAFELY_IGNORABLE_FIELDS).
+    assertFields(block, block.type === 'tool_result'
+      ? ['type', 'tool_use_id', 'content', 'is_error', ...SAFELY_IGNORABLE_FIELDS]
+      : ['type', 'text', ...SAFELY_IGNORABLE_FIELDS], 'user content');
     if (block.type === 'text') parts.push({ type: 'text', text: block.text || '' });
     else if (block.type === 'tool_result') {
       if (block.is_error === true) unsupportedBlock('tool_result.is_error');
@@ -72,7 +85,8 @@ function extractToolResultText(content: unknown): string {
   for (const part of content) {
     if (typeof part === 'string') parts.push(part);
     else if (isRecord(part) && part.type === 'text' && typeof part.text === 'string') {
-      assertFields(part, ['type', 'text'], 'tool_result content');
+      // `cache_control` is intentionally ignored (see SAFELY_IGNORABLE_FIELDS).
+      assertFields(part, ['type', 'text', ...SAFELY_IGNORABLE_FIELDS], 'tool_result content');
       parts.push(part.text);
     } else unsupportedBlock('non-text tool_result');
   }
@@ -93,7 +107,13 @@ function mapToolChoice(toolChoice: unknown): string | Record<string, unknown> | 
 }
 
 export function convertAnthropicToOpenAIRequest(body: Record<string, unknown>): Record<string, unknown> {
-  assertFields(body, ['model', 'messages', 'system', 'max_tokens', 'temperature', 'top_p', 'stream', 'stop_sequences', 'tools', 'tool_choice'], 'request');
+  // `metadata` is an Anthropic attribution field with no safe generic OpenAI
+  // equivalent — different OpenAI-compatible providers disagree on `user`,
+  // `metadata`, `safety_identifier`. It never changes generated content, so it
+  // is accepted here and deliberately NOT forwarded to the OpenAI upstream
+  // (intentional drop, not an omission). The remaining fields are validated as
+  // required / convertible / semantic-error below.
+  assertFields(body, ['model', 'messages', 'system', 'max_tokens', 'temperature', 'top_p', 'stream', 'stop_sequences', 'tools', 'tool_choice', 'metadata'], 'request');
   assertSampling(body);
   if (!Array.isArray(body.messages)) unsupportedBlock('invalid messages');
   const out: Record<string, unknown> = {};
@@ -149,7 +169,8 @@ export function convertAnthropicToOpenAIRequest(body: Record<string, unknown>): 
   if (Array.isArray(body.tools)) {
     out.tools = body.tools.map((tool: unknown) => {
       if (!isRecord(tool)) unsupportedBlock('invalid tool');
-      assertFields(tool, ['name', 'description', 'input_schema'], 'tool');
+      // `cache_control` is intentionally ignored (see SAFELY_IGNORABLE_FIELDS).
+      assertFields(tool, ['name', 'description', 'input_schema', ...SAFELY_IGNORABLE_FIELDS], 'tool');
       if (typeof tool.name !== 'string' || !tool.name || !isRecord(tool.input_schema)) unsupportedBlock('invalid tool');
       return { type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.input_schema } };
     });
