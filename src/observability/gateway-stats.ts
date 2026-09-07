@@ -17,11 +17,11 @@ export const gatewayStats = {
 };
 
 // Node-layer stream lifecycle counters (gateway_stream_* in /metrics).
-// Emitted only by the node-layer tracking in handler.js: the client-facing
+// Emitted only by the node-layer tracking in handler.ts: the client-facing
 // trackClientResponse wrapper below passes no telemetry callbacks, so each
 // stream is counted exactly once. Invariant:
 // interrupted === missingCompletion + idleTimeout + readerError.
-export const streamStats = {
+export const streamStats: Record<string, number> = {
   started: 0,
   completed: 0,
   interrupted: 0,
@@ -30,22 +30,22 @@ export const streamStats = {
   readerError: 0,
 };
 
-export function recordStreamStart() {
+export function recordStreamStart(): void {
   streamStats.started++;
 }
 
-export function recordStreamCompleted() {
+export function recordStreamCompleted(): void {
   streamStats.completed++;
 }
 
-export function recordStreamInterrupted(reason) {
+export function recordStreamInterrupted(reason: string | null): void {
   streamStats.interrupted++;
   if (reason === 'missing_completion_marker') streamStats.missingCompletion++;
   else if (reason === 'idle_timeout') streamStats.idleTimeout++;
   else if (reason === 'reader_error') streamStats.readerError++;
 }
 
-export function __resetStreamStatsForTests() {
+export function __resetStreamStatsForTests(): void {
   for (const key of Object.keys(streamStats)) streamStats[key] = 0;
 }
 
@@ -62,13 +62,13 @@ const COUNTED_ROUTES = new Set([
   'GET /models',
 ]);
 
-export function isCountedRoute(method, pathname) {
+export function isCountedRoute(method: string, pathname: string): boolean {
   return COUNTED_ROUTES.has(`${method} ${pathname}`);
 }
 
 // Wrap a response so its completion updates the client counters, including
 // streaming responses that finish after the handler has returned.
-export function trackClientResponse(response) {
+export function trackClientResponse(response: Response): Response {
   const ok = response.status < 400;
   const streaming = ok && isOpenAIStreamingResponse(response) && response.body;
   if (!streaming) {

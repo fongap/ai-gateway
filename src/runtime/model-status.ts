@@ -6,7 +6,7 @@
 //   "Does this logical model have credible evidence of serving recently?"
 //
 // It is intentionally NOT the same as Runtime Availability
-// (src/runtime/availability.js). Runtime Availability describes THIS isolate's
+// (src/runtime/availability.ts). Runtime Availability describes THIS isolate's
 // scheduling state (Tier 1 passive TTFT, Tier 2/3 circuit + cooldown) and is
 // the correct signal for P2C / cooldown / hedge / failover. Public Model
 // Status describes the user-facing service state across isolates, restarts
@@ -37,14 +37,16 @@
 // means the model successfully completed at least one real request in that
 // hour. We do NOT introduce a new persistence table, a new health database, or
 // a second statistics system. See queryRecentModelEvidence() in
-// token-usage-store.mjs.
+// token-usage-store/queries.ts.
 //
 // Public-safety: this module NEVER reads credentials, node ids, providers or
 // tiers into its outputs. The return value is a list of { id, status } only.
 
 import { loadModelRegistry, servesModel, collectKnownModels } from '../config/registry.ts';
-import { getRuntimeAvailability } from './availability.js';
-import { normalizeModelKey } from '../observability/token-usage-store.mjs';
+import { getRuntimeAvailability } from './availability.ts';
+import { normalizeModelKey } from '../observability/token-usage-store.ts';
+import type { RegistryEntry } from '../config/registry.ts';
+import type { RuntimeNode } from '../types/node.ts';
 
 // Recent-evidence window. The D1 per-model table stores UTC hourly buckets
 // with a 7-day retention (cleanupModelStats prunes older rows). A 24-hour
@@ -58,11 +60,20 @@ import { normalizeModelKey } from '../observability/token-usage-store.mjs';
 //     a single GROUP BY over a small number of rows.
 //
 // Single source of truth for the Recent Evidence window lives next to the
-// query that parameterizes it (token-usage-store/queries.js); re-exported
+// query that parameterizes it (token-usage-store/queries.ts); re-exported
 // here because Model Status semantics own the public surface.
 export {
   MODEL_STATUS_RECENT_WINDOW_MS,
-} from '../observability/token-usage-store.mjs';
+} from '../observability/token-usage-store.ts';
+
+export type PublicModelStatusState = 'available' | 'degraded' | 'unobserved' | 'unavailable';
+
+export type PublicModelStatusEntry = {
+  id: string,
+  status: PublicModelStatusState,
+  display_order: number,
+  group: string,
+};
 
 // Pure function: compute the public four-state status for every logical
 // model known to the gateway.
@@ -92,30 +103,30 @@ export {
 // The list is sorted by logical model id for stable rendering. No node ids,
 // providers, tiers, counts or durations leave this function.
 
-function deriveGroup(name) {
+function deriveGroup(name: string): string {
   if (name.startsWith('Code-')) return 'code';
   if (name === 'Omni') return 'omni';
   if (name === 'OCR') return 'ocr';
   return 'general';
 }
 
-const MODEL_NAME_PRIORITY = {
+const MODEL_NAME_PRIORITY: Record<string, number> = {
   air: 10, pro: 20, max: 30, ultra: 40,
 };
-const GROUP_PRIORITY = { general: 0, code: 1, omni: 2, ocr: 3 };
-function modelNamePriority(name) {
+const GROUP_PRIORITY: Record<string, number> = { general: 0, code: 1, omni: 2, ocr: 3 };
+function modelNamePriority(name: string): number {
   const lower = name.toLowerCase().replace(/^code-/, '');
   return MODEL_NAME_PRIORITY[lower] ?? 90;
 }
 
-export function getPublicModelStatus(nodes, env, evidence = new Set(), now = Date.now()) {
-  const names = new Set();
+export function getPublicModelStatus(nodes: ReadonlyArray<RuntimeNode>, env: Record<string, unknown> | null | undefined, evidence: ReadonlySet<string> = new Set(), now: number = Date.now()): { observed_at: string, models: PublicModelStatusEntry[] } {
+  const names = new Set<string>();
   for (const node of nodes || []) {
     for (const key of Object.keys(node.models || {})) names.add(key);
   }
-  let visibility = {};
-  let uiVisible = {};
-  let registry = {};
+  let visibility: Record<string, string> = {};
+  let uiVisible: Record<string, boolean> = {};
+  let registry: Record<string, RegistryEntry> = {};
   if (env) {
     try {
       registry = loadModelRegistry(env);
@@ -131,7 +142,7 @@ export function getPublicModelStatus(nodes, env, evidence = new Set(), now = Dat
   // ids below keep their official logical casing (Code-Max). Matching is
   // always canonical-statistical-key vs canonical-statistical-key —
   // routing/auth model-ID semantics stay exact and untouched.
-  const canonicalEvidence = new Set();
+  const canonicalEvidence = new Set<string>();
   for (const key of evidenceSet) {
     const canonical = normalizeModelKey(key);
     if (canonical) canonicalEvidence.add(canonical);
@@ -140,19 +151,19 @@ export function getPublicModelStatus(nodes, env, evidence = new Set(), now = Dat
   // serves models that actually exist in the gateway. The public name set
   // stays node-mapped (an operator declares models where they live); the
   // catalog is the same single source used by authorization.
-  const knownModels = collectKnownModels(nodes, env);
-  const models = [];
+  const knownModels = collectKnownModels(nodes, env ?? undefined);
+  const models: PublicModelStatusEntry[] = [];
   for (const name of [...names]) {
     if (visibility[name] === 'internal') continue;
     if (uiVisible[name] === false) continue;
     const serving = (nodes || []).filter((n) => servesModel(n, name, knownModels));
     const status = modelStatus(name, serving, canonicalEvidence, now);
-    const entry = registry[name] || {};
+    const entry: RegistryEntry | undefined = registry[name];
     models.push({
       id: name,
       status,
-      display_order: entry.display_order !== undefined ? entry.display_order : 100,
-      group: entry.group !== undefined ? entry.group : deriveGroup(name),
+      display_order: entry?.display_order !== undefined ? entry.display_order : 100,
+      group: entry?.group !== undefined ? entry.group : deriveGroup(name),
     });
   }
   models.sort((a, b) => {
@@ -169,7 +180,7 @@ export function getPublicModelStatus(nodes, env, evidence = new Set(), now = Dat
 }
 
 // Compute the status of one logical model.
-function modelStatus(name, serving, canonicalEvidence, now) {
+function modelStatus(name: string, serving: RuntimeNode[], canonicalEvidence: ReadonlySet<string>, now: number): PublicModelStatusState {
   if (!serving.length) return 'unavailable';
 
   const states = serving.map((n) => getRuntimeAvailability(n, name, now));

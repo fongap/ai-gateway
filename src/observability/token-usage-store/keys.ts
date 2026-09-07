@@ -12,6 +12,8 @@
 // Rolling windows (24h, 7d, cumulative) remain UTC-based sliding
 // windows.
 
+import type { D1Database } from '../../types/cloudflare.ts';
+
 export const TABLE = 'token_usage_hourly';
 export const TABLE_MODEL = 'token_usage_model_hourly';
 export const TABLE_TOTALS = 'token_usage_totals';
@@ -48,12 +50,12 @@ export const DISPLAY_TIMEZONE_OFFSET_MS = 8 * 60 * 60 * 1000;
 // Return the UTC millisecond timestamp of the Beijing (UTC+8) midnight for
 // the given UTC timestamp. The result is always hour-aligned (Beijing
 // 00:00 = 16:00Z).
-export function utc8DayStartUtcMs(now = Date.now()) {
+export function utc8DayStartUtcMs(now: number = Date.now()): number {
   return Math.floor((now + DISPLAY_TIMEZONE_OFFSET_MS) / DAY_MS) * DAY_MS - DISPLAY_TIMEZONE_OFFSET_MS;
 }
 
 // Return the UTC+8 date string (YYYY-MM-DD) for the given UTC timestamp.
-export function isoDayUtc8(ms) {
+export function isoDayUtc8(ms: number): string {
   return new Date(ms + DISPLAY_TIMEZONE_OFFSET_MS).toISOString().slice(0, 10);
 }
 
@@ -61,7 +63,7 @@ export function isoDayUtc8(ms) {
 // the hour in UTC so isolates in different PoPs write the SAME key for
 // the same wall-clock hour, which is what makes cross-isolate
 // aggregation meaningful.
-export function normalizeHour(date = Date.now()) {
+export function normalizeHour(date: number | Date = Date.now()): string {
   const d = date instanceof Date ? date : new Date(date);
   const year = d.getUTCFullYear();
   const month = String(d.getUTCMonth() + 1).padStart(2, '0');
@@ -73,7 +75,7 @@ export function normalizeHour(date = Date.now()) {
 // Map a TTFT value (ms) to a histogram bucket index [0..6].
 // Returns -1 for invalid/negative values (should not be recorded).
 // Infinity maps to the last bucket (timeout territory).
-export function ttftBucketIndex(ttftMs) {
+export function ttftBucketIndex(ttftMs: number): number {
   if (ttftMs === Infinity) return TTFT_BUCKET_COUNT - 1;
   if (!Number.isFinite(ttftMs) || ttftMs < 0) return -1;
   for (let i = 0; i < TTFT_BUCKET_BOUNDARIES_MS.length; i++) {
@@ -87,15 +89,15 @@ export function ttftBucketIndex(ttftMs) {
 // never affects routing/auth/model-id exactness (which keep official
 // casing). Merges Code-Max / code-max / CODE-MAX into one stats
 // dimension.
-export function normalizeModelKey(model) {
+export function normalizeModelKey(model: unknown): string {
   return String(model || '').trim().toLowerCase();
 }
 
 // Resolve the D1 binding (env.TOKEN_STATS_DB). Returns null when the
 // binding is absent or not a real D1 database — every query / write
 // path fails open in that case.
-export function tokenStatsD1(env) {
-  const d1 = env?.TOKEN_STATS_DB;
+export function tokenStatsD1(env: Record<string, unknown>): D1Database | null {
+  const d1 = env?.TOKEN_STATS_DB as D1Database | null | undefined;
   if (!d1 || typeof d1.prepare !== 'function') {
     return null;
   }

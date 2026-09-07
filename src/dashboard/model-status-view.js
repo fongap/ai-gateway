@@ -8,8 +8,8 @@
 // providers, tiers, counts or durations ever leave this module, and no model
 // name or prefix carries any business meaning.
 
-import { getPublicModelStatus } from '../runtime/model-status.js';
-import { normalizeModelKey } from '../observability/token-usage-store.mjs';
+import { getPublicModelStatus } from '../runtime/model-status.ts';
+import { normalizeModelKey } from '../observability/token-usage-store.ts';
 import { escapeHtml, fmtTtft } from './format.js';
 
 const STATE_LABEL = { available: '可用', unobserved: '未观测', degraded: '波动', unavailable: '不可用' };

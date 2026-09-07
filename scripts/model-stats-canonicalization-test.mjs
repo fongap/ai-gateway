@@ -32,7 +32,7 @@ import {
   queryAllModelsTtftPercentiles,
   queryModelUsageCoverage,
   persistTokenUsage,
-} from '../src/observability/token-usage-store.mjs';
+} from '../src/observability/token-usage-store.ts';
 import { createMockD1 } from './mock-d1-database.mjs';
 
 const HOUR = 3_600_000;

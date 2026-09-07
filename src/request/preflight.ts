@@ -183,7 +183,7 @@ export async function preflight(request: Request, env: Record<string, unknown>, 
   }
 
   // Authenticated diagnostic endpoints short-circuit here.
-  const diag = await import('../observability/diagnostic-endpoints.mjs');
+  const diag = await import('../observability/diagnostic-endpoints.ts');
   switch (route) {
     case 'version':
       return { ok: false, response: diag.versionResponse(request, env) };

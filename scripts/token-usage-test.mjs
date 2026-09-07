@@ -10,10 +10,10 @@ import assert from 'node:assert/strict';
 import {
   normalizeTokenUsage, recordTokenUsage, summarizeTokenStats,
   tokenMetricSeries, __resetTokenStatsForTests,
-} from '../src/observability/token-usage.mjs';
+} from '../src/observability/token-usage.ts';
 import { dashboardResponse, __resetDashboardCacheForTests } from '../src/dashboard/pages.js';
-import { metricsResponse } from '../src/observability/diagnostic-endpoints.mjs';
-import { persistTokenUsage } from '../src/observability/token-usage-store.mjs';
+import { metricsResponse } from '../src/observability/diagnostic-endpoints.ts';
+import { persistTokenUsage } from '../src/observability/token-usage-store.ts';
 import { withUsageStreamOptions } from '../src/protocol/openai.ts';
 import { trackStreamResponse } from '../src/stream/track.ts';
 import { createMockD1 } from './mock-d1-database.mjs';

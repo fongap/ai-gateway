@@ -19,7 +19,7 @@
 // decoded tail text and is passive: it never injects, requests or estimates
 // usage; it only observes what the upstream volunteered.
 
-import { normalizeTokenUsage } from '../observability/token-usage.mjs';
+import { normalizeTokenUsage } from '../observability/token-usage.ts';
 import { FIRST_EVENT_MAX_SSE_LINE } from './guard.ts';
 
 // Hard limit for the model-rewrite line buffer in the tracked stream (after

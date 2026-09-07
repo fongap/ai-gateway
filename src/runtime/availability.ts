@@ -11,7 +11,7 @@
 // Querying either directly from the dashboard is a bug waiting to happen:
 // a Tier 1 node that has been disabled, cooled down, or never observed
 // will silently look "available" through the legacy peekAvailability()
-// because node-state.js creates a default-healthy entry on first read.
+// because node-state.ts creates a default-healthy entry on first read.
 //
 // This module is the ONLY place the dashboard (and other read-only UIs)
 // should query availability. It dispatches to the right state machine
@@ -29,29 +29,33 @@ import {
   getTier1ModelPerf,
   TIER1_FAILURE_STATES,
 } from '../reliability/tier1-state.ts';
+import type { RuntimeNode } from '../types/node.ts';
+
+export type RuntimeAvailability = 'available' | 'unobserved' | 'unavailable';
 
 /**
  * Returns one of: 'available' | 'unobserved' | 'unavailable'
  *
- * @param {object} node  The runtime node object (has .id, .tier, .limits, .protocol, .surfaces, .models).
- * @param {string} [model]  Logical model name; required for Tier 1 to look up the (account, model) pair.
- * @param {Date|number} [now]  Optional clock for deterministic tests.
- * @returns {'available'|'unobserved'|'unavailable'}
+ * @param node  The runtime node object (has .id, .tier, .limits, .protocol, .surfaces, .models).
+ * @param model  Logical model name; required for Tier 1 to look up the (account, model) pair.
+ * @param now  Optional clock for deterministic tests.
  */
-export function getRuntimeAvailability(node, model, now = Date.now()) {
+export function getRuntimeAvailability(node: RuntimeNode, model?: string, now: number | Date = Date.now()): RuntimeAvailability {
   if (!node || typeof node !== 'object') return 'unavailable';
+  // Normalize the documented Date|number clock contract to milliseconds.
+  const nowMs = now instanceof Date ? now.getTime() : now;
   if (node.tier === 'tier-1') {
-    return getTier1Availability(node, model, now);
+    return getTier1Availability(node, model, nowMs);
   }
-  return getLegacyAvailability(node, model, now);
+  return getLegacyAvailability(node, model, nowMs);
 }
 
 // Tier 1: state lives in (account, model) maps, not in a single per-node entry.
 // A Tier 1 account that has never been touched has no runtime state at all —
-// that is 'unobserved', NOT 'available'. The legacy node-state.js would have
+// that is 'unobserved', NOT 'available'. The legacy node-state would have
 // reported 'available' (it lazily creates a default-healthy entry on first
 // read), which is exactly the dashboard bug this module exists to fix.
-function getTier1Availability(node, model, now) {
+function getTier1Availability(node: RuntimeNode, model: string | undefined, nowMs: number): RuntimeAvailability {
   if (!model) return 'unobserved';
   // Build a minimal request descriptor for eligibility check.
   const req = {
@@ -59,7 +63,7 @@ function getTier1Availability(node, model, now) {
     protocol: node.protocol,
     surface: Array.isArray(node.surfaces) && node.surfaces.length > 0 ? node.surfaces[0] : 'chat_completions',
   };
-  if (!isTier1Eligible(node, req, now)) return 'unavailable';
+  if (!isTier1Eligible(node, req, nowMs)) return 'unavailable';
   // Eligible right now. Distinguish "we know this works" from "we have no idea yet".
   const perf = getTier1ModelPerf(node.id, model);
   if (!perf || perf.ttftEwma == null || perf.sampleCount === 0) return 'unobserved';
@@ -72,12 +76,12 @@ function getTier1Availability(node, model, now) {
 // so peekAvailability() returns 'yes' even when the node has never successfully
 // served a request. We now gate on hasBeenObserved (totalSuccesses > 0) to
 // distinguish 'unobserved' from 'available' — configured ≠ observed healthy.
-function getLegacyAvailability(node, model, now) {
+function getLegacyAvailability(node: RuntimeNode, model: string | undefined, nowMs: number): RuntimeAvailability {
   if (model && node.models && Object.keys(node.models).length > 0 && !node.models[model]) {
     // Node does not serve this specific logical model.
     return 'unavailable';
   }
-  const status = peekAvailability(node.id, now);
+  const status = peekAvailability(node.id, nowMs);
   if (status === 'no') return 'unavailable';
   if (status === 'probe') return 'unavailable'; // circuit half-open: still risky
   // status === 'yes': circuit closed and not cooling down. But has this

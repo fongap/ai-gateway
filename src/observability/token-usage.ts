@@ -14,10 +14,10 @@
 //     buckets over the last 7d — are the same isolate-local best-effort
 //     contract. They reset with the isolate and are never persisted. This
 //     module feeds /metrics and /health; the PUBLIC homepage reads the durable
-//     D1 aggregate (token-usage-store.mjs) instead, so the panel is no longer
+//     D1 aggregate (token-usage-store.ts) instead, so the panel is no longer
 //     isolate-scoped.
-//   - Zero imports: a leaf module so the stream layer (track.js) and the
-//     dashboard (pages.js) can use it without cycles.
+//   - Zero imports: a leaf module so the stream layer (track.ts) and the
+//     dashboard (pages.ts) can use it without cycles.
 
 // Cardinality guard: models are registry-validated upstream of dispatch, so
 // the natural cardinality is models × tiers × providers × nodes. Past the
@@ -35,15 +35,37 @@ const DAY_MS = 86400_000;
 const HOURS_24 = 24;
 const DAYS_7 = 7;
 
-export const tokenStats = {
-  startedAt: Date.now(),
-  totals: { input: 0, output: 0, total: 0, reports: 0, missing: 0 },
-  buckets: new Map(), // "<model>|<tier>|<provider>|<nodeId>" -> { model, tier, provider, nodeId, input, output, total, reports, missing }
-  hourBuckets: new Map(), // hourStartMs -> { total, reports }  (rolling 24h)
-  dayBuckets: new Map(), // dayStartMs  -> { total, reports }  (rolling 7d)
+export type NormalizedTokenUsage = { input: number, output: number, total: number };
+
+export type TokenUsageBucket = {
+  model: string,
+  tier: string,
+  provider: string,
+  nodeId: string,
+  input: number,
+  output: number,
+  total: number,
+  reports: number,
+  missing: number,
 };
 
-function validTokenCount(value) {
+export type RollingWindowBucket = { total: number, reports: number };
+
+export const tokenStats: {
+  startedAt: number,
+  totals: { input: number, output: number, total: number, reports: number, missing: number },
+  buckets: Map<string, TokenUsageBucket>, // "<model>|<tier>|<provider>|<nodeId>" -> bucket
+  hourBuckets: Map<number, RollingWindowBucket>, // hourStartMs -> { total, reports }  (rolling 24h)
+  dayBuckets: Map<number, RollingWindowBucket>, // dayStartMs  -> { total, reports }  (rolling 7d)
+} = {
+  startedAt: Date.now(),
+  totals: { input: 0, output: 0, total: 0, reports: 0, missing: 0 },
+  buckets: new Map(),
+  hourBuckets: new Map(),
+  dayBuckets: new Map(),
+};
+
+function validTokenCount(value: unknown): number | null {
   // Strict: numbers only (numeric strings from odd upstreams are rejected),
   // finite, non-negative. Fractional upstream values are truncated.
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null;
@@ -62,14 +84,15 @@ function validTokenCount(value) {
 // nothing is recorded rather than a half-true number. Missing fields are the
 // opposite case — partial data beats nothing (`{ prompt_tokens: 2 }` with no
 // completion side is still a usable report).
-export function normalizeTokenUsage(usage) {
+export function normalizeTokenUsage(usage: unknown): NormalizedTokenUsage | null {
   if (!usage || typeof usage !== 'object' || Array.isArray(usage)) return null;
-  const inputKey = usage.prompt_tokens !== undefined ? 'prompt_tokens'
-    : usage.input_tokens !== undefined ? 'input_tokens' : null;
-  const outputKey = usage.completion_tokens !== undefined ? 'completion_tokens'
-    : usage.output_tokens !== undefined ? 'output_tokens' : null;
-  const inputRaw = inputKey === null ? undefined : usage[inputKey];
-  const outputRaw = outputKey === null ? undefined : usage[outputKey];
+  const u = usage as Record<string, unknown>;
+  const inputKey = u.prompt_tokens !== undefined ? 'prompt_tokens'
+    : u.input_tokens !== undefined ? 'input_tokens' : null;
+  const outputKey = u.completion_tokens !== undefined ? 'completion_tokens'
+    : u.output_tokens !== undefined ? 'output_tokens' : null;
+  const inputRaw = inputKey === null ? undefined : u[inputKey];
+  const outputRaw = outputKey === null ? undefined : u[outputKey];
   if ((inputKey !== null && validTokenCount(inputRaw) === null)
       || (outputKey !== null && validTokenCount(outputRaw) === null)) return null;
   const input = validTokenCount(inputRaw);
@@ -78,8 +101,8 @@ export function normalizeTokenUsage(usage) {
   // A reported total_tokens wins verbatim even when it disagrees with
   // input+output: reported-first — the gateway never second-guesses upstream
   // numbers. A provided-but-invalid total is likewise untrustworthy.
-  if (usage.total_tokens !== undefined && validTokenCount(usage.total_tokens) === null) return null;
-  const reportedTotal = validTokenCount(usage.total_tokens);
+  if (u.total_tokens !== undefined && validTokenCount(u.total_tokens) === null) return null;
+  const reportedTotal = validTokenCount(u.total_tokens);
   const total = reportedTotal ?? (input ?? 0) + (output ?? 0);
   return { input: input ?? 0, output: output ?? 0, total };
 }
@@ -88,7 +111,7 @@ export function normalizeTokenUsage(usage) {
 // labels or dashboard HTML passes through one allowlist, so both surfaces are
 // safe by construction. sanitizePrometheusLabel / escapeHtml remain as
 // defense in depth.
-function sanitizeDimension(value) {
+function sanitizeDimension(value: unknown): string {
   const raw = String(value ?? '');
   const cleaned = raw.replace(/[^A-Za-z0-9._:/-]/g, '_').slice(0, MAX_DIMENSION_LENGTH);
   return cleaned || 'unknown';
@@ -98,7 +121,7 @@ function sanitizeDimension(value) {
 // every bucket older than the window (current + keep-1 prior stay), then add
 // the report. The Maps stay bounded to `keep` entries. Deleting the current
 // entry mid-iteration of a Map is spec-safe.
-function bumpWindow(map, now, unitMs, keep, total) {
+function bumpWindow(map: Map<number, RollingWindowBucket>, now: number, unitMs: number, keep: number, total: number): void {
   const start = Math.floor(now / unitMs) * unitMs;
   const cutoff = start - (keep - 1) * unitMs;
   for (const ts of map.keys()) {
@@ -115,7 +138,7 @@ function bumpWindow(map, now, unitMs, keep, total) {
 
 // Sum every surviving bucket in a rolling window. The dashboard shows the
 // rolling total; reports are exposed too so the window can be audited.
-function sumWindow(map) {
+function sumWindow(map: Map<number, RollingWindowBucket>): { total: number, reports: number } {
   let total = 0;
   let reports = 0;
   for (const b of map.values()) {
@@ -133,7 +156,14 @@ function sumWindow(map) {
 // missing and coverage stay accurate, not just the isolate-wide totals.
 // The rolling time windows only advance on a real report — a missing-usage
 // response carries no tokens to attribute to any hour/day.
-export function recordTokenUsage({ model, tier, provider, nodeId, usage, now = Date.now() }) {
+export function recordTokenUsage({ model, tier, provider, nodeId, usage, now = Date.now() }: {
+  model: unknown,
+  tier: unknown,
+  provider: unknown,
+  nodeId: unknown,
+  usage: unknown,
+  now?: number,
+}): void {
   const dims = {
     model: sanitizeDimension(model),
     tier: sanitizeDimension(tier),
@@ -141,7 +171,7 @@ export function recordTokenUsage({ model, tier, provider, nodeId, usage, now = D
     nodeId: sanitizeDimension(nodeId),
   };
   const key = `${dims.model}|${dims.tier}|${dims.provider}|${dims.nodeId}`;
-  const bucket = () => {
+  const bucket = (): TokenUsageBucket | null => {
     let b = tokenStats.buckets.get(key);
     if (!b) {
       if (tokenStats.buckets.size >= MAX_BUCKETS) return null; // totals stay exact
@@ -171,8 +201,11 @@ export function recordTokenUsage({ model, tier, provider, nodeId, usage, now = D
   b.total += normalized.total;
 }
 
-function aggregateBy(dimension) {
-  const rows = new Map();
+type DimensionName = 'model' | 'provider' | 'tier' | 'nodeId';
+type DimensionRow = { name: string, input: number, output: number, total: number, reports: number, missing: number };
+
+function aggregateBy(dimension: DimensionName): DimensionRow[] {
+  const rows = new Map<string, DimensionRow>();
   for (const bucket of tokenStats.buckets.values()) {
     const name = bucket[dimension];
     let row = rows.get(name);
@@ -191,7 +224,7 @@ function aggregateBy(dimension) {
   return [...rows.values()].sort((a, b) => b.total - a.total);
 }
 
-function usageCoverage() {
+function usageCoverage(): number | null {
   const denominator = tokenStats.totals.reports + tokenStats.totals.missing;
   return denominator === 0 ? null : tokenStats.totals.reports / denominator;
 }
@@ -215,11 +248,11 @@ export function summarizeTokenStats() {
 
 // Raw bucket rows (insertion order) for /metrics label series. Dimension
 // rollups are a dashboard concern; Prometheus consumers aggregate themselves.
-export function tokenMetricSeries() {
+export function tokenMetricSeries(): TokenUsageBucket[] {
   return [...tokenStats.buckets.values()];
 }
 
-export function __resetTokenStatsForTests() {
+export function __resetTokenStatsForTests(): void {
   tokenStats.startedAt = Date.now();
   tokenStats.totals = { input: 0, output: 0, total: 0, reports: 0, missing: 0 };
   tokenStats.buckets = new Map();

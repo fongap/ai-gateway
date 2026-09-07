@@ -19,9 +19,9 @@ import {
   recordTier1Ttft, recordTier1Success, applyTier1Outcome, classifyTier1Failure,
 } from '../../reliability/tier1-state.ts';
 import { writeTier1Affinity } from '../../scheduler/tier1-affinity.ts';
-import { recordStreamStart, recordStreamCompleted, recordStreamInterrupted } from '../../observability/gateway-stats.mjs';
-import { recordTokenUsage } from '../../observability/token-usage.mjs';
-import { persistTokenUsage } from '../../observability/token-usage-store.mjs';
+import { recordStreamStart, recordStreamCompleted, recordStreamInterrupted } from '../../observability/gateway-stats.ts';
+import { recordTokenUsage } from '../../observability/token-usage.ts';
+import { persistTokenUsage } from '../../observability/token-usage-store.ts';
 import { upstreamModelOf } from '../response-helpers.ts';
 import type { AttemptContext } from '../../types/request.ts';
 import type { RuntimeNode } from '../../types/node.ts';
@@ -101,7 +101,7 @@ export function recordNodeSuccess(c: AttemptContext, node: RuntimeNode, latencyM
 }
 
 // Node-layer stream tracking: node outcome recording + stream-end telemetry.
-// The client-facing layer (gateway-stats.mjs trackClientResponse) never passes the
+// The client-facing layer (gateway-stats.ts trackClientResponse) never passes the
 // telemetry callbacks, so stream counters count each stream exactly once.
 export function makeNodeStreamTrack(c: AttemptContext, node: RuntimeNode, latencyMs: number) {
   const tier1 = node.tier === 'tier-1';

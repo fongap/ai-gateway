@@ -22,10 +22,10 @@
  */
 
 import { handleRequest } from './request/handler.ts';
-import { isCountedRoute, gatewayStats, trackClientResponse } from './observability/gateway-stats.mjs';
+import { isCountedRoute, gatewayStats, trackClientResponse } from './observability/gateway-stats.ts';
 import { normalizePath } from './request/router.ts';
-import { sanitizedInternalError } from './observability/diagnostic-endpoints.mjs';
-import { maintainUsageStats } from './observability/token-usage-store.mjs';
+import { sanitizedInternalError } from './observability/diagnostic-endpoints.ts';
+import { maintainUsageStats } from './observability/token-usage-store.ts';
 
 export default {
   async fetch(request, env, ctx) {

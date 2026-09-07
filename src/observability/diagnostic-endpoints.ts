@@ -8,11 +8,15 @@ import { loadGatewayConfig } from '../config/nodes.ts';
 import { snapshotNode } from '../reliability/node-state.ts';
 import { snapshotTier1AccountRuntime } from '../reliability/tier1-state.ts';
 import { snapshotTier1Affinity } from '../scheduler/tier1-affinity.ts';
-import { gatewayStats, streamStats } from './gateway-stats.mjs';
-import { tokenStats, summarizeTokenStats, tokenMetricSeries } from './token-usage.mjs';
+import { gatewayStats, streamStats } from './gateway-stats.ts';
+import { tokenStats, summarizeTokenStats, tokenMetricSeries } from './token-usage.ts';
 import { corsHeaders, jsonError } from '../protocol/http.ts';
 import { modelRegistryEntry, servesModel, collectKnownModels } from '../config/registry.ts';
 import { filterVisibleModels as filterModelsByKey } from '../config/access-keys.ts';
+import type { RegistryEntry } from '../config/registry.ts';
+import type { AuthResult } from '../types/request.ts';
+import type { RuntimeNode } from '../types/node.ts';
+import type { Surface } from '../types/protocol.ts';
 
 export const APP_META = Object.freeze({
   name: 'ai-gateway',
@@ -20,7 +24,7 @@ export const APP_META = Object.freeze({
   version: '1.2.6',
 });
 
-function sanitizePrometheusLabel(value) {
+function sanitizePrometheusLabel(value: unknown): string {
   return String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
 }
 
@@ -35,15 +39,24 @@ function sanitizePrometheusLabel(value) {
 // buildModelsList: builds the key-scoped model list for /v1/models.
 // Returns only models visible to the current key (intersection of configured models
 // and key's allowlist). Also includes ui_visible flag and ocr capability.
-function buildModelsList(nodes, env, authResult) {
+function buildModelsList(nodes: RuntimeNode[], env: Record<string, unknown>, authResult: AuthResult): { object: string, data: Array<Record<string, unknown>> } {
   // The Known Model Catalog is the single source of model existence: every
   // explicit node.models key union every MODELS_CONFIG key. A wildcard node
   // (empty models) serves every model in this catalog. Visible == Callable
   // holds because the same catalog drives authorization.
   const logicalNames = collectKnownModels(nodes, env);
 
-  const models = new Map();
-  const entryFor = (logical) => {
+  type ModelListEntry = {
+    id: string,
+    object: string,
+    created: number,
+    owned_by: string,
+    apiBackends: Set<string>,
+    surfaces: Set<Surface>,
+    reg: RegistryEntry,
+  };
+  const models = new Map<string, ModelListEntry>();
+  const entryFor = (logical: string): ModelListEntry => {
     const reg = modelRegistryEntry(env, logical);
     let e = models.get(logical);
     if (!e) {
@@ -74,8 +87,12 @@ function buildModelsList(nodes, env, authResult) {
   }
 
   // Determine allowed models for this key. Visible == Callable because the
-  // filter is the same catalog that authorization checks against.
-  const allowedModels = filterModelsByKey(authResult, logicalNames);
+  // filter is the same catalog that authorization checks against. An
+  // unauthorized or skip-mode request sees an empty catalog.
+  const filterShape = authResult.authorized && authResult.mode !== 'skip'
+    ? { allowAll: authResult.allowAll, allowlist: authResult.allowlist }
+    : null;
+  const allowedModels = filterModelsByKey(filterShape, logicalNames);
   const allowedSet = new Set(allowedModels);
 
   const data = [...models.values()]
@@ -106,7 +123,7 @@ function buildModelsList(nodes, env, authResult) {
   return { object: 'list', data };
 }
 
-export function healthResponse(request, env, requestId) {
+export function healthResponse(request: Request, env: Record<string, unknown>, requestId: string): Response {
   const config = loadGatewayConfig(env);
   const now = Date.now();
   // The Known Model Catalog (node models keys union MODELS_CONFIG) is the
@@ -195,15 +212,15 @@ export function healthResponse(request, env, requestId) {
   });
 }
 
-export function metricsResponse(request, env, requestId) {
+export function metricsResponse(request: Request, env: Record<string, unknown>, requestId: string): Response {
   const config = loadGatewayConfig(env);
   const now = Date.now();
-  const lines = [];
-  const emit = (name, type, help) => {
+  const lines: string[] = [];
+  const emit = (name: string, type: string, help: string) => {
     lines.push(`# HELP ${name} ${help}`);
     lines.push(`# TYPE ${name} ${type}`);
   };
-  const counter = (name, value, labels = '') => lines.push(`${name}{${labels}} ${value}`);
+  const counter = (name: string, value: number, labels = '') => lines.push(`${name}{${labels}} ${value}`);
 
   emit('gateway_client_requests_total', 'counter', 'Counted client API requests since isolate start.');
   counter('gateway_client_requests_total', gatewayStats.requests);
@@ -282,7 +299,7 @@ export function metricsResponse(request, env, requestId) {
       }
     } else {
       counter('gateway_node_health_score', s.health_score, label);
-      counter('gateway_node_circuit_state', ({ closed: 0, 'half-open': 1, open: 2 })[s.circuit_state] ?? 0, `node_id="${sanitizePrometheusLabel(node.id)}"`);
+      counter('gateway_node_circuit_state', ({ closed: 0, 'half-open': 1, open: 2 } as Record<string, number>)[s.circuit_state] ?? 0, `node_id="${sanitizePrometheusLabel(node.id)}"`);
       counter('gateway_node_active_requests', s.active_requests, label);
       counter('gateway_node_cooldown_remaining_ms', s.cooldown_remaining_ms, label);
       counter('gateway_node_avg_latency_ms', s.avg_latency_ms, label);
@@ -302,9 +319,9 @@ export function metricsResponse(request, env, requestId) {
   });
 }
 
-export function versionResponse(request, env) {
+export function versionResponse(request: Request, env: Record<string, unknown>): Response {
   const repositoryRaw = String(env?.PROJECT_REPOSITORY_URL || '').trim();
-  let repository;
+  let repository: string | undefined;
   try {
     const url = new URL(repositoryRaw);
     repository = url.protocol === 'https:' ? url.href.replace(/\/$/, '') : undefined;
@@ -329,7 +346,7 @@ export function versionResponse(request, env) {
   });
 }
 
-export function modelsListResponse(request, env, requestId, authResult) {
+export function modelsListResponse(request: Request, env: Record<string, unknown>, requestId: string, authResult: AuthResult): Response {
   const config = loadGatewayConfig(env);
   const list = buildModelsList(config.nodes, env, authResult);
   return new Response(JSON.stringify({
@@ -346,14 +363,14 @@ export function modelsListResponse(request, env, requestId, authResult) {
   });
 }
 
-export function sanitizedInternalError(request, env, isAnthropic, requestId) {
+export function sanitizedInternalError(request: Request, env: Record<string, unknown>, isAnthropic: boolean, requestId: string): Response {
   const message = 'Internal gateway error.';
   return isAnthropic
     ? anthropicErrorResponseSafe(request, env, message, requestId)
     : jsonError(request, env, 500, message, undefined, requestId);
 }
 
-function anthropicErrorResponseSafe(request, env, message, requestId) {
+function anthropicErrorResponseSafe(request: Request, env: Record<string, unknown>, message: string, requestId: string): Response {
   return new Response(JSON.stringify({ type: 'error', error: { type: 'api_error', message } }), {
     status: 500,
     headers: {

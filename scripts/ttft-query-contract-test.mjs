@@ -26,7 +26,7 @@ import {
   persistTokenUsage,
   normalizeModelKey,
   TTFT_BUCKET_BOUNDARIES_MS,
-} from '../src/observability/token-usage-store.mjs';
+} from '../src/observability/token-usage-store.ts';
 import { ensureModelTtftContainers, fmtModelTtft } from '../src/dashboard/model-status-view.js';
 import { createMockD1 } from './mock-d1-database.mjs';
 

@@ -15,7 +15,7 @@
 //   queryTokenModelUsage  - per-model usage
 //   queryModelUsageCoverage - per-model usage coverage
 //
-// Public Model Status consumers (src/runtime/model-status.js):
+// Public Model Status consumers (src/runtime/model-status.ts):
 //   queryRecentModelEvidence - recent successful traffic
 //
 // TTFT percentile consumer (src/dashboard/pages.js):
@@ -24,11 +24,17 @@
 import {
   TABLE, TABLE_MODEL, TABLE_TOTALS, TABLE_DAILY,
   HOUR_MS, DAY_MS,
-  TTFT_BUCKET_BOUNDARIES_MS,
   normalizeHour, normalizeModelKey, utc8DayStartUtcMs, isoDayUtc8,
   DISPLAY_TIMEZONE_OFFSET_MS,
   tokenStatsD1,
-} from './keys.js';
+} from './keys.ts';
+import { TTFT_BUCKET_BOUNDARIES_MS } from './keys.ts';
+
+type DailyWindowRow = { total: number, requests: number };
+type TtftEntry = { available: true, p50: number | null, p95: number | null, sampleCount: number, insufficient: boolean };
+
+const asMessage = (e: unknown): string =>
+  String((e as { message?: unknown } | null | undefined)?.message || e);
 
 // Aggregate summary for the public dashboard. Returns:
 //   {
@@ -40,7 +46,7 @@ import {
 //     coverage: <number|null>,           // reports / (reports + missing)
 //   }
 // or null when binding missing, or error object when query fails.
-export async function queryTokenSummary(env, now = Date.now()) {
+export async function queryTokenSummary(env: Record<string, unknown>, now: number = Date.now()) {
   const d1 = tokenStatsD1(env);
   if (!d1) return null;
   const todayStart = normalizeHour(utc8DayStartUtcMs(now));
@@ -48,7 +54,7 @@ export async function queryTokenSummary(env, now = Date.now()) {
   const d7Start = normalizeHour(now - 7 * DAY_MS);
 
   // First, try to read lifetime totals for cumulative KPIs.
-  let totalsRow = null;
+  let totalsRow: Record<string, unknown> | null = null;
   try {
     const totalsStmt = d1.prepare(
       `SELECT input_tokens, output_tokens, total_tokens, requests, usage_reports, usage_missing
@@ -70,16 +76,16 @@ export async function queryTokenSummary(env, now = Date.now()) {
        COALESCE(SUM(CASE WHEN hour >= ? THEN requests END), 0) AS d7_requests
      FROM ${TABLE}`
   );
-  let hourlyRow;
+  let hourlyRow: Record<string, unknown> | null | undefined;
   try {
     hourlyRow = await hourlyStmt.bind(todayStart, todayStart, h24Start, h24Start, d7Start, d7Start).first();
   } catch (e) {
-    return { available: false, error: `queryTokenSummary: ${e?.message || e}` };
+    return { available: false, error: `queryTokenSummary: ${asMessage(e)}` };
   }
   if (!hourlyRow || typeof hourlyRow !== 'object') return null;
 
   // Cumulative from totals (with hourly fallback for rolling-deploy safety).
-  let cum_total, cum_requests, cum_reports, cum_missing;
+  let cum_total: number, cum_requests: number, cum_reports: number, cum_missing: number;
   if (totalsRow && typeof totalsRow === 'object') {
     cum_total = Number(totalsRow.total_tokens) || 0;
     cum_requests = Number(totalsRow.requests) || 0;
@@ -135,12 +141,12 @@ export async function queryTokenSummary(env, now = Date.now()) {
 }
 
 // Daily totals for the homepage activity heatmap.
-export async function queryTokenDailySeries(env, startDayIso, now = Date.now()) {
+export async function queryTokenDailySeries(env: Record<string, unknown>, startDayIso: string, now: number = Date.now()): Promise<Map<string, DailyWindowRow> | { available: false, error: string } | null> {
   const d1 = tokenStatsD1(env);
   if (!d1) return null;
   const todayIso = isoDayUtc8(utc8DayStartUtcMs(now));
-  const map = new Map();
-  let dailyRows = [];
+  const map = new Map<string, DailyWindowRow>();
+  let dailyRows: Record<string, unknown>[] = [];
   let dailyTableHasData = false;
 
   // Try to read from token_usage_daily table first.
@@ -222,7 +228,7 @@ export async function queryTokenDailySeries(env, startDayIso, now = Date.now()) 
         });
       }
     } catch (e) {
-      return { available: false, error: `queryTokenDailySeries: ${e?.message || e}` };
+      return { available: false, error: `queryTokenDailySeries: ${asMessage(e)}` };
     }
   }
 
@@ -236,7 +242,7 @@ export async function queryTokenDailySeries(env, startDayIso, now = Date.now()) 
 // stats dimension instead of splitting (or overwriting each other). The
 // writer already canonicalizes; the reader must not depend on that —
 // pre-normalization rows still exist in D1 until retention ages them out.
-export async function queryTokenModelUsage(env, days = 7, now = Date.now()) {
+export async function queryTokenModelUsage(env: Record<string, unknown>, days: number = 7, now: number = Date.now()) {
   const d1 = tokenStatsD1(env);
   if (!d1) return { available: false, error: 'TOKEN_STATS_DB binding missing' };
   const startHour = normalizeHour(now - days * DAY_MS);
@@ -258,18 +264,18 @@ export async function queryTokenModelUsage(env, days = 7, now = Date.now()) {
         .filter((r) => r.model.length > 0),
     };
   } catch (e) {
-    return { available: false, error: `queryTokenModelUsage: ${e?.message || e}` };
+    return { available: false, error: `queryTokenModelUsage: ${asMessage(e)}` };
   }
 }
 
 // Recent Evidence window for the Public Model Status layer. This is the
 // SINGLE definition of that window (24h): the runtime constant
-// src/runtime/model-status.js re-exports this binding, and every caller
+// src/runtime/model-status.ts re-exports this binding, and every caller
 // must pass it (or rely on this default) instead of hardcoding days.
 export const MODEL_STATUS_RECENT_WINDOW_MS = 24 * HOUR_MS;
 
 // Recent-success evidence for the Public Model Status layer
-// (src/runtime/model-status.js). Returns a Set<string> of canonical
+// (src/runtime/model-status.ts). Returns a Set<string> of canonical
 // statistical model keys (trim + lowercase) that have at least one request
 // in the per-model hourly aggregate within the last `windowMs` milliseconds.
 // `requests > 0` is the success-evidence signal: the per-model table is
@@ -280,7 +286,7 @@ export const MODEL_STATUS_RECENT_WINDOW_MS = 24 * HOUR_MS;
 // normalizeModelKey() without case drift. Fail-open: missing binding →
 // empty Set, query failure → empty Set. NEVER fabricates evidence — an
 // empty Set is "no evidence", not "evidence of failure".
-export async function queryRecentModelEvidence(env, windowMs = MODEL_STATUS_RECENT_WINDOW_MS, now = Date.now()) {
+export async function queryRecentModelEvidence(env: Record<string, unknown>, windowMs: number = MODEL_STATUS_RECENT_WINDOW_MS, now: number = Date.now()): Promise<Set<string>> {
   const d1 = tokenStatsD1(env);
   if (!d1) return new Set();
   const startHour = normalizeHour(now - windowMs);
@@ -292,7 +298,7 @@ export async function queryRecentModelEvidence(env, windowMs = MODEL_STATUS_RECE
        GROUP BY LOWER(TRIM(model))`,
     ).bind(startHour).all();
     const rows = Array.isArray(res?.results) ? res.results : [];
-    const out = new Set();
+    const out = new Set<string>();
     for (const r of rows) {
       const key = normalizeModelKey(r?.model);
       if (key) out.add(key);
@@ -316,7 +322,7 @@ export async function queryRecentModelEvidence(env, windowMs = MODEL_STATUS_RECE
 //   { available: true, p50, p95, sampleCount, insufficient }
 //   samples < TTFT_MIN_SAMPLES -> p50/p95 null, insufficient: true
 //   (bucket-upper-bound precision, never a fabricated precise value).
-export async function queryAllModelsTtftPercentiles(env, days = 7, now = Date.now()) {
+export async function queryAllModelsTtftPercentiles(env: Record<string, unknown>, days: number = 7, now: number = Date.now()) {
   const d1 = tokenStatsD1(env);
   if (!d1) return { available: false, error: 'TOKEN_STATS_DB binding missing' };
   const startHour = normalizeHour(now - days * DAY_MS);
@@ -336,7 +342,7 @@ export async function queryAllModelsTtftPercentiles(env, days = 7, now = Date.no
        GROUP BY LOWER(TRIM(model))`,
     ).bind(startHour).all();
     const rows = Array.isArray(res?.results) ? res.results : [];
-    const ttft = new Map();
+    const ttft = new Map<string, TtftEntry>();
     for (const row of rows) {
       const key = normalizeModelKey(row?.model);
       if (!key) continue;
@@ -364,7 +370,7 @@ export async function queryAllModelsTtftPercentiles(env, days = 7, now = Date.no
     }
     return { available: true, ttft };
   } catch (e) {
-    return { available: false, error: `queryAllModelsTtftPercentiles: ${e?.message || e}` };
+    return { available: false, error: `queryAllModelsTtftPercentiles: ${asMessage(e)}` };
   }
 }
 
@@ -377,7 +383,7 @@ export async function queryAllModelsTtftPercentiles(env, days = 7, now = Date.no
 // misleading numbers.
 const TTFT_MIN_SAMPLES = 5;
 
-function percentileFromBuckets(buckets, total, pct) {
+function percentileFromBuckets(buckets: number[], total: number, pct: number): number {
   const threshold = Math.ceil(total * pct);
   let cumulative = 0;
   for (let i = 0; i < buckets.length; i++) {
@@ -396,7 +402,7 @@ function percentileFromBuckets(buckets, total, pct) {
 // stats. Provider-specific filtering is NOT done here. Grouping is
 // canonical (LOWER(TRIM(model))) so historical case variants merge
 // instead of splitting requests / reports / missing across keys.
-export async function queryModelUsageCoverage(env, days = 7, now = Date.now()) {
+export async function queryModelUsageCoverage(env: Record<string, unknown>, days: number = 7, now: number = Date.now()) {
   const d1 = tokenStatsD1(env);
   if (!d1) return { available: false, error: 'TOKEN_STATS_DB binding missing' };
   const startHour = normalizeHour(now - days * DAY_MS);
@@ -431,6 +437,6 @@ export async function queryModelUsageCoverage(env, days = 7, now = Date.now()) {
         .filter((r) => r.model.length > 0),
     };
   } catch (e) {
-    return { available: false, error: `queryModelUsageCoverage: ${e?.message || e}` };
+    return { available: false, error: `queryModelUsageCoverage: ${asMessage(e)}` };
   }
 }
