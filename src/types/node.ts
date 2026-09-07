@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
 //
-// Runtime Node shape produced by the config layer. Module successor of the
-// ambient declarations in src/types/domain.d.ts (see src/types/protocol.ts
-// header for the transition plan).
+// Runtime Node shape produced by the config layer. Canonical type consumed
+// by the scheduler, reliability, and request layers (src/types/domain.d.ts
+// has been deleted — see docs/governance/typescript-migration.md).
 
 import type { Protocol, Surface } from './protocol.ts';
 

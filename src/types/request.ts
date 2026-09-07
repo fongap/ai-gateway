@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
 //
-// Request orchestration types. Module successor of the ambient declarations
-// in src/types/domain.d.ts (see src/types/protocol.ts header for the
-// transition plan). Shapes mirror what the request layer actually passes
-// through handleRequest → runTierLoop → dispatchWithHedge → attemptNode.
+// Request orchestration types. Canonical source for the request pipeline,
+// consumed by the scheduler and request layers. Shapes mirror what the
+// request layer actually passes through handleRequest → runTierLoop →
+// dispatchWithHedge → attemptNode (src/types/domain.d.ts has been deleted —
+// see docs/governance/typescript-migration.md).
 
 import type { Protocol, Surface } from './protocol.ts';
 import type { RuntimeNode } from './node.ts';

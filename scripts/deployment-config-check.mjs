@@ -9,7 +9,7 @@ const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
 const config = JSON.parse(read('wrangler.jsonc'));
 
 assert.equal(config.keep_vars, true, 'wrangler.jsonc must set keep_vars=true');
-assert.equal(config.main, 'src/index.js');
+assert.equal(config.main, 'src/index.ts');
 assert.equal(
   config.secrets,
   undefined,

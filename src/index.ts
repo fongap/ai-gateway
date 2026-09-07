@@ -28,7 +28,7 @@ import { sanitizedInternalError } from './observability/diagnostic-endpoints.ts'
 import { maintainUsageStats } from './observability/token-usage-store.ts';
 
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(request: Request, env: Record<string, unknown>, ctx: { waitUntil?: Function }): Promise<Response> {
     const pathname = normalizePath(new URL(request.url).pathname);
     const counted = isCountedRoute(request.method.toUpperCase(), pathname);
     if (counted) {
@@ -44,7 +44,7 @@ export default {
         gatewayStats.failures++;
         if (request.signal?.aborted) gatewayStats.cancellations++;
       }
-      console.error('unhandled gateway error:', error?.message || error);
+      console.error('unhandled gateway error:', (error as Error)?.message || error);
       const isAnthropic = /messages/.test(pathname);
       return sanitizedInternalError(request, env, isAnthropic, crypto.randomUUID().slice(0, 8));
     }
@@ -56,7 +56,7 @@ export default {
   //   2. Aggregate daily → weekly (idempotent overwrite)
   //   3. Retention cleanup for hourly (7d), daily (52w), weekly (52w)
   // All operations are idempotent and fail-open for the API path.
-  async scheduled(_controller, env, _ctx) {
+  async scheduled(_controller: unknown, env: Record<string, unknown>, _ctx: unknown): Promise<void> {
     await maintainUsageStats(env);
   },
 };

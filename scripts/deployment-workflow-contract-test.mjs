@@ -153,7 +153,7 @@ const PUSH_SUCCESS_BASE = {
   ciConclusion: 'success',
   headRepo: REPO,
   thisRepo: REPO,
-  changedFiles: ['src/index.js'],
+  changedFiles: ['src/index.ts'],
 };
 
 // ---- Contract 01: migration before Worker deploy ------------------------------
@@ -268,7 +268,7 @@ const PUSH_SUCCESS_BASE = {
   // Behavioral: docs-only changes are skipped, real changes deploy, and the
   // initial-commit case (no diff available) deploys.
   const docsOnly = decideDeploy({ ...PUSH_SUCCESS_BASE, triggerEvent: 'push', changedFiles: ['README.md', 'docs/operations/deployment.md'] });
-  const codeChange = decideDeploy({ ...PUSH_SUCCESS_BASE, triggerEvent: 'push', changedFiles: ['src/index.js', 'README.md'] });
+  const codeChange = decideDeploy({ ...PUSH_SUCCESS_BASE, triggerEvent: 'push', changedFiles: ['src/index.ts', 'README.md'] });
   const initialCommit = decideDeploy({ ...PUSH_SUCCESS_BASE, triggerEvent: 'push', changedFiles: null });
   check('C06 markdown/docs-only changes skip deploy; code changes deploy; initial commit deploys',
     gateUsesDecisionScript && gatePassesTriggerEvent

@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
 //
-// Cross-module protocol vocabulary. Module successor of the ambient
-// declarations in src/types/domain.d.ts — the ambient copies remain only
-// for checkJs consumers of not-yet-migrated .js modules and are deleted
-// together with domain.d.ts in PR 7 (see docs/governance/typescript-migration.md).
+// Cross-module protocol vocabulary. Canonical source for Protocol and Surface
+// types, consumed throughout the migrated .ts modules (src/types/domain.d.ts
+// has been deleted — see docs/governance/typescript-migration.md).
 
 export type Protocol = 'openai' | 'anthropic';
 

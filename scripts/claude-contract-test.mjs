@@ -12,7 +12,7 @@
 // relays the upstream's native Anthropic SSE lifecycle. Every mock upstream
 // below therefore speaks the Anthropic wire format.
 import assert from 'node:assert/strict';
-import worker from '../src/index.js';
+import worker from '../src/index.ts';
 import { __resetAllStateForTests, getNodeState } from '../src/reliability/node-state.ts';
 import { __resetTier1StateForTests, recordTier1Ttft } from '../src/reliability/tier1-state.ts';
 import { __resetTier1AffinityForTests } from '../src/scheduler/tier1-affinity.ts';

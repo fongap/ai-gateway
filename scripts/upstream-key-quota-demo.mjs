@@ -11,7 +11,7 @@
 //
 // Metric: how many of 45 sequential client requests succeed without
 // seeing an error, and where the load landed.
-import worker from '../src/index.js';
+import worker from '../src/index.ts';
 import { __resetAllStateForTests } from '../src/reliability/node-state.ts';
 
 const ACCESS_KEY = 'demo-key';
