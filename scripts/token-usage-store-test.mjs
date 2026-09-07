@@ -54,11 +54,11 @@ await test('normalizeHour produces a UTC-aligned YYYY-MM-DDTHH:00:00Z key', asyn
 await test('reported usage yields a report payload with its token totals', async () => {
   assert.deepEqual(
     tokenUsagePayload({ prompt_tokens: 2, completion_tokens: 3 }),
-    { input: 2, output: 3, total: 5, requests: 1, reports: 1, missing: 0 },
+    { input: 2, output: 3, cacheCreation: 0, cacheRead: 0, total: 5, requests: 1, reports: 1, missing: 0 },
   );
   assert.deepEqual(
     tokenUsagePayload({ input_tokens: 4, output_tokens: 6 }),
-    { input: 4, output: 6, total: 10, requests: 1, reports: 1, missing: 0 },
+    { input: 4, output: 6, cacheCreation: 0, cacheRead: 0, total: 10, requests: 1, reports: 1, missing: 0 },
   );
 });
 
@@ -66,7 +66,7 @@ await test('missing usage yields a missing payload and never fabricates tokens',
   for (const usage of [null, undefined, {}, [], 'x', 42]) {
     assert.deepEqual(
       tokenUsagePayload(usage),
-      { input: 0, output: 0, total: 0, requests: 1, reports: 0, missing: 1 },
+      { input: 0, output: 0, cacheCreation: 0, cacheRead: 0, total: 0, requests: 1, reports: 0, missing: 1 },
       String(usage),
     );
   }
@@ -79,7 +79,7 @@ await test('first insert creates the hour bucket and records the write', async (
   await persistTokenUsage({ TOKEN_STATS_DB: d1 }, { prompt_tokens: 2, completion_tokens: 8 }, H0);
   assert.deepEqual(
     d1._rows.get(normalizeHour(H0)),
-    { input: 2, output: 8, total: 10, requests: 1, reports: 1, missing: 0 },
+    { input: 2, output: 8, cacheCreation: 0, cacheRead: 0, total: 10, requests: 1, reports: 1, missing: 0 },
   );
   assert.equal(d1._writes.length, 2, 'global + totals writes');
   assert.match(d1._writes[0].sql, /ON CONFLICT\(hour\) DO UPDATE SET/);
@@ -92,7 +92,7 @@ await test('same-hour upsert accumulates input/output/total/requests atomically'
   await persistTokenUsage({ TOKEN_STATS_DB: d1 }, { prompt_tokens: 4, completion_tokens: 6 }, H0);
   assert.deepEqual(
     d1._rows.get(normalizeHour(H0)),
-    { input: 6, output: 9, total: 15, requests: 2, reports: 2, missing: 0 },
+    { input: 6, output: 9, cacheCreation: 0, cacheRead: 0, total: 15, requests: 2, reports: 2, missing: 0 },
   );
 });
 
@@ -110,7 +110,7 @@ await test('missing usage bumps requests and usage_missing, never total_tokens',
   await persistTokenUsage({ TOKEN_STATS_DB: d1 }, null, H0);
   await persistTokenUsage({ TOKEN_STATS_DB: d1 }, {}, H0);
   const row = d1._rows.get(normalizeHour(H0));
-  assert.deepEqual(row, { input: 0, output: 0, total: 0, requests: 2, reports: 0, missing: 2 });
+  assert.deepEqual(row, { input: 0, output: 0, cacheCreation: 0, cacheRead: 0, total: 0, requests: 2, reports: 0, missing: 2 });
 });
 
 // ---- tokenStatsD1: binding detection ----------------------------------------

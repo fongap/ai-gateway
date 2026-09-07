@@ -30,7 +30,7 @@ import {
 } from './keys.ts';
 import { TTFT_BUCKET_BOUNDARIES_MS } from './keys.ts';
 
-type DailyWindowRow = { total: number, requests: number };
+type DailyWindowRow = { total: number, requests: number, reports: number, missing: number };
 type TtftEntry = { available: true, p50: number | null, p95: number | null, sampleCount: number, p50Insufficient: boolean, p95Insufficient: boolean };
 
 const asMessage = (e: unknown): string =>
@@ -178,6 +178,8 @@ export async function queryTokenDailySeries(env: Record<string, unknown>, startD
     map.set(r.day, {
       total: Number(r.total_tokens) || 0,
       requests: Number(r.requests) || 0,
+      reports: Number(r.usage_reports) || 0,
+      missing: Number(r.usage_missing) || 0,
     });
   }
 
@@ -188,19 +190,21 @@ export async function queryTokenDailySeries(env: Record<string, unknown>, startD
     const todayStart = normalizeHour(utc8DayStartUtcMs(now));
     try {
       const res = await d1.prepare(
-        `SELECT hour, COALESCE(SUM(total_tokens),0) AS total, COALESCE(SUM(requests),0) AS requests
+        `SELECT hour, COALESCE(SUM(total_tokens),0) AS total, COALESCE(SUM(requests),0) AS requests, COALESCE(SUM(usage_reports),0) AS reports, COALESCE(SUM(usage_missing),0) AS missing
          FROM ${TABLE}
          WHERE hour >= ?
          GROUP BY hour`
       ).bind(todayStart).all();
       const rows = Array.isArray(res?.results) ? res.results : [];
-      let todayTotal = 0, todayRequests = 0;
+      let todayTotal = 0, todayRequests = 0, todayReports = 0, todayMissing = 0;
       for (const r of rows) {
         todayTotal += Number(r.total) || 0;
         todayRequests += Number(r.requests) || 0;
+        todayReports += Number(r.reports) || 0;
+        todayMissing += Number(r.missing) || 0;
       }
       if (todayTotal > 0 || todayRequests > 0) {
-        map.set(todayIso, { total: todayTotal, requests: todayRequests });
+        map.set(todayIso, { total: todayTotal, requests: todayRequests, reports: todayReports, missing: todayMissing });
       }
     } catch (e) {
       // Hourly overlay failed; keep daily table value if present.
@@ -214,7 +218,7 @@ export async function queryTokenDailySeries(env: Record<string, unknown>, startD
       const startUtcMs = Date.parse(`${startDayIso}T00:00:00Z`) - DISPLAY_TIMEZONE_OFFSET_MS;
       const startHour = normalizeHour(startUtcMs);
       const res = await d1.prepare(
-        `SELECT hour, COALESCE(SUM(total_tokens),0) AS total, COALESCE(SUM(requests),0) AS requests
+        `SELECT hour, COALESCE(SUM(total_tokens),0) AS total, COALESCE(SUM(requests),0) AS requests, COALESCE(SUM(usage_reports),0) AS reports, COALESCE(SUM(usage_missing),0) AS missing
          FROM ${TABLE}
          WHERE hour >= ?
          GROUP BY hour`
@@ -228,10 +232,12 @@ export async function queryTokenDailySeries(env: Record<string, unknown>, startD
         if (day < startDayIso) continue;
         // Skip todayIso — it's handled by the live hourly overlay above.
         if (day === todayIso) continue;
-        const cur = map.get(day) || { total: 0, requests: 0 };
+        const cur = map.get(day) || { total: 0, requests: 0, reports: 0, missing: 0 };
         map.set(day, {
           total: cur.total + (Number(r.total) || 0),
           requests: cur.requests + (Number(r.requests) || 0),
+          reports: cur.reports + (Number(r.reports) || 0),
+          missing: cur.missing + (Number(r.missing) || 0),
         });
       }
     } catch (e) {

@@ -152,12 +152,18 @@ await run('conversion: response conversion (text + tool_use, finish=tool_calls)'
 });
 
 await run('conversion: usage conversion', () => {
+  // For observability: null/undefined upstream usage returns null (signals missing)
+  assert.equal(convertOpenAIUsageToAnthropic(null), null);
+  assert.equal(convertOpenAIUsageToAnthropic(undefined), null);
+  // Empty object with no usable fields returns null
+  assert.equal(convertOpenAIUsageToAnthropic({}), null);
+  assert.equal(convertOpenAIUsageToAnthropic({ prompt_tokens: 0, completion_tokens: 0 }), null);
+  // Valid usage returns converted values
   assert.deepEqual(convertOpenAIUsageToAnthropic({ prompt_tokens: 5, completion_tokens: 10, total_tokens: 15 }),
     { input_tokens: 5, output_tokens: 10 });
-  assert.deepEqual(convertOpenAIUsageToAnthropic({ prompt_tokens: 0, completion_tokens: 0 }),
-    { input_tokens: 0, output_tokens: 0 });
-  assert.deepEqual(convertOpenAIUsageToAnthropic(null), { input_tokens: 0, output_tokens: 0 });
-  assert.deepEqual(convertOpenAIUsageToAnthropic(undefined), { input_tokens: 0, output_tokens: 0 });
+  // total_tokens is ignored in conversion (client-facing), but observability uses it
+  assert.deepEqual(convertOpenAIUsageToAnthropic({ prompt_tokens: 2, completion_tokens: 3 }),
+    { input_tokens: 2, output_tokens: 3 });
 });
 
 await run('conversion: unsupported image block throws ConversionError', () => {

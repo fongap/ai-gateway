@@ -15,6 +15,7 @@ import { escapeHtml, fmtTokens, fmtInt } from './format.ts';
 import { buildCalendarHeatmap } from './heatmap.ts';
 import { renderHeatmap } from './heatmap-view.ts';
 import type { HeatmapDataEntry } from './heatmap.ts';
+import type { DailyCellData } from './heatmap-view.ts';
 import type { TtftEntry } from './model-status-view.ts';
 
 const DAY_MS = 86_400_000;
@@ -45,7 +46,7 @@ function modelShade(i: number, n: number): string {
 // in `usageSection` and the test contract (which asserts on the HTML
 // output) continue to work without churn.
 
-export function buildHeatmap(daily: Map<string, HeatmapDataEntry> | null, now: number): { cells: string[], labels: string[], ariaLabel: string, weekCount: number } {
+export function buildHeatmap(daily: Map<string, DailyCellData> | null, now: number, coverage?: number | null): { cells: string[], labels: string[], ariaLabel: string, weekCount: number } {
   const heatmap = buildCalendarHeatmap({
     mode: 'rolling-52-weeks',
     today: now,
@@ -55,6 +56,7 @@ export function buildHeatmap(daily: Map<string, HeatmapDataEntry> | null, now: n
   const { cells, labels, ariaLabel } = renderHeatmap(heatmap, {
     data: daily,
     valueKey: 'total',
+    coverage,
   });
   // weekCount feeds the shared `--week-count` CSS variable: the heatmap
   // grid and the month-label row MUST use the same week-column tracks.
@@ -217,7 +219,7 @@ export async function usageSection(env: Record<string, unknown>, now: number = D
   }
   const activity = available && dailyMap
     ? (() => {
-        const { cells, labels, ariaLabel, weekCount } = buildHeatmap(dailyMap, now);
+        const { cells, labels, ariaLabel, weekCount } = buildHeatmap(dailyMap as Map<string, DailyCellData>, now, summaryOk ? summary.coverage : null);
         // `--week-count` makes `.months` share the heatmap's exact week
         // column tracks, so each label's grid-column anchoring is real
         // positioning, not a flex approximation.

@@ -20,13 +20,16 @@ function mapFinishReason(reason: unknown): string {
   }
 }
 
-export function convertOpenAIUsageToAnthropic(usage: unknown): { input_tokens: number, output_tokens: number } {
-  if (!usage || typeof usage !== 'object') return { input_tokens: 0, output_tokens: 0 };
+export function convertOpenAIUsageToAnthropic(usage: unknown): { input_tokens: number, output_tokens: number } | null {
+  if (!usage || typeof usage !== 'object') return null;
   const u = usage as Record<string, unknown>;
-  return {
-    input_tokens: Number(u.prompt_tokens ?? 0) || 0,
-    output_tokens: Number(u.completion_tokens ?? 0) || 0,
-  };
+  const input = Number(u.prompt_tokens ?? 0) || 0;
+  const output = Number(u.completion_tokens ?? 0) || 0;
+  // If both are zero and no total_tokens was provided, the upstream
+  // likely didn't report usage. Return null so observability can
+  // count this as missing rather than recording synthetic zeros.
+  if (input === 0 && output === 0 && u.total_tokens === undefined) return null;
+  return { input_tokens: input, output_tokens: output };
 }
 
 export function convertOpenAIToAnthropicResponse(data: unknown): Record<string, unknown> {
@@ -61,6 +64,6 @@ export function convertOpenAIToAnthropicResponse(data: unknown): Record<string, 
     content,
     stop_reason: mapFinishReason(choice.finish_reason),
     stop_sequence: null,
-    usage: convertOpenAIUsageToAnthropic(d.usage),
+    usage: convertOpenAIUsageToAnthropic(d.usage) ?? { input_tokens: 0, output_tokens: 0 },
   };
 }
