@@ -21,7 +21,7 @@
 // the 404 "No configured node provides model ..." denial path in handler.js.
 
 import assert from 'node:assert/strict';
-import { getPublicModelStatus } from '../src/runtime/model-status.js';
+import { getPublicModelStatus } from '../src/runtime/model-status.ts';
 import { renderModels } from '../src/dashboard/model-status-view.js';
 import { supportsRequest } from '../src/scheduler/scheduler.ts';
 import { __resetTier1StateForTests, recordTier1Ttft } from '../src/reliability/tier1-state.ts';

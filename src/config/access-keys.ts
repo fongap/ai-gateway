@@ -161,12 +161,13 @@ export function keyAllowsModel(keyEntry: { allowAll: boolean, allowlist: Set<str
 }
 
 // Filter the configured model set to the key's allowlist. This is what
-// /v1/models returns. Visible == Callable by construction.
-export function filterVisibleModels(keyEntry: { allowAll: boolean, allowlist: Set<string> } | null | undefined, configuredModels: ReadonlySet<string> | null | undefined): string[] {
+// /v1/models returns. Visible == Callable by construction. Accepts the full
+// AuthResult union: only authorized allowlist keys carry a concrete Set.
+export function filterVisibleModels(keyEntry: { allowAll?: boolean, allowlist?: ReadonlySet<string> } | null | undefined, configuredModels: ReadonlySet<string> | null | undefined): string[] {
   if (!configuredModels) return [];
   if (keyEntry?.allowAll) return [...configuredModels].sort();
-  if (!keyEntry) return [];
-  return [...configuredModels].filter((m) => keyEntry.allowlist.has(m)).sort();
+  if (!keyEntry || !keyEntry.allowlist) return [];
+  return [...configuredModels].filter((m) => keyEntry.allowlist?.has(m) === true).sort();
 }
 
 // Snapshot for diagnostics consumers.

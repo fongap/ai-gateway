@@ -3,7 +3,7 @@
 // Copyright (c) 2026 Fongap Studio
 //
 // Unit tests for the Cloudflare D1 token-usage store
-// (src/observability/token-usage-store.mjs): UTC hour normalization, per-response
+// (src/observability/token-usage-store.ts): UTC hour normalization, per-response
 // payload derivation, atomic UPSERT persistence (insert / same-hour upsert /
 // different hours / reports / missing / requests / totals), the aggregate
 // dashboard query (cumulative / 24h / 7d / coverage), and the fail-open
@@ -21,7 +21,7 @@ import {
   tokenStatsD1,
   utc8DayStartUtcMs,
   isoDayUtc8,
-} from '../src/observability/token-usage-store.mjs';
+} from '../src/observability/token-usage-store.ts';
 import { createMockD1 } from './mock-d1-database.mjs';
 
 let passed = 0;

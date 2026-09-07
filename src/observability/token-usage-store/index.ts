@@ -3,11 +3,11 @@
 //
 // Public re-export surface for the token-usage store.
 //
-// The actual implementation lives in ./keys.js, ./writer.js,
-// ./queries.js, ./aggregation.js, and ./retention.js. This module
+// The actual implementation lives in ./keys.ts, ./writer.ts,
+// ./queries.ts, ./aggregation.ts, and ./retention.ts. This module
 // is the single import point for external consumers
-// (src/runtime/cron.js, src/dashboard/pages.js,
-// src/runtime/model-status.js, src/request/handler.ts).
+// (src/dashboard/pages.ts, src/runtime/model-status.ts,
+// src/request/handler.ts).
 
 export {
   // Keys / shared constants
@@ -20,10 +20,10 @@ export {
   ttftBucketIndex,
   normalizeModelKey,
   tokenStatsD1,
-} from './keys.js';
+} from './keys.ts';
 
 // Writer — single hot-path persistence entrypoint.
-export { persistTokenUsage, tokenUsagePayload } from './writer.js';
+export { persistTokenUsage, tokenUsagePayload } from './writer.ts';
 
 // Queries — read paths for the dashboard, public model status, and
 // TTFT percentiles.
@@ -35,14 +35,14 @@ export {
   queryAllModelsTtftPercentiles,
   queryRecentModelEvidence,
   queryModelUsageCoverage,
-} from './queries.js';
+} from './queries.ts';
 
 // Aggregation — hourly → daily → weekly. Idempotent.
-export { aggregateHourlyToDaily, aggregateDailyToWeekly } from './aggregation.js';
+export { aggregateHourlyToDaily, aggregateDailyToWeekly } from './aggregation.ts';
 
 // Retention — delete expired rows from hourly / daily / weekly / per-model.
 export {
   cleanupUsageRetention,
   cleanupModelStats,
   maintainUsageStats,
-} from './retention.js';
+} from './retention.ts';

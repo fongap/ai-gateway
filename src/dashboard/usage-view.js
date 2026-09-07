@@ -10,7 +10,7 @@ import {
   queryTokenModelUsage,
   utc8DayStartUtcMs,
   isoDayUtc8,
-} from '../observability/token-usage-store.mjs';
+} from '../observability/token-usage-store.ts';
 import { escapeHtml, fmtTokens, fmtInt } from './format.js';
 import { buildCalendarHeatmap } from './heatmap.js';
 import { renderHeatmap } from './heatmap-view.js';
@@ -211,7 +211,7 @@ export async function usageSection(env, now = Date.now(), stats = null, official
 }
 
 // Re-export cache helpers used by pages.js
-import { MODEL_STATUS_RECENT_WINDOW_MS, queryAllModelsTtftPercentiles, queryRecentModelEvidence } from '../observability/token-usage-store.mjs';
+import { MODEL_STATUS_RECENT_WINDOW_MS, queryAllModelsTtftPercentiles, queryRecentModelEvidence } from '../observability/token-usage-store.ts';
 
 const DASHBOARD_CACHE_TTL_MS = 45_000;
 let dashboardCaches = new WeakMap();

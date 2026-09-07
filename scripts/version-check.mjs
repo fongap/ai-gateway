@@ -15,7 +15,7 @@ function readJson(rel) {
 
 const pkg = readJson('package.json');
 const lock = readJson('package-lock.json');
-const status = fs.readFileSync(path.join(root, 'src', 'observability', 'diagnostic-endpoints.mjs'), 'utf8');
+const status = fs.readFileSync(path.join(root, 'src', 'observability', 'diagnostic-endpoints.ts'), 'utf8');
 const changelog = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
 const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
 const readmeEn = fs.readFileSync(path.join(root, 'README_EN.md'), 'utf8');
@@ -45,7 +45,7 @@ if (!lockRoot) {
 // APP_META.version
 const sourceVersion = status.match(/version:\s*'([^']+)'/)?.[1];
 if (!sourceVersion) {
-  fail('APP_META.version was not found in src/observability/diagnostic-endpoints.mjs');
+  fail('APP_META.version was not found in src/observability/diagnostic-endpoints.ts');
 } else if (sourceVersion !== version) {
   fail(`APP_META.version=${sourceVersion} does not match package.json.version=${version}`);
 }

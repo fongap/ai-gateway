@@ -12,7 +12,7 @@ import {
 } from '../src/reliability/tier1-state.ts';
 import { __resetTier1AffinityForTests } from '../src/scheduler/tier1-affinity.ts';
 import { createMockD1 } from './mock-d1-database.mjs';
-import { persistTokenUsage } from '../src/observability/token-usage-store.mjs';
+import { persistTokenUsage } from '../src/observability/token-usage-store.ts';
 
 const ACCESS_KEY = 'test-access-key';
 

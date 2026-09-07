@@ -7,22 +7,24 @@
 // weekly tables respectively. Idempotent: running either function
 // multiple times produces the same result (overwrite, not increment).
 //
-// Cron Trigger (src/runtime/cron.js) calls maintainUsageStats() in
-// retention.js, which chains the two aggregations + the cleanup
+// Cron Trigger (scheduled handler) calls maintainUsageStats() in
+// retention.ts, which chains the two aggregations + the cleanup
 // passes. This module is the pure aggregation step; the cleanup
 // step is a separate concern.
 
-import { getUtcWeekStartUtcMs } from '../time-buckets.mjs';
+import { getUtcWeekStartUtcMs } from '../time-buckets.ts';
 import {
   TABLE, TABLE_DAILY, TABLE_WEEKLY,
-  DAY_MS,
   normalizeHour, isoDayUtc8, tokenStatsD1,
-} from './keys.js';
+} from './keys.ts';
+import type { D1PreparedStatement } from '../../types/cloudflare.ts';
+
+type AggregateRow = { input: number, output: number, total: number, requests: number, reports: number, missing: number };
 
 // ---- Aggregation: hourly → daily (idempotent, overwrite) ----
 // Groups all hourly rows by their UTC+8 day and overwrites the daily
 // table.
-export async function aggregateHourlyToDaily(env, now = Date.now()) {
+export async function aggregateHourlyToDaily(env: Record<string, unknown>, now: number = Date.now()) {
   const d1 = tokenStatsD1(env);
   if (!d1) return { skipped: true, reason: 'TOKEN_STATS_DB binding missing' };
   try {
@@ -35,7 +37,7 @@ export async function aggregateHourlyToDaily(env, now = Date.now()) {
     const rows = Array.isArray(res?.results) ? res.results : [];
 
     // Group by UTC+8 day.
-    const byDay = new Map();
+    const byDay = new Map<string, AggregateRow>();
     for (const r of rows) {
       if (!r || typeof r.hour !== 'string') continue;
       const ms = Date.parse(r.hour);
@@ -66,14 +68,14 @@ export async function aggregateHourlyToDaily(env, now = Date.now()) {
          usage_reports = excluded.usage_reports,
          usage_missing = excluded.usage_missing`
     );
-    const batch = [];
+    const batch: D1PreparedStatement[] = [];
     for (const [day, v] of byDay) {
       batch.push(upsertStmt.bind(day, v.input, v.output, v.total, v.requests, v.reports, v.missing));
     }
     if (batch.length) await d1.batch(batch);
     return { aggregatedDays: batch.length };
   } catch (e) {
-    console.error('aggregateHourlyToDaily failed:', e?.message || e);
+    console.error('aggregateHourlyToDaily failed:', (e as { message?: unknown } | null | undefined)?.message || e);
     throw e;
   }
 }
@@ -81,7 +83,7 @@ export async function aggregateHourlyToDaily(env, now = Date.now()) {
 // ---- Aggregation: daily → weekly (idempotent, overwrite) ----
 // Groups daily rows by their UTC week (Monday-start) and overwrites
 // the weekly table.
-export async function aggregateDailyToWeekly(env, now = Date.now()) {
+export async function aggregateDailyToWeekly(env: Record<string, unknown>, now: number = Date.now()) {
   const d1 = tokenStatsD1(env);
   if (!d1) return { skipped: true, reason: 'TOKEN_STATS_DB binding missing' };
   try {
@@ -93,7 +95,7 @@ export async function aggregateDailyToWeekly(env, now = Date.now()) {
 
     // Group by week_start (Monday of the week containing the UTC+8
     // day).
-    const byWeek = new Map();
+    const byWeek = new Map<string, AggregateRow>();
     for (const r of rows) {
       if (!r || typeof r.day !== 'string') continue;
       // Parse the UTC+8 day as a Date at noon UTC to get stable week
@@ -125,14 +127,14 @@ export async function aggregateDailyToWeekly(env, now = Date.now()) {
          usage_reports = excluded.usage_reports,
          usage_missing = excluded.usage_missing`
     );
-    const batch = [];
+    const batch: D1PreparedStatement[] = [];
     for (const [weekStart, v] of byWeek) {
       batch.push(upsertStmt.bind(weekStart, v.input, v.output, v.total, v.requests, v.reports, v.missing));
     }
     if (batch.length) await d1.batch(batch);
     return { aggregatedWeeks: batch.length };
   } catch (e) {
-    console.error('aggregateDailyToWeekly failed:', e?.message || e);
+    console.error('aggregateDailyToWeekly failed:', (e as { message?: unknown } | null | undefined)?.message || e);
     throw e;
   }
 }

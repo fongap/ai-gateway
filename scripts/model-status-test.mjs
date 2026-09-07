@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MIT
 //
-// Public Model Status unit tests (src/runtime/model-status.js). The core bug
+// Public Model Status unit tests (src/runtime/model-status.ts). The core bug
 // fix is verified here: a freshly-isolated Worker that has no Tier 1
 // passive-TTFT sample must NOT mark every model `未观测` when D1 has recent
 // successful evidence for them. The other end of the spectrum is also
@@ -14,8 +14,8 @@ import assert from 'node:assert/strict';
 import {
   getPublicModelStatus,
   MODEL_STATUS_RECENT_WINDOW_MS,
-} from '../src/runtime/model-status.js';
-import { queryRecentModelEvidence } from '../src/observability/token-usage-store.mjs';
+} from '../src/runtime/model-status.ts';
+import { queryRecentModelEvidence } from '../src/observability/token-usage-store.ts';
 import { __resetTier1StateForTests, getTier1Model, recordTier1Ttft } from '../src/reliability/tier1-state.ts';
 import { __resetAllStateForTests } from '../src/reliability/node-state.ts';
 import { createMockD1 } from './mock-d1-database.mjs';
@@ -241,7 +241,7 @@ await testAsync('queryRecentModelEvidence: persists -> returns model Set', async
   const env = { TOKEN_STATS_DB: d1 };
   // Persist one recent success.
   const h0 = Math.floor((now() - 30 * 60_000) / HOUR) * HOUR;
-  const { persistTokenUsage } = await import('../src/observability/token-usage-store.mjs');
+  const { persistTokenUsage } = await import('../src/observability/token-usage-store.ts');
   await persistTokenUsage(env, { prompt_tokens: 10, completion_tokens: 5 }, h0, 'air');
   await persistTokenUsage(env, { prompt_tokens: 10, completion_tokens: 5 }, h0, 'code-max');
   const out = await queryRecentModelEvidence(env, MODEL_STATUS_RECENT_WINDOW_MS, now());
@@ -263,7 +263,7 @@ await testAsync('queryRecentModelEvidence: only rows in the window count', async
   const env = { TOKEN_STATS_DB: d1 };
   const h0 = Math.floor((now() - 30 * 60_000) / HOUR) * HOUR;          // 30 min ago: in window
   const hOld = Math.floor((now() - 30 * HOUR) / HOUR) * HOUR;            // 30h ago: out of window
-  const { persistTokenUsage } = await import('../src/observability/token-usage-store.mjs');
+  const { persistTokenUsage } = await import('../src/observability/token-usage-store.ts');
   await persistTokenUsage(env, { prompt_tokens: 10, completion_tokens: 5 }, h0, 'air');
   await persistTokenUsage(env, { prompt_tokens: 10, completion_tokens: 5 }, hOld, 'oldmodel');
   const out = await queryRecentModelEvidence(env, MODEL_STATUS_RECENT_WINDOW_MS, now());
@@ -279,7 +279,7 @@ await testAsync('queryRecentModelEvidence: requests=0 is NOT evidence', async ()
   // evidence query is `requests > 0` (per-model traffic), so this DOES
   // still count as evidence. The 'reports > 0' filter would be too strict
   // (an interrupted stream with partial data is still recent activity).
-  const { persistTokenUsage } = await import('../src/observability/token-usage-store.mjs');
+  const { persistTokenUsage } = await import('../src/observability/token-usage-store.ts');
   await persistTokenUsage(env, null, h0, 'broken-only');
   const out = await queryRecentModelEvidence(env, MODEL_STATUS_RECENT_WINDOW_MS, now());
   assert.ok(out.has('broken-only'),
@@ -350,7 +350,7 @@ await testAsync('dashboard path issues queryRecentModelEvidence at most once per
   const { dashboardResponse, __resetDashboardCacheForTests } = await import('../src/dashboard/pages.js');
   __resetDashboardCacheForTests();
   const h0 = Math.floor((now() - 30 * 60_000) / HOUR) * HOUR;
-  const { persistTokenUsage } = await import('../src/observability/token-usage-store.mjs');
+  const { persistTokenUsage } = await import('../src/observability/token-usage-store.ts');
   await persistTokenUsage(env, { prompt_tokens: 10, completion_tokens: 5 }, h0, 'air');
   // Issue two concurrent page loads — the model-status query must be
   // coalesced by the existing dashboard cache, not re-issued.

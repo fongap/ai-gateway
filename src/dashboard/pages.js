@@ -25,7 +25,7 @@
 
 import { loadGatewayConfig } from '../config/nodes.ts';
 import { htmlResponse } from '../protocol/http.ts';
-import { normalizeModelKey } from '../observability/token-usage-store.mjs';
+import { normalizeModelKey } from '../observability/token-usage-store.ts';
 import { escapeHtml } from './format.js';
 import { THEME_CSS } from './theme.js';
 import { ensureModelTtftContainers, publicModelStatus, renderModels } from './model-status-view.js';

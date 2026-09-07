@@ -101,7 +101,7 @@ const tests = [
     }
   }],
   ['version-check.mjs rejects APP_META.version drift', async () => {
-    const restore = writeAndRestore('src/observability/diagnostic-endpoints.mjs', (text) => {
+    const restore = writeAndRestore('src/observability/diagnostic-endpoints.ts', (text) => {
       // Track the live package version so a version bump does not break the
       // drift-detection tests themselves.
       return text.replace(new RegExp(`version:\\s*'${currentVersion.replace(/\./g, '\\.')}'`), "version: '9.9.9-fake'");

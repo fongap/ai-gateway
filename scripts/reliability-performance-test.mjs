@@ -16,7 +16,7 @@ import {
   queryModelUsageCoverage,
   ttftBucketIndex,
   TTFT_BUCKET_BOUNDARIES_MS,
-} from '../src/observability/token-usage-store.mjs';
+} from '../src/observability/token-usage-store.ts';
 
 let passed = 0;
 let failed = 0;

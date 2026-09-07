@@ -17,12 +17,13 @@
 // failure dominates when both reject so the request-level caller
 // still emits exactly one diagnostic.
 
-import { normalizeTokenUsage } from '../token-usage.mjs';
+import { normalizeTokenUsage } from '../token-usage.ts';
 import {
   TABLE, TABLE_MODEL, TABLE_TOTALS,
-  TTFT_BUCKET_COUNT, TTFT_BUCKET_BOUNDARIES_MS,
+  TTFT_BUCKET_COUNT,
   normalizeHour, tokenStatsD1, normalizeModelKey, ttftBucketIndex,
-} from './keys.js';
+} from './keys.ts';
+import type { NormalizedTokenUsage } from '../token-usage.ts';
 
 // Derive the D1 aggregate payload for ONE delivered response from a
 // raw upstream usage object. Exactly one of { reports: 1 } or {
@@ -30,8 +31,8 @@ import {
 // Returns null only when a caller passes something structurally
 // unusable (defensive) — in practice the caller always passes either
 // a usage object or null/undefined.
-export function tokenUsagePayload(usage) {
-  const normalized = normalizeTokenUsage(usage);
+export function tokenUsagePayload(usage: unknown): { input: number, output: number, total: number, requests: number, reports: number, missing: number } {
+  const normalized: NormalizedTokenUsage | null = normalizeTokenUsage(usage);
   if (normalized) {
     return {
       input: normalized.input,
@@ -45,8 +46,11 @@ export function tokenUsagePayload(usage) {
   return { input: 0, output: 0, total: 0, requests: 1, reports: 0, missing: 1 };
 }
 
-function persistFailure(scope, cause, model = null) {
-  const error = new Error(cause?.message || String(cause || 'D1 persistence failure'), { cause });
+function persistFailure(scope: string, cause: unknown, model: string | null = null): Error & { scope: string, model?: string } {
+  const rawMessage = (cause as { message?: unknown } | null | undefined)?.message || String(cause || 'D1 persistence failure');
+  // scope / model are attached dynamically exactly as before; the assertion
+  // only types that fact for callers.
+  const error = new Error(String(rawMessage), { cause }) as Error & { scope: string, model?: string };
   error.name = 'TokenStatsPersistError';
   error.scope = scope;
   if (model) error.model = model;
@@ -74,20 +78,12 @@ function persistFailure(scope, cause, model = null) {
 // TTFT sample. The value is bucketed into a coarse histogram
 // (ttft_b0..ttft_b6) for percentile calculation without storing raw
 // samples.
-/**
- * @param {Record<string, any>} env
- * @param {{ prompt_tokens?: number, completion_tokens?: number } | null | undefined} usage
- * @param {number} [now]
- * @param {string | null} [model]
- * @param {number | null} [ttftMs]
- * @returns {Promise<void>}
- */
-export function persistTokenUsage(env, usage, now = Date.now(), model = null, ttftMs = null) {
+export function persistTokenUsage(env: Record<string, unknown>, usage: { prompt_tokens?: number, completion_tokens?: number } | null | undefined, now: number = Date.now(), model: string | null = null, ttftMs: number | null = null): Promise<void> {
   const d1 = tokenStatsD1(env);
   if (!d1) return Promise.resolve();
   const hour = normalizeHour(now);
   const p = tokenUsagePayload(usage);
-  let globalTask;
+  let globalTask: Promise<unknown>;
   try {
     const globalStmt = d1.prepare(
       `INSERT INTO ${TABLE} (
@@ -123,7 +119,7 @@ export function persistTokenUsage(env, usage, now = Date.now(), model = null, tt
 
   // Lifetime totals UPSERT (single row 'global'). Fail-open: errors
   // are logged but do not block the request path.
-  let totalsTask;
+  let totalsTask: Promise<unknown>;
   try {
     const totalsStmt = d1.prepare(
       `INSERT INTO ${TABLE_TOTALS} (
@@ -151,7 +147,7 @@ export function persistTokenUsage(env, usage, now = Date.now(), model = null, tt
     ).run());
   } catch (cause) {
     // Log but don't fail the request for totals write failures.
-    console.error('token-stats totals persist failed:', cause?.message || cause);
+    console.error('token-stats totals persist failed:', (cause as { message?: unknown } | null | undefined)?.message || cause);
     totalsTask = Promise.resolve();
   }
 
@@ -175,7 +171,7 @@ export function persistTokenUsage(env, usage, now = Date.now(), model = null, tt
       successTtftCount = 1;
     }
   }
-  let modelTask;
+  let modelTask: Promise<unknown>;
   try {
     modelTask = Promise.resolve(d1.prepare(
       `INSERT INTO ${TABLE_MODEL} (

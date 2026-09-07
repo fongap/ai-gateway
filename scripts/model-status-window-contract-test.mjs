@@ -13,7 +13,7 @@
 //
 //   C01  The window constant is defined exactly once (token-usage-store
 //        queries.js), exported through the store facade and re-exported by
-//        src/runtime/model-status.js — same binding identity.
+//        src/runtime/model-status.ts — same binding identity.
 //   C02  queryRecentModelEvidence defaults to that constant.
 //   C03  23h-old success IS recent evidence; 25h-old is NOT (default window).
 //   C04  The dashboard evidence call site passes the constant, not a number.
@@ -37,20 +37,20 @@ function check(name, ok, detail) {
 }
 
 // ---- C01: one definition, consistent re-exports ------------------------------
-const storeConstant = (await import('../src/observability/token-usage-store.mjs')).MODEL_STATUS_RECENT_WINDOW_MS;
-const runtimeConstant = (await import('../src/runtime/model-status.js')).MODEL_STATUS_RECENT_WINDOW_MS;
+const storeConstant = (await import('../src/observability/token-usage-store.ts')).MODEL_STATUS_RECENT_WINDOW_MS;
+const runtimeConstant = (await import('../src/runtime/model-status.ts')).MODEL_STATUS_RECENT_WINDOW_MS;
 check('C01 store and runtime expose the SAME 24h binding',
   storeConstant === runtimeConstant && runtimeConstant === 24 * HOUR,
   `store=${storeConstant} runtime=${runtimeConstant}`);
 
 // ---- C02 + C03: default window is the constant; boundary behavior -------------
 {
-  const { queryRecentModelEvidence, persistTokenUsage } = await import('../src/observability/token-usage-store.mjs');
+  const { queryRecentModelEvidence, persistTokenUsage } = await import('../src/observability/token-usage-store.ts');
   const { createMockD1 } = await import('./mock-d1-database.mjs');
 
-  const src = readFileSync(join(root, 'src/observability/token-usage-store/queries.js'), 'utf8');
+  const src = readFileSync(join(root, 'src/observability/token-usage-store/queries.ts'), 'utf8');
   check('C02 queryRecentModelEvidence default window is the constant',
-    /queryRecentModelEvidence\(env, windowMs = MODEL_STATUS_RECENT_WINDOW_MS/.test(src)
+    /queryRecentModelEvidence\(env: Record<string, unknown>, windowMs: number = MODEL_STATUS_RECENT_WINDOW_MS/.test(src)
       && /export const MODEL_STATUS_RECENT_WINDOW_MS = 24 \* HOUR_MS;/.test(src));
 
   const d1 = createMockD1();
@@ -82,8 +82,8 @@ check('C01 store and runtime expose the SAME 24h binding',
     'src/dashboard/usage-view.js',
     'src/dashboard/pages.js',
     'src/dashboard/model-status-view.js',
-    'src/runtime/model-status.js',
-    'src/observability/token-usage-store/queries.js',
+    'src/runtime/model-status.ts',
+    'src/observability/token-usage-store/queries.ts',
   ];
   let hit = '';
   for (const f of chainFiles) {
@@ -94,9 +94,9 @@ check('C01 store and runtime expose the SAME 24h binding',
   }
   check('C05 no second Recent-Evidence window literal in the evidence chain', hit === '', hit);
   // The runtime module must re-export, not redefine.
-  const runtimeSrc = readFileSync(join(root, 'src/runtime/model-status.js'), 'utf8');
+  const runtimeSrc = readFileSync(join(root, 'src/runtime/model-status.ts'), 'utf8');
   check('C05b runtime model-status re-exports the window constant',
-    /export \{\s*\n?\s*MODEL_STATUS_RECENT_WINDOW_MS,\s*\} from '\.\.\/observability\/token-usage-store\.mjs'/.test(runtimeSrc)
+    /export \{\s*\n?\s*MODEL_STATUS_RECENT_WINDOW_MS,\s*\} from '\.\.\/observability\/token-usage-store\.ts'/.test(runtimeSrc)
       && !/MODEL_STATUS_RECENT_WINDOW_MS = 24 \* 3600_000/.test(runtimeSrc));
 }
 
