@@ -10,7 +10,7 @@
 // Chinese unit formatting for KPI values: 万 (10^4) and 亿 (10^8).
 // < 10000: integer; >= 10000: 万 with 1 decimal; >= 100M: 亿 with 2 decimals.
 // Never use K/M/B. Exact value available in title attribute.
-export function fmtTokens(n) {
+export function fmtTokens(n: number): string {
   if (!Number.isFinite(n) || n < 0) return '—';
   if (n < 10000) return String(Math.trunc(n));
   if (n < 1e8) {
@@ -23,14 +23,14 @@ export function fmtTokens(n) {
   return `${s}亿`;
 }
 
-export function fmtInt(n) {
+export function fmtInt(n: number): string {
   return String(Math.trunc(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
 // Format TTFT milliseconds into a human-friendly string. Negative or
 // non-finite values render as "--". Sub-second values use ms, second-level
 // values use plain s when integer and .1s when fractional.
-export function fmtTtft(ms) {
+export function fmtTtft(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '--';
   if (ms < 1000) return `${ms}ms`;
   const sec = ms / 1000;
@@ -39,7 +39,7 @@ export function fmtTtft(ms) {
 }
 
 // Format a UTC+8 ISO date (YYYY-MM-DD) as "6月1日" for tooltip display.
-export function fmtTooltipDate(iso) {
+export function fmtTooltipDate(iso: string): string {
   const d = new Date(iso + 'T00:00:00Z');
   return `${d.getUTCMonth() + 1}月${d.getUTCDate()}日`;
 }
@@ -48,8 +48,9 @@ export function fmtTooltipDate(iso) {
 // Only handles the characters that can break out of a double-quoted HTML
 // attribute — the dashboard never embeds user-controlled HTML, only model
 // names and aggregated numbers.
-export function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({
+export function escapeHtml(s: string): string {
+  const map: Record<string, string> = {
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  }[c]));
+  };
+  return String(s).replace(/[&<>"']/g, (c) => map[c]);
 }

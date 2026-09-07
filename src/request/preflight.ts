@@ -40,7 +40,7 @@ import { collectKnownModels } from '../config/registry.ts';
 import { authorizeModel } from './model-authz.ts';
 import { evaluateRouteFeasibility } from './route-feasibility.ts';
 import { detectRoute, normalizePath, acceptsHtml } from './router.ts';
-import { dashboardResponse } from '../dashboard/pages.js';
+import { dashboardResponse } from '../dashboard/pages.ts';
 import { corsHeaders, readBodyTextWithLimit, BodyTooLargeError } from '../protocol/http.ts';
 import { validateOpenAIChatRequest } from '../protocol/openai.ts';
 import {

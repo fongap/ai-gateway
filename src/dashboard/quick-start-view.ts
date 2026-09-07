@@ -4,9 +4,9 @@
 // 快速开始 section — tabbed OpenAI / Anthropic code snippets.
 // Extracted from pages.js for the v5 Compact Quiet Technical Interface.
 
-import { escapeHtml } from './format.js';
+import { escapeHtml } from './format.ts';
 
-function snippetPane({ id, active, code }) {
+function snippetPane({ id, active, code }: { id: string, active: boolean, code: string }): string {
   return `<div class="pane${active ? ' active' : ''}" id="pane-${id}" role="tabpanel" ` +
     `aria-labelledby="tab-${id}"${active ? '' : ' hidden'}>
     <div class="code-card">
@@ -22,7 +22,7 @@ function snippetPane({ id, active, code }) {
   </div>`;
 }
 
-export function quickStartSection(apiBase) {
+export function quickStartSection(apiBase: string): string {
   const origin = new URL(apiBase).origin;
   const openai = `OPENAI_BASE_URL=${apiBase}\nOPENAI_API_KEY=$GATEWAY_ACCESS_KEY`;
   const anthropic = `ANTHROPIC_BASE_URL=${origin}\nANTHROPIC_AUTH_TOKEN=$GATEWAY_ACCESS_KEY`;

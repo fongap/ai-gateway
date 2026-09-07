@@ -67,7 +67,7 @@ check('C01 store and runtime expose the SAME 24h binding',
 
 // ---- C04 + C05: dashboard call site and magic-number ban ----------------------
 {
-  const usageView = readFileSync(join(root, 'src/dashboard/usage-view.js'), 'utf8');
+  const usageView = readFileSync(join(root, 'src/dashboard/usage-view.ts'), 'utf8');
   check('C04 dashboard evidence call passes MODEL_STATUS_RECENT_WINDOW_MS',
     /queryRecentModelEvidence\(env, MODEL_STATUS_RECENT_WINDOW_MS, now\)/.test(usageView));
 
@@ -79,9 +79,9 @@ check('C01 store and runtime expose the SAME 24h binding',
     /7 \* 24 \* HOUR/,
   ];
   const chainFiles = [
-    'src/dashboard/usage-view.js',
-    'src/dashboard/pages.js',
-    'src/dashboard/model-status-view.js',
+    'src/dashboard/usage-view.ts',
+    'src/dashboard/pages.ts',
+    'src/dashboard/model-status-view.ts',
     'src/runtime/model-status.ts',
     'src/observability/token-usage-store/queries.ts',
   ];

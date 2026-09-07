@@ -347,7 +347,7 @@ test('output only ever returns the four documented status values', () => {
 await testAsync('dashboard path issues queryRecentModelEvidence at most once per 45s cache window', async () => {
   const d1 = createMockD1();
   const env = { GATEWAY_ACCESS_KEY: 'k', TOKEN_STATS_DB: d1, MODELS_CONFIG: JSON.stringify({ air: { policy: 'fast' } }) };
-  const { dashboardResponse, __resetDashboardCacheForTests } = await import('../src/dashboard/pages.js');
+  const { dashboardResponse, __resetDashboardCacheForTests } = await import('../src/dashboard/pages.ts');
   __resetDashboardCacheForTests();
   const h0 = Math.floor((now() - 30 * 60_000) / HOUR) * HOUR;
   const { persistTokenUsage } = await import('../src/observability/token-usage-store.ts');

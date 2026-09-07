@@ -15,8 +15,8 @@
 //     can be added without breaking layout.
 
 import assert from 'node:assert/strict';
-import { buildCalendarHeatmap } from '../src/dashboard/heatmap.js';
-import { renderHeatmap } from '../src/dashboard/heatmap-view.js';
+import { buildCalendarHeatmap } from '../src/dashboard/heatmap.ts';
+import { renderHeatmap } from '../src/dashboard/heatmap-view.ts';
 
 function dateAtIso(iso) {
   // TRUE UTC+8 midnight (= 16:00Z the previous day), NOT `${iso}T00:00:00Z`

@@ -9,7 +9,7 @@
 // dashboard can degrade gracefully. None of the queries throw into
 // a request path.
 //
-// Dashboard consumers (src/dashboard/pages.js):
+// Dashboard consumers (src/dashboard/pages.ts):
 //   queryTokenSummary     - rolling / today / cumulative / coverage
 //   queryTokenDailySeries - 52-week heatmap
 //   queryTokenModelUsage  - per-model usage
@@ -18,7 +18,7 @@
 // Public Model Status consumers (src/runtime/model-status.ts):
 //   queryRecentModelEvidence - recent successful traffic
 //
-// TTFT percentile consumer (src/dashboard/pages.js):
+// TTFT percentile consumer (src/dashboard/pages.ts):
 //   queryAllModelsTtftPercentiles
 
 import {
@@ -46,7 +46,14 @@ const asMessage = (e: unknown): string =>
 //     coverage: <number|null>,           // reports / (reports + missing)
 //   }
 // or null when binding missing, or error object when query fails.
-export async function queryTokenSummary(env: Record<string, unknown>, now: number = Date.now()) {
+export async function queryTokenSummary(env: Record<string, unknown>, now: number = Date.now()): Promise<{
+  available: true,
+  today: { total: number, requests: number },
+  h24: { total: number, requests: number },
+  d7: { total: number, requests: number },
+  cumulative: { total: number, requests: number, reports: number, missing: number },
+  coverage: number | null,
+} | { available: false, error: string } | null> {
   const d1 = tokenStatsD1(env);
   if (!d1) return null;
   const todayStart = normalizeHour(utc8DayStartUtcMs(now));
@@ -242,7 +249,7 @@ export async function queryTokenDailySeries(env: Record<string, unknown>, startD
 // stats dimension instead of splitting (or overwriting each other). The
 // writer already canonicalizes; the reader must not depend on that —
 // pre-normalization rows still exist in D1 until retention ages them out.
-export async function queryTokenModelUsage(env: Record<string, unknown>, days: number = 7, now: number = Date.now()) {
+export async function queryTokenModelUsage(env: Record<string, unknown>, days: number = 7, now: number = Date.now()): Promise<{ available: true, rows: Array<{ model: string, total: number, requests: number }> } | { available: false, error: string }> {
   const d1 = tokenStatsD1(env);
   if (!d1) return { available: false, error: 'TOKEN_STATS_DB binding missing' };
   const startHour = normalizeHour(now - days * DAY_MS);

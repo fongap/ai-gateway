@@ -22,7 +22,7 @@ import { getLimits } from '../config/timeouts.ts';
 import { TIER_ORDER, normalizePath, detectRoute, acceptsHtml } from './router.ts';
 import { getLogger } from '../observability/logger.ts';
 import { healthResponse, metricsResponse, modelsListResponse, versionResponse } from '../observability/diagnostic-endpoints.ts';
-import { dashboardResponse } from '../dashboard/pages.js';
+import { dashboardResponse } from '../dashboard/pages.ts';
 import { authorize } from './auth.ts';
 import { loadAccessKeysConfig, collectConfiguredModels } from '../config/access-keys.ts';
 import { authorizeModel, filterVisibleModels } from './model-authz.ts';

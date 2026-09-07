@@ -22,7 +22,7 @@
 
 import assert from 'node:assert/strict';
 import { getPublicModelStatus } from '../src/runtime/model-status.ts';
-import { renderModels } from '../src/dashboard/model-status-view.js';
+import { renderModels } from '../src/dashboard/model-status-view.ts';
 import { supportsRequest } from '../src/scheduler/scheduler.ts';
 import { __resetTier1StateForTests, recordTier1Ttft } from '../src/reliability/tier1-state.ts';
 import { __resetAllStateForTests } from '../src/reliability/node-state.ts';
