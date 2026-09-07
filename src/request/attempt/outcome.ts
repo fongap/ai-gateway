@@ -16,13 +16,13 @@ import {
   applyTier1Outcome, classifyTier1Failure,
   rollbackTier1Rpm,
 } from '../../reliability/tier1-state.ts';
-import type { FailureClassification } from '../../reliability/classify.ts';
+import type { FailureClassification, FailureKind } from '../../reliability/classify.ts';
 import { trimDiagnostic } from '../../protocol/http.ts';
 import { upstreamModelOf } from '../response-helpers.ts';
 import type { LoopState, AttemptContext, AttemptOutcome } from '../../types/request.ts';
 import type { RuntimeNode } from '../../types/node.ts';
 
-export function rotateWithNeutralEnd(state: LoopState, node: RuntimeNode, reason: string, c: Partial<AttemptContext> = {}, preDispatch: boolean = false): AttemptOutcome {
+export function rotateWithNeutralEnd(state: LoopState, node: RuntimeNode, reason: FailureKind, c: Partial<AttemptContext> = {}, preDispatch: boolean = false): AttemptOutcome {
   state.attempted.add(node.id);
   // Pre-dispatch neutrals (invalid base URL) never reached an upstream, so they
   // do not consume any budget — no dispatch/attempt charge, and the outcome
@@ -59,7 +59,7 @@ export function rotateWithNeutralEnd(state: LoopState, node: RuntimeNode, reason
 // Aggregate failure-kind counter for the exhausted response. Kinds alone (no
 // node ids / no ordering) are safe to expose to clients by default and answer
 // the only question that matters when everything failed: HOW did it fail?
-export function noteFailure(state: LoopState, kind: string): void {
+export function noteFailure(state: LoopState, kind: FailureKind): void {
   state.failureKinds[kind] = (state.failureKinds[kind] || 0) + 1;
 }
 

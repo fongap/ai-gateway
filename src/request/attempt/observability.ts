@@ -18,6 +18,7 @@ import {
   releaseTier1Slot,
   recordTier1Ttft, recordTier1Success, applyTier1Outcome, classifyTier1Failure,
 } from '../../reliability/tier1-state.ts';
+import { classifyStreamInterrupted } from '../../reliability/classify.ts';
 import { writeTier1Affinity } from '../../scheduler/tier1-affinity.ts';
 import { recordStreamStart, recordStreamCompleted, recordStreamInterrupted } from '../../observability/gateway-stats.ts';
 import { recordTokenUsage } from '../../observability/token-usage.ts';
@@ -115,7 +116,10 @@ export function makeNodeStreamTrack(c: AttemptContext, node: RuntimeNode, latenc
     // so its failure state and release happen there. Tier 2/3 keep the existing
     // recordFailure path unchanged.
     onFailure: () => {
-      if (!tier1) recordFailure(node.id, { counted: true, cooldownMs: 60_000, reason: 'stream_interrupted' });
+      if (!tier1) {
+        const c = classifyStreamInterrupted();
+        recordFailure(node.id, { counted: c.counted, cooldownMs: c.cooldownMs, reason: c.kind });
+      }
     },
     onNeutral: () => tier1
       ? releaseTier1Slot(node.id, c.tier1ReleaseToken)
@@ -127,7 +131,7 @@ export function makeNodeStreamTrack(c: AttemptContext, node: RuntimeNode, latenc
       recordStreamInterrupted(d.reason);
       if (tier1) {
         applyTier1Outcome(node.id, c.state?.requestedModel,
-          classifyTier1Failure({ kind: 'stream_interrupted', streamReason: d.reason }));
+          classifyTier1Failure({ kind: classifyStreamInterrupted().kind, streamReason: d.reason }));
         releaseTier1Slot(node.id, c.tier1ReleaseToken);
         bumpNodeCounters(node.id, { requests: 1, failures: 1 });
       } else {

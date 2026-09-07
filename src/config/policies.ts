@@ -23,7 +23,7 @@ import type { PolicyConfig } from '../types/policy.ts';
 const MIN_ATTEMPTS = 1;
 const MAX_ATTEMPTS = 8;
 const TIER_KEYS = ['tier1', 'tier2', 'tier3'];
-const ALLOWED_FIELDS = new Set(['max_attempts', 'tier_attempts', 'hedge', 'first_event_timeout_ms']);
+const ALLOWED_FIELDS = new Set(['max_attempts', 'tier_attempts', 'hedge', 'first_event_timeout_ms', 'budget_split']);
 
 type HedgePolicy = { enabled?: boolean, delayMs?: number, tiers?: Array<'tier1' | 'tier2' | 'tier3'> } | null;
 type TierAttempts = { tier1?: number, tier2?: number, tier3?: number } | null;
@@ -37,24 +37,28 @@ const BUILTIN_POLICIES: Record<string, PolicyConfig> = Object.freeze({
     tierAttempts: null,
     hedge: { enabled: true },
     firstEventTimeoutMs: null,
+    budgetSplit: null,
   },
   fast: {
     maxAttempts: 1,
     tierAttempts: null,
     hedge: { enabled: false },
     firstEventTimeoutMs: null,
+    budgetSplit: null,
   },
   stable: {
     maxAttempts: 5,
     tierAttempts: null,
     hedge: { enabled: true, tiers: ['tier1'] },
     firstEventTimeoutMs: null,
+    budgetSplit: null,
   },
   'long-reasoning': {
     maxAttempts: 3,
     tierAttempts: null,
     hedge: { enabled: false },
     firstEventTimeoutMs: 120_000,
+    budgetSplit: null,
   },
 });
 
@@ -104,6 +108,7 @@ function analyzePolicies(env: Record<string, unknown>): { policies: Record<strin
         const tierAttempts = parseTierAttempts(cfg.tier_attempts, name, errors);
         const hedge = parseHedge(cfg.hedge, name, errors);
         const firstEventTimeoutMs = parseFirstEventTimeoutMs(cfg.first_event_timeout_ms, name, errors);
+        const budgetSplit = parseBudgetSplit(cfg.budget_split, name, errors);
         let attempts: number;
         if (cfg.max_attempts !== undefined) {
           // `typeof` leads the guard so the integer range checks run on a
@@ -127,6 +132,7 @@ function analyzePolicies(env: Record<string, unknown>): { policies: Record<strin
           tierAttempts,
           hedge,
           firstEventTimeoutMs,
+          budgetSplit,
         };
       }
     }
@@ -212,6 +218,18 @@ function parseFirstEventTimeoutMs(value: unknown, policyName: string, errors: st
     return null;
   }
   return value;
+}
+
+// R5 (v1.3.0): Parse an optional budget_split strategy.
+//   "even"     (default, backward-compatible): first dispatchable tier gets
+//              the entire surplus.
+//   "weighted": surplus is distributed proportionally to each tier's live
+//              dispatchable node count.
+function parseBudgetSplit(value: unknown, policyName: string, errors: string[]): 'even' | 'weighted' | null {
+  if (value === undefined || value === null) return null;
+  if (value === 'even' || value === 'weighted') return value;
+  errors.push(`POLICIES_CONFIG: "${policyName}": budget_split must be "even" or "weighted"`);
+  return null;
 }
 
 export function getPolicy(modelName: string, modelsConfig: Record<string, { policy?: string }>, policiesConfig: Record<string, PolicyConfig>): PolicyConfig {

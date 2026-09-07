@@ -48,8 +48,13 @@ const PROTOCOL_SURFACES = new Map<string, Set<string>>([
 
 // Single source of truth for supported cross-protocol conversions.
 // Key: client route (protocol:surface), Value: array of allowed fallback targets.
+// A conversion is listed here ONLY after the full Request + Response + Stream +
+// Error Converter has been implemented and tested. See R0 of the v1.3.0
+// development instructions.
 export const SUPPORTED_CONVERSIONS: Readonly<Record<string, string[]>> = Object.freeze({
   'anthropic:messages': ['openai:chat_completions'],
+  'openai:chat_completions': ['anthropic:messages'],
+  'openai:responses': ['anthropic:messages'],
 });
 
 // Built-in default chain. Applied when PROTOCOL_FALLBACKS is unset/empty.
@@ -57,6 +62,8 @@ export const SUPPORTED_CONVERSIONS: Readonly<Record<string, string[]>> = Object.
 // value; see header for the three-mode contract.
 export const DEFAULT_FALLBACK_CHAIN: Readonly<Record<string, string[]>> = Object.freeze({
   'anthropic:messages': ['openai:chat_completions'],
+  'openai:chat_completions': ['anthropic:messages'],
+  'openai:responses': ['anthropic:messages'],
 });
 
 // Magic literal that turns the default off. Compared case-insensitively after

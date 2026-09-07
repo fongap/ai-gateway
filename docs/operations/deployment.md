@@ -40,7 +40,7 @@ Deploy workflow（workflow_run: CI completed, branch main）:
 
 手动 Deploy（workflow_dispatch）:
   → job gate 放行,但绝不绕过 Production Gate:
-  → job manual-validate（完整套件: validate:deploy + typecheck + strict typecheck + bundle dry-run）
+  → job manual-validate（统一验证入口: `npm run validate:deploy` + `npm run check:deploy` 干跑 bundle）
   → 全部通过后 job deploy 才开始（needs.manual-validate.result == 'success'）
 ```
 
@@ -120,6 +120,16 @@ Deploy 工作流包含自动 Worker-code 回滚。如果 Worker 部署成功但 
 
 1. 在 `main` 上 revert commit（或推送恢复之前 Variable/Secret 值的新 commit）
 2. 下次 Deploy 恢复之前的代码和运行时变量
+
+## Build Identity / Deployment SHA
+
+每次 Deploy 注入同一个 SHA 到三处：CI 验证的 commit、部署的 Worker code、`/version` 暴露的 `build` 字段。
+
+- **Release identity** = `APP_META.version`（semver，手动 bump，关联 `package.json` / `CHANGELOG.md`）
+- **Deployment identity** = `build` 字段（commit SHA，CI/Deploy 自动注入 `GITHUB_SHA`，不手工维护）
+- 部署 Bridge 通过 `EXTRA_VAR_ALLOW` 白名单透传 `GITHUB_SHA` 到 Worker vars map
+- `/version.build` 在缺值或非法值时回退到 `unknown`，本地 dev 与 pre-deploy probe 不会崩溃
+- 完整审计链：`/version` 的 `build` == Workflow run 的 `DEPLOYED_SHA` == 回滚步骤的 `::notice::Rolling back ... for deployed SHA`
 
 ## D1 迁移
 

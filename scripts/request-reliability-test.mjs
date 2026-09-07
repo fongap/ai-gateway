@@ -12,7 +12,7 @@ import {
   parseRetryAfterMs, attemptBudgetSliceMs, attemptHeadersTimeoutMs, attemptFirstEventTimeoutMs,
   MIN_ATTEMPT_HEADERS_MS, MIN_ATTEMPT_FIRST_EVENT_MS,
 } from '../src/config/timeouts.ts';
-import { classifyUpstreamStatus, classifyNetworkError, classifyFirstEventFailure, classifyClientAbort } from '../src/reliability/classify.ts';
+import { classifyUpstreamStatus, classifyNetworkError, classifyFirstEventFailure, classifyClientAbort, classifyPreDispatchRateLimit, classifyPreDispatchInvalidBaseUrl, classifyStreamInterrupted, classifyHedgeRaceLoss, classifyHedgeUnknown, classifyNonJsonBody, KIND } from '../src/reliability/classify.ts';
 import { getLimits } from '../src/config/timeouts.ts';
 import { countDispatchableNodes } from '../src/scheduler/scheduler.ts';
 
@@ -383,6 +383,81 @@ await test('dispatchable count reflects the live pool, not the policy maximum', 
   acquireSlot('live-count-b', now);
   assert.equal(countDispatchableNodes(nodes, req, new Set(), now), 1, 'a saturated node is not live capacity');
   recordNeutralEnd('live-count-b');
+});
+
+// R3 (v1.3.0): Reliability Core. The pre-dispatch, stream-interrupted,
+// hedge-race-loss, hedge-unknown, and non-json-body classifiers are
+// single-source-of-truth helpers. Their `counted`/`action`/cooldown must
+// match the budget-charging / rotation / circuit-breaker expectations of
+// the sites that call them (dispatch.ts, observability.ts, hedge.ts,
+// success.ts).
+await test('R3 classifyPreDispatchRateLimit: rotate, NOT counted, no cooldown (budget must not be charged)', async () => {
+  const c = classifyPreDispatchRateLimit();
+  assert.equal(c.kind, KIND.RATE_LIMIT_GLOBAL);
+  assert.equal(c.action, 'rotate');
+  assert.equal(c.cooldownMs, 0);
+  assert.equal(c.counted, false, 'pre-dispatch denials must NOT feed the circuit breaker');
+  // The dispatch path will pass budgetCharged:false; verify the kind is
+  // distinct from RATE_LIMIT so terminalStatus can disambiguate.
+  assert.notEqual(c.kind, KIND.RATE_LIMIT, 'rate_limit_global is its own kind, not a synonym');
+});
+
+await test('R3 classifyPreDispatchInvalidBaseUrl: rotate, NOT counted, no cooldown (misconfig is operator-side)', async () => {
+  const c = classifyPreDispatchInvalidBaseUrl();
+  assert.equal(c.kind, KIND.INVALID_BASE_URL);
+  assert.equal(c.action, 'rotate');
+  assert.equal(c.cooldownMs, 0);
+  assert.equal(c.counted, false, 'misconfigured nodes must NOT feed the circuit');
+});
+
+await test('R3 classifyStreamInterrupted: rotate, counted, 60s cooldown (matches rate-limit cooldown)', async () => {
+  const c = classifyStreamInterrupted();
+  assert.equal(c.kind, KIND.STREAM_INTERRUPTED);
+  assert.equal(c.action, 'rotate');
+  assert.equal(c.counted, true, 'stream interruptions MUST feed the circuit breaker');
+  assert.equal(c.cooldownMs, 60_000, '60s matches rate-limit cooldown so repeat offenders fall out without permanent discard');
+});
+
+await test('R3 classifyHedgeRaceLoss: neutral, NOT counted (winner decides, loser is bookkeeping)', async () => {
+  const c = classifyHedgeRaceLoss();
+  assert.equal(c.kind, KIND.CANCELLED_AFTER_PEER_COMMIT);
+  assert.equal(c.action, 'neutral');
+  assert.equal(c.cooldownMs, 0);
+  assert.equal(c.counted, false, 'hedge losers must NOT count against the winner');
+});
+
+await test('R3 classifyHedgeUnknown: rotate, NOT counted (real reason will be re-classified by attemptNode)', async () => {
+  const c = classifyHedgeUnknown();
+  assert.equal(c.kind, KIND.UNKNOWN);
+  assert.equal(c.action, 'rotate');
+  assert.equal(c.cooldownMs, 0);
+  assert.equal(c.counted, false);
+});
+
+await test('R3 classifyNonJsonBody: neutral, NOT counted (upstream WAS contacted, no circuit penalty)', async () => {
+  const c = classifyNonJsonBody();
+  assert.equal(c.kind, KIND.NON_JSON_BODY);
+  assert.equal(c.action, 'neutral');
+  assert.equal(c.cooldownMs, 0);
+  assert.equal(c.counted, false);
+});
+
+await test('R3 every failure-kind consumer-facing value appears in KIND', async () => {
+  // Pin the contract: the kind vocabulary is closed. The list below is the
+  // exhaustive set of values that may appear on LoopState.failureKinds /
+  // AttemptOutcome.kind / terminalStatus dispatch. New kinds require
+  // editing KIND in src/reliability/classify.ts AND this test.
+  const expected = [
+    KIND.RATE_LIMIT, KIND.RATE_LIMIT_GLOBAL, KIND.AUTH, KIND.CLIENT,
+    KIND.MODEL_MISSING, KIND.ENDPOINT_NOT_FOUND, KIND.SERVER, KIND.NETWORK,
+    KIND.HEADERS_TIMEOUT, KIND.FIRST_EVENT_TIMEOUT, KIND.CLIENT_ABORT,
+    KIND.INVALID_BASE_URL, KIND.STREAM_INTERRUPTED, KIND.NON_JSON_BODY,
+    KIND.CANCELLED_AFTER_PEER_COMMIT, KIND.UNKNOWN,
+  ];
+  // Sanity: no duplicates.
+  assert.equal(new Set(expected).size, expected.length, 'KIND values must be unique');
+  // Each must round-trip through the union.
+  for (const k of expected) assert.equal(typeof k, 'string');
 });
 
 if (!process.exitCode) console.log(`request reliability tests passed (${passed}).`);

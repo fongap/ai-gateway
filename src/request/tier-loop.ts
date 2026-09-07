@@ -49,8 +49,16 @@ type PickForTierOpts = {
 export function pickForTier(tierNumber: Tier, tierNodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, opts: PickForTierOpts = {}): TierPickResult {
   const { knownModels } = opts;
   if (tierNumber !== 1) {
-    const node = pickCandidate(tierNodes, req, attempted, undefined, null, knownModels);
-    return node ? { node } : null;
+    // R4 (v1.3.0): pickCandidate now returns PickedCandidate | null,
+    // matching pickTier1Candidate. The Tier 2/3 path no longer wraps a
+    // bare RuntimeNode — it receives { node } | { raceLost: true } | null
+    // directly, so race-loss is visible to the caller (previously it was
+    // indistinguishable from "no eligible candidate" and the tier loop
+    // would skip to the next tier instead of retrying).
+    const r = pickCandidate(tierNodes, req, attempted, undefined, null, knownModels);
+    if (!r) return null;
+    if (r.raceLost) return { raceLost: true };
+    return { node: r.node };
   }
   const r = pickTier1Candidate(tierNodes, req, attempted, { ...opts, knownModels });
   if (!r) return null;
@@ -96,10 +104,17 @@ export function makeTier1Rng(env: Record<string, unknown>): () => number {
 //     candidates left to spend that slot on.
 //   * A tier with no dispatchable candidate for the request descriptor gets 0
 //     budget.
-//   * By default `max_attempts` is split so every dispatchable tier gets at
-//     least one attempt and the surplus goes to the highest (most-preferred)
-//     dispatchable tier — maximizing free/priority resource use while keeping
-//     the paid fallback reachable and never starving an intermediate tier.
+//   * The surplus = max_attempts - dispatchable_tier_count is distributed
+//     across dispatchable tiers according to `policy.budgetSplit`:
+//       - "even" (default, backward-compatible): the first (most-preferred)
+//         dispatchable tier receives the ENTIRE surplus, maximizing free /
+//         priority resource use. Existing tests and behavior are unchanged.
+//       - "weighted" (R5, opt-in): the surplus is distributed proportionally
+//         to each tier's live dispatchable node count, so a lower tier with
+//         significantly more capacity gets more attempts than a higher tier
+//         with fewer candidates.
+//     `tier_attempts` (when explicitly set) always wins for the tier it
+//     names; `budget_split` is only consulted for tiers without an override.
 //   * `policy.tierAttempts` (POLICIES_CONFIG tier_attempts) overrides a tier's
 //     budget explicitly (0 disables it).
 // Budget is a per-tier UPPER bound; the shared state.maxAttempts still caps the
@@ -114,6 +129,51 @@ export function computeTierCaps(tiers: Record<number, RuntimeNode[]>, reqDescrip
       : tierHasDispatchableNode(tiers[t], reqDescriptor, attempted, now, knownModels));
   if (dispatchable.length === 0) return caps;
   const max = policy.maxAttempts;
+  // R5: when budget_split === 'weighted', count live dispatchable nodes per
+  // tier and distribute the surplus proportionally. A lower tier with
+  // significantly more capacity gets a larger share.
+  const liveCount = (tierNumber: number): number => {
+    return tierNumber === 1
+      ? tier1CountDispatchableNodes(tiers[tierNumber], reqDescriptor, attempted, now, knownModels)
+      : countDispatchableNodes(tiers[tierNumber], reqDescriptor, attempted, now, knownModels);
+  };
+  const useWeighted = policy.budgetSplit === 'weighted';
+  if (useWeighted) {
+    // Per-tier surplus by node-count weight. Each tier first gets 1 attempt
+    // (its baseline share), and any extra surplus is distributed by weight.
+    // `tier_attempts` overrides win as before. After per-tier computation,
+    // the last dispatchable tier absorbs the rounding remainder so the
+    // totals are stable AND within max.
+    const totalLive = dispatchable.reduce((s, t) => s + liveCount(t), 0);
+    if (totalLive === 0) return caps;
+    const surplus = Math.max(0, max - dispatchable.length);
+    const tierShare = (tierNumber: number): number => {
+      const w = liveCount(tierNumber) / totalLive;
+      return 1 + Math.floor(surplus * w);
+    };
+    dispatchable.forEach((t, i) => {
+      const override = policy.tierAttempts?.[`tier${t}`];
+      if (override !== undefined) caps[t] = override;
+      else caps[t] = tierShare(t);
+      if (t === 1) caps[t] = Math.min(caps[t], TIER1_MAX_ATTEMPTS);
+    });
+    // Reconcile to exactly max_attempts. Any over- or under-allocation from
+    // floor rounding or override choices is absorbed by the last tier.
+    const last = dispatchable[dispatchable.length - 1];
+    const usedSoFar = dispatchable.reduce((s, t) => s + caps[t], 0);
+    if (usedSoFar > max) {
+      // Over-budget: trim the last tier. (Over-budget happens when an
+      // override sum exceeds max; this is the operator's call to make but
+      // we MUST respect max.)
+      caps[last] = Math.max(1, caps[last] - (usedSoFar - max));
+    } else {
+      const remaining = max - usedSoFar;
+      if (remaining > 0) caps[last] = caps[last] + remaining;
+    }
+    return caps;
+  }
+  // Default: "even" (backward-compatible) — first dispatchable tier gets the
+  // entire surplus.
   const surplus = Math.max(0, max - dispatchable.length);
   dispatchable.forEach((t, i) => {
     // `t` is numeric (1/2/3); POLICIES_CONFIG tier_attempts uses string keys

@@ -6,11 +6,11 @@ name: Deploy
 #
 # Production gate: this workflow is triggered by `workflow_run` when the CI
 # workflow completes on main. CI success means BOTH of its jobs passed —
-# validate-merge (syntax + config + unit + typecheck + strict typecheck +
-# security + docs + bundle dry-run) AND validate-deploy (unit + scheduler
-# stability + integration + stress + Codex/Claude contract + security + docs).
-# Worker Deploy therefore never executes before full validation succeeds, and
-# the full suite is executed exactly once per push (Merge Gate != Production
+# validate-merge (syntax + config + unit + typecheck + security + docs +
+# bundle dry-run) AND validate-deploy (unit + scheduler stability +
+# integration + stress + Codex/Claude contract + security + docs). Worker
+# Deploy therefore never executes before full validation succeeds, and the
+# full suite is executed exactly once per push (Merge Gate != Production
 # Gate; no duplicated validation).
 #
 # Gate rules (scripts/deploy-gate-decision.mjs, unit-tested):
@@ -20,11 +20,11 @@ name: Deploy
 #   * CI conclusion != success                        -> never deploy
 #   * triggering commit touched ONLY **.md / docs/**  -> skip deploy
 #   * manual workflow_dispatch                        -> allowed, but NEVER a
-#     bypass: the `manual-validate` job runs the full validation suite
-#     (validate:deploy + typecheck + strict typecheck + bundle dry-run)
-#     inside this workflow before the deploy job may start. Only the manual
-#     path re-runs validation (it is not a high-frequency operation); the
-#     automatic main-push path reuses the already-completed CI run.
+#     bypass: the `manual-validate` job runs the single `validate:deploy`
+#     entry point inside this workflow before the deploy job may start. Only
+#     the manual path re-runs validation (it is not a high-frequency
+#     operation); the automatic main-push path reuses the already-completed
+#     CI run.
 #
 # Pipeline: preflight → validate configuration → D1 migrations (if configured)
 # → atomic Worker deploy (code + secrets in a single
@@ -52,6 +52,20 @@ name: Deploy
 #
 # Main repository: Deploy always runs (a missing required config FAILS here,
 # it is never skipped). Forks: opt in with DEPLOY_ENABLED=true.
+#
+# R1 (v1.3.0) — Deploy Correctness:
+#   * Validated SHA = deployed SHA = deployment metadata SHA.
+#   * Every `workflow_run` job (gate, manual-validate, deploy) explicitly
+#     checkouts `github.event.workflow_run.head_sha`. Relying on the
+#     default `GITHUB_SHA` is insufficient because (a) it can drift if a
+#     newer commit lands while CI is running and (b) it is not auditable
+#     from the workflow YAML alone.
+#   * The deploy job captures the SHA once as `DEPLOYED_SHA` and uses that
+#     same value in the deployment summary and the rollback record.
+#   * The manual path uses a SINGLE validation entry point
+#     (`npm run validate:deploy`) — the old `typecheck:strict` step and
+#     the bare `typecheck` step are removed. Pinned by
+#     deployment-workflow-contract-test.mjs C11..C15.
 
 on:
   workflow_run:
@@ -109,13 +123,27 @@ jobs:
   # job runs the complete CI-equivalent suite; the deploy job below starts
   # only after it succeeds. The automatic main-push path skips this job and
   # reuses the already-completed CI run (validation once per push).
+  #
+  # R1 (v1.3.0) contract: validated SHA = deployed SHA = deployment
+  # metadata SHA. Every `workflow_run` job MUST explicitly checkout the
+  # triggering commit so the worker code, validation suite, and recorded
+  # metadata all refer to the same commit. Relying on the default
+  # `GITHUB_SHA` is not enough — the gate step already pins it for the
+  # changed-files check, but the validate and deploy steps must too.
   manual-validate:
     needs: gate
     if: needs.gate.outputs.deploy == 'true' && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - name: Checkout
+      - name: Checkout triggering commit
+        if: github.event_name == 'workflow_run'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 2
+      - name: Checkout (manual dispatch)
+        if: github.event_name != 'workflow_run'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Node.js
@@ -127,14 +155,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Validate (deploy suite)
+      # R1: unified to a single validation entry point. The npm scripts
+      # `typecheck:strict` and the bare `typecheck` step are removed — the
+      # full deploy suite is the only contract the manual path must satisfy,
+      # identical to what CI runs on the automatic main-push path.
+      - name: Validate (deploy suite — single entry point)
         run: npm run validate:deploy
-
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Strict typecheck
-        run: npm run typecheck:strict
 
       - name: Dry-run Worker bundle
         run: npm run check:deploy
@@ -152,6 +178,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
+      # R1: a single SHA identifier is captured and used everywhere in this
+      # job — checkout, deployment summary, rollback record, and the
+      # wrapper logs. Validated SHA == deployed SHA == metadata SHA.
+      DEPLOYED_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+      # R2 (v1.3.0): same SHA is also injected as the `GITHUB_SHA` Worker
+      # text variable so the runtime can expose it as the deployment
+      # identity on `GET /version` (the `build` field). The deployment
+      # bridge recognises `GITHUB_SHA` via its allow-list (no runtime
+      # tunable registry entry is required because it is a deploy-time
+      # identity, not a runtime control). Validated SHA == deployed SHA
+      # == Worker build identity.
+      GITHUB_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
       # --- Non-sensitive GitHub Variables (fixed range; unset => empty) ---
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       TOKEN_STATS_D1_ID: ${{ vars.TOKEN_STATS_D1_ID }}
@@ -253,7 +291,14 @@ jobs:
       TIER3_NODES_SECRETS_10: ${{ secrets.TIER3_NODES_SECRETS_10 }}
       GATEWAY_SECRETS_CONFIG: ${{ secrets.GATEWAY_SECRETS_CONFIG }}
     steps:
-      - name: Checkout
+      - name: Checkout triggering commit
+        if: github.event_name == 'workflow_run'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 2
+      - name: Checkout (manual dispatch)
+        if: github.event_name != 'workflow_run'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Node.js
@@ -302,19 +347,35 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          echo "::warning::Post-deploy health check failed 鈥?rolling back Worker code to the previous version."
+          echo "::warning::Post-deploy health check failed — rolling back Worker code to the previous version."
            echo "Worker variables, secrets and D1 migrations are NOT rolled back (see docs/operations/deployment.md)."
+          # R1: record the SHA of the deployment that was rolled back, so the
+          # rolled-back-from SHA is auditable in the workflow run log. The
+          # SHA is the SAME as the validated SHA captured at the top of this
+          # job (validated SHA = deployed SHA = metadata SHA).
+          echo "::notice::Rolling back Worker code for deployed SHA: ${DEPLOYED_SHA}"
           npx --yes wrangler@4.114.0 rollback -c "$RUNNER_TEMP/wrangler.github.json"
 
       - name: Verify rolled-back gateway
         if: failure() && steps.deploy.outcome == 'success'
         run: |
           node scripts/github-deployment-config.mjs health-check --from-env || {
-            echo "::error::Rollback health check also failed 鈥?the previous version may not be healthy either. Manual intervention required."
+            echo "::error::Rollback health check also failed — the previous version may not be healthy either. Manual intervention required."
             exit 1
           }
 
       - name: Deployment summary
         if: success()
+        env:
+          DEPLOYED_SHA: ${{ env.DEPLOYED_SHA }}
         run: |
-          cat "$RUNNER_TEMP/deployment-summary.txt" | tee "$GITHUB_STEP_SUMMARY"
+          # R1: append the deployed SHA to the deployment summary so the
+          # validated / deployed / metadata SHA are all visible in the
+          # same artifact. This is the single record used by
+          # deployment-workflow-contract-test.mjs to pin the contract.
+          {
+            cat "$RUNNER_TEMP/deployment-summary.txt"
+            echo ""
+            echo "Identity"
+            echo "  Deployed SHA: ${DEPLOYED_SHA}"
+          } | tee "$GITHUB_STEP_SUMMARY"

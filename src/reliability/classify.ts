@@ -10,7 +10,12 @@
 
 import { parseRetryAfterMs, getLimits } from '../config/timeouts.ts';
 
-const KIND = {
+// R3 (v1.3.0): `KIND` is the single source of truth for every failure-kind
+// string that appears on the request hot path (LoopState.failureKinds,
+// AttemptOutcome.kind, terminalStatus dispatch, Tier1 mapping). It is
+// exported so consumers (e.g. errors.ts) can compare against the canonical
+// values without re-typing the literal.
+export const KIND = {
   RATE_LIMIT: 'rate_limit',
   AUTH: 'auth',
   CLIENT: 'client',
@@ -25,6 +30,26 @@ const KIND = {
   // (status=200 in attempt records; the wait after headers is the TTFT wait).
   FIRST_EVENT_TIMEOUT: 'first_event_timeout',
   CLIENT_ABORT: 'client_abort',
+  // --- R3 (v1.3.0): pre-dispatch and intra-request kinds ---------------
+  // A pre-dispatch denial by a distributed rate-limiter binding: the request
+  // never reached an upstream, so it must NOT consume any failover budget.
+  RATE_LIMIT_GLOBAL: 'rate_limit_global',
+  // A structurally broken node config (e.g. an unparseable base_url): the
+  // request never reached an upstream, so it must NOT consume any budget.
+  INVALID_BASE_URL: 'invalid_base_url',
+  // A streaming response was interrupted mid-generation (TTL expiry, peer
+  // close, missing completion marker). Counted=true so the circuit breaker
+  // sees it; Tier 1 gets a 60s cooldown via applyHealthPenalty.
+  STREAM_INTERRUPTED: 'stream_interrupted',
+  // An HTTP 200 response whose body was not parseable as the expected JSON
+  // shape. Neutral end (the upstream WAS contacted), no circuit penalty.
+  NON_JSON_BODY: 'upstream_200_non_json_body',
+  // A hedge twin (or the primary) that lost the race and was aborted after
+  // its peer committed. Neutral — no rotation, no penalty, no budget charge.
+  CANCELLED_AFTER_PEER_COMMIT: 'cancelled_after_peer_commit',
+  // A hedge twin / primary that errored in an unexpected way (the catch-all
+  // around attemptNode in hedge.ts). Rotate to give the next node a chance.
+  UNKNOWN: 'unknown',
 } as const;
 
 export type FailureKind = typeof KIND[keyof typeof KIND];
@@ -116,4 +141,60 @@ export function classifyFirstEventFailure(): FailureClassification {
 
 export function classifyClientAbort(): FailureClassification {
   return { kind: KIND.CLIENT_ABORT, action: 'neutral', cooldownMs: 0, counted: false };
+}
+
+// R3 (v1.3.0): pre-dispatch and intra-request classification helpers.
+// These cover failures that never produced an HTTP status (the upstream was
+// never contacted) or that happen mid-stream. They are kept here so the
+// entire `kind` vocabulary lives in one place: `KIND` is the single source of
+// truth, every consumer imports from this module, and the type system catches
+// drift.
+
+// Distributed rate-limiter binding denied the request before dispatch.
+// Rotate (so a same-tier healthy node gets a chance on the same logical
+// attempt), but do NOT charge the failover budget — the request never
+// touched a provider, so consuming max_attempts / budget_ms would let a
+// stream of CF-denied keys starve healthy candidates and every fallback tier
+// without ever contacting a provider.
+export function classifyPreDispatchRateLimit(): FailureClassification {
+  return { kind: KIND.RATE_LIMIT_GLOBAL, action: 'rotate', cooldownMs: 0, counted: false };
+}
+
+// The node's base_url is structurally invalid (unparseable URL, wrong
+// scheme, etc.). Rotate, do NOT charge the budget, do NOT feed the circuit
+// (a misconfigured node is an operator problem, not a provider health
+// issue).
+export function classifyPreDispatchInvalidBaseUrl(): FailureClassification {
+  return { kind: KIND.INVALID_BASE_URL, action: 'rotate', cooldownMs: 0, counted: false };
+}
+
+// The upstream returned HTTP 200 with a body that could not be parsed as
+// the expected JSON shape. Neutral end (the upstream WAS contacted, so do
+// not roll back the RPM slot), no circuit penalty, no cooldown.
+export function classifyNonJsonBody(): FailureClassification {
+  return { kind: KIND.NON_JSON_BODY, action: 'neutral', cooldownMs: 0, counted: false };
+}
+
+// The stream was interrupted mid-generation (TTL expiry, peer close, missing
+// completion marker). Rotate so a different node is tried on the next
+// attempt; counted=true so the circuit breaker sees it; 60s cooldown on
+// Tier 2/3 (matches the rate-limit cooldown so repeat offenders fall out
+// of the candidate ordering without permanent discard).
+export function classifyStreamInterrupted(): FailureClassification {
+  return { kind: KIND.STREAM_INTERRUPTED, action: 'rotate', cooldownMs: 60_000, counted: true };
+}
+
+// A hedge twin (or the primary) lost the race and was aborted because its
+// peer committed a response. Neutral — no rotation, no penalty, no budget
+// charge. The winner is the one that decides the request outcome; the loser
+// is just bookkeeping.
+export function classifyHedgeRaceLoss(): FailureClassification {
+  return { kind: KIND.CANCELLED_AFTER_PEER_COMMIT, action: 'neutral', cooldownMs: 0, counted: false };
+}
+
+// The hedge promise rejected in an unexpected way (network blip, abort
+// storm, etc.). Rotate to give the next node a chance; the regular upstream
+// failure path will re-classify the real reason if there is one.
+export function classifyHedgeUnknown(): FailureClassification {
+  return { kind: KIND.UNKNOWN, action: 'rotate', cooldownMs: 0, counted: false };
 }

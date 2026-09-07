@@ -2,9 +2,61 @@
 
 ## Unreleased
 
-### Added — 治理
+### Added — TypeScript Migration (v1.3.0 阶段)
 
 - **TypeScript Migration 治理(v1.3.0 阶段)**:新增 `docs/governance/typescript-migration.md`,固化 v1.2.6 为最后一个 JavaScript Runtime baseline 与 rollback 基线;迁移全程 behavior-preserving,Feature / Architecture / Protocol / Scheduler Freeze 持续有效至 v1.3.0 发布。禁止新增功能、修改核心行为、借迁移重构与新增 Runtime 依赖(production dependencies 保持 0)。固定 PR0–PR7 迁移顺序与每阶段 `branch → PR → CI → merge main` 节奏(文件迁移必须 `git mv` 保 history);明确工具链(Wrangler bundler + tsc noEmit typecheck、Node 原生 type stripping、erasable-only TS、真实扩展名 import 规则)、tsconfig 最终 strict 收口、类型纪律(@ts-ignore = 0、禁批量 any / `!`)、公开 API 零变化(/version 仅可加 build/revision)、Bundle 对比与每 PR 最低验证/报告要求;测试分层:轻量行为契约入 `validate:merge`,慢速套件保留 `validate:deploy`。
+
+### Added — Cross-Protocol Fallback (R0 v1.3.0)
+
+- **OpenAI Chat ↔ Anthropic Messages 双向 fallback**:客户端 OpenAI Chat / Anthropic Messages 互转,各由独立 converter 文件实现(`src/conversion/openai-chat-request-to-anthropic.ts` + `anthropic-response-to-openai-chat.ts` + `anthropic-stream-to-openai-chat.ts`)。Native First 不变,跨协议 fallback 默认 ON,跨协议 fallback 与 native retry 共享 `max_attempts` / `FAILOVER_BUDGET_MS` budget,不获取新 attempt slot。
+- **OpenAI Responses → Anthropic Messages 客户端**(Codex 路径):Responses request / response / stream 各由独立 converter 实现(`src/conversion/responses-request-to-anthropic.ts` + `anthropic-response-to-responses.ts` + `anthropic-stream-to-responses.ts`)。仅支持 Codex 实际下发的字段子集,不支持的字段(`reasoning` items / `image_generation_call` / `mcp_*` items / `code_interpreter_call` 等)被**明确拒绝**(`conversion_not_supported`),不静默丢字段。
+- **错误 envelope 跨协议契约(R0.4)**:跨协议 fallback 后,客户端始终收到**自己协议形状**的错误 envelope;上游的内部错误 JSON 永远不泄漏到客户端。OpenAI Chat 客户端收到 `{ error: { message, type, ... } }`,Anthropic 客户端收到 `{ type: 'error', error: { type, message } }`,Responses 客户端收到 `{ error: { message, type, param, code } }`。
+- **跨协议 fallback 矩阵测试 (`scripts/conversion-test.mjs`)** 覆盖全部 6 个 client×upstream 组合(非流式成功 / 流式成功 / 错误 envelope / Native 不回归 / 工具调用 fallback)与 16 个 boundary 单元测试;90/90 passed。
+
+### Changed — Deploy Correctness (R1 v1.3.0)
+
+- **CI 自动 deploy 显式 pin triggering commit**:三个 workflow_run job (gate / manual-validate / deploy) 全部 `with: ref: ${{ github.event.workflow_run.head_sha }}` 显式 checkout,消除 CI 跑期间 main 推进时的 SHA 漂移。Validated SHA == Deployed SHA == Worker build identity。
+- **手动 deploy 单一验证入口**:移除 `typecheck:strict` / 裸 `typecheck` 步骤(后者历史上引用了不存在的 npm script)。manual-validate 简化为 `npm run validate:deploy` + `npm run check:deploy` 干跑 bundle,与自动路径完全一致。
+- **Deployment summary / rollback 记录同一 SHA**:deploy job env 新增 `DEPLOYED_SHA`,Deployment summary 步骤追加 `Identity / Deployed SHA: ${DEPLOYED_SHA}`,rollback 步骤 `echo "::notice::Rolling back Worker code for deployed SHA: ${DEPLOYED_SHA}"`。完整审计链:Workflow run `DEPLOYED_SHA` == Worker `build` identity == 部署日志 == 回滚记录。
+- **Deployment Workflow Contract Test 扩展至 ×18**(`scripts/deployment-workflow-contract-test.mjs`):保留 C01–C11,新增 C12 (npm run 引用必须真实存在)、C13 (workflow_run SHA 显式 pin)、C14 (DEPLOYED_SHA env + summary 记录)、C15 (rollback 记录同一 SHA)。
+
+### Added — Production Identity (R2 v1.3.0)
+
+- **`/version` 新增 `build` 字段**(向后兼容的纯增量):从 `env.GITHUB_SHA` 读取 commit SHA,显示 7-40 hex;缺失或非法值回退为字面量 `unknown`(保证 `wrangler dev` / pre-deploy probe 不崩溃)。`version`(semver)是 release identity(手动 bump),`build`(commit SHA)是 deployment identity(CI 自动注入),两者分离。
+- **Deploy job env 注入 `GITHUB_SHA`**:与 `DEPLOYED_SHA` 同源(`github.event.workflow_run.head_sha || github.sha`)。
+- **Deployment bridge `EXTRA_VAR_ALLOW` 允许 `GITHUB_SHA`**:让 deploy bridge 从 env 收集到 Worker vars map,运行时可读取。
+- **Deployment Workflow Contract C16-C18**:deploy job 必须注入 `GITHUB_SHA` (C16),bridge 白名单必须包含 `GITHUB_SHA` (C17),`versionResponse` 必须暴露 `build` 字段 (C18)。
+- **集成测试**:`/version.build` 在注入合法 SHA 时返回该 SHA,缺失/非法时回退 `unknown`。
+
+### Changed — Reliability Core (R3 v1.3.0)
+
+- **FailureKind 词汇从 10 增到 16 闭合值**(`src/reliability/classify.ts`):新增 `RATE_LIMIT_GLOBAL` / `INVALID_BASE_URL` / `STREAM_INTERRUPTED` / `NON_JSON_BODY` / `CANCELLED_AFTER_PEER_COMMIT` / `UNKNOWN` 6 个。`KIND` 改为 `export const`,作为整个 codebase 的单一事实源。
+- **6 个新 classifier helper**:`classifyPreDispatchRateLimit` / `classifyPreDispatchInvalidBaseUrl` / `classifyStreamInterrupted` / `classifyNonJsonBody` / `classifyHedgeRaceLoss` / `classifyHedgeUnknown`。所有消费方(dispatch / success / hedge / observability / errors)通过 helper 或 `KIND.*` 常量引用,无开放字符串字面量。
+- **类型收紧**:`AttemptOutcome.kind: FailureKind` (之前 `string`)、`LoopState.failureKinds: Partial<Record<FailureKind, number>>` (之前 `Record<string, number>`)、`rotateWithNeutralEnd(reason: FailureKind)` / `noteFailure(kind: FailureKind)`。编译期捕获 drift。
+- **`terminalStatus` 使用 `KIND.*` 常量**:替代硬编码字面量比较。
+- **Reliability Core Contract ×4**(`scripts/reliability-core-contract-test.mjs`):C19 KIND 闭合 16 值、C20 src/ 无开放 kind 字面量、C21 AttemptOutcome.kind 类型为 FailureKind、C22 类型来自 classify.ts。
+
+### Changed — Scheduler Core (R4 v1.3.0)
+
+- **统一 picker 返回类型**:`pickCandidate` (Tier 2/3) 从 `RuntimeNode | null` 改为 `PickedCandidate | null`,与 `pickTier1Candidate` (Tier 1) 一致。修复 Tier 2/3 slot race-loss 返回 `null` (与 "无合格候选" 不可区分) 的 bug——之前 tier loop 跳到下一 tier 而不是重试,现在 `{ raceLost: true }` 让 race-loss 可见。
+- **`hedge.ts` twin pick 简化**:从手动包装 `{ node: legacyTwin, raceLost: false }` 改为直接传递 `PickedCandidate`。
+- **Architecture Contract C15**:`pickCandidate` 返回 `PickedCandidate` (有 `raceLost` / `releaseToken` 字段),不是裸 `RuntimeNode`。
+
+### Added — Adaptive Budget (R5 v1.3.0)
+
+- **`POLICIES_CONFIG.budget_split` opt-in 策略**:控制 per-tier attempt surplus 分配。`'even'` (默认, 向后兼容) 第一个 dispatchable tier 拿全部 surplus;`'weighted'` 按每个 tier 的 live dispatchable 节点数比例分配。
+- **`tier_attempts` 仍然胜出**:显式 override 不受 `budget_split` 影响(两者正交)。
+- **算法保证总和 = `max_attempts`**:floor 取整 / override 导致的余项由最后一个 dispatchable tier 吸收。
+- **Architecture Contract C16** + 2 个单元测试(`POLICIES_CONFIG accepts/rejects budget_split`)端到端验证两种 split 行为。
+
+### Documentation (R6 v1.3.0)
+
+- **协议模型 (R0)**:新增 v1.3.0 跨协议 fallback 矩阵(双向 OpenAI Chat↔Anthropic + Responses→Anthropic)、错误 envelope 跨协议契约、v1.3.0 协议转换表。
+- **可靠性模型 (R3)**:完整 16 个 FailureKind 表、新增 6 个 classifier helper、类型安全契约、Adaptive Budget (R5) 章节、Unified Scheduler Return (R4) 章节。
+- **调度模型 (R5)**:Adaptive Budget 章节。
+- **配置参考 (R5)**:POLICIES_CONFIG 详细字段 + `budget_split` 详解。
+- **部署文档 (R1)**:Build Identity / Deployment SHA 章节,完整审计链。
+- **Troubleshooting (R3)**:`failure_kinds` 章节列出 6 个常见 kind 与触发条件。
 
 ### Changed — Dashboard
 

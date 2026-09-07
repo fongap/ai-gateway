@@ -24,6 +24,22 @@ export const APP_META = Object.freeze({
   version: '1.2.6',
 });
 
+// R2 (v1.3.0) — Production Identity. Build SHA is the deployment identity
+// and is injected by the CI/Deploy workflow as the `GITHUB_SHA` Worker
+// text variable (see .github/workflows/deploy.yml `env.GITHUB_SHA` and
+// scripts/github-deployment-config.mjs `EXTRA_VAR_ALLOW`). The value is
+// NOT hand-maintained: the workflow pins it from
+// `github.event.workflow_run.head_sha` and the runtime reads it as-is.
+// Accept the standard 7–40 hex chars; anything else falls back to
+// `unknown` so `wrangler dev` / local dev / pre-deploy probes never
+// crash on a malformed value.
+const SHA_RE = /^[0-9a-f]{7,40}$/;
+export function resolveBuildSha(env: Record<string, unknown>): string {
+  const raw = String(env?.GITHUB_SHA ?? '').trim();
+  if (SHA_RE.test(raw)) return raw;
+  return 'unknown';
+}
+
 function sanitizePrometheusLabel(value: unknown): string {
   return String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
 }
@@ -326,13 +342,18 @@ export function versionResponse(request: Request, env: Record<string, unknown>):
     const url = new URL(repositoryRaw);
     repository = url.protocol === 'https:' ? url.href.replace(/\/$/, '') : undefined;
   } catch { repository = undefined; }
-  // Public endpoint: expose only branding/version. Never leak configuration
-  // status, node counts, or topology here — that belongs to the auth-protected
-  // /health (and server logs).
+  // Public endpoint: expose only branding/version + build identity. Never
+  // leak configuration status, node counts, or topology here — that
+  // belongs to the auth-protected /health (and server logs).
+  // R2 (v1.3.0): `version` is the release identity (semver, hand-bumped
+  // at release time); `build` is the deployment identity (commit SHA,
+  // injected by CI). The two are SEPARATE — a release version and the
+  // specific build deployed under that version.
   return new Response(JSON.stringify({
     name: APP_META.name,
     display_name: APP_META.displayName,
     version: APP_META.version,
+    build: resolveBuildSha(env),
     runtime: 'Cloudflare Workers',
     protocols: ['OpenAI Chat Completions', 'OpenAI Responses', 'Anthropic Messages'],
     ...(repository ? { repository } : {}),

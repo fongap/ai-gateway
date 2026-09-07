@@ -71,6 +71,16 @@ Tier 间 fallback 严格按优先级顺序。Budget 分配在当前可调度的 
 
 Tier 1 额外硬限制为最多 3 个 logical attempt，且在重试前检查共享 wall-clock deadline。
 
+### Adaptive Budget (R5 v1.3.0)
+
+`POLICIES_CONFIG` 中可选用 `budget_split` 字段 (与 `tier_attempts` 正交):
+
+- **`'even'` (默认)**: 第一个 dispatchable tier 获得全部 surplus。
+- **`'weighted'` (opt-in)**: surplus 按每个 tier 的 live dispatchable 节点数比例分配。
+- **`'tier_attempts'` 仍然胜出**: 显式 override 不受 `budget_split` 影响。
+
+详细算法与示例见 [reliability-model.md → Adaptive Budget (R5)](./reliability-model.md#adaptive-budget-r5-v130)。
+
 ## Failover Budget
 
 整个请求由 `FAILOVER_BUDGET_MS`（默认 60s）限制。时间从网关收到请求开始计算；每次新 attempt 检查剩余 budget。Budget 耗尽时停止轮换，返回 504 + attempt count。客户端 abort 是特权的；首事件后透明 failover 不安全。

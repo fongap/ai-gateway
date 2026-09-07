@@ -12,7 +12,7 @@
 import { attemptHeadersTimeoutMs, attemptBudgetSliceMs } from '../../config/timeouts.ts';
 import { recordNeutralEnd, rollbackRpmBucket, bumpNodeCounters } from '../../reliability/node-state.ts';
 import { releaseTier1Slot, rollbackTier1Rpm } from '../../reliability/tier1-state.ts';
-import { classifyUpstreamStatus, classifyNetworkError, classifyClientAbort } from '../../reliability/classify.ts';
+import { classifyUpstreamStatus, classifyNetworkError, classifyClientAbort, classifyPreDispatchRateLimit, classifyPreDispatchInvalidBaseUrl, classifyHedgeRaceLoss } from '../../reliability/classify.ts';
 import { buildTargetUrl, safeReadErrorBody } from '../../protocol/http.ts';
 import { isOpenAIStreamingResponse, withUsageStreamOptions } from '../../protocol/openai.ts';
 import { resolveUpstreamPath, buildUpstreamHeadersFor } from '../../transport/index.ts';
@@ -115,7 +115,7 @@ async function dispatchAttempt(c: AttemptContext): Promise<AttemptOutcome> {
   try {
     targetUrl = buildTargetUrl(node.baseUrl, resolveUpstreamPath(upstreamProtocol, surface));
   } catch {
-    return rotateWithNeutralEnd(state, node, 'invalid_base_url', c, true);
+    return rotateWithNeutralEnd(state, node, classifyPreDispatchInvalidBaseUrl().kind, c, true);
   }
 
   // ---- Optional distributed rate shaping (Cloudflare Rate Limiting) ---------
@@ -150,15 +150,16 @@ async function dispatchAttempt(c: AttemptContext): Promise<AttemptOutcome> {
           recordNeutralEnd(node.id);
           rollbackRpmBucket(node.id);
         }
-        noteFailure(state, 'rate_limit_global');
+        const preDispatchKind = classifyPreDispatchRateLimit().kind;
+        noteFailure(state, preDispatchKind);
         state.logger.info(
           `dispatch request=${requestId} logical_attempt=${state.logicalAttempts + 1}/${state.maxAttempts}`
           + ` dispatch=${state.dispatches} node=${node.id} provider=${node.provider}`
           + ` protocol=${upstreamProtocol} surface=${surface} tier=${node.tier}`
           + ` model=${requestedModel}->${upstreamModelOf(node, requestedModel)}`
-          + ` hedged=false kind=rate_limit_global status=429 counted=false (pre-dispatch, no budget charged)`,
+          + ` hedged=false kind=${preDispatchKind} status=429 counted=false (pre-dispatch, no budget charged)`,
         );
-        state.attempts.push({ attempt: state.logicalAttempts + 1, dispatch: state.dispatches, node_id: node.id, status: 429, kind: 'rate_limit_global', hedged: false });
+        state.attempts.push({ attempt: state.logicalAttempts + 1, dispatch: state.dispatches, node_id: node.id, status: 429, kind: preDispatchKind, hedged: false });
         return { rotate: true, budgetCharged: false };
       }
     } catch {
@@ -251,7 +252,7 @@ async function dispatchAttempt(c: AttemptContext): Promise<AttemptOutcome> {
         `hedge loser: request=${requestId} node=${node.id} phase=headers`
         + ` reason=cancelled_after_peer_commit neutral=true latency_ms=${latencyMs}`,
       );
-      return { rotate: true, hedgedAway: true, kind: 'cancelled_after_peer_commit' };
+      return { rotate: true, hedgedAway: true, kind: classifyHedgeRaceLoss().kind };
     }
     const classification = classifyNetworkError(headersTimeoutHit);
     recordOutcome(state, node, classification, c, { latencyMs });

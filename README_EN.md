@@ -41,7 +41,7 @@ flowchart TB
 
 - Multi-protocol: OpenAI Chat / Responses, Anthropic Messages / count_tokens
 - Native protocol forwarding: Chat → upstream `/v1/chat/completions`, Responses → upstream `/v1/responses`, Messages → upstream `/v1/messages`; nodes declare `protocol` + `surfaces` explicitly
-- Native First: OpenAI Chat / Responses are native-only; Anthropic Messages is native first, with the built-in default fallback to OpenAI Chat (via `PROTOCOL_FALLBACKS` default `{"anthropic:messages":["openai:chat_completions"]}`, only Anthropic → OpenAI Chat is supported; set `disable` to opt out; an explicit JSON value overrides)
+- Native First + v1.3.0 cross-protocol fallback: client requests are forwarded to a same-protocol, same-surface native upstream first; when the native pool is exhausted, the default enables cross-protocol fallback (OpenAI Chat↔Anthropic Messages bidirectional + Responses→Anthropic). `PROTOCOL_FALLBACKS` defaults to the three-direction chain; set `disable` to opt out; an explicit JSON value overrides. Cross-protocol fallback shares the same `max_attempts` / `FAILOVER_BUDGET_MS` budget as native retry — fallback does not earn a new attempt slot.
 - `limits.rpm` defaults hard and is enforced best-effort within one Worker isolate
 - One whole-request failover budget shared by Tier 1, Tier 2, and Tier 3
 - Tier 1 learns per-`(account, model)` TTFT only from meaningful output in real requests. It uses no active probes, health score, LRU, or static-priority ordering. It does not promise the globally fastest account on every request; it targets stability, low cost, fast avoidance, natural balance, and session continuity.
@@ -97,7 +97,7 @@ Node definitions are Worker text variables; upstream credentials and the gateway
 | POST | `/v1/chat/completions` | OpenAI Chat |
 | POST | `/v1/responses` | OpenAI Responses |
 | POST | `/v1/messages` · `/count_tokens` | Anthropic Messages |
-| GET | `/` · `/version` | entry page · version |
+| GET | `/` · `/version` | entry page · version (v1.3.0: `version` = release identity, `build` = deployment identity) |
 | GET | `/health` `/metrics` `/v1/models` | diagnostics (authenticated) |
 
 Clients may send `x-session-id` (8–128 characters) to enable Tier 1 session affinity. The raw value is SHA-256 hashed before it becomes a KV key and is never logged.
