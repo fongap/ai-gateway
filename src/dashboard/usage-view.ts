@@ -242,7 +242,7 @@ export async function usageSection(env: Record<string, unknown>, now: number = D
 }
 
 // Re-export cache helpers used by pages.ts
-import { MODEL_STATUS_RECENT_WINDOW_MS, queryAllModelsTtftPercentiles, queryRecentModelEvidence } from '../observability/token-usage-store.ts';
+import { MODEL_STATUS_RECENT_WINDOW_MS, MODEL_STATUS_HISTORICAL_WINDOW_MS, queryAllModelsTtftPercentiles, queryRecentModelEvidence } from '../observability/token-usage-store.ts';
 
 type SummaryBucket = { total: number, requests: number };
 type SummaryResult = ({
@@ -260,6 +260,7 @@ export type DashboardStats = {
   daily: DailyResult | null,
   modelUsage: ModelUsageResult | null,
   recentEvidence: Set<string> | null,
+  historicalEvidence: Set<string> | null,
   ttft: Map<string, TtftEntry> | null,
   observedAt: string,
 };
@@ -317,16 +318,17 @@ async function loadDashboardStats(env: Record<string, unknown>, now: number): Pr
   const dow = (new Date(isoDayUtc8(gridStartUtc8)).getUTCDay() + 6) % 7;
   const currentWeekStartUtc8 = gridStartUtc8 - dow * DAY_MS;
   const startIso = isoDayUtc8(currentWeekStartUtc8 - (HEATMAP_WEEKS - 1) * 7 * DAY_MS);
-  const [summary, daily, modelUsage, recentEvidence, ttftQuery] = await Promise.all([
+  const [summary, daily, modelUsage, recentEvidence, historicalEvidence, ttftQuery] = await Promise.all([
     queryTokenSummary(env, now),
     queryTokenDailySeries(env, startIso, now),
     queryTokenModelUsage(env, 7, now),
     queryRecentModelEvidence(env, MODEL_STATUS_RECENT_WINDOW_MS, now),
-    queryAllModelsTtftPercentiles(env, 7, now),
+    queryRecentModelEvidence(env, MODEL_STATUS_HISTORICAL_WINDOW_MS, now),
+    queryAllModelsTtftPercentiles(env, MODEL_STATUS_RECENT_WINDOW_MS, now),
   ]);
-  // One grouped D1 query covers ALL models in the window — no Top-4 slice,
+  // One grouped D1 query covers ALL models in the 24h window — no Top-4 slice,
   // no per-model N+1. Entries are keyed by the canonical statistical model
   // key; models without rows are filled per-public-catalog in pages.ts.
   const ttft = ttftQuery?.available && ttftQuery.ttft instanceof Map ? ttftQuery.ttft : new Map<string, TtftEntry>();
-  return { summary, daily, modelUsage, recentEvidence, ttft, observedAt: new Date(now).toISOString() };
+  return { summary, daily, modelUsage, recentEvidence, historicalEvidence, ttft, observedAt: new Date(now).toISOString() };
 }

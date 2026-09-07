@@ -36,6 +36,7 @@ import {
 import { createMockD1 } from './mock-d1-database.mjs';
 
 const HOUR = 3_600_000;
+const WEEK_MS = 7 * 24 * 3600_000;
 const now = () => 1_700_000_000_000;
 const h0 = Math.floor((now() - 30 * 60_000) / HOUR) * HOUR; // 30 min ago
 
@@ -69,23 +70,24 @@ function check(name, ok, detail) {
   const d1 = createMockD1();
   // Three case variants plus a second-hour row of one variant. With the
   // legacy GROUP BY model + JS map.set() the `code-max` entry would be
-  // overwritten by whichever raw variant came last (sampleCount <= 9);
-  // correct behavior merges all four rows: count = 3+3+3+9 = 18,
-  // buckets b0=3, b1=3, b2=3, b4=9.
+  // overwritten by whichever raw variant came last; correct behavior merges
+  // all four rows: count = 3+3+5+9 = 20 (≥ P95_MIN for both percentiles),
+  // buckets b0=3, b1=3, b2=5, b4=9.
   d1.seedModelRow(h0, 'Code-Max', { successful_ttft_count: 3, ttft_b0: 3 });
   d1.seedModelRow(h0, 'code-max', { successful_ttft_count: 3, ttft_b1: 3 });
-  d1.seedModelRow(h0 - HOUR, 'CODE-MAX', { successful_ttft_count: 3, ttft_b2: 3 });
+  d1.seedModelRow(h0 - HOUR, 'CODE-MAX', { successful_ttft_count: 5, ttft_b2: 5 });
   d1.seedModelRow(h0 - HOUR, 'code-max', { successful_ttft_count: 9, ttft_b4: 9 });
   const env = { TOKEN_STATS_DB: d1 };
-  const res = await queryAllModelsTtftPercentiles(env, 7, now());
+  const res = await queryAllModelsTtftPercentiles(env, WEEK_MS, now());
   const entry = res.ttft.get('code-max');
   check('C02 variants merge into one TTFT entry with the true sample count',
-    res.available === true && res.ttft.size === 1 && entry && entry.sampleCount === 18,
+    res.available === true && res.ttft.size === 1 && entry && entry.sampleCount === 20,
     `keys=${JSON.stringify([...res.ttft.keys()])} entry=${JSON.stringify(entry)}`);
-  // p50: ceil(18*0.5)=9th sample -> cumulative b0=3, b1=6, b2=9 -> bucket 2 (1000ms).
-  // p95: ceil(18*0.95)=18th sample -> b3=0, b4=9 -> cumulative 18 at bucket 4 (5000ms).
+  // p50: ceil(20*0.5)=10th sample -> cumulative b0=3, b1=6, b2=11 -> bucket 2 (1000ms).
+  // p95: ceil(20*0.95)=19th sample -> cumulative b3=11, b4=20 -> bucket 4 (5000ms).
   check('C02 percentiles are computed from the MERGED histogram (not the last variant)',
-    entry && entry.insufficient === false && entry.p50 === 1000 && entry.p95 === 5000,
+    entry && entry.p50Insufficient === false && entry.p95Insufficient === false
+      && entry.p50 === 1000 && entry.p95 === 5000,
     `p50=${entry && entry.p50} p95=${entry && entry.p95}`);
 }
 

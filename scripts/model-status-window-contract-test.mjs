@@ -11,14 +11,15 @@
 // (7d) diverged. These contracts pin the single source and keep the magic
 // numbers out of the evidence chain:
 //
-//   C01  The window constant is defined exactly once (token-usage-store
-//        queries.js), exported through the store facade and re-exported by
-//        src/runtime/model-status.ts — same binding identity.
-//   C02  queryRecentModelEvidence defaults to that constant.
+//   C01  The window constants are defined exactly once (token-usage-store
+//        queries.ts): 24h recent + 7d historical, exported through the store
+//        facade and re-exported by src/runtime/model-status.ts — same binding.
+//   C02  queryRecentModelEvidence defaults to the 24h constant.
 //   C03  23h-old success IS recent evidence; 25h-old is NOT (default window).
-//   C04  The dashboard evidence call site passes the constant, not a number.
-//   C05  No second window literal (7d / 168h / 604800000) in the evidence
-//        chain modules.
+//   C04  The dashboard passes the constants: recent-evidence 24h, TTFT 24h,
+//        historical-evidence 7d — not magic numbers.
+//   C05  No second RECENT-evidence window literal (7d / 168h / 604800000) in
+//        the evidence chain modules (the 7d HISTORICAL window uses DAY_MS).
 
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -42,6 +43,11 @@ const runtimeConstant = (await import('../src/runtime/model-status.ts')).MODEL_S
 check('C01 store and runtime expose the SAME 24h binding',
   storeConstant === runtimeConstant && runtimeConstant === 24 * HOUR,
   `store=${storeConstant} runtime=${runtimeConstant}`);
+const storeHist = (await import('../src/observability/token-usage-store.ts')).MODEL_STATUS_HISTORICAL_WINDOW_MS;
+const runtimeHist = (await import('../src/runtime/model-status.ts')).MODEL_STATUS_HISTORICAL_WINDOW_MS;
+check('C01 store and runtime expose the SAME 7d historical binding',
+  storeHist === runtimeHist && runtimeHist === 7 * 24 * HOUR,
+  `store=${storeHist} runtime=${runtimeHist}`);
 
 // ---- C02 + C03: default window is the constant; boundary behavior -------------
 {
@@ -68,8 +74,12 @@ check('C01 store and runtime expose the SAME 24h binding',
 // ---- C04 + C05: dashboard call site and magic-number ban ----------------------
 {
   const usageView = readFileSync(join(root, 'src/dashboard/usage-view.ts'), 'utf8');
-  check('C04 dashboard evidence call passes MODEL_STATUS_RECENT_WINDOW_MS',
+  check('C04 dashboard recent-evidence call passes MODEL_STATUS_RECENT_WINDOW_MS',
     /queryRecentModelEvidence\(env, MODEL_STATUS_RECENT_WINDOW_MS, now\)/.test(usageView));
+  check('C04b dashboard TTFT call passes MODEL_STATUS_RECENT_WINDOW_MS (24h)',
+    /queryAllModelsTtftPercentiles\(env, MODEL_STATUS_RECENT_WINDOW_MS, now\)/.test(usageView));
+  check('C04c dashboard historical-evidence call passes MODEL_STATUS_HISTORICAL_WINDOW_MS (7d)',
+    /queryRecentModelEvidence\(env, MODEL_STATUS_HISTORICAL_WINDOW_MS, now\)/.test(usageView));
 
   const banned = [
     /7 \* 24 \* 60 \* 60 \* 1000/,
@@ -92,12 +102,14 @@ check('C01 store and runtime expose the SAME 24h binding',
       if (re.test(src)) hit += `${f}:${re} `;
     }
   }
-  check('C05 no second Recent-Evidence window literal in the evidence chain', hit === '', hit);
-  // The runtime module must re-export, not redefine.
+  check('C05 no second RECENT-evidence window literal in the chain', hit === '', hit);
+  // The runtime module must re-export both constants, not redefine them.
   const runtimeSrc = readFileSync(join(root, 'src/runtime/model-status.ts'), 'utf8');
-  check('C05b runtime model-status re-exports the window constant',
-    /export \{\s*\n?\s*MODEL_STATUS_RECENT_WINDOW_MS,\s*\} from '\.\.\/observability\/token-usage-store\.ts'/.test(runtimeSrc)
-      && !/MODEL_STATUS_RECENT_WINDOW_MS = 24 \* 3600_000/.test(runtimeSrc));
+  check('C05b runtime model-status re-exports both window constants (no redefine)',
+    /export \{[^}]*MODEL_STATUS_RECENT_WINDOW_MS[^}]*\} from '\.\.\/observability\/token-usage-store\.ts'/.test(runtimeSrc)
+      && /export \{[^}]*MODEL_STATUS_HISTORICAL_WINDOW_MS[^}]*\} from '\.\.\/observability\/token-usage-store\.ts'/.test(runtimeSrc)
+      && !/MODEL_STATUS_RECENT_WINDOW_MS = 24 \* 3600_000/.test(runtimeSrc)
+      && !/MODEL_STATUS_HISTORICAL_WINDOW_MS = /.test(runtimeSrc));
 }
 
 if (failures > 0) {
