@@ -12,7 +12,7 @@ function walk(dir, out = []) {
     if (entry.name.startsWith('.')) continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) walk(full, out);
-    else if (entry.name.endsWith('.js') || entry.name.endsWith('.mjs') || entry.name.endsWith('.ts')) out.push(full);
+    else if (entry.name.endsWith('.js') || entry.name.endsWith('.mjs')) out.push(full);
   }
   return out;
 }
