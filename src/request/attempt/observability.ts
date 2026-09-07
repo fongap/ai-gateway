@@ -121,7 +121,7 @@ export function makeNodeStreamTrack(c: AttemptContext, node: RuntimeNode, latenc
       ? releaseTier1Slot(node.id, c.tier1ReleaseToken)
       : recordNeutralEnd(node.id),
     onStreamStart: () => recordStreamStart(),
-    onStreamEnd: (outcome: string, d: { reason: string, durationMs: number, chunkCount: number, receivedBytes: number, completionMarkerSeen: boolean }) => {
+    onStreamEnd: (outcome: string, d: { reason: string | null, durationMs: number, chunkCount: number, receivedBytes: number, completionMarkerSeen: boolean }) => {
       if (outcome === 'completed') { recordStreamCompleted(); return; }
       if (outcome !== 'interrupted') return; // neutral (client abort) is not counted
       recordStreamInterrupted(d.reason);

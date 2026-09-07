@@ -11,12 +11,7 @@ const SECURITY_HEADERS = {
   'Referrer-Policy': 'no-referrer',
 };
 
-/**
- * @param {Request} request
- * @param {Record<string, any>} env
- * @returns {Record<string, string>}
- */
-export function corsHeaders(request, env) {
+export function corsHeaders(request: Request, env: Record<string, unknown>): Record<string, string> {
   const allowedOrigin = readEnv(env, 'ALLOWED_ORIGIN');
   // Default: CORS disabled. Browser access requires explicit ALLOWED_ORIGIN.
   if (!allowedOrigin) return { ...SECURITY_HEADERS };
@@ -29,7 +24,7 @@ export function corsHeaders(request, env) {
     'anthropic-version', 'anthropic-beta',
   ]);
   const accepted = requested.filter((v) => allowedRequestHeaders.has(v));
-  const headers = {
+  const headers: Record<string, string> = {
     'Access-Control-Allow-Origin': origin,
     'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
     'Access-Control-Allow-Headers': accepted.length > 0 ? accepted.join(', ') : 'Authorization,X-Api-Key,Content-Type,Accept',
@@ -40,7 +35,7 @@ export function corsHeaders(request, env) {
   return headers;
 }
 
-function normalizeAllowedOrigin(value) {
+function normalizeAllowedOrigin(value: string): string | null {
   if (value === '*') return '*';
   try {
     const parsed = new URL(value);
@@ -52,7 +47,7 @@ function normalizeAllowedOrigin(value) {
   }
 }
 
-export function jsonError(request, env, status, message, details, requestId, extraHeaders) {
+export function jsonError(request: Request, env: Record<string, unknown>, status: number, message: string, details?: Record<string, unknown>, requestId?: string, extraHeaders?: Record<string, string>): Response {
   return new Response(JSON.stringify({ error: { message, ...(details ? { details } : {}) } }), {
     status,
     headers: {
@@ -65,7 +60,7 @@ export function jsonError(request, env, status, message, details, requestId, ext
   });
 }
 
-export function htmlResponse(content, init) {
+export function htmlResponse(content: BodyInit, init?: { status?: number, headers?: Record<string, unknown> }): Response {
   return new Response(content, {
     status: init?.status ?? 200,
     headers: {
@@ -87,7 +82,7 @@ export function htmlResponse(content, init) {
 // Join an upstream API path onto a configured base_url.
 // If base_url already ends with /v1, a leading /v1 on the path is stripped
 // so "https://host/v1" + "/v1/chat/completions" does not double the prefix.
-export function buildTargetUrl(baseUrl, upstreamPath) {
+export function buildTargetUrl(baseUrl: string, upstreamPath: string): string {
   const base = new URL(baseUrl);
   let path = upstreamPath || '/';
   const basePath = base.pathname.replace(/\/+$/, '').toLowerCase();
@@ -99,7 +94,7 @@ export function buildTargetUrl(baseUrl, upstreamPath) {
   return base.toString();
 }
 
-function joinPath(left, right) {
+function joinPath(left: string | undefined, right: string | undefined): string {
   const a = String(left || '').replace(/\/+$/, '');
   const b = String(right || '').replace(/^\/+/, '');
   return `/${[a.replace(/^\/+/, ''), b].filter(Boolean).join('/')}`;
@@ -112,7 +107,7 @@ export class BodyTooLargeError extends Error {
   }
 }
 
-export async function readBodyTextWithLimit(request, maxBytes) {
+export async function readBodyTextWithLimit(request: Request, maxBytes: number): Promise<string> {
   if (!request.body) return '';
   const reader = request.body.getReader();
   const decoder = new TextDecoder();
@@ -131,13 +126,13 @@ export async function readBodyTextWithLimit(request, maxBytes) {
   return text + decoder.decode();
 }
 
-export async function safeReadErrorBody(response, maxBytes = 4096) {
+export async function safeReadErrorBody(response: Response, maxBytes: number = 4096): Promise<string> {
   try {
     const ct = (response.headers.get('content-type') || '').toLowerCase();
     if (ct.includes('text/event-stream')) return '[streaming body skipped]';
     const reader = response.body?.getReader();
     if (!reader) return '';
-    const chunks = [];
+    const chunks: Uint8Array[] = [];
     let total = 0;
     while (total < maxBytes) {
       const { done, value } = await reader.read();
@@ -161,7 +156,7 @@ export async function safeReadErrorBody(response, maxBytes = 4096) {
   }
 }
 
-export function trimDiagnostic(text, limit = 600) {
+export function trimDiagnostic(text: unknown, limit: number = 600): string {
   return String(text || '').replace(/\s+/g, ' ').slice(0, limit);
 }
 
@@ -169,11 +164,7 @@ export function trimDiagnostic(text, limit = 600) {
 // request the gateway already resolved — the gateway has internally rotated
 // across nodes, so a client-side blind retry risks re-executing a tool call.
 // Rate-limit (429) and capacity (503) responses stay retryable via Retry-After.
-/**
- * @param {number} status
- * @returns {Record<string, string>}
- */
-export function shouldNotRetryHeaders(status) {
+export function shouldNotRetryHeaders(status: number): Record<string, string> {
   if (status === 429 || status === 503) return {};
   return { 'x-should-retry': 'false' };
 }

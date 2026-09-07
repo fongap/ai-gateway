@@ -13,9 +13,9 @@ import { attemptHeadersTimeoutMs, attemptBudgetSliceMs } from '../../config/time
 import { recordNeutralEnd, rollbackRpmBucket, bumpNodeCounters } from '../../reliability/node-state.ts';
 import { releaseTier1Slot, rollbackTier1Rpm } from '../../reliability/tier1-state.ts';
 import { classifyUpstreamStatus, classifyNetworkError, classifyClientAbort } from '../../reliability/classify.ts';
-import { buildTargetUrl, safeReadErrorBody } from '../../protocol/http.js';
-import { isOpenAIStreamingResponse, withUsageStreamOptions } from '../../protocol/openai.js';
-import { resolveUpstreamPath, buildUpstreamHeadersFor } from '../../transport/index.js';
+import { buildTargetUrl, safeReadErrorBody } from '../../protocol/http.ts';
+import { isOpenAIStreamingResponse, withUsageStreamOptions } from '../../protocol/openai.ts';
+import { resolveUpstreamPath, buildUpstreamHeadersFor } from '../../transport/index.ts';
 import { streamUsageSupported } from '../../config/provider-quirks.ts';
 import { gatewayError, buildClientErrorResponse } from '../errors.ts';
 import { upstreamModelOf } from '../response-helpers.ts';

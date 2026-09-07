@@ -31,31 +31,50 @@ export const GUARD_ERROR = {
   // records a node failure and rotates to a healthy node.
   PRE_EVENT_BYTES_EXCEEDED: 'first_event_pre_bytes_exceeded',
   SSE_LINE_EXCEEDED: 'first_event_sse_line_exceeded',
-};
+} as const;
 
-const guardedStreamState = new WeakMap();
+export type GuardErrorCode = typeof GUARD_ERROR[keyof typeof GUARD_ERROR];
 
-// Hard limits for the pre-first-event guard (shared with track.js for
+// Same runtime shape as before (Error with name + code), now typed.
+class GuardError extends Error {
+  code: GuardErrorCode;
+  constructor(code: GuardErrorCode) {
+    super(code);
+    this.name = 'FirstEventGuardError';
+    this.code = code;
+  }
+}
+
+function guardError(code: GuardErrorCode): GuardError {
+  return new GuardError(code);
+}
+
+const guardedStreamState = new WeakMap<object, { failureReason: string | null }>();
+
+// Hard limits for the pre-first-event guard (shared with track.ts for
 // consistency with the 2 MiB assembled-body limit).
 export const FIRST_EVENT_MAX_PRE_BYTES = 2 * 1024 * 1024; // 2 MiB
 export const FIRST_EVENT_MAX_SSE_LINE = 1024 * 1024; // 1 MiB per SSE line/event
+
+export type SseEventState = { dataLines: string[], dataLength: number };
+export type SseEventHandler = (data: string) => void;
 
 // A post-commit reader exception is intentionally relayed as a clean EOF so
 // already-buffered model output is not discarded. Expose the hidden cause to
 // the outer tracker, which can then classify/log it as reader_error instead of
 // collapsing every clean close into missing_completion_marker.
-export function guardedStreamFailureReason(response) {
+export function guardedStreamFailureReason(response: Response): string | null {
   return guardedStreamState.get(response)?.failureReason || null;
 }
 
 // Incremental SSE line scanner shared by every streaming path so each SSE
 // event is parsed exactly once no matter which consumer processes it.
 // Usage: const s = createSseScanner(onData); s.push(chunkText)...; s.flush();
-export function createSseScanner(onEvent) {
+export function createSseScanner(onEvent: SseEventHandler): { push(chunkText: string): void, flush(): void } {
   let buffer = '';
-  const eventState = { dataLines: [], dataLength: 0 };
+  const eventState: SseEventState = { dataLines: [], dataLength: 0 };
   return {
-    push(chunkText) {
+    push(chunkText: string): void {
       buffer += chunkText;
       buffer = drainLines(buffer, eventState, onEvent);
       // Check the unfinished remainder AFTER draining complete lines. A large
@@ -65,13 +84,13 @@ export function createSseScanner(onEvent) {
         throw guardError(GUARD_ERROR.SSE_LINE_EXCEEDED);
       }
     },
-    flush() {
+    flush(): void {
       buffer = drainLines(buffer + '', eventState, onEvent, true);
     },
   };
 }
 
-function drainLines(buffer, eventState, onEvent, flush = false) {
+function drainLines(buffer: string, eventState: SseEventState, onEvent: SseEventHandler, flush: boolean = false): string {
   let rest = buffer;
   for (;;) {
     const newline = rest.indexOf('\n');
@@ -97,7 +116,7 @@ function drainLines(buffer, eventState, onEvent, flush = false) {
   return rest;
 }
 
-function handleSseLine(line, eventState, onEvent) {
+function handleSseLine(line: string, eventState: SseEventState, onEvent: SseEventHandler): void {
   if (line === '') {
     dispatchData(eventState, onEvent);
     return;
@@ -118,7 +137,7 @@ function handleSseLine(line, eventState, onEvent) {
   eventState.dataLength += separatorLength + value.length;
 }
 
-function dispatchData(eventState, onEvent) {
+function dispatchData(eventState: SseEventState, onEvent: SseEventHandler): void {
   const { dataLines } = eventState;
   if (dataLines.length === 0) return;
   const data = dataLines.join('\n');
@@ -127,7 +146,7 @@ function dispatchData(eventState, onEvent) {
   onEvent(data);
 }
 
-function isCompletePayload(data) {
+function isCompletePayload(data: string): boolean {
   if (!data || data === '[DONE]') return true;
   try {
     JSON.parse(data);
@@ -145,14 +164,14 @@ function isCompletePayload(data) {
 // keeps consuming until real output appears (or the stream ends/times out).
 // Omitting it preserves the original "any parseable non-error event commits"
 // behavior used by the OpenAI Chat / Responses paths.
-export async function ensureFirstSseEvent(upstreamResponse, timeoutMs, clientSignal, isRealOutput) {
+export async function ensureFirstSseEvent(upstreamResponse: Response, timeoutMs: number, clientSignal: AbortSignal | null | undefined, isRealOutput: ((json: any) => boolean) | undefined): Promise<Response> {
   if (!upstreamResponse.body) throw guardError(GUARD_ERROR.EMPTY);
   const reader = upstreamResponse.body.getReader();
-  const consumed = [];
+  const consumed: Uint8Array[] = [];
   let settled = false;
 
   return await new Promise((resolve, reject) => {
-    let timerId = null;
+    let timerId: ReturnType<typeof setTimeout> | undefined;
     const abort = () => finishErr(GUARD_ERROR.ABORTED);
 
     const finishOk = () => {
@@ -160,7 +179,7 @@ export async function ensureFirstSseEvent(upstreamResponse, timeoutMs, clientSig
       settled = true;
       clearTimeout(timerId);
       clientSignal?.removeEventListener('abort', abort);
-      const state = { failureReason: null };
+      const state: { failureReason: string | null } = { failureReason: null };
       const stream = new ReadableStream({
         start(controller) {
           for (const chunk of consumed) controller.enqueue(chunk);
@@ -177,7 +196,7 @@ export async function ensureFirstSseEvent(upstreamResponse, timeoutMs, clientSig
       resolve(replay);
     };
 
-    const finishErr = (code) => {
+    const finishErr = (code: GuardErrorCode) => {
       if (settled) return;
       settled = true;
       clearTimeout(timerId);
@@ -191,7 +210,7 @@ export async function ensureFirstSseEvent(upstreamResponse, timeoutMs, clientSig
     // output: committing it would close the failover boundary on a node that
     // never produced anything, so it must rotate like any other first-event
     // failure.
-    const check = (data) => {
+    const check = (data: string) => {
       if (data === '[DONE]') {
         // A bare [DONE] without any output event is an empty stream.
         finishErr(GUARD_ERROR.DONE_ONLY);
@@ -232,7 +251,7 @@ export async function ensureFirstSseEvent(upstreamResponse, timeoutMs, clientSig
   });
 }
 
-async function consumeSseEventsWithReader(reader, onData, consumed, isSettled) {
+async function consumeSseEventsWithReader(reader: ReadableStreamDefaultReader<Uint8Array>, onData: SseEventHandler, consumed: Uint8Array[], isSettled: () => boolean): Promise<void> {
   const decoder = new TextDecoder();
   const scanner = createSseScanner(onData);
   let preBytes = 0;
@@ -251,7 +270,7 @@ async function consumeSseEventsWithReader(reader, onData, consumed, isSettled) {
   if (!isSettled()) scanner.flush();
 }
 
-async function pump(reader, controller, state) {
+async function pump(reader: ReadableStreamDefaultReader<Uint8Array>, controller: ReadableStreamDefaultController<Uint8Array>, state: { failureReason: string | null }): Promise<void> {
   try {
     for (;;) {
       const { done, value } = await reader.read();
@@ -266,11 +285,4 @@ async function pump(reader, controller, state) {
     state.failureReason = 'reader_error';
     try { controller.close(); } catch { /* already closed */ }
   }
-}
-
-function guardError(code) {
-  const error = new Error(code);
-  error.name = 'FirstEventGuardError';
-  error.code = code;
-  return error;
 }

@@ -7,7 +7,7 @@
 // by handler.ts. Extracting them shrinks handler.ts and makes the response
 // shaping logic independently inspectable without changing behavior.
 
-import { corsHeaders } from '../protocol/http.js';
+import { corsHeaders } from '../protocol/http.ts';
 import type { RuntimeNode } from '../types/node.ts';
 
 const streamErrorEncoder = new TextEncoder();
@@ -47,7 +47,7 @@ export function jsonResponse(status: number, data: unknown, env: Record<string, 
 // when a transparent failover is no longer safe. The shape is route-specific:
 // Responses uses event: error + type/error, Anthropic uses event: error +
 // type/error nested under .error, and OpenAI Chat uses a plain data: payload.
-export function streamInterruptionChunk(route: string, requestId: string, reason: string, { nextSequenceNumber = 0 }: { nextSequenceNumber?: number } = {}): Uint8Array {
+export function streamInterruptionChunk(route: string, requestId: string, reason: string | null, { nextSequenceNumber = 0 }: { nextSequenceNumber?: number } = {}): Uint8Array {
   const message = `Gateway upstream stream interrupted (${reason || 'unknown'}).`;
   let event;
   if (route === 'openai_responses') {

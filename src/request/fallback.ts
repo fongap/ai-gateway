@@ -34,8 +34,8 @@
 //   * If the fallback chain is exhausted, the request falls through
 //     to the standard exhausted handler.
 
-import { anthropicErrorResponse } from '../protocol/anthropic.js';
-import { convertAnthropicToOpenAIRequest, ConversionError } from '../conversion/anthropic-to-openai.js';
+import { anthropicErrorResponse } from '../protocol/anthropic.ts';
+import { convertAnthropicToOpenAIRequest, ConversionError } from '../conversion/anthropic-to-openai.ts';
 import { buildBudgetExhaustedResponse } from './errors.ts';
 import { computeTierCaps } from './tier-loop.ts';
 import type { LoopContext, ConversionContext } from '../types/request.ts';

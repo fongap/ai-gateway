@@ -10,7 +10,7 @@ import { snapshotTier1AccountRuntime } from '../reliability/tier1-state.ts';
 import { snapshotTier1Affinity } from '../scheduler/tier1-affinity.ts';
 import { gatewayStats, streamStats } from './gateway-stats.mjs';
 import { tokenStats, summarizeTokenStats, tokenMetricSeries } from './token-usage.mjs';
-import { corsHeaders, jsonError } from '../protocol/http.js';
+import { corsHeaders, jsonError } from '../protocol/http.ts';
 import { modelRegistryEntry, servesModel, collectKnownModels } from '../config/registry.ts';
 import { filterVisibleModels as filterModelsByKey } from '../config/access-keys.ts';
 

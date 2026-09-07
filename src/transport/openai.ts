@@ -14,6 +14,8 @@
 //   responses        -> {base_url}/v1/responses   (NATIVE — never converted
 //                                                     to/from chat completions)
 
+import type { Surface } from '../types/protocol.ts';
+
 // Upstream path per surface. The gateway forwards OpenAI requests to the
 // native OpenAI-compatible endpoint of the same surface.
 export const OPENAI_SURFACE_PATH = Object.freeze({
@@ -29,17 +31,17 @@ const RESPONSES_MEANINGFUL_DELTA_TYPES = new Set([
   'response.refusal.delta',
 ]);
 
-export function resolveOpenAIPath(surface) {
-  const path = OPENAI_SURFACE_PATH[surface];
+export function resolveOpenAIPath(surface: Surface): string {
+  const path = (OPENAI_SURFACE_PATH as Record<string, string | undefined>)[surface];
   if (!path) throw new Error(`unknown OpenAI surface: ${surface}`);
   return path;
 }
 
 // Strict upstream header allowlist. Client auth material is never forwarded;
 // the only Authorization header is the one built from the Runtime Node
-// credential. See buildUpstreamHeadersFor (transport/index.js) for the
+// credential. See buildUpstreamHeadersFor (transport/index.ts) for the
 // protocol dispatch.
-export function buildOpenAIHeaders(request, credential, requestId) {
+export function buildOpenAIHeaders(request: Request, credential: string, requestId: string): Headers {
   const headers = new Headers();
   headers.set('Authorization', `Bearer ${credential}`);
   headers.set('Content-Type', request.headers.get('content-type') || 'application/json');
@@ -57,7 +59,7 @@ export function buildOpenAIHeaders(request, credential, requestId) {
 // (response.created / output_item.added / …) do NOT commit the failover
 // boundary, so a node that announces itself and then dies can still be
 // rotated away from.
-export function isResponsesRealOutput(json) {
+export function isResponsesRealOutput(json: Record<string, any> | null | undefined): boolean {
   const type = json?.type;
   if (!RESPONSES_MEANINGFUL_DELTA_TYPES.has(type)) return false;
   return typeof json?.delta === 'string' && json.delta.trim().length > 0;
@@ -71,7 +73,7 @@ export function isResponsesRealOutput(json) {
 // keep the original lax boundary. Real output = non-empty text, a reasoning
 // increment, or a tool-call increment; role-only / empty / usage-only deltas do
 // NOT commit, so a node that announces itself and then dies can still rotate.
-export function isOpenAIChatRealOutput(json) {
+export function isOpenAIChatRealOutput(json: Record<string, any> | null | undefined): boolean {
   const choices = json?.choices;
   if (!Array.isArray(choices) || choices.length === 0) return false;
   for (const c of choices) {
@@ -85,7 +87,7 @@ export function isOpenAIChatRealOutput(json) {
   return false;
 }
 
-function isMeaningfulToolCall(call) {
+function isMeaningfulToolCall(call: any): boolean {
   if (!call || typeof call !== 'object') return false;
   if (typeof call.id === 'string' && call.id.trim().length > 0) return true;
   const fn = call.function;
@@ -95,7 +97,7 @@ function isMeaningfulToolCall(call) {
   ));
 }
 
-export function isOpenAIChatCompletionMeaningful(json) {
+export function isOpenAIChatCompletionMeaningful(json: Record<string, any> | null | undefined): boolean {
   for (const choice of json?.choices ?? []) {
     const message = choice?.message;
     if (!message || typeof message !== 'object') continue;
@@ -107,7 +109,7 @@ export function isOpenAIChatCompletionMeaningful(json) {
   return false;
 }
 
-export function isOpenAIResponsesObjectMeaningful(json) {
+export function isOpenAIResponsesObjectMeaningful(json: Record<string, any> | null | undefined): boolean {
   for (const item of json?.output ?? []) {
     if (item?.type === 'function_call' && (
       (typeof item.name === 'string' && item.name.trim().length > 0)

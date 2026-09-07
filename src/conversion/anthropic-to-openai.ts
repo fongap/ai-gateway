@@ -4,22 +4,23 @@
 // Anthropic Messages request -> OpenAI Chat Completions request converter.
 
 export class ConversionError extends Error {
-  constructor(code, message) {
+  code: string;
+  constructor(code: string, message?: string) {
     super(message || code);
     this.name = 'ConversionError';
     this.code = code;
   }
 }
 
-function unsupportedBlock(type) {
+function unsupportedBlock(type: unknown): never {
   throw new ConversionError(`conversion_not_supported: ${type} blocks not supported`);
 }
 
-function systemToOpenAI(system) {
+function systemToOpenAI(system: unknown): Record<string, any> | null {
   if (system === undefined || system === null) return null;
   if (typeof system === 'string') return { role: 'system', content: system };
   if (!Array.isArray(system)) return { role: 'system', content: String(system) };
-  const parts = [];
+  const parts: string[] = [];
   for (const block of system) {
     if (typeof block === 'string') parts.push(block);
     else if (block?.type === 'text') parts.push(block.text || '');
@@ -28,10 +29,10 @@ function systemToOpenAI(system) {
   return { role: 'system', content: parts.join('\n') };
 }
 
-function convertAssistantContent(blocks) {
-  const out = { content: '' };
-  const toolCalls = [];
-  let pending = null;
+function convertAssistantContent(blocks: any[]): Record<string, any> {
+  const out: Record<string, any> = { content: '' };
+  const toolCalls: any[] = [];
+  let pending: { toolCalls: any[], content: any } | null = null;
   for (const block of blocks) {
     if (!block || typeof block !== 'object') continue;
     if (block.type === 'text') {
@@ -55,10 +56,10 @@ function convertAssistantContent(blocks) {
   return out;
 }
 
-function convertUserContent(blocks) {
+function convertUserContent(blocks: unknown): string | Record<string, any> | Array<Record<string, any>> {
   if (typeof blocks === 'string') return blocks;
   if (!Array.isArray(blocks)) return '';
-  const parts = [];
+  const parts: Array<Record<string, any>> = [];
   for (const block of blocks) {
     if (!block || typeof block !== 'object') continue;
     if (block.type === 'text') parts.push({ type: 'text', text: block.text || '' });
@@ -72,11 +73,11 @@ function convertUserContent(blocks) {
   return parts.length === 1 && parts[0].role === 'tool' ? parts[0] : parts;
 }
 
-function extractToolResultText(content) {
+function extractToolResultText(content: unknown): string {
   if (content === undefined || content === null) return '';
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return JSON.stringify(content);
-  const parts = [];
+  const parts: string[] = [];
   for (const part of content) {
     if (typeof part === 'string') parts.push(part);
     else if (part && typeof part === 'object' && part.type === 'text') parts.push(part.text || '');
@@ -84,18 +85,19 @@ function extractToolResultText(content) {
   return parts.join('\n');
 }
 
-function mapToolChoice(toolChoice) {
+function mapToolChoice(toolChoice: unknown): string | Record<string, any> | undefined {
   if (toolChoice === undefined || toolChoice === null) return undefined;
   if (typeof toolChoice === 'string') return toolChoice;
-  if (toolChoice.type === 'auto') return 'auto';
-  if (toolChoice.type === 'any') return 'required';
-  if (toolChoice.type === 'tool') return { type: 'function', function: { name: toolChoice.name } };
-  if (toolChoice.type === 'none') return 'none';
-  unsupportedBlock(`tool_choice:${toolChoice.type}`);
+  const tc = toolChoice as Record<string, any>;
+  if (tc.type === 'auto') return 'auto';
+  if (tc.type === 'any') return 'required';
+  if (tc.type === 'tool') return { type: 'function', function: { name: tc.name } };
+  if (tc.type === 'none') return 'none';
+  unsupportedBlock(`tool_choice:${tc.type}`);
 }
 
-export function convertAnthropicToOpenAIRequest(body) {
-  const out = {};
+export function convertAnthropicToOpenAIRequest(body: Record<string, any>): Record<string, any> {
+  const out: Record<string, any> = {};
   if (body.model !== undefined) out.model = body.model;
   if (body.max_tokens !== undefined) out.max_tokens = body.max_tokens;
   if (body.temperature !== undefined) out.temperature = body.temperature;
@@ -106,7 +108,7 @@ export function convertAnthropicToOpenAIRequest(body) {
   if (body.metadata !== undefined) out.metadata = body.metadata;
   if (body.user !== undefined) out.user = body.user;
 
-  const messages = [];
+  const messages: any[] = [];
   const systemMessage = systemToOpenAI(body.system);
   if (systemMessage) messages.push(systemMessage);
 
@@ -140,7 +142,7 @@ export function convertAnthropicToOpenAIRequest(body) {
   out.messages = messages;
 
   if (Array.isArray(body.tools)) {
-    out.tools = body.tools.map((tool) => ({
+    out.tools = body.tools.map((tool: any) => ({
       type: 'function',
       function: {
         name: tool.name,

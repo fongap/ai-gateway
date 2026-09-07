@@ -17,7 +17,7 @@ import {
   rollbackTier1Rpm,
 } from '../../reliability/tier1-state.ts';
 import type { FailureClassification } from '../../reliability/classify.ts';
-import { trimDiagnostic } from '../../protocol/http.js';
+import { trimDiagnostic } from '../../protocol/http.ts';
 import { upstreamModelOf } from '../response-helpers.ts';
 import type { LoopState, AttemptContext, AttemptOutcome } from '../../types/request.ts';
 import type { RuntimeNode } from '../../types/node.ts';

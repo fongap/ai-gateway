@@ -15,27 +15,27 @@ import { classifyUpstreamStatus, classifyFirstEventFailure, classifyClientAbort 
 import {
   corsHeaders,
   safeReadErrorBody, trimDiagnostic,
-} from '../../protocol/http.js';
-import { synthesizeSseFromCompletion } from '../../protocol/openai.js';
-import { estimateAnthropicInputTokens } from '../../protocol/anthropic.js';
+} from '../../protocol/http.ts';
+import { synthesizeSseFromCompletion } from '../../protocol/openai.ts';
+import { estimateAnthropicInputTokens } from '../../protocol/anthropic.ts';
 import {
   collectResponsesObject, synthesizeResponsesFromObject,
-} from '../../protocol/responses/index.js';
+} from '../../protocol/responses/index.ts';
 import {
   isAnthropicNativeRealOutput, isResponsesRealOutput, isOpenAIChatRealOutput,
   isOpenAIChatCompletionMeaningful, isOpenAIResponsesObjectMeaningful,
   isAnthropicMessageMeaningful,
-} from '../../transport/index.js';
+} from '../../transport/index.ts';
 import {
   collectAnthropicMessageObject, synthesizeAnthropicFromMessage,
-} from '../../stream/anthropic-native.js';
-import { ensureFirstSseEvent, GUARD_ERROR, guardedStreamFailureReason } from '../../stream/guard.js';
-import { collectOpenAIStreamObject } from '../../stream/assemble.js';
-import { trackStreamResponse } from '../../stream/track.js';
+} from '../../stream/anthropic-native.ts';
+import { ensureFirstSseEvent, GUARD_ERROR, guardedStreamFailureReason } from '../../stream/guard.ts';
+import { collectOpenAIStreamObject } from '../../stream/assemble.ts';
+import { trackStreamResponse } from '../../stream/track.ts';
 import { gatewayError, buildClientErrorResponse } from '../errors.ts';
 import { finalHeaders, jsonResponse, streamInterruptionChunk, upstreamModelOf } from '../response-helpers.ts';
-import { convertOpenAIToAnthropicResponse, convertOpenAIUsageToAnthropic } from '../../conversion/openai-to-anthropic.js';
-import { createAnthropicStreamFromOpenAI } from '../../conversion/stream-converter.js';
+import { convertOpenAIToAnthropicResponse, convertOpenAIUsageToAnthropic } from '../../conversion/openai-to-anthropic.ts';
+import { createAnthropicStreamFromOpenAI } from '../../conversion/stream-converter.ts';
 import {
   recordTokens, recordNodeSuccess, makeNodeStreamTrack, recordTier1NonStreamTtft,
 } from './observability.ts';
@@ -47,7 +47,7 @@ import type { AttemptContext, AttemptOutcome } from '../../types/request.ts';
 // content_block_start/stop, ping and message_delta are lifecycle events and
 // NOT commit points — the guard keeps consuming until real output appears,
 // so a node that streams lifecycle events before dying can still fail over.
-// Defined by the Anthropic transport (src/transport/anthropic.js) — the two
+// Defined by the Anthropic transport (src/transport/anthropic.ts) — the two
 // protocol families deliberately do NOT share a first-real-output judgment.
 // OpenAI Chat Tier 1 uses its meaningful-output predicate while Tier 2/3 keep
 // the original parseable-event boundary. Responses uses response.*.delta.
@@ -178,7 +178,7 @@ export async function handleSuccess(s: {
         // transform's parse point instead (onUsage NOT passed here), keeping
         // exactly one capture per stream.
         onUsage: (u: any) => recordTokens(c, node, u),
-        interruptionChunk: (reason: string) => streamInterruptionChunk(route, requestId, reason),
+        interruptionChunk: (reason: string | null) => streamInterruptionChunk(route, requestId, reason),
         upstreamFailureReason: hiddenStreamFailure,
         ...makeNodeStreamTrack(c, node, latencyMs),
       });
@@ -197,7 +197,7 @@ export async function handleSuccess(s: {
         // Native Responses SSE carries usage inside the response.completed
         // payload; the tracked stream's passive scan reports it (onUsage).
         onUsage: (u: any) => recordTokens(c, node, u),
-        interruptionChunk: (reason: string, details: { nextSequenceNumber?: number }) => streamInterruptionChunk(route, requestId, reason, details),
+        interruptionChunk: (reason: string | null, details?: { nextSequenceNumber?: number }) => streamInterruptionChunk(route, requestId, reason, details),
         upstreamFailureReason: hiddenStreamFailure,
         ...makeNodeStreamTrack(c, node, latencyMs),
       });
@@ -225,7 +225,7 @@ export async function handleSuccess(s: {
           idleTimeoutMs: limits.streamIdleTimeoutMs,
           completionMarker: /event:\s*message_stop\b/,
           onUsage: (u: any) => recordTokens(c, node, u),
-          interruptionChunk: (reason: string) => streamInterruptionChunk(route, requestId, reason),
+          interruptionChunk: (reason: string | null) => streamInterruptionChunk(route, requestId, reason),
           upstreamFailureReason: hiddenStreamFailure,
           ...makeNodeStreamTrack(c, node, latencyMs),
         },
@@ -244,7 +244,7 @@ export async function handleSuccess(s: {
       completionMarker: /event:\s*message_stop\b/,
       ...(needsModelRewrite ? { rewriteModel: requestedModel, rewriteModelAt: 'message.model' } : {}),
       onUsage: (u: any) => recordTokens(c, node, u),
-      interruptionChunk: (reason: string) => streamInterruptionChunk(route, requestId, reason),
+      interruptionChunk: (reason: string | null) => streamInterruptionChunk(route, requestId, reason),
       upstreamFailureReason: hiddenStreamFailure,
       ...makeNodeStreamTrack(c, node, latencyMs),
     });
@@ -339,7 +339,7 @@ export async function handleSuccess(s: {
           // branch is mutually exclusive with the assemble path below, so the
           // scan can never double-count against a recordTokens call).
           onUsage: (u: any) => recordTokens(c, node, u),
-          interruptionChunk: (reason: string) => streamInterruptionChunk(route, requestId, reason),
+          interruptionChunk: (reason: string | null) => streamInterruptionChunk(route, requestId, reason),
           ...makeNodeStreamTrack(c, node, latencyMs),
         },
       );

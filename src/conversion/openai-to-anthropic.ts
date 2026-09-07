@@ -3,9 +3,9 @@
 //
 // OpenAI Chat Completions response -> Anthropic Messages response converter.
 
-import { ConversionError } from './anthropic-to-openai.js';
+import { ConversionError } from './anthropic-to-openai.ts';
 
-function mapFinishReason(reason) {
+function mapFinishReason(reason: unknown): string {
   switch (reason) {
     case 'stop':
     case 'content_filter':
@@ -19,17 +19,19 @@ function mapFinishReason(reason) {
   }
 }
 
-export function convertOpenAIUsageToAnthropic(usage) {
+export function convertOpenAIUsageToAnthropic(usage: unknown): { input_tokens: number, output_tokens: number } {
   if (!usage || typeof usage !== 'object') return { input_tokens: 0, output_tokens: 0 };
+  const u = usage as Record<string, any>;
   return {
-    input_tokens: Number(usage.prompt_tokens ?? 0) || 0,
-    output_tokens: Number(usage.completion_tokens ?? 0) || 0,
+    input_tokens: Number(u.prompt_tokens ?? 0) || 0,
+    output_tokens: Number(u.completion_tokens ?? 0) || 0,
   };
 }
 
-function parseToolArguments(argumentsString) {
+function parseToolArguments(argumentsString: unknown): Record<string, any> {
   if (!argumentsString) return {};
-  if (typeof argumentsString !== 'string') return argumentsString ?? {};
+  // Non-string arguments pass through unchanged (defensive upstream shape).
+  if (typeof argumentsString !== 'string') return (argumentsString as Record<string, any>) ?? {};
   try {
     const parsed = JSON.parse(argumentsString);
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
@@ -39,14 +41,15 @@ function parseToolArguments(argumentsString) {
   }
 }
 
-export function convertOpenAIToAnthropicResponse(data) {
+export function convertOpenAIToAnthropicResponse(data: unknown): Record<string, any> {
   if (!data || typeof data !== 'object') {
     throw new ConversionError('conversion_invalid_response', 'OpenAI response is not an object');
   }
-  const choices = Array.isArray(data.choices) ? data.choices : [];
+  const d = data as Record<string, any>;
+  const choices = Array.isArray(d.choices) ? d.choices : [];
   const choice = choices[0] || {};
   const message = choice.message || {};
-  const content = [];
+  const content: any[] = [];
 
   if (typeof message.content === 'string' && message.content) {
     content.push({ type: 'text', text: message.content });
@@ -63,13 +66,13 @@ export function convertOpenAIToAnthropicResponse(data) {
   }
 
   return {
-    id: data.id,
+    id: d.id,
     type: 'message',
     role: 'assistant',
-    model: data.model,
+    model: d.model,
     content,
     stop_reason: mapFinishReason(choice.finish_reason),
     stop_sequence: null,
-    usage: convertOpenAIUsageToAnthropic(data.usage),
+    usage: convertOpenAIUsageToAnthropic(d.usage),
   };
 }

@@ -46,7 +46,7 @@ import {
   isOpenAIChatRealOutput, isResponsesRealOutput, isAnthropicNativeRealOutput,
   isOpenAIChatCompletionMeaningful, isOpenAIResponsesObjectMeaningful,
   isAnthropicMessageMeaningful,
-} from '../src/transport/index.js';
+} from '../src/transport/index.ts';
 
 let passed = 0, failed = 0;
 async function test(name, fn) {

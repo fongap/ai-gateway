@@ -13,32 +13,34 @@
 // contract (the same ordering free-claude-code adopts) so Codex / OpenCode
 // clients can consume them without a custom parser.
 
-export function formatResponsesSseEvent(eventType, data) {
+export function formatResponsesSseEvent(eventType: string, data: unknown): string {
   return `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
 export class ResponsesEventBuilder {
+  private _nextSequenceNumber: number;
+
   constructor() {
     this._nextSequenceNumber = 0;
   }
 
-  response_created(response) {
+  response_created(response: Record<string, any>) {
     return this._format('response.created', { type: 'response.created', response });
   }
 
-  response_completed(response) {
+  response_completed(response: Record<string, any>) {
     return this._format('response.completed', { type: 'response.completed', response });
   }
 
-  response_incomplete(response) {
+  response_incomplete(response: Record<string, any>) {
     return this._format('response.incomplete', { type: 'response.incomplete', response });
   }
 
-  response_failed(response) {
+  response_failed(response: Record<string, any>) {
     return this._format('response.failed', { type: 'response.failed', response });
   }
 
-  output_item_added(outputIndex, item) {
+  output_item_added(outputIndex: number, item: unknown) {
     return this._format('response.output_item.added', {
       type: 'response.output_item.added',
       output_index: outputIndex,
@@ -46,7 +48,7 @@ export class ResponsesEventBuilder {
     });
   }
 
-  output_item_done(outputIndex, item) {
+  output_item_done(outputIndex: number, item: unknown) {
     return this._format('response.output_item.done', {
       type: 'response.output_item.done',
       output_index: outputIndex,
@@ -54,7 +56,7 @@ export class ResponsesEventBuilder {
     });
   }
 
-  content_part_added(itemId, outputIndex) {
+  content_part_added(itemId: string, outputIndex: number) {
     return this._format('response.content_part.added', {
       type: 'response.content_part.added',
       item_id: itemId,
@@ -64,7 +66,7 @@ export class ResponsesEventBuilder {
     });
   }
 
-  content_part_done(itemId, outputIndex, text) {
+  content_part_done(itemId: string, outputIndex: number, text: string) {
     return this._format('response.content_part.done', {
       type: 'response.content_part.done',
       item_id: itemId,
@@ -74,7 +76,7 @@ export class ResponsesEventBuilder {
     });
   }
 
-  output_text_delta(itemId, outputIndex, text) {
+  output_text_delta(itemId: string, outputIndex: number, text: string) {
     return this._format('response.output_text.delta', {
       type: 'response.output_text.delta',
       item_id: itemId,
@@ -84,7 +86,7 @@ export class ResponsesEventBuilder {
     });
   }
 
-  output_text_done(itemId, outputIndex, text) {
+  output_text_done(itemId: string, outputIndex: number, text: string) {
     return this._format('response.output_text.done', {
       type: 'response.output_text.done',
       item_id: itemId,
@@ -94,7 +96,7 @@ export class ResponsesEventBuilder {
     });
   }
 
-  reasoning_text_delta(itemId, outputIndex, text) {
+  reasoning_text_delta(itemId: string, outputIndex: number, text: string) {
     return this._format('response.reasoning_text.delta', {
       type: 'response.reasoning_text.delta',
       item_id: itemId,
@@ -104,7 +106,7 @@ export class ResponsesEventBuilder {
     });
   }
 
-  reasoning_text_done(itemId, outputIndex, text) {
+  reasoning_text_done(itemId: string, outputIndex: number, text: string) {
     return this._format('response.reasoning_text.done', {
       type: 'response.reasoning_text.done',
       item_id: itemId,
@@ -114,7 +116,7 @@ export class ResponsesEventBuilder {
     });
   }
 
-  function_call_arguments_delta(itemId, outputIndex, argumentsJson) {
+  function_call_arguments_delta(itemId: string, outputIndex: number, argumentsJson: string) {
     return this._format('response.function_call_arguments.delta', {
       type: 'response.function_call_arguments.delta',
       item_id: itemId,
@@ -123,7 +125,7 @@ export class ResponsesEventBuilder {
     });
   }
 
-  function_call_arguments_done(itemId, outputIndex, argumentsJson) {
+  function_call_arguments_done(itemId: string, outputIndex: number, argumentsJson: string) {
     return this._format('response.function_call_arguments.done', {
       type: 'response.function_call_arguments.done',
       item_id: itemId,
@@ -132,7 +134,7 @@ export class ResponsesEventBuilder {
     });
   }
 
-  _format(eventType, data) {
+  _format(eventType: string, data: Record<string, any>): string {
     data.sequence_number = this._nextSequenceNumber;
     this._nextSequenceNumber += 1;
     return formatResponsesSseEvent(eventType, data);
@@ -141,7 +143,13 @@ export class ResponsesEventBuilder {
 
 // ---- Error envelope --------------------------------------------------------
 
-export function responsesErrorTypeForStatus(status) {
+export type ResponsesErrorType =
+  | 'invalid_request_error' | 'authentication_error' | 'permission_error'
+  | 'not_found_error' | 'request_too_large' | 'unsupported_media_type_error'
+  | 'rate_limit_error' | 'billing_error' | 'overloaded_error'
+  | 'timeout_error' | 'api_error';
+
+export function responsesErrorTypeForStatus(status: number): ResponsesErrorType {
   if (status === 400 || status === 422) return 'invalid_request_error';
   if (status === 401) return 'authentication_error';
   if (status === 403) return 'permission_error';
@@ -156,7 +164,7 @@ export function responsesErrorTypeForStatus(status) {
 }
 
 // OpenAI-style error envelope used by /v1/responses responses.
-export function buildResponsesError(message, errorType) {
+export function buildResponsesError(message: unknown, errorType?: string | null): { error: { message: string, type: string, param: null, code: null } } {
   return {
     error: {
       message: String(message || 'Unknown gateway error.'),
