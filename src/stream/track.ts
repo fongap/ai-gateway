@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Fongap Studio
+//
 // Tracked stream wrapper: the single place where a streaming response body is
 // relayed to the client while (a) enforcing the stream idle timeout, (b)
 // recording the node outcome exactly once, (c) optionally rewriting the
@@ -17,18 +20,38 @@
 // usage; it only observes what the upstream volunteered.
 
 import { normalizeTokenUsage } from '../observability/token-usage.mjs';
-import { FIRST_EVENT_MAX_SSE_LINE } from './guard.js';
+import { FIRST_EVENT_MAX_SSE_LINE } from './guard.ts';
 
 // Hard limit for the model-rewrite line buffer in the tracked stream (after
 // first-event commit). Prevents unbounded growth from a never-terminated
 // SSE line. Same limit as the pre-first-event guard for consistency.
 const TRACK_MAX_LINE_BUFFER = FIRST_EVENT_MAX_SSE_LINE;
 
-/**
- * @param {Response} response
- * @param {Record<string, any>} options
- */
-export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFailure, onNeutral, onStreamStart, onStreamEnd, completionMarker, failureMarker, rewriteModel, rewriteModelAt, onUsage, interruptionChunk, upstreamFailureReason }) {
+export type TrackStreamEndInfo = {
+  reason: string | null,
+  durationMs: number,
+  chunkCount: number,
+  receivedBytes: number,
+  completionMarkerSeen: boolean,
+};
+
+export type TrackOptions = {
+  idleTimeoutMs: number,
+  onSuccess: () => void,
+  onFailure: () => void,
+  onNeutral: () => void,
+  onStreamStart?: () => void,
+  onStreamEnd?: (outcome: string, info: TrackStreamEndInfo) => void,
+  completionMarker?: RegExp,
+  failureMarker?: RegExp,
+  rewriteModel?: string,
+  rewriteModelAt?: string,
+  onUsage?: (usage: any) => void,
+  interruptionChunk?: (reason: string | null, details?: { nextSequenceNumber?: number }) => Uint8Array,
+  upstreamFailureReason?: () => string | null,
+};
+
+export function trackStreamResponse(response: Response, { idleTimeoutMs, onSuccess, onFailure, onNeutral, onStreamStart, onStreamEnd, completionMarker, failureMarker, rewriteModel, rewriteModelAt, onUsage, interruptionChunk, upstreamFailureReason }: TrackOptions): Response {
   if (!response.body) {
     onSuccess();
     return response;
@@ -55,16 +78,16 @@ export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFail
   // the last usable reported usage object, and a once-only fire guard.
   const usageScan = typeof onUsage === 'function';
   let usageLines = '';
-  let usageCandidate = null;
+  let usageCandidate: any = null;
   let usageReported = false;
   // Stream-end telemetry: chunk/byte volume plus the interruption reason,
   // resolved at the failure branch that observed it.
   const startMs = Date.now();
   let chunkCount = 0;
   let receivedBytes = 0;
-  let failureReason = null;
+  let failureReason: string | null = null;
 
-  const emitInterruption = (controller) => {
+  const emitInterruption = (controller: ReadableStreamDefaultController<Uint8Array>) => {
     if (errorEventSeen || typeof interruptionChunk !== 'function') return;
     try {
       const chunk = interruptionChunk(failureReason, { nextSequenceNumber });
@@ -78,7 +101,7 @@ export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFail
   // resend cumulative usage). The buffer is capped so a never-terminating
   // line cannot grow it unbounded; scanning stops once the completion marker
   // was seen (usage never follows [DONE]).
-  const scanUsageLine = (text) => {
+  const scanUsageLine = (text: string) => {
     usageLines += text;
     if (usageLines.length > 64 * 1024) usageLines = '';
     const lines = usageLines.split('\n');
@@ -103,7 +126,7 @@ export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFail
     }
   };
 
-  const finalize = (result) => {
+  const finalize = (result: 'success' | 'failure' | 'neutral') => {
     if (finished) return;
     finished = true;
     // Fire the usage callback EXACTLY ONCE per stream, for success and
@@ -144,7 +167,7 @@ export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFail
   // The field is only REWRITTEN when it already exists — unrelated lines are
   // never given a model field they did not carry.
   const modelPointer = rewriteModelAt || 'model';
-  const processLine = (line) => {
+  const processLine = (line: string): string => {
     if (!line.startsWith('data:') || !line.includes('"model"')) return line;
     const raw = line.slice(5).trimStart();
     if (!raw || raw === '[DONE]') return line;
@@ -169,7 +192,7 @@ export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFail
   // Decode + optional rewrite, returning the bytes to forward for this chunk.
   // The line buffer is capped so a never-terminated SSE line (no newline) from
   // a malformed or adversarial upstream cannot grow it unbounded.
-  const forwardBytes = (value) => {
+  const forwardBytes = (value: Uint8Array): Uint8Array => {
     if (!encoder) return value;
     lineBuffer += rewriteDecoder.decode(value, { stream: true });
     const lines = lineBuffer.split('\n');
@@ -214,7 +237,7 @@ export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFail
       }
       const { done, value } = result.value;
       if (done) {
-        let hiddenReason = null;
+        let hiddenReason: string | null = null;
         try { hiddenReason = upstreamFailureReason?.() || null; } catch { /* diagnostic only */ }
         failureReason = hiddenReason || 'missing_completion_marker';
         if (encoder && lineBuffer) { controller.enqueue(encoder.encode(lineBuffer)); lineBuffer = ''; }
@@ -250,7 +273,7 @@ export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFail
         if (!terminalFailureSeen && failureMarker?.test(scanWindow)) {
           terminalFailureSeen = true;
         }
-        if (!completionSeen && completionMarker.test(scanWindow)) {
+        if (!completionSeen && completionMarker?.test(scanWindow)) {
           completionSeen = true;
         }
         diagnosticTail = scanWindow.slice(-256);
@@ -283,15 +306,15 @@ export function trackStreamResponse(response, { idleTimeoutMs, onSuccess, onFail
   });
 }
 
-async function raceWithIdle(readPromise, idleTimeoutMs) {
-  if (!idleTimeoutMs || idleTimeoutMs <= 0) return { value: await readPromise };
-  let timerId;
-  const timeoutPromise = new Promise((resolve) => {
+async function raceWithIdle(readPromise: Promise<ReadableStreamReadResult<Uint8Array>>, idleTimeoutMs: number): Promise<{ timeout: false, value: ReadableStreamReadResult<Uint8Array> } | { timeout: true }> {
+  if (!idleTimeoutMs || idleTimeoutMs <= 0) return { timeout: false, value: await readPromise };
+  let timerId: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<{ timeout: true }>((resolve) => {
     timerId = setTimeout(() => resolve({ timeout: true }), idleTimeoutMs);
   });
   try {
     return await Promise.race([
-      readPromise.then((value) => ({ value })),
+      readPromise.then((value) => ({ timeout: false as const, value })),
       timeoutPromise,
     ]);
   } finally {

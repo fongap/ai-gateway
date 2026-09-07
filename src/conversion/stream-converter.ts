@@ -3,10 +3,10 @@
 //
 // OpenAI Chat Completions SSE stream -> Anthropic Messages SSE stream converter.
 
-import { createSseScanner } from '../stream/guard.js';
-import { convertOpenAIUsageToAnthropic } from './openai-to-anthropic.js';
+import { createSseScanner } from '../stream/guard.ts';
+import { convertOpenAIUsageToAnthropic } from './openai-to-anthropic.ts';
 
-function mapFinishReason(reason) {
+function mapFinishReason(reason: unknown): string {
   switch (reason) {
     case 'stop':
     case 'content_filter':
@@ -20,20 +20,45 @@ function mapFinishReason(reason) {
   }
 }
 
-function encodeSseEvent(event, data) {
+function encodeSseEvent(event: string, data: unknown): Uint8Array {
   return new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
-function createAnthropicMessageId() {
+function createAnthropicMessageId(): string {
   return `msg_${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`;
 }
 
-export function createAnthropicStreamFromOpenAI(openAiResponseBody, options = {}) {
+type ToolBlockState = {
+  index: number,
+  id: string,
+  name: string,
+  arguments: string,
+  opened: boolean,
+  closed: boolean,
+};
+
+export function createAnthropicStreamFromOpenAI(
+  openAiResponseBody: ReadableStream<Uint8Array> | null | undefined,
+  options: { messageId?: string, model?: string, inputTokens?: number } = {},
+): ReadableStream<Uint8Array> {
   const { messageId, model, inputTokens } = options;
   const finalMessageId = messageId || createAnthropicMessageId();
   const encoder = new TextEncoder();
 
-  const state = {
+  const state: {
+    messageId: string,
+    model: string,
+    inputTokens: number,
+    messageStarted: boolean,
+    textBlockOpened: boolean,
+    textBlockClosed: boolean,
+    toolBlocks: Map<number, ToolBlockState>,
+    blockIndex: number,
+    usage: any,
+    finishReason: any,
+    closed: boolean,
+    textIndex?: number,
+  } = {
     messageId: finalMessageId,
     model: model || '',
     inputTokens: Number(inputTokens ?? 0) || 0,
@@ -47,16 +72,16 @@ export function createAnthropicStreamFromOpenAI(openAiResponseBody, options = {}
     closed: false,
   };
 
-  const blocks = [];
+  const blocks: Array<{ event: string, data: unknown }> = [];
 
-  const emit = (controller, event, data) => {
+  const emit = (controller: ReadableStreamDefaultController<Uint8Array>, event: string, data: unknown) => {
     if (state.closed) return;
     const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
     controller.enqueue(encoder.encode(payload));
     blocks.push({ event, data });
   };
 
-  const emitMessageStart = (controller) => {
+  const emitMessageStart = (controller: ReadableStreamDefaultController<Uint8Array>) => {
     if (state.messageStarted) return;
     state.messageStarted = true;
     emit(controller, 'message_start', {
@@ -74,7 +99,7 @@ export function createAnthropicStreamFromOpenAI(openAiResponseBody, options = {}
     });
   };
 
-  const openTextBlock = (controller) => {
+  const openTextBlock = (controller: ReadableStreamDefaultController<Uint8Array>) => {
     if (state.textBlockOpened) return;
     state.textBlockOpened = true;
     emitMessageStart(controller);
@@ -87,7 +112,7 @@ export function createAnthropicStreamFromOpenAI(openAiResponseBody, options = {}
     state.textIndex = index;
   };
 
-  const closeTextBlock = (controller) => {
+  const closeTextBlock = (controller: ReadableStreamDefaultController<Uint8Array>) => {
     if (!state.textBlockOpened || state.textBlockClosed) return;
     state.textBlockClosed = true;
     emit(controller, 'content_block_stop', {
@@ -96,9 +121,9 @@ export function createAnthropicStreamFromOpenAI(openAiResponseBody, options = {}
     });
   };
 
-  const openToolBlock = (controller, toolCall) => {
+  const openToolBlock = (controller: ReadableStreamDefaultController<Uint8Array>, toolCall: any): ToolBlockState => {
     const index = state.blockIndex++;
-    const toolState = {
+    const toolState: ToolBlockState = {
       index,
       id: toolCall.id || '',
       name: toolCall.function?.name || '',
@@ -120,7 +145,7 @@ export function createAnthropicStreamFromOpenAI(openAiResponseBody, options = {}
     return toolState;
   };
 
-  const closeAllBlocks = (controller) => {
+  const closeAllBlocks = (controller: ReadableStreamDefaultController<Uint8Array>) => {
     closeTextBlock(controller);
     for (const tool of state.toolBlocks.values()) {
       if (tool.opened && !tool.closed) {
@@ -133,7 +158,7 @@ export function createAnthropicStreamFromOpenAI(openAiResponseBody, options = {}
     }
   };
 
-  const emitMessageDelta = (controller) => {
+  const emitMessageDelta = (controller: ReadableStreamDefaultController<Uint8Array>) => {
     emit(controller, 'message_delta', {
       type: 'message_delta',
       delta: {
@@ -144,13 +169,13 @@ export function createAnthropicStreamFromOpenAI(openAiResponseBody, options = {}
     });
   };
 
-  const emitMessageStop = (controller) => {
+  const emitMessageStop = (controller: ReadableStreamDefaultController<Uint8Array>) => {
     if (state.closed) return;
     emit(controller, 'message_stop', { type: 'message_stop' });
     state.closed = true;
   };
 
-  const processOpenAIChunk = (controller, chunk) => {
+  const processOpenAIChunk = (controller: ReadableStreamDefaultController<Uint8Array>, chunk: any) => {
     if (!chunk || typeof chunk !== 'object') return;
     if (chunk.usage && typeof chunk.usage === 'object') {
       state.usage = chunk.usage;
@@ -222,7 +247,7 @@ export function createAnthropicStreamFromOpenAI(openAiResponseBody, options = {}
       }
       const reader = openAiResponseBody.getReader();
       const decoder = new TextDecoder();
-      const onData = (data) => {
+      const onData = (data: string) => {
         if (!data || data === '[DONE]') {
           if (data === '[DONE]') {
             closeAllBlocks(controller);

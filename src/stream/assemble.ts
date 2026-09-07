@@ -7,29 +7,33 @@
 // a streaming upstream). Nothing has been sent to the client while assembling,
 // so a failure here still allows node rotation.
 
-import { extractOpenAITextContent } from '../protocol/openai.js';
-import { createSseScanner } from './guard.js';
+import { extractOpenAITextContent } from '../protocol/openai.ts';
+import { createSseScanner } from './guard.ts';
 
 const MAX_ASSEMBLED_BYTES = 2 * 1024 * 1024;
 
-export async function collectOpenAIStreamObject(upstream, clientSignal) {
+type ToolCallState = { id: string, type: string, function: { name: string, arguments: string } };
+type ChoiceState = { content: string, reasoning_content: string, toolCalls: Map<number, ToolCallState>, finish_reason: any };
+
+export async function collectOpenAIStreamObject(upstream: Response, clientSignal: AbortSignal | null | undefined): Promise<Record<string, any>> {
+  if (!upstream.body) throw new Error('Upstream response has no body.');
   const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   let id = '';
   let created = Math.floor(Date.now() / 1000);
   let model = '';
-  let usage = null;
+  let usage: any = null;
   let currentBytes = 0;
-  const choices = new Map();
+  const choices = new Map<number, ChoiceState>();
   // Count UTF-8 bytes (not JS string.length) as each part is appended, so that
   // multi-byte text and large tool-call arguments/names/ids cannot bypass the
   // 2 MiB assembled-body memory guard.
-  const countBytes = (value) => {
+  const countBytes = (value: string) => {
     if (value) currentBytes += encoder.encode(value).length;
   };
 
-  const fail = async (message) => {
+  const fail = async (message: string): Promise<never> => {
     await reader.cancel().catch(() => {});
     throw new Error(message);
   };
@@ -48,10 +52,11 @@ export async function collectOpenAIStreamObject(upstream, clientSignal) {
     if (json.usage) usage = json.usage;
     for (const choice of json.choices || []) {
       const idx = choice.index ?? 0;
-      if (!choices.has(idx)) {
-        choices.set(idx, { content: '', reasoning_content: '', toolCalls: new Map(), finish_reason: null });
+      let state = choices.get(idx);
+      if (!state) {
+        state = { content: '', reasoning_content: '', toolCalls: new Map(), finish_reason: null };
+        choices.set(idx, state);
       }
-      const state = choices.get(idx);
       const delta = choice.delta || {};
       const text = extractOpenAITextContent(delta.content);
       if (text) {
@@ -65,10 +70,11 @@ export async function collectOpenAIStreamObject(upstream, clientSignal) {
       }
       for (const tc of delta.tool_calls || []) {
         const tcIdx = tc.index ?? 0;
-        if (!state.toolCalls.has(tcIdx)) {
-          state.toolCalls.set(tcIdx, { id: '', type: 'function', function: { name: '', arguments: '' } });
+        let existing = state.toolCalls.get(tcIdx);
+        if (!existing) {
+          existing = { id: '', type: 'function', function: { name: '', arguments: '' } };
+          state.toolCalls.set(tcIdx, existing);
         }
-        const existing = state.toolCalls.get(tcIdx);
         if (tc.id !== existing.id) { existing.id = tc.id; countBytes(tc.id); }
         if (tc.type !== existing.type) existing.type = tc.type;
         if (tc.function?.name) { existing.function.name += tc.function.name; countBytes(tc.function.name); }
@@ -107,7 +113,7 @@ export async function collectOpenAIStreamObject(upstream, clientSignal) {
     created,
     model,
     choices: states.map(([index, s]) => {
-      const message = { role: 'assistant', content: s.content || null };
+      const message: Record<string, any> = { role: 'assistant', content: s.content || null };
       if (s.reasoning_content) message.reasoning_content = s.reasoning_content;
       if (s.toolCalls.size) {
         message.tool_calls = [...s.toolCalls.entries()].sort((a, b) => a[0] - b[0]).map(([, x]) => x);

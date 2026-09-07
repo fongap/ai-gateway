@@ -10,9 +10,9 @@
 // upstream diagnostics) is attached only when the caller passes
 // `exposeUpstreamInfo` (EXPOSE_UPSTREAM_INFO=true).
 
-import { corsHeaders, shouldNotRetryHeaders, trimDiagnostic } from '../protocol/http.js';
-import { anthropicErrorTypeForStatus } from '../protocol/anthropic.js';
-import { responsesErrorResponse } from '../protocol/responses/index.js';
+import { corsHeaders, shouldNotRetryHeaders, trimDiagnostic } from '../protocol/http.ts';
+import { anthropicErrorTypeForStatus } from '../protocol/anthropic.ts';
+import { responsesErrorResponse } from '../protocol/responses/index.ts';
 import { getCooldownRemainingMs, getModelCooldownRemainingMs, getNodeState } from '../reliability/node-state.ts';
 import { tier1BlockingWaitMs, tier1HasDeferredCapacity } from '../reliability/tier1-state.ts';
 import { supportsRequest, isHardRpmExhausted, tierHasDeferredCapacity } from '../scheduler/scheduler.ts';

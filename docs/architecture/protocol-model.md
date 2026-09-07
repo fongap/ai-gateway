@@ -16,8 +16,8 @@ Client /v1/messages         → Anthropic transport → upstream /v1/messages
 
 Transport 层 (`src/transport/`) 负责上游路径、协议头、模型替换、流式判定与协议特定响应语义。
 
-- `transport/openai.js`：OpenAI 上游路径、`Authorization: Bearer` 头、Responses 首事件判定
-- `transport/anthropic.js`：`/v1/messages` 路径、`x-api-key` 认证头、`anthropic-version`/`anthropic-beta` 透传、Anthropic 首事件判定
+- `transport/openai.ts`：OpenAI 上游路径、`Authorization: Bearer` 头、Responses 首事件判定
+- `transport/anthropic.ts`：`/v1/messages` 路径、`x-api-key` 认证头、`anthropic-version`/`anthropic-beta` 透传、Anthropic 首事件判定
 - `transport/index.js`：按协议分发（`resolveUpstreamPath`、`buildUpstreamHeadersFor`）
 
 Transport 层不调度节点；Scheduler 和 Reliability 层不解析协议事件。

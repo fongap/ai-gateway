@@ -15,22 +15,23 @@
 // It never touches node scheduling, cooldowns or the circuit breaker — that
 // belongs to Scheduler / Reliability.
 
-import { corsHeaders, shouldNotRetryHeaders } from '../http.js';
-import { buildResponsesError, responsesErrorTypeForStatus } from './events.js';
-import { collectResponsesObject, synthesizeResponsesFromObject } from './native-stream.js';
+import { corsHeaders, shouldNotRetryHeaders } from '../http.ts';
+import { buildResponsesError, responsesErrorTypeForStatus } from './events.ts';
+import { collectResponsesObject, synthesizeResponsesFromObject } from './native-stream.ts';
 
 // Basic request shape validation. The request body is forwarded NATIVELY to
 // the upstream, so this gateway only checks the minimum contract (model +
 // input); field-level semantics are the upstream's job. Requests that do not
 // satisfy the shape are rejected with a 400 before any upstream attempt.
-export function validateOpenAIResponsesRequest(body) {
+export function validateOpenAIResponsesRequest(body: unknown): string | null {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return 'Request body must be a JSON object.';
-  if (!body.model || typeof body.model !== 'string' || !body.model.trim()) return 'model is required and must be a non-empty string.';
-  if (body.input === undefined || body.input === null) return 'input is required.';
+  const b = body as Record<string, unknown>;
+  if (!b.model || typeof b.model !== 'string' || !b.model.trim()) return 'model is required and must be a non-empty string.';
+  if (b.input === undefined || b.input === null) return 'input is required.';
   return null;
 }
 
-export function responsesErrorResponse(request, env, status, message, requestId, extraHeaders) {
+export function responsesErrorResponse(request: Request, env: Record<string, unknown>, status: number, message: unknown, requestId?: string, extraHeaders?: Record<string, string>): Response {
   const body = buildResponsesError(message, responsesErrorTypeForStatus(status));
   return new Response(JSON.stringify(body), {
     status,
@@ -46,5 +47,5 @@ export function responsesErrorResponse(request, env, status, message, requestId,
 }
 
 export { buildResponsesError, responsesErrorTypeForStatus };
-export { ResponsesEventBuilder, formatResponsesSseEvent } from './events.js';
+export { ResponsesEventBuilder, formatResponsesSseEvent } from './events.ts';
 export { collectResponsesObject, synthesizeResponsesFromObject };

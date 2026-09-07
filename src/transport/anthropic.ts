@@ -12,12 +12,14 @@
 //   messages -> {base_url}/v1/messages  (NATIVE — never converted to/from
 //                                         OpenAI chat completions)
 
+import type { Surface } from '../types/protocol.ts';
+
 export const ANTHROPIC_SURFACE_PATH = Object.freeze({
   messages: '/v1/messages',
 });
 
-export function resolveAnthropicPath(surface) {
-  const path = ANTHROPIC_SURFACE_PATH[surface];
+export function resolveAnthropicPath(surface: Surface): string {
+  const path = (ANTHROPIC_SURFACE_PATH as Record<string, string | undefined>)[surface];
   if (!path) throw new Error(`unknown Anthropic surface: ${surface}`);
   return path;
 }
@@ -30,7 +32,7 @@ export function resolveAnthropicPath(surface) {
 // anthropic-version: forwarded from the client when present, otherwise the
 // current stable version. anthropic-beta: forwarded verbatim when the client
 // opted into a beta feature — dropping it would silently change behavior.
-export function buildAnthropicHeaders(request, credential, requestId) {
+export function buildAnthropicHeaders(request: Request, credential: string, requestId: string): Headers {
   const headers = new Headers();
   headers.set('x-api-key', credential);
   const clientVersion = request.headers.get('anthropic-version');
@@ -50,7 +52,7 @@ export function buildAnthropicHeaders(request, credential, requestId) {
 // deltas are real model output. Lifecycle events (message_start,
 // content_block_start, content_block_stop, ping, message_delta) are NOT
 // commit points — a node that streams them before dying can still fail over.
-export function isAnthropicNativeRealOutput(json) {
+export function isAnthropicNativeRealOutput(json: Record<string, any> | null | undefined): boolean {
   if (json?.type !== 'content_block_delta') return false;
   const delta = json?.delta;
   if (delta?.type === 'text_delta') return typeof delta.text === 'string' && delta.text.trim().length > 0;
@@ -59,7 +61,7 @@ export function isAnthropicNativeRealOutput(json) {
   return false;
 }
 
-export function isAnthropicMessageMeaningful(json) {
+export function isAnthropicMessageMeaningful(json: Record<string, any> | null | undefined): boolean {
   for (const block of json?.content ?? []) {
     if ((block?.type === 'text' && typeof block.text === 'string' && block.text.trim().length > 0)
       || (block?.type === 'thinking' && typeof block.thinking === 'string' && block.thinking.trim().length > 0)) return true;

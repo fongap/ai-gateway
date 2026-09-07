@@ -14,8 +14,8 @@ import {
 import { dashboardResponse, __resetDashboardCacheForTests } from '../src/dashboard/pages.js';
 import { metricsResponse } from '../src/observability/diagnostic-endpoints.mjs';
 import { persistTokenUsage } from '../src/observability/token-usage-store.mjs';
-import { withUsageStreamOptions } from '../src/protocol/openai.js';
-import { trackStreamResponse } from '../src/stream/track.js';
+import { withUsageStreamOptions } from '../src/protocol/openai.ts';
+import { trackStreamResponse } from '../src/stream/track.ts';
 import { createMockD1 } from './mock-d1-database.mjs';
 
 let passed = 0;

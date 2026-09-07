@@ -41,14 +41,14 @@ import { authorizeModel } from './model-authz.ts';
 import { evaluateRouteFeasibility } from './route-feasibility.ts';
 import { detectRoute, normalizePath, acceptsHtml } from './router.ts';
 import { dashboardResponse } from '../dashboard/pages.js';
-import { corsHeaders, readBodyTextWithLimit, BodyTooLargeError } from '../protocol/http.js';
-import { validateOpenAIChatRequest } from '../protocol/openai.js';
+import { corsHeaders, readBodyTextWithLimit, BodyTooLargeError } from '../protocol/http.ts';
+import { validateOpenAIChatRequest } from '../protocol/openai.ts';
 import {
   anthropicErrorResponse,
   validateAnthropicMessagesRequest, validateAnthropicCountTokensRequest,
   estimateAnthropicInputTokens,
-} from '../protocol/anthropic.js';
-import { validateOpenAIResponsesRequest } from '../protocol/responses/index.js';
+} from '../protocol/anthropic.ts';
+import { validateOpenAIResponsesRequest } from '../protocol/responses/index.ts';
 import { jsonResponse } from './response-helpers.ts';
 import { admitKeyRequest } from '../ratelimit/key-rpm.ts';
 import type { AuthResult, RequestDescriptor, RouteFeasibilityResult } from '../types/request.ts';

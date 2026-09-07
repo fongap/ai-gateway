@@ -14,10 +14,11 @@
 //   openai    -> chat_completions, responses
 //   anthropic -> messages
 
-import { resolveOpenAIPath, buildOpenAIHeaders, isResponsesRealOutput, isOpenAIChatRealOutput, isOpenAIChatCompletionMeaningful, isOpenAIResponsesObjectMeaningful, OPENAI_SURFACE_PATH } from './openai.js';
-import { resolveAnthropicPath, buildAnthropicHeaders, isAnthropicNativeRealOutput, isAnthropicMessageMeaningful, ANTHROPIC_SURFACE_PATH } from './anthropic.js';
+import { resolveOpenAIPath, buildOpenAIHeaders, isResponsesRealOutput, isOpenAIChatRealOutput, isOpenAIChatCompletionMeaningful, isOpenAIResponsesObjectMeaningful, OPENAI_SURFACE_PATH } from './openai.ts';
+import { resolveAnthropicPath, buildAnthropicHeaders, isAnthropicNativeRealOutput, isAnthropicMessageMeaningful, ANTHROPIC_SURFACE_PATH } from './anthropic.ts';
+import type { Protocol, Surface } from '../types/protocol.ts';
 
-export { isOpenAIStreamingResponse, withUsageStreamOptions } from '../protocol/openai.js';
+export { isOpenAIStreamingResponse, withUsageStreamOptions } from '../protocol/openai.ts';
 export { OPENAI_SURFACE_PATH, resolveOpenAIPath, buildOpenAIHeaders, isResponsesRealOutput, isOpenAIChatRealOutput, isOpenAIChatCompletionMeaningful, isOpenAIResponsesObjectMeaningful };
 export { ANTHROPIC_SURFACE_PATH, resolveAnthropicPath, buildAnthropicHeaders, isAnthropicNativeRealOutput, isAnthropicMessageMeaningful };
 
@@ -25,7 +26,7 @@ export { ANTHROPIC_SURFACE_PATH, resolveAnthropicPath, buildAnthropicHeaders, is
 // config layer already validated node.protocol / node.surfaces, and the
 // request handler derives the surface from the route, so an unknown pair is
 // an internal invariant break — fail loudly instead of guessing a path.
-export function resolveUpstreamPath(protocol, surface) {
+export function resolveUpstreamPath(protocol: Protocol, surface: Surface): string {
   switch (protocol) {
     case 'openai': return resolveOpenAIPath(surface);
     case 'anthropic': return resolveAnthropicPath(surface);
@@ -36,7 +37,7 @@ export function resolveUpstreamPath(protocol, surface) {
 // Protocol-aware upstream headers. Client auth material never reaches the
 // upstream for either protocol; the node credential is applied in the
 // protocol's native auth header shape.
-export function buildUpstreamHeadersFor(protocol, request, credential, requestId) {
+export function buildUpstreamHeadersFor(protocol: Protocol, request: Request, credential: string, requestId: string): Headers {
   switch (protocol) {
     case 'openai': return buildOpenAIHeaders(request, credential, requestId);
     case 'anthropic': return buildAnthropicHeaders(request, credential, requestId);

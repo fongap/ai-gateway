@@ -19,12 +19,12 @@ import { __resetTier1AffinityForTests } from '../src/scheduler/tier1-affinity.ts
 import {
   convertAnthropicToOpenAIRequest,
   ConversionError,
-} from '../src/conversion/anthropic-to-openai.js';
+} from '../src/conversion/anthropic-to-openai.ts';
 import {
   convertOpenAIToAnthropicResponse,
   convertOpenAIUsageToAnthropic,
-} from '../src/conversion/openai-to-anthropic.js';
-import { createAnthropicStreamFromOpenAI } from '../src/conversion/stream-converter.js';
+} from '../src/conversion/openai-to-anthropic.ts';
+import { createAnthropicStreamFromOpenAI } from '../src/conversion/stream-converter.ts';
 import {
   loadProtocolFallbacks,
   getProtocolFallbacksDiagnostics,

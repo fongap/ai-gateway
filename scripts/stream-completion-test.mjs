@@ -7,13 +7,13 @@
 // env layer, which makes idle-timeout scenarios impractical through the
 // black-box worker suite.
 import assert from 'node:assert/strict';
-import { trackStreamResponse } from '../src/stream/track.js';
+import { trackStreamResponse } from '../src/stream/track.ts';
 import {
   ensureFirstSseEvent,
   FIRST_EVENT_MAX_PRE_BYTES,
   FIRST_EVENT_MAX_SSE_LINE,
   GUARD_ERROR,
-} from '../src/stream/guard.js';
+} from '../src/stream/guard.ts';
 import {
   __resetTier1StateForTests, claimTier1Slot, makeTier1ReleaseToken,
   releaseTier1Slot, tier1AccountInFlight,

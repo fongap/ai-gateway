@@ -4,8 +4,8 @@
 // Gateway request counters and the client-facing stream accounting wrapper.
 // All state is isolate-local best-effort.
 
-import { trackStreamResponse } from '../stream/track.js';
-import { isOpenAIStreamingResponse } from '../protocol/openai.js';
+import { trackStreamResponse } from '../stream/track.ts';
+import { isOpenAIStreamingResponse } from '../protocol/openai.ts';
 
 export const gatewayStats = {
   startedAt: Date.now(),

@@ -18,7 +18,7 @@
 // helpers run BEFORE any byte reaches the client, so a failure inside them
 // still rotates to another node.
 
-import { createSseScanner } from './guard.js';
+import { createSseScanner } from './guard.ts';
 
 const MAX_COLLECTED_BYTES = 2 * 1024 * 1024;
 
@@ -26,25 +26,28 @@ const MAX_COLLECTED_BYTES = 2 * 1024 * 1024;
 // /v1/messages SSE stream (message_start -> content blocks -> message_delta
 // -> message_stop). An upstream `error` event or a missing message_stop is a
 // failure: nothing reached the client yet, so the caller can rotate.
-export async function collectAnthropicMessageObject(upstream, clientSignal) {
+export async function collectAnthropicMessageObject(upstream: Response, clientSignal: AbortSignal | null | undefined): Promise<Record<string, any>> {
+  if (!upstream.body) throw new Error('Upstream response has no body.');
   const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
   const encoder = new TextEncoder(); // UTF-8 byte accounting only
   let receivedBytes = 0;
   let stopMessageStop = false;
-  let messageBase = null; // { id, model }
-  let stopReason = null;
+  // Assigned from the SSE scanner closure; `| undefined` (no initializer)
+  // keeps control-flow analysis from collapsing the type to `null`.
+  let messageBase: { id: any, model: any } | null | undefined; // { id, model }
+  let stopReason: any = null;
   let usage = { input_tokens: 0, output_tokens: 0 };
-  const blocks = [];
+  const blocks: any[] = [];
   // content_block_start state carries accumulated deltas per block index.
-  const blockState = new Map();
+  const blockState = new Map<number, any>();
 
-  const fail = async (message) => {
+  const fail = async (message: string): Promise<never> => {
     await reader.cancel().catch(() => {});
     throw new Error(message);
   };
 
-  const countBytes = (value) => {
+  const countBytes = (value: string) => {
     if (value) receivedBytes += encoder.encode(value).length;
   };
 
@@ -148,9 +151,9 @@ export async function collectAnthropicMessageObject(upstream, clientSignal) {
   };
 }
 
-function anthropicBlockFromState(state) {
+function anthropicBlockFromState(state: any): Record<string, any> {
   if (state.type === 'tool_use') {
-    let input = {};
+    let input: any = {};
     const raw = state.partialJson || '{}';
     try {
       const parsed = JSON.parse(raw);
@@ -159,7 +162,7 @@ function anthropicBlockFromState(state) {
     return { type: 'tool_use', id: state.id || '', name: state.name || 'unknown_tool', input };
   }
   if (state.type === 'thinking') {
-    const block = { type: 'thinking', thinking: state.thinking || '' };
+    const block: Record<string, any> = { type: 'thinking', thinking: state.thinking || '' };
     if (state.signature) block.signature = state.signature;
     return block;
   }
@@ -173,16 +176,16 @@ function anthropicBlockFromState(state) {
 // object (the "upstream answered JSON but the client wants a stream" case).
 // Event order follows the Anthropic contract:
 // message_start -> per-block start/delta/stop -> message_delta -> message_stop.
-export function synthesizeAnthropicFromMessage(message, extraHeaders) {
+export function synthesizeAnthropicFromMessage(message: Record<string, any> | null | undefined, extraHeaders?: Record<string, string>): Response {
   const encoder = new TextEncoder();
-  const emit = (chunks, event, data) => chunks.push(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-  const object = message && typeof message === 'object' ? message : {};
+  const emit = (chunks: string[], event: string, data: unknown) => chunks.push(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  const object: Record<string, any> = message && typeof message === 'object' ? message : {};
   const content = Array.isArray(object.content) ? object.content : [];
   const usage = object.usage && typeof object.usage === 'object'
     ? { input_tokens: Number(object.usage.input_tokens ?? 0) || 0, output_tokens: Number(object.usage.output_tokens ?? 0) || 0 }
     : { input_tokens: 0, output_tokens: 0 };
 
-  const chunks = [];
+  const chunks: string[] = [];
   emit(chunks, 'message_start', {
     type: 'message_start',
     message: {
