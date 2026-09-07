@@ -2008,10 +2008,12 @@ await run('handler: OpenAI Chat native success unchanged when native node availa
   assert.equal(anthropicHosts.length, 0, 'native OpenAI Chat served; no Anthropic hop');
 });
 
-await run('handler: conversion error returns OpenAI error envelope (R0.4)', async () => {
+await run('handler: conversion error skips the fallback target -> gateway exhausted (not 400)', async () => {
   // The OpenAI Chat request includes a tool_choice the converter rejects.
-  // The client must see a 400 in OpenAI Chat shape — NOT the Anthropic
-  // error envelope that the upstream protocol would produce.
+  // The client request is legal — it is the Anthropic fallback TARGET that
+  // cannot express it. So the conversion must NOT be answered with a client
+  // 400: the target is skipped, the fallback chain is exhausted, and the
+  // request falls through to the standard gateway exhausted handler.
   resetMock();
   routeHandlers['a1.example.com'] = () => jsonUpstream(okAnthropicMessage());
   const env = makeEnv({
@@ -2023,7 +2025,9 @@ await run('handler: conversion error returns OpenAI error envelope (R0.4)', asyn
     tool_choice: { type: 'weird_unsupported_shape' },
     messages: [{ role: 'user', content: 'hi' }],
   }), env, {});
-  assert.equal(res.status, 400, 'conversion error is 400');
+  assert.ok(res.status !== 400, 'a legal client request must never get a client 400 from a conversion incompatibility');
+  // The OpenAI Chat client still sees an OpenAI-shaped error envelope, but as a
+  // gateway failure (429/502/503), never a client-protocol 400.
   const body = await res.json();
   assert.ok(body.error, 'OpenAI-shaped error envelope');
   assert.equal(body.type, undefined, 'no Anthropic envelope');

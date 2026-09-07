@@ -30,16 +30,21 @@
 //     reachable fallback steps is precomputed by route-feasibility.ts at
 //     preflight time and carried through loopCtx.feasibility; runFallbackChain
 //     iterates that set rather than re-implementing the feasibility check.
-//   * If the conversion itself throws ConversionError, the request is
-//     answered with 400 in the CLIENT protocol envelope (R0.4). Other
-//     conversion errors propagate.
+//   * If the conversion itself throws ConversionError, that fallback target
+//     simply cannot express this request (the client request is still legal —
+//     it is the TARGET protocol that is incompatible). The conversion happens
+//     before any upstream dispatch, so it never touches logicalAttempts,
+//     dispatches, hedges, activeRequests, node RPM, node failure, cooldown,
+//     or circuit breaker state. The current fallback target is SKIPPED and
+//     the next one is tried.
 //   * If the fallback chain is exhausted, the request falls through
-//     to the standard exhausted handler.
+//     to the standard exhausted handler (a 502/503 gateway failure, never a
+//     client 400).
 
 import { convertAnthropicToOpenAIRequest, ConversionError } from '../conversion/anthropic-to-openai.ts';
 import { convertOpenAIChatRequestToAnthropic } from '../conversion/openai-chat-request-to-anthropic.ts';
 import { convertResponsesRequestToAnthropic } from '../conversion/responses-request-to-anthropic.ts';
-import { buildBudgetExhaustedResponse, gatewayError } from './errors.ts';
+import { buildBudgetExhaustedResponse } from './errors.ts';
 import { computeTierCaps } from './tier-loop.ts';
 import type { LoopContext, ConversionContext } from '../types/request.ts';
 import type { RoutableRequest } from '../types/scheduler.ts';
@@ -86,10 +91,14 @@ export async function runFallbackChain({ loopCtx, route, requestedModel, runTier
       }
     } catch (e) {
       if (e instanceof ConversionError) {
-        // The client request was malformed for the fallback protocol. Return
-        // a client-protocol-shaped error envelope (R0.4): the client must
-        // never see the upstream protocol's error format.
-        return gatewayError(request, env, route, 400, e.code, requestId);
+        // This fallback target cannot express the request (e.g. an Anthropic
+        // `thinking` block with no OpenAI equivalent). The client request is
+        // legal — the TARGET is incompatible — so this is NOT a client 400.
+        // Conversion happens before dispatch, so no reliability counter has
+        // been touched. Skip this target and try the next fallback in the
+        // chain. If every target is exhausted, runFallbackChain returns null
+        // and the standard exhausted handler produces the gateway failure.
+        continue;
       }
       throw e;
     }

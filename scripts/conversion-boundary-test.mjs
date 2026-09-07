@@ -15,12 +15,31 @@ for (const [name, convert, base] of [
   ['Responses', responses, { model: 'm', input: 'hello' }],
   ['Messages', anthropic, { model: 'm', max_tokens: 20, messages: [message] }],
 ]) {
-  for (const [field, value] of [['metadata', { user_id: 'x' }], ['reasoning', { effort: 'high' }], ['unknown_option', true]]) {
+  for (const [field, value] of [['reasoning', { effort: 'high' }], ['unknown_option', true]]) {
     test(`${name} rejects unsupported ${field} instead of dropping semantics`, () => {
       assert.throws(() => convert({ ...base, [field]: value }), /conversion_not_supported/);
     });
   }
 }
+// `metadata` is an Anthropic attribution field with no OpenAI-equivalent
+// semantic. The OpenAI client converters (Chat / Responses) reject it because
+// it is not part of their request schema. The Anthropic -> OpenAI Messages
+// converter must ACCEPT it and safely drop it, because a legal Anthropic
+// request carrying metadata must still be able to fall back to OpenAI.
+for (const [name, convert, base] of [
+  ['Chat', chat, { model: 'm', messages: [message] }],
+  ['Responses', responses, { model: 'm', input: 'hello' }],
+]) {
+  test(`${name} rejects unsupported metadata instead of dropping semantics`, () => {
+    assert.throws(() => convert({ ...base, metadata: { user_id: 'x' } }), /conversion_not_supported/);
+  });
+}
+test('Messages accepts metadata (safe drop) instead of blocking fallback', () => {
+  const out = anthropic({ model: 'm', max_tokens: 20, metadata: { user_id: 'x' }, messages: [message] });
+  assert.equal(out.model, 'm');
+  assert.equal(out.messages[0].role, 'user');
+  assert.equal(out.metadata, undefined, 'metadata is dropped, not forwarded');
+});
 test('Chat rejects non-equivalent sampling, strict tools, and invalid JSON arguments', () => {
   assert.throws(() => chat({ model: 'm', messages: [message], temperature: 1.5 }), /conversion_not_supported/);
   assert.throws(() => chat({ model: 'm', messages: [message], tools: [{ type: 'function', function: { name: 'f', strict: true } }] }), /conversion_not_supported/);

@@ -75,7 +75,7 @@ const node = (id, extra = {}) => ({
   protocol: 'anthropic',
   surfaces: ['messages'],
   base_url: `https://${id}.example.com`,
-  models: { 'claude-x': 'up-model' },
+  models: { 'claude-x': 'up-model', 'code-max': 'up-model' },
   ...extra,
 });
 
@@ -524,6 +524,200 @@ await test('claude stream client + JSON upstream synthesizes the SSE lifecycle',
   assert.ok(types.includes('content_block_delta'));
   assert.equal(types[types.length - 1], 'message_stop');
   assert.match(text, /"text":"hello"/);
+});
+
+// =====================================================================
+//   Claude Code -> Anthropic Messages -> OpenAI Chat fallback
+//   (real fallback contract: native Anthropic fails, OpenAI serves)
+// =====================================================================
+
+// An OpenAI-protocol node serving /v1/chat/completions.
+const openaiNode = (id, extra = {}) => ({
+  id,
+  provider: 'mock',
+  protocol: 'openai',
+  surfaces: ['chat_completions'],
+  base_url: `https://${id}.example.com/v1`,
+  models: { 'code-max': 'up-model' },
+  ...extra,
+});
+
+const okOpenAICompletion = () => ({
+  id: 'chatcmpl-cc', model: 'up-model',
+  choices: [{ index: 0, message: { role: 'assistant', content: 'hello' }, finish_reason: 'stop' }],
+  usage: { prompt_tokens: 1, completion_tokens: 1 },
+});
+
+// Open the Anthropic native circuit so the request must cross to OpenAI.
+const alwaysFailingAnthropic = () => jsonUpstream({ error: { message: 'overloaded' } }, 529);
+
+const fallbackEnv = ({ tier1, secrets }) => makeEnv({
+  tier1,
+  secrets,
+  extraEnv: {
+    PROTOCOL_FALLBACKS: JSON.stringify({ 'anthropic:messages': ['openai:chat_completions'] }),
+    EXPOSE_UPSTREAM_INFO: 'true',
+  },
+});
+
+await test('claude fallback Case A: metadata is safely dropped on OpenAI fallback', async () => {
+  resetMock();
+  // Anthropic native node always overloads -> the request must fall back to OpenAI.
+  routeHandlers['ca.example.com'] = () => alwaysFailingAnthropic();
+  routeHandlers['coa.example.com'] = () => jsonUpstream(okOpenAICompletion());
+  const env = fallbackEnv({
+    tier1: [node('ca'), openaiNode('coa')],
+    secrets: { ca: 'k', coa: 'k' },
+  });
+  const res = await worker.fetch(messagesRequest({
+    model: 'code-max',
+    max_tokens: 4096,
+    metadata: { user_id: 'test-user' },
+    messages: [{ role: 'user', content: 'hello' }],
+  }), env, {});
+  assert.equal(res.status, 200, 'metadata must not block the OpenAI fallback');
+  const body = await res.json();
+  assert.equal(body.type, 'message');
+  assert.equal(body.content[0].text, 'hello');
+  // The OpenAI upstream must have been called with the converted body.
+  const openAiCall = upstreamCalls.find((c) => c.host === 'coa.example.com');
+  assert.ok(openAiCall, 'OpenAI fallback node served the request');
+  assert.equal(openAiCall.body.model, 'up-model');
+  assert.equal(openAiCall.body.max_tokens, 4096);
+  assert.equal(openAiCall.body.messages[0].role, 'user');
+  assert.equal(openAiCall.body.messages[0].content, 'hello');
+  assert.equal(openAiCall.body.metadata, undefined,
+    'metadata must be dropped on the OpenAI upstream body (intentional, safe drop)');
+});
+
+await test('claude fallback Case B: cache_control is safely dropped on OpenAI fallback', async () => {
+  resetMock();
+  routeHandlers['cb.example.com'] = () => alwaysFailingAnthropic();
+  routeHandlers['cob.example.com'] = () => jsonUpstream(okOpenAICompletion());
+  const env = fallbackEnv({
+    tier1: [node('cb'), openaiNode('cob')],
+    secrets: { cb: 'k', cob: 'k' },
+  });
+  const res = await worker.fetch(messagesRequest({
+    model: 'code-max',
+    max_tokens: 4096,
+    system: [
+      { type: 'text', text: 'You are Claude Code', cache_control: { type: 'ephemeral' } },
+    ],
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'hello', cache_control: { type: 'ephemeral' } },
+        ],
+      },
+    ],
+  }), env, {});
+  assert.equal(res.status, 200, 'cache_control must not block the OpenAI fallback');
+  const body = await res.json();
+  assert.equal(body.content[0].text, 'hello');
+  // The OpenAI upstream body must carry the text but not any cache_control hint.
+  const openAiCall = upstreamCalls.find((c) => c.host === 'cob.example.com');
+  assert.ok(openAiCall, 'OpenAI fallback node served the request');
+  // Anthropic system blocks collapse into the OpenAI messages[0] system message.
+  assert.equal(openAiCall.body.messages[0].role, 'system');
+  assert.equal(openAiCall.body.messages[0].content, 'You are Claude Code');
+  assert.equal(openAiCall.body.messages[1].role, 'user');
+  // The user text block is converted to an OpenAI content part carrying the text.
+  const userText = openAiCall.body.messages[1].content[0];
+  assert.equal(userText.text, 'hello');
+  assert.equal(JSON.stringify(openAiCall.body).includes('cache_control'), false,
+    'no cache_control leaks to the OpenAI upstream body');
+});
+
+await test('claude fallback Case C: metadata + cache_control + tools completes an agent workflow', async () => {
+  resetMock();
+  routeHandlers['cc.example.com'] = () => alwaysFailingAnthropic();
+  routeHandlers['coc.example.com'] = () => jsonUpstream({
+    id: 'chatcmpl-cc', model: 'up-model',
+    choices: [{ index: 0, message: { role: 'assistant', content: 'using tool', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'get_weather', arguments: '{"city":"SF"}' } }] }, finish_reason: 'tool_calls' }],
+    usage: { prompt_tokens: 2, completion_tokens: 2 },
+  });
+  const env = fallbackEnv({
+    tier1: [node('cc'), openaiNode('coc')],
+    secrets: { cc: 'k', coc: 'k' },
+  });
+  const res = await worker.fetch(messagesRequest({
+    model: 'code-max',
+    max_tokens: 4096,
+    metadata: { user_id: 'test-user' },
+    system: [
+      { type: 'text', text: 'You are Claude Code', cache_control: { type: 'ephemeral' } },
+    ],
+    tools: [
+      { name: 'get_weather', description: 'w', input_schema: { type: 'object', properties: { city: { type: 'string' } } } },
+    ],
+    tool_choice: { type: 'auto' },
+    messages: [
+      { role: 'user', content: 'what is the weather in SF?' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'let me check', cache_control: { type: 'ephemeral' } },
+          { type: 'tool_use', id: 'call_1', name: 'get_weather', input: { city: 'SF' } },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'call_1', content: 'sunny', cache_control: { type: 'ephemeral' } },
+        ],
+      },
+    ],
+  }), env, {});
+  assert.equal(res.status, 200, 'a full Claude Code agent workflow must complete the OpenAI fallback');
+  const body = await res.json();
+  assert.equal(body.type, 'message');
+  const toolUse = body.content.find((b) => b.type === 'tool_use');
+  assert.ok(toolUse, 'the OpenAI tool_calls response is converted back to Anthropic tool_use');
+  assert.equal(toolUse.name, 'get_weather');
+  assert.deepEqual(toolUse.input, { city: 'SF' });
+  // The OpenAI upstream body is fully converted: metadata + cache_control gone,
+  // tools + tool_choice mapped to the OpenAI function-calling shape.
+  const openAiCall = upstreamCalls.find((c) => c.host === 'coc.example.com');
+  assert.ok(openAiCall, 'OpenAI fallback node served the request');
+  assert.equal(openAiCall.body.metadata, undefined, 'metadata dropped');
+  assert.equal(JSON.stringify(openAiCall.body).includes('cache_control'), false, 'no cache_control leaks');
+  assert.equal(openAiCall.body.tools[0].type, 'function');
+  assert.equal(openAiCall.body.tools[0].function.name, 'get_weather');
+  assert.equal(openAiCall.body.tool_choice, 'auto');
+});
+
+await test('claude fallback Case D: unconvertible semantic feature is skipped, not a client 400', async () => {
+  resetMock();
+  // Native Anthropic fails; the OpenAI fallback cannot express a `thinking`
+  // block, so the conversion throws ConversionError -> the OpenAI target is
+  // skipped -> the chain is exhausted -> the standard gateway exhausted
+  // handler answers with a gateway failure (429/502/503), NEVER a client 400.
+  routeHandlers['cd.example.com'] = () => alwaysFailingAnthropic();
+  let openAiCalls = 0;
+  routeHandlers['cod.example.com'] = () => { openAiCalls++; return jsonUpstream(okOpenAICompletion()); };
+  const env = fallbackEnv({
+    tier1: [node('cd'), openaiNode('cod')],
+    secrets: { cd: 'k', cod: 'k' },
+  });
+  const res = await worker.fetch(messagesRequest({
+    model: 'code-max',
+    max_tokens: 4096,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'thinking', thinking: 'let me reason' },
+          { type: 'text', text: 'hello' },
+        ],
+      },
+    ],
+  }), env, {});
+  assert.ok(res.status !== 400, 'a legal Anthropic request must never get a client 400 from a conversion incompatibility');
+  assert.ok(res.status >= 429 && res.status < 600,
+    `expected a gateway-level failure status (429/5xx), got ${res.status}`);
+  assert.equal(openAiCalls, 0, 'the incompatible OpenAI fallback target must be skipped, not dispatched');
 });
 
 if (!process.exitCode) console.log(`\nclaude (messages) contract tests passed (${passed}).`);
