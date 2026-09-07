@@ -3,7 +3,8 @@
 //
 // OpenAI Chat Completions SSE stream -> Anthropic Messages SSE stream converter.
 
-import { createSseScanner } from '../stream/guard.ts';
+import { convertSseStream } from './sse.ts';
+import { isRecord } from './validation.ts';
 import { convertOpenAIUsageToAnthropic } from './openai-to-anthropic.ts';
 
 function mapFinishReason(reason: unknown): string {
@@ -18,10 +19,6 @@ function mapFinishReason(reason: unknown): string {
     default:
       return 'end_turn';
   }
-}
-
-function encodeSseEvent(event: string, data: unknown): Uint8Array {
-  return new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
 function createAnthropicMessageId(): string {
@@ -54,8 +51,8 @@ export function createAnthropicStreamFromOpenAI(
     textBlockClosed: boolean,
     toolBlocks: Map<number, ToolBlockState>,
     blockIndex: number,
-    usage: any,
-    finishReason: any,
+    usage: unknown,
+    finishReason: unknown,
     closed: boolean,
     textIndex?: number,
   } = {
@@ -72,13 +69,11 @@ export function createAnthropicStreamFromOpenAI(
     closed: false,
   };
 
-  const blocks: Array<{ event: string, data: unknown }> = [];
 
   const emit = (controller: ReadableStreamDefaultController<Uint8Array>, event: string, data: unknown) => {
     if (state.closed) return;
     const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
     controller.enqueue(encoder.encode(payload));
-    blocks.push({ event, data });
   };
 
   const emitMessageStart = (controller: ReadableStreamDefaultController<Uint8Array>) => {
@@ -100,7 +95,8 @@ export function createAnthropicStreamFromOpenAI(
   };
 
   const openTextBlock = (controller: ReadableStreamDefaultController<Uint8Array>) => {
-    if (state.textBlockOpened) return;
+    if (state.textBlockOpened && !state.textBlockClosed) return;
+    state.textBlockClosed = false;
     state.textBlockOpened = true;
     emitMessageStart(controller);
     const index = state.blockIndex++;
@@ -121,7 +117,7 @@ export function createAnthropicStreamFromOpenAI(
     });
   };
 
-  const openToolBlock = (controller: ReadableStreamDefaultController<Uint8Array>, toolCall: any): ToolBlockState => {
+  const openToolBlock = (controller: ReadableStreamDefaultController<Uint8Array>, toolCall: { id?: string, index?: number, function?: { name?: string, arguments?: string } }): ToolBlockState => {
     const index = state.blockIndex++;
     const toolState: ToolBlockState = {
       index,
@@ -175,8 +171,9 @@ export function createAnthropicStreamFromOpenAI(
     state.closed = true;
   };
 
-  const processOpenAIChunk = (controller: ReadableStreamDefaultController<Uint8Array>, chunk: any) => {
-    if (!chunk || typeof chunk !== 'object') return;
+  const processOpenAIChunk = (controller: ReadableStreamDefaultController<Uint8Array>, chunk: unknown) => {
+    if (!isRecord(chunk)) throw new Error('Invalid upstream SSE event');
+    if (chunk.error) throw new Error('Upstream stream error');
     if (chunk.usage && typeof chunk.usage === 'object') {
       state.usage = chunk.usage;
     }
@@ -239,55 +236,15 @@ export function createAnthropicStreamFromOpenAI(
     }
   };
 
-  return new ReadableStream({
-    async start(controller) {
-      if (!openAiResponseBody || !openAiResponseBody.getReader) {
-        controller.error(new Error('OpenAI stream body is not readable'));
-        return;
-      }
-      const reader = openAiResponseBody.getReader();
-      const decoder = new TextDecoder();
-      const onData = (data: string) => {
-        if (!data || data === '[DONE]') {
-          if (data === '[DONE]') {
-            closeAllBlocks(controller);
-            emitMessageDelta(controller);
-            emitMessageStop(controller);
-          }
-          return;
-        }
-        let json;
-        try {
-          json = JSON.parse(data);
-        } catch {
-          return;
-        }
-        processOpenAIChunk(controller, json);
-      };
-      const scanner = createSseScanner(onData);
-      try {
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          scanner.push(decoder.decode(value, { stream: true }));
-        }
-        scanner.flush();
-        if (!state.closed) {
-          closeAllBlocks(controller);
-          if (!state.finishReason) state.finishReason = 'stop';
-          emitMessageDelta(controller);
-          emitMessageStop(controller);
-        }
-        controller.close();
-      } catch (e) {
-        if (!state.closed) {
-          closeAllBlocks(controller);
-          if (!state.finishReason) state.finishReason = 'stop';
-          try { emitMessageDelta(controller); } catch { /* */ }
-          try { emitMessageStop(controller); } catch { /* */ }
-        }
-        controller.error(e);
-      }
-    },
-  });
+  return convertSseStream(openAiResponseBody, (data, controller) => {
+    if (data === '[DONE]') {
+      closeAllBlocks(controller);
+      emitMessageDelta(controller);
+      emitMessageStop(controller);
+      return;
+    }
+    let event: unknown;
+    try { event = JSON.parse(data); } catch { throw new Error('Malformed upstream SSE JSON'); }
+    processOpenAIChunk(controller, event);
+  }, () => state.closed);
 }

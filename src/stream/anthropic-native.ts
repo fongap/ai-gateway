@@ -26,7 +26,7 @@ const MAX_COLLECTED_BYTES = 2 * 1024 * 1024;
 // /v1/messages SSE stream (message_start -> content blocks -> message_delta
 // -> message_stop). An upstream `error` event or a missing message_stop is a
 // failure: nothing reached the client yet, so the caller can rotate.
-export async function collectAnthropicMessageObject(upstream: Response, clientSignal: AbortSignal | null | undefined): Promise<Record<string, any>> {
+export async function collectAnthropicMessageObject(upstream: Response, clientSignal: AbortSignal | null | undefined): Promise<Record<string, unknown>> {
   if (!upstream.body) throw new Error('Upstream response has no body.');
   const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
@@ -35,12 +35,12 @@ export async function collectAnthropicMessageObject(upstream: Response, clientSi
   let stopMessageStop = false;
   // Assigned from the SSE scanner closure; `| undefined` (no initializer)
   // keeps control-flow analysis from collapsing the type to `null`.
-  let messageBase: { id: any, model: any } | null | undefined; // { id, model }
-  let stopReason: any = null;
+  let messageBase: { id: unknown, model: unknown } | null | undefined; // { id, model }
+  let stopReason: unknown = null;
   let usage = { input_tokens: 0, output_tokens: 0 };
-  const blocks: any[] = [];
+  const blocks: Record<string, unknown>[] = [];
   // content_block_start state carries accumulated deltas per block index.
-  const blockState = new Map<number, any>();
+  const blockState = new Map<number, Record<string, unknown> & { text?: string, thinking?: string, signature?: string, partialJson?: string }>();
 
   const fail = async (message: string): Promise<never> => {
     await reader.cancel().catch(() => {});
@@ -151,9 +151,9 @@ export async function collectAnthropicMessageObject(upstream: Response, clientSi
   };
 }
 
-function anthropicBlockFromState(state: any): Record<string, any> {
+function anthropicBlockFromState(state: Record<string, unknown> & { text?: string, thinking?: string, signature?: string, partialJson?: string }): Record<string, unknown> {
   if (state.type === 'tool_use') {
-    let input: any = {};
+    let input: unknown = {};
     const raw = state.partialJson || '{}';
     try {
       const parsed = JSON.parse(raw);
@@ -162,7 +162,7 @@ function anthropicBlockFromState(state: any): Record<string, any> {
     return { type: 'tool_use', id: state.id || '', name: state.name || 'unknown_tool', input };
   }
   if (state.type === 'thinking') {
-    const block: Record<string, any> = { type: 'thinking', thinking: state.thinking || '' };
+    const block: Record<string, unknown> = { type: 'thinking', thinking: state.thinking || '' };
     if (state.signature) block.signature = state.signature;
     return block;
   }
@@ -176,13 +176,13 @@ function anthropicBlockFromState(state: any): Record<string, any> {
 // object (the "upstream answered JSON but the client wants a stream" case).
 // Event order follows the Anthropic contract:
 // message_start -> per-block start/delta/stop -> message_delta -> message_stop.
-export function synthesizeAnthropicFromMessage(message: Record<string, any> | null | undefined, extraHeaders?: Record<string, string>): Response {
+export function synthesizeAnthropicFromMessage(message: Record<string, unknown> | null | undefined, extraHeaders?: Record<string, string>): Response {
   const encoder = new TextEncoder();
   const emit = (chunks: string[], event: string, data: unknown) => chunks.push(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-  const object: Record<string, any> = message && typeof message === 'object' ? message : {};
+  const object: Record<string, unknown> = message && typeof message === 'object' ? message : {};
   const content = Array.isArray(object.content) ? object.content : [];
   const usage = object.usage && typeof object.usage === 'object'
-    ? { input_tokens: Number(object.usage.input_tokens ?? 0) || 0, output_tokens: Number(object.usage.output_tokens ?? 0) || 0 }
+    ? { input_tokens: Number((object.usage as Record<string, unknown>).input_tokens ?? 0) || 0, output_tokens: Number((object.usage as Record<string, unknown>).output_tokens ?? 0) || 0 }
     : { input_tokens: 0, output_tokens: 0 };
 
   const chunks: string[] = [];

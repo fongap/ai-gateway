@@ -24,19 +24,19 @@ export class ResponsesEventBuilder {
     this._nextSequenceNumber = 0;
   }
 
-  response_created(response: Record<string, any>) {
+  response_created(response: Record<string, unknown>) {
     return this._format('response.created', { type: 'response.created', response });
   }
 
-  response_completed(response: Record<string, any>) {
+  response_completed(response: Record<string, unknown>) {
     return this._format('response.completed', { type: 'response.completed', response });
   }
 
-  response_incomplete(response: Record<string, any>) {
+  response_incomplete(response: Record<string, unknown>) {
     return this._format('response.incomplete', { type: 'response.incomplete', response });
   }
 
-  response_failed(response: Record<string, any>) {
+  response_failed(response: Record<string, unknown>) {
     return this._format('response.failed', { type: 'response.failed', response });
   }
 
@@ -134,7 +134,7 @@ export class ResponsesEventBuilder {
     });
   }
 
-  _format(eventType: string, data: Record<string, any>): string {
+  _format(eventType: string, data: Record<string, unknown>): string {
     data.sequence_number = this._nextSequenceNumber;
     this._nextSequenceNumber += 1;
     return formatResponsesSseEvent(eventType, data);

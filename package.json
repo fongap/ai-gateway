@@ -6,7 +6,7 @@
   "type": "module",
   "license": "MIT",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.18.0"
   },
   "scripts": {
     "build": "npm run validate:merge",
@@ -23,8 +23,8 @@
     "bench:full": "node benchmark/benchmark.mjs",
     "security:scan": "node scripts/secret-scan.mjs",
     "typecheck": "npx tsc --noEmit",
-    "validate:merge": "npm run check && npm run check:version && npm run check:deployment-config && npm run migrations:check && npm run test:unit && npm run security:scan && npm run check:docs && npm run typecheck",
-    "validate:deploy": "npm run check && npm run check:version && npm run check:deployment-config && npm run migrations:check && npm run test:all && npm run security:scan && npm run check:docs",
+    "validate:merge": "npm run check && npm run check:version && npm run check:deployment-config && npm run migrations:check && npm run test:unit && npm run security:scan && npm run check:docs && npm run typecheck && npm run check:links",
+    "validate:deploy": "npm run check && npm run check:version && npm run check:deployment-config && npm run migrations:check && npm run test:all && npm run security:scan && npm run check:docs && npm run typecheck && npm run check:links",
     "dev": "node scripts/cloudflare-wrangler.mjs dev",
     "deploy": "node scripts/cloudflare-wrangler.mjs deploy --keep-vars",
     "tail": "npx --yes wrangler@4.114.0 tail",

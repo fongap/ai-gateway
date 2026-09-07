@@ -15,7 +15,7 @@
 import { getUtcWeekStartUtcMs } from '../time-buckets.ts';
 import {
   TABLE, TABLE_DAILY, TABLE_WEEKLY,
-  normalizeHour, isoDayUtc8, tokenStatsD1,
+  isoDayUtc8, tokenStatsD1,
 } from './keys.ts';
 import type { D1PreparedStatement } from '../../types/cloudflare.ts';
 

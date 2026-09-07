@@ -164,7 +164,7 @@ function isCompletePayload(data: string): boolean {
 // keeps consuming until real output appears (or the stream ends/times out).
 // Omitting it preserves the original "any parseable non-error event commits"
 // behavior used by the OpenAI Chat / Responses paths.
-export async function ensureFirstSseEvent(upstreamResponse: Response, timeoutMs: number, clientSignal: AbortSignal | null | undefined, isRealOutput: ((json: any) => boolean) | undefined): Promise<Response> {
+export async function ensureFirstSseEvent(upstreamResponse: Response, timeoutMs: number, clientSignal: AbortSignal | null | undefined, isRealOutput: ((json: unknown) => boolean) | undefined): Promise<Response> {
   if (!upstreamResponse.body) throw guardError(GUARD_ERROR.EMPTY);
   const reader = upstreamResponse.body.getReader();
   const consumed: Uint8Array[] = [];

@@ -17,7 +17,6 @@
 // not what every model under it does.
 
 import { loadModelsConfig } from './models.ts';
-import type { ModelEntry } from './models.ts';
 
 // Under-report capabilities, never over-report: an unlisted model is assumed to
 // support nothing beyond streaming. Only an explicit MODELS_CONFIG declaration

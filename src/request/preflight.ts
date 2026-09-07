@@ -54,7 +54,6 @@ import { admitKeyRequest } from '../ratelimit/key-rpm.ts';
 import type { AuthResult, RequestDescriptor, RouteFeasibilityResult } from '../types/request.ts';
 import type { GatewayConfig } from '../config/nodes.ts';
 import type { PolicyConfig } from '../types/policy.ts';
-import type { Limits } from '../config/timeouts.ts';
 import type { RuntimeNode } from '../types/node.ts';
 
 // (protocol, surface) keyed by the client route. The same map lives in
@@ -88,7 +87,7 @@ export type PreflightOk = {
   requestedModel: string,
   clientWantsStream: boolean,
   fakeStream: boolean,
-  bodyJson: Record<string, any>,
+  bodyJson: Record<string, unknown>,
   limits: Record<string, number>,
   exposeUpstreamInfo: boolean,
   authResult: AuthResult,
@@ -204,7 +203,7 @@ export async function preflight(request: Request, env: Record<string, unknown>, 
 
   // ---- Request body ----
   const limits = getLimits(env);
-  let bodyJson: Record<string, any>;
+  let bodyJson: Record<string, unknown>;
   try {
     const contentType = (request.headers.get('content-type') || '').toLowerCase();
     if (!contentType.includes('application/json')) {

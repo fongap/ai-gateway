@@ -68,7 +68,7 @@ function readEnginesFromReadme(text) {
   }
   return matches;
 }
-const expectedMajor = parseInt(String(nodeEngine).replace(/[^0-9]/g, ''), 10);
+const expectedMajor = parseInt(String(nodeEngine).replace(/^[^0-9]*/, ''), 10);
 for (const [name, text] of [['README.md', readme], ['README_EN.md', readmeEn]]) {
   const majors = new Set(readEnginesFromReadme(text).map((s) => parseInt(s, 10)));
   if (majors.size === 0) {

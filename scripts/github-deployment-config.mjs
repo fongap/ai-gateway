@@ -349,19 +349,26 @@ function readSecretList(file) {
   return parsed;
 }
 
-async function verifyRemote(baseUrl, accessKey) {
+export async function verifyRemote(baseUrl, accessKey, expectedBuild) {
   const origin = String(baseUrl || '').replace(/\/+$/, '');
   if (!/^https:\/\//.test(origin)) throw new Error('GATEWAY_PUBLIC_BASE_URL must be an absolute https URL');
   const headers = { authorization: `Bearer ${accessKey}` };
-  const health = await fetch(`${origin}/health`, { headers });
+  if (expectedBuild !== undefined) {
+    if (!/^[a-f0-9]{40}$/i.test(expectedBuild)) throw new Error('Expected build must be a full commit SHA');
+    const version = await fetch(`${origin}/version`, { headers, signal: AbortSignal.timeout(15000) });
+    const identity = await version.json().catch(() => null);
+    if (!version.ok || identity?.build !== expectedBuild) throw new Error('Remote /version.build does not match the validated deployment SHA');
+  }
+  const health = await fetch(`${origin}/health`, { headers, signal: AbortSignal.timeout(15000) });
   const healthBody = await health.json().catch(() => null);
   if (!health.ok || !healthBody?.ready) {
     throw new Error(`remote /health is not ready (HTTP ${health.status}, status ${healthBody?.status || 'unknown'})`);
   }
-  const models = await fetch(`${origin}/v1/models`, { headers });
+  const models = await fetch(`${origin}/v1/models`, { headers, signal: AbortSignal.timeout(15000) });
   if (!models.ok) throw new Error(`remote /v1/models failed (HTTP ${models.status})`);
   const count = await fetch(`${origin}/v1/messages/count_tokens`, {
     method: 'POST',
+    signal: AbortSignal.timeout(15000),
     headers: { ...headers, 'content-type': 'application/json' },
     body: JSON.stringify({ model: 'gateway-health-check', messages: [] }),
   });
@@ -436,7 +443,7 @@ async function main() {
     const runtime = resolveRuntime(argv);
     const groupKey = Object.keys(runtime.secrets).find((k) => /^GATEWAY_ACCESS_KEY_(?:AIR|PRO|MAX|ULTRA|AGENT)$/.test(k));
     if (!groupKey) throw new Error('No GATEWAY_ACCESS_KEY_<GROUP> secret found for health check');
-    await verifyRemote(process.env.GATEWAY_PUBLIC_BASE_URL, runtime.secrets[groupKey]);
+    await verifyRemote(process.env.GATEWAY_PUBLIC_BASE_URL, runtime.secrets[groupKey], argValue(argv, '--expected-build') || undefined);
     console.log('Remote health checks passed.');
     return;
   }

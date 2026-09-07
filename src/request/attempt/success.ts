@@ -83,7 +83,7 @@ export async function handleSuccess(s: {
   // BEFORE returning anything to the client.
   if (clientWantsStream && upstreamWasStreaming) {
     const guardStartMs = Date.now();
-    let guarded: any;
+    let guarded: Response;
     try {
       const remainingRequestBudgetMs = (c.failoverBudgetMs ?? limits.failoverBudgetMs) - (Date.now() - (c.requestStartMs || (s.attemptStartMs as number) || Date.now()));
       const remainingAttemptBudgetMs = (c.attemptDeadlineMs ?? Date.now()) - Date.now();
@@ -181,7 +181,7 @@ export async function handleSuccess(s: {
         // passive scan. Transformed routes below report usage from the
         // transform's parse point instead (onUsage NOT passed here), keeping
         // exactly one capture per stream.
-        onUsage: (u: any) => recordTokens(c, node, u),
+        onUsage: (u: unknown) => recordTokens(c, node, u),
         interruptionChunk: (reason: string | null) => streamInterruptionChunk(route, requestId, reason),
         upstreamFailureReason: hiddenStreamFailure,
         ...makeNodeStreamTrack(c, node, latencyMs),
@@ -210,7 +210,7 @@ export async function handleSuccess(s: {
           // The stream converter emits usage in OpenAI Chat format
           // (prompt_tokens / completion_tokens / total_tokens), so the
           // passive scan can capture it directly.
-          onUsage: (u: any) => recordTokens(c, node, u),
+          onUsage: (u: unknown) => recordTokens(c, node, u),
           interruptionChunk: (reason: string | null) => streamInterruptionChunk(route, requestId, reason),
           upstreamFailureReason: hiddenStreamFailure,
           ...makeNodeStreamTrack(c, node, latencyMs),
@@ -230,7 +230,7 @@ export async function handleSuccess(s: {
         ...(needsModelRewrite ? { rewriteModel: requestedModel, rewriteModelAt: 'response.model' } : {}),
         // Native Responses SSE carries usage inside the response.completed
         // payload; the tracked stream's passive scan reports it (onUsage).
-        onUsage: (u: any) => recordTokens(c, node, u),
+        onUsage: (u: unknown) => recordTokens(c, node, u),
         interruptionChunk: (reason: string | null, details?: { nextSequenceNumber?: number }) => streamInterruptionChunk(route, requestId, reason, details),
         upstreamFailureReason: hiddenStreamFailure,
         ...makeNodeStreamTrack(c, node, latencyMs),
@@ -247,7 +247,7 @@ export async function handleSuccess(s: {
       const responsesStream = createResponsesStreamFromAnthropic(guarded.body, {
         responseId: `resp_${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`,
         model: requestedModel,
-        createdAt: 1,
+        createdAt: Math.floor(Date.now() / 1000),
       });
       const tracked = trackStreamResponse(
         new Response(responsesStream, { status: 200, headers }),
@@ -256,7 +256,7 @@ export async function handleSuccess(s: {
           completionMarker: /event:\s*response\.(?:completed|incomplete)\b/,
           failureMarker: /event:\s*response\.failed\b/,
           ...(needsModelRewrite ? { rewriteModel: requestedModel, rewriteModelAt: 'response.model' } : {}),
-          onUsage: (u: any) => recordTokens(c, node, u),
+          onUsage: (u: unknown) => recordTokens(c, node, u),
           interruptionChunk: (reason: string | null, details?: { nextSequenceNumber?: number }) => streamInterruptionChunk(route, requestId, reason, details),
           upstreamFailureReason: hiddenStreamFailure,
           ...makeNodeStreamTrack(c, node, latencyMs),
@@ -285,7 +285,7 @@ export async function handleSuccess(s: {
         {
           idleTimeoutMs: limits.streamIdleTimeoutMs,
           completionMarker: /event:\s*message_stop\b/,
-          onUsage: (u: any) => recordTokens(c, node, u),
+          onUsage: (u: unknown) => recordTokens(c, node, u),
           interruptionChunk: (reason: string | null) => streamInterruptionChunk(route, requestId, reason),
           upstreamFailureReason: hiddenStreamFailure,
           ...makeNodeStreamTrack(c, node, latencyMs),
@@ -304,7 +304,7 @@ export async function handleSuccess(s: {
       // must NOT be recorded as a node success.
       completionMarker: /event:\s*message_stop\b/,
       ...(needsModelRewrite ? { rewriteModel: requestedModel, rewriteModelAt: 'message.model' } : {}),
-      onUsage: (u: any) => recordTokens(c, node, u),
+      onUsage: (u: unknown) => recordTokens(c, node, u),
       interruptionChunk: (reason: string | null) => streamInterruptionChunk(route, requestId, reason),
       upstreamFailureReason: hiddenStreamFailure,
       ...makeNodeStreamTrack(c, node, latencyMs),
@@ -323,7 +323,7 @@ export async function handleSuccess(s: {
   // error (R0.4).
   if (route === 'openai_responses' && c.conversionContext) {
     try {
-      let data: any;
+      let data: (Record<string, unknown> & { error?: { status?: unknown, message?: string } }) | null;
       if (upstreamWasStreaming) {
         data = await collectAnthropicMessageObject(upstream, request.signal);
       } else {
@@ -332,7 +332,7 @@ export async function handleSuccess(s: {
       }
       if (data && typeof data === 'object' && (data.type === 'error' || data.error)) {
         const status = Number(data.error?.status) >= 400 && Number(data.error?.status) < 600
-          ? Math.trunc(Number(data.error.status))
+          ? Math.trunc(Number(data.error?.status))
           : 502;
         const message = data.error?.message || 'Upstream returned an embedded error.';
         const classification = classifyUpstreamStatus(status, upstream.headers, env, undefined, message);
@@ -342,7 +342,7 @@ export async function handleSuccess(s: {
         }
         return { rotate: true, kind: classification.kind };
       }
-      const converted = convertAnthropicResponseToResponses(data, { createdAt: 1 });
+      const converted = convertAnthropicResponseToResponses(data, { createdAt: Math.floor(Date.now() / 1000) });
       converted.model = requestedModel;
       recordNodeSuccess(c, node, latencyMs);
       recordTokens(c, node, converted?.usage);
@@ -365,7 +365,7 @@ export async function handleSuccess(s: {
   // ---- OpenAI Responses (non-stream, NATIVE) ----
   if (route === 'openai_responses' && !c.conversionContext) {
     try {
-      let data: any;
+      let data: (Record<string, unknown> & { error?: { status?: unknown, message?: string } }) | null;
       if (upstreamWasStreaming) {
         // Defensive: the native upstream streamed although the client asked
         // for JSON. Assemble the terminal response object — nothing has
@@ -375,8 +375,8 @@ export async function handleSuccess(s: {
         data = JSON.parse(await safeReadErrorBody(upstream, 2 * 1024 * 1024));
       }
       if (data && typeof data === 'object' && data.error) {
-        const status = Number(data.error.status) >= 400 && Number(data.error.status) < 600
-          ? Math.trunc(Number(data.error.status))
+        const status = Number(data.error?.status) >= 400 && Number(data.error?.status) < 600
+          ? Math.trunc(Number(data.error?.status))
           : 502;
         const classification = classifyUpstreamStatus(status, upstream.headers, env, undefined, data.error?.message || '');
         recordOutcome(state, node, classification, c, { latencyMs, status, diagnostic: trimDiagnostic(data.error.message || 'embedded error', 200) });
@@ -420,7 +420,7 @@ export async function handleSuccess(s: {
   // upstream error must surface as an OpenAI Chat error (R0.4).
   if (route === 'openai_chat' && c.conversionContext) {
     try {
-      let data: any;
+      let data: (Record<string, unknown> & { error?: { status?: unknown, message?: string } }) | null;
       if (upstreamWasStreaming) {
         // Anthropic fallback upstream streamed although the client asked for
         // JSON. Assemble the full Anthropic message object, then convert to
@@ -432,7 +432,7 @@ export async function handleSuccess(s: {
       }
       if (data && typeof data === 'object' && (data.type === 'error' || data.error)) {
         const status = Number(data.error?.status) >= 400 && Number(data.error?.status) < 600
-          ? Math.trunc(Number(data.error.status))
+          ? Math.trunc(Number(data.error?.status))
           : 502;
         const message = data.error?.message || 'Upstream returned an embedded error.';
         const classification = classifyUpstreamStatus(status, upstream.headers, env, undefined, message);
@@ -504,7 +504,7 @@ export async function handleSuccess(s: {
           // Defensive consistency with the streaming passthrough above (this
           // branch is mutually exclusive with the assemble path below, so the
           // scan can never double-count against a recordTokens call).
-          onUsage: (u: any) => recordTokens(c, node, u),
+          onUsage: (u: unknown) => recordTokens(c, node, u),
           interruptionChunk: (reason: string | null) => streamInterruptionChunk(route, requestId, reason),
           ...makeNodeStreamTrack(c, node, latencyMs),
         },
@@ -516,7 +516,7 @@ export async function handleSuccess(s: {
     // stream:true requests. Handle explicitly instead of feeding the client
     // a body it cannot parse as a stream.
     const text = await safeReadErrorBody(upstream, 2 * 1024 * 1024);
-    let data: any;
+    let data: (Record<string, unknown> & { error?: { status?: unknown, message?: string } }) | null;
     try {
       data = JSON.parse(text);
     } catch {
@@ -525,8 +525,8 @@ export async function handleSuccess(s: {
     if (data && typeof data === 'object' && data.error) {
       // Provider returned 200 with an embedded error: treat as a real failure
       // so the request rotates to a healthy node instead of relaying garbage.
-      const status = Number(data.error.status) >= 400 && Number(data.error.status) < 600
-        ? Math.trunc(Number(data.error.status))
+      const status = Number(data.error?.status) >= 400 && Number(data.error?.status) < 600
+        ? Math.trunc(Number(data.error?.status))
         : 502;
       const classification = classifyUpstreamStatus(status, upstream.headers, env, undefined, data.error?.message || '');
       recordOutcome(state, node, classification, c, { latencyMs, status, diagnostic: trimDiagnostic(data.error.message || 'embedded error', 200) });
@@ -554,7 +554,7 @@ export async function handleSuccess(s: {
   // ---- Anthropic messages (non-stream, CROSS-PROTOCOL FALLBACK) ----
   if (route === 'anthropic_messages' && c.conversionContext) {
     try {
-      let data: any;
+      let data: (Record<string, unknown> & { error?: { status?: unknown, message?: string } }) | null;
       if (upstreamWasStreaming) {
         // OpenAI fallback upstream streamed although the client asked for
         // JSON. Assemble the full OpenAI completion object, then convert to
@@ -565,8 +565,8 @@ export async function handleSuccess(s: {
         data = JSON.parse(text);
       }
       if (data && typeof data === 'object' && data.error) {
-        const status = Number(data.error.status) >= 400 && Number(data.error.status) < 600
-          ? Math.trunc(Number(data.error.status))
+        const status = Number(data.error?.status) >= 400 && Number(data.error?.status) < 600
+          ? Math.trunc(Number(data.error?.status))
           : 502;
         const message = data.error?.message || 'Upstream returned an embedded error.';
         const classification = classifyUpstreamStatus(status, upstream.headers, env, undefined, message);
@@ -598,7 +598,7 @@ export async function handleSuccess(s: {
 
   // ---- Anthropic messages (non-stream, NATIVE) ----
   try {
-    let data: any;
+    let data: (Record<string, unknown> & { error?: { status?: unknown, message?: string } }) | null;
     if (upstreamWasStreaming) {
       // Defensive: the native upstream streamed although the client asked
       // for JSON. Assemble the final message object — nothing has reached

@@ -28,12 +28,12 @@ const MAX_COLLECTED_BYTES = 2 * 1024 * 1024;
 //   response.completed / response.incomplete -> resolve with `response`
 //   response.failed                          -> throw (rotate; client saw nothing)
 // EOF without a terminal event                -> throw (truncated stream)
-export async function collectResponsesObject(upstream: Response, clientSignal: AbortSignal | null | undefined): Promise<Record<string, any>> {
+export async function collectResponsesObject(upstream: Response, clientSignal: AbortSignal | null | undefined): Promise<Record<string, unknown>> {
   if (!upstream.body) throw new Error('Upstream response has no body.');
   const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
   let receivedBytes = 0;
-  let collected: Record<string, any> | null = null;
+  let collected: Record<string, unknown> | null = null;
 
   const fail = async (message: string): Promise<never> => {
     await reader.cancel().catch(() => {});
@@ -84,11 +84,11 @@ export async function collectResponsesObject(upstream: Response, clientSignal: A
 // full Responses object (the "upstream answered JSON but the client wants a
 // stream" case). Event order follows the Responses contract:
 // response.created -> per-item added/delta/done -> response.completed.
-export function synthesizeResponsesFromObject(response: Record<string, any> | null | undefined, requestedModel: string, extraHeaders?: Record<string, string>): Response {
+export function synthesizeResponsesFromObject(response: Record<string, unknown> | null | undefined, requestedModel: string, extraHeaders?: Record<string, string>): Response {
   const events = new ResponsesEventBuilder();
   const encoder = new TextEncoder();
   const chunks: string[] = [];
-  const object: Record<string, any> = response && typeof response === 'object' ? response : {};
+  const object: Record<string, unknown> = response && typeof response === 'object' ? response : {};
   if (object.model !== undefined) object.model = requestedModel;
 
   chunks.push(events.response_created({ ...object, status: 'in_progress' }));

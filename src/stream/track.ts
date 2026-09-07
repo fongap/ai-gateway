@@ -46,7 +46,7 @@ export type TrackOptions = {
   failureMarker?: RegExp,
   rewriteModel?: string,
   rewriteModelAt?: string,
-  onUsage?: (usage: any) => void,
+  onUsage?: (usage: unknown) => void,
   interruptionChunk?: (reason: string | null, details?: { nextSequenceNumber?: number }) => Uint8Array,
   upstreamFailureReason?: () => string | null,
 };
@@ -78,7 +78,7 @@ export function trackStreamResponse(response: Response, { idleTimeoutMs, onSucce
   // the last usable reported usage object, and a once-only fire guard.
   const usageScan = typeof onUsage === 'function';
   let usageLines = '';
-  let usageCandidate: any = null;
+  let usageCandidate: unknown = null;
   let usageReported = false;
   // Stream-end telemetry: chunk/byte volume plus the interruption reason,
   // resolved at the failure branch that observed it.

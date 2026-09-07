@@ -21,6 +21,7 @@ const files = [
   ...walk(path.join(root, 'src')),
   ...walk(path.join(root, 'scripts')),
   ...walk(path.join(root, 'benchmark')),
+  ...walk(path.join(root, 'tests')),
 ];
 
 for (const file of files) {

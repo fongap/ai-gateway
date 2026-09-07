@@ -14,6 +14,10 @@
 //   responses        -> {base_url}/v1/responses   (NATIVE — never converted
 //                                                     to/from chat completions)
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
 import type { Surface } from '../types/protocol.ts';
 
 // Upstream path per surface. The gateway forwards OpenAI requests to the
@@ -59,9 +63,10 @@ export function buildOpenAIHeaders(request: Request, credential: string, request
 // (response.created / output_item.added / …) do NOT commit the failover
 // boundary, so a node that announces itself and then dies can still be
 // rotated away from.
-export function isResponsesRealOutput(json: Record<string, any> | null | undefined): boolean {
+export function isResponsesRealOutput(json: unknown): boolean {
+  if (!isRecord(json)) return false;
   const type = json?.type;
-  if (!RESPONSES_MEANINGFUL_DELTA_TYPES.has(type)) return false;
+  if (typeof type !== 'string' || !RESPONSES_MEANINGFUL_DELTA_TYPES.has(type)) return false;
   return typeof json?.delta === 'string' && json.delta.trim().length > 0;
 }
 
@@ -73,7 +78,8 @@ export function isResponsesRealOutput(json: Record<string, any> | null | undefin
 // keep the original lax boundary. Real output = non-empty text, a reasoning
 // increment, or a tool-call increment; role-only / empty / usage-only deltas do
 // NOT commit, so a node that announces itself and then dies can still rotate.
-export function isOpenAIChatRealOutput(json: Record<string, any> | null | undefined): boolean {
+export function isOpenAIChatRealOutput(json: unknown): boolean {
+  if (!isRecord(json)) return false;
   const choices = json?.choices;
   if (!Array.isArray(choices) || choices.length === 0) return false;
   for (const c of choices) {
@@ -87,18 +93,19 @@ export function isOpenAIChatRealOutput(json: Record<string, any> | null | undefi
   return false;
 }
 
-function isMeaningfulToolCall(call: any): boolean {
-  if (!call || typeof call !== 'object') return false;
+function isMeaningfulToolCall(call: unknown): boolean {
+  if (!isRecord(call)) return false;
   if (typeof call.id === 'string' && call.id.trim().length > 0) return true;
-  const fn = call.function;
+  const fn = isRecord(call.function) ? call.function : null;
   return Boolean(fn && (
     (typeof fn.name === 'string' && fn.name.trim().length > 0)
     || (typeof fn.arguments === 'string' && fn.arguments.trim().length > 0)
   ));
 }
 
-export function isOpenAIChatCompletionMeaningful(json: Record<string, any> | null | undefined): boolean {
-  for (const choice of json?.choices ?? []) {
+export function isOpenAIChatCompletionMeaningful(json: unknown): boolean {
+  if (!isRecord(json)) return false;
+  for (const choice of Array.isArray(json.choices) ? json.choices : []) {
     const message = choice?.message;
     if (!message || typeof message !== 'object') continue;
     if (typeof message.content === 'string' && message.content.trim().length > 0) return true;
@@ -109,8 +116,9 @@ export function isOpenAIChatCompletionMeaningful(json: Record<string, any> | nul
   return false;
 }
 
-export function isOpenAIResponsesObjectMeaningful(json: Record<string, any> | null | undefined): boolean {
-  for (const item of json?.output ?? []) {
+export function isOpenAIResponsesObjectMeaningful(json: unknown): boolean {
+  if (!isRecord(json)) return false;
+  for (const item of Array.isArray(json.output) ? json.output : []) {
     if (item?.type === 'function_call' && (
       (typeof item.name === 'string' && item.name.trim().length > 0)
       || (typeof item.arguments === 'string' && item.arguments.trim().length > 0)

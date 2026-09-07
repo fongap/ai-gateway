@@ -74,12 +74,12 @@ function estimateTextTokens(text: unknown): number {
   return cjk + other / 4;
 }
 
-export function estimateAnthropicInputTokens(body: Record<string, any>): number {
+export function estimateAnthropicInputTokens(body: Record<string, unknown>): number {
   let tokens = 0;
   const countText = (value: unknown) => { tokens += estimateTextTokens(value); };
   if (typeof body.system === 'string') countText(body.system);
   else if (Array.isArray(body.system)) for (const x of body.system) countText(x?.text || x);
-  for (const message of body.messages || []) {
+  for (const message of Array.isArray(body.messages) ? body.messages : []) {
     tokens += 2; // per-message structural overhead
     if (typeof message.content === 'string') countText(message.content);
     else for (const block of message.content || []) {

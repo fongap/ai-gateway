@@ -3,67 +3,58 @@
 //
 // Anthropic Messages request -> OpenAI Chat Completions request converter.
 
-export class ConversionError extends Error {
-  code: string;
-  constructor(code: string, message?: string) {
-    super(message || code);
-    this.name = 'ConversionError';
-    this.code = code;
-  }
-}
+import { ConversionError, isRecord, assertFields, assertSampling } from './validation.ts';
+export { ConversionError };
 
 function unsupportedBlock(type: unknown): never {
   throw new ConversionError(`conversion_not_supported: ${type} blocks not supported`);
 }
 
-function systemToOpenAI(system: unknown): Record<string, any> | null {
+function systemToOpenAI(system: unknown): Record<string, unknown> | null {
   if (system === undefined || system === null) return null;
   if (typeof system === 'string') return { role: 'system', content: system };
-  if (!Array.isArray(system)) return { role: 'system', content: String(system) };
+  if (!Array.isArray(system)) unsupportedBlock('invalid system');
   const parts: string[] = [];
   for (const block of system) {
     if (typeof block === 'string') parts.push(block);
-    else if (block?.type === 'text') parts.push(block.text || '');
-    else unsupportedBlock(block?.type || 'unknown');
+    else if (isRecord(block) && block.type === 'text' && typeof block.text === 'string') {
+      assertFields(block, ['type', 'text'], 'system');
+      parts.push(block.text);
+    }
+    else unsupportedBlock(isRecord(block) ? block.type : 'unknown');
   }
   return { role: 'system', content: parts.join('\n') };
 }
 
-function convertAssistantContent(blocks: any[]): Record<string, any> {
-  const out: Record<string, any> = { content: '' };
-  const toolCalls: any[] = [];
-  let pending: { toolCalls: any[], content: any } | null = null;
+function convertAssistantContent(blocks: unknown[]): Record<string, unknown> {
+  let text = '';
+  const toolCalls: Record<string, unknown>[] = [];
   for (const block of blocks) {
-    if (!block || typeof block !== 'object') continue;
+    if (!isRecord(block)) unsupportedBlock('invalid');
     if (block.type === 'text') {
-      out.content = (out.content || '') + (block.text || '');
+      assertFields(block, ['type', 'text'], 'assistant text');
+      if (typeof block.text !== 'string') unsupportedBlock('non-text');
+      text += block.text;
     } else if (block.type === 'tool_use') {
-      if (!pending) {
-        pending = { toolCalls: [], content: out.content || '' };
-      }
-      pending.toolCalls.push({
-        id: block.id,
-        type: 'function',
-        function: { name: block.name, arguments: JSON.stringify(block.input ?? {}) },
-      });
-    } else {
-      unsupportedBlock(block.type);
-    }
+      assertFields(block, ['type', 'id', 'name', 'input'], 'tool_use');
+      if (typeof block.id !== 'string' || !block.id || typeof block.name !== 'string' || !block.name || !isRecord(block.input)) unsupportedBlock('invalid tool_use');
+      toolCalls.push({ id: block.id, type: 'function', function: { name: block.name, arguments: JSON.stringify(block.input) } });
+    } else unsupportedBlock(block.type);
   }
-  if (pending) {
-    return { content: pending.content, tool_calls: pending.toolCalls };
-  }
-  return out;
+  return { content: text, ...(toolCalls.length ? { tool_calls: toolCalls } : {}) };
 }
 
-function convertUserContent(blocks: unknown): string | Record<string, any> | Array<Record<string, any>> {
+function convertUserContent(blocks: unknown): string | Record<string, unknown> | Array<Record<string, unknown>> {
   if (typeof blocks === 'string') return blocks;
-  if (!Array.isArray(blocks)) return '';
-  const parts: Array<Record<string, any>> = [];
+  if (!Array.isArray(blocks)) unsupportedBlock('invalid user content');
+  const parts: Array<Record<string, unknown>> = [];
   for (const block of blocks) {
-    if (!block || typeof block !== 'object') continue;
+    if (!isRecord(block)) unsupportedBlock('invalid');
+    assertFields(block, block.type === 'tool_result' ? ['type', 'tool_use_id', 'content', 'is_error'] : ['type', 'text'], 'user content');
     if (block.type === 'text') parts.push({ type: 'text', text: block.text || '' });
     else if (block.type === 'tool_result') {
+      if (block.is_error === true) unsupportedBlock('tool_result.is_error');
+      if (typeof block.tool_use_id !== 'string' || !block.tool_use_id) unsupportedBlock('invalid tool_result');
       const text = extractToolResultText(block.content);
       parts.push({ role: 'tool', tool_call_id: block.tool_use_id, content: text });
     } else {
@@ -76,19 +67,24 @@ function convertUserContent(blocks: unknown): string | Record<string, any> | Arr
 function extractToolResultText(content: unknown): string {
   if (content === undefined || content === null) return '';
   if (typeof content === 'string') return content;
-  if (!Array.isArray(content)) return JSON.stringify(content);
+  if (!Array.isArray(content)) unsupportedBlock('non-text tool result');
   const parts: string[] = [];
   for (const part of content) {
     if (typeof part === 'string') parts.push(part);
-    else if (part && typeof part === 'object' && part.type === 'text') parts.push(part.text || '');
+    else if (isRecord(part) && part.type === 'text' && typeof part.text === 'string') {
+      assertFields(part, ['type', 'text'], 'tool_result content');
+      parts.push(part.text);
+    } else unsupportedBlock('non-text tool_result');
   }
   return parts.join('\n');
 }
 
-function mapToolChoice(toolChoice: unknown): string | Record<string, any> | undefined {
+function mapToolChoice(toolChoice: unknown): string | Record<string, unknown> | undefined {
   if (toolChoice === undefined || toolChoice === null) return undefined;
   if (typeof toolChoice === 'string') return toolChoice;
-  const tc = toolChoice as Record<string, any>;
+  if (!isRecord(toolChoice)) unsupportedBlock('invalid tool_choice');
+  assertFields(toolChoice, ['type', 'name'], 'tool_choice');
+  const tc = toolChoice;
   if (tc.type === 'auto') return 'auto';
   if (tc.type === 'any') return 'required';
   if (tc.type === 'tool') return { type: 'function', function: { name: tc.name } };
@@ -96,24 +92,25 @@ function mapToolChoice(toolChoice: unknown): string | Record<string, any> | unde
   unsupportedBlock(`tool_choice:${tc.type}`);
 }
 
-export function convertAnthropicToOpenAIRequest(body: Record<string, any>): Record<string, any> {
-  const out: Record<string, any> = {};
+export function convertAnthropicToOpenAIRequest(body: Record<string, unknown>): Record<string, unknown> {
+  assertFields(body, ['model', 'messages', 'system', 'max_tokens', 'temperature', 'top_p', 'stream', 'stop_sequences', 'tools', 'tool_choice'], 'request');
+  assertSampling(body);
+  if (!Array.isArray(body.messages)) unsupportedBlock('invalid messages');
+  const out: Record<string, unknown> = {};
   if (body.model !== undefined) out.model = body.model;
   if (body.max_tokens !== undefined) out.max_tokens = body.max_tokens;
   if (body.temperature !== undefined) out.temperature = body.temperature;
   if (body.top_p !== undefined) out.top_p = body.top_p;
-  if (body.top_k !== undefined) out.top_k = body.top_k;
   if (body.stream !== undefined) out.stream = body.stream;
   if (body.stop_sequences !== undefined) out.stop = body.stop_sequences;
-  if (body.metadata !== undefined) out.metadata = body.metadata;
-  if (body.user !== undefined) out.user = body.user;
 
-  const messages: any[] = [];
+  const messages: Record<string, unknown>[] = [];
   const systemMessage = systemToOpenAI(body.system);
   if (systemMessage) messages.push(systemMessage);
 
   for (const msg of body.messages || []) {
-    if (!msg || typeof msg !== 'object') continue;
+    if (!isRecord(msg)) unsupportedBlock('invalid message');
+    assertFields(msg, ['role', 'content', 'tool_use_id'], 'message');
     if (msg.role === 'assistant') {
       if (typeof msg.content === 'string') {
         messages.push({ role: 'assistant', content: msg.content });
@@ -130,6 +127,14 @@ export function convertAnthropicToOpenAIRequest(body: Record<string, any>): Reco
       // user message.
       if (converted && typeof converted === 'object' && !Array.isArray(converted) && converted.role === 'tool') {
         messages.push(converted);
+      } else if (Array.isArray(converted)) {
+        // Tool results must be top-level Chat messages, including parallel calls.
+        let parts: Record<string, unknown>[] = [];
+        const flush = () => { if (parts.length) messages.push({ role: 'user', content: parts }); parts = []; };
+        for (const part of converted) {
+          if (part.role === 'tool') { flush(); messages.push(part); } else parts.push(part);
+        }
+        flush();
       } else {
         messages.push({ role: 'user', content: converted });
       }
@@ -142,14 +147,12 @@ export function convertAnthropicToOpenAIRequest(body: Record<string, any>): Reco
   out.messages = messages;
 
   if (Array.isArray(body.tools)) {
-    out.tools = body.tools.map((tool: any) => ({
-      type: 'function',
-      function: {
-        name: tool.name,
-        description: tool.description,
-        parameters: tool.input_schema,
-      },
-    }));
+    out.tools = body.tools.map((tool: unknown) => {
+      if (!isRecord(tool)) unsupportedBlock('invalid tool');
+      assertFields(tool, ['name', 'description', 'input_schema'], 'tool');
+      if (typeof tool.name !== 'string' || !tool.name || !isRecord(tool.input_schema)) unsupportedBlock('invalid tool');
+      return { type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.input_schema } };
+    });
   }
   if (body.tool_choice !== undefined) {
     out.tool_choice = mapToolChoice(body.tool_choice);

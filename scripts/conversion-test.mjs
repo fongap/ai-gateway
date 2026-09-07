@@ -619,7 +619,7 @@ await run('conversion: stream Anthropic -> OpenAI Chat — text + end_turn, real
   const textChunk = chunks.find((c) => c.choices?.[0]?.delta?.content === 'hi');
   assert.ok(textChunk, 'text delta emitted');
   // Last chunk carries finish_reason
-  const last = chunks[chunks.length - 1];
+  const last = chunks.findLast((c) => c.choices?.[0]?.finish_reason);
   assert.equal(last.choices[0].finish_reason, 'stop');
   assert.equal(dones.length, 1, 'exactly one [DONE] sentinel');
 });
@@ -651,7 +651,7 @@ await run('conversion: stream Anthropic -> OpenAI Chat — tool_use + tool_calls
   const argChunks = chunks.filter((c) => c.choices?.[0]?.delta?.tool_calls?.[0]?.function?.arguments);
   assert.ok(argChunks.length >= 2, 'multiple argument deltas');
   // Final chunk: finish_reason=tool_calls
-  const last = chunks[chunks.length - 1];
+  const last = chunks.findLast((c) => c.choices?.[0]?.finish_reason);
   assert.equal(last.choices[0].finish_reason, 'tool_calls');
 });
 
@@ -675,17 +675,7 @@ await run('conversion: stream Anthropic -> OpenAI Chat — message_start only is
   const stream = createOpenAIChatStreamFromAnthropic(makeSseResponse(anthropicChunks), {
     messageId: 'chatcmpl-test-3', model: 'claude-x',
   });
-  const out = await readOpenAIChatChunks(stream);
-  const chunks = out.filter((x) => x.chunk).map((x) => x.chunk);
-  // Only a role header should have been emitted (no content, no finish).
-  // The guard sees this as a "done_only"-like stream and rotates the node;
-  // the converter must not pre-commit by emitting a finish chunk with
-  // content that the model never produced.
-  const deltas = chunks.flatMap((c) => c.choices ?? []).map((c) => c.delta);
-  const hasContent = deltas.some((d) => d && typeof d.content === 'string' && d.content.length > 0);
-  assert.equal(hasContent, false, 'no content was produced; first-event boundary is preserved');
-  const finishes = chunks.filter((c) => c.choices?.[0]?.finish_reason);
-  assert.equal(finishes.length, 0, 'no finish chunk before any real output');
+  await assert.rejects(readOpenAIChatChunks(stream), /interrupted/);
 });
 
 await run('conversion: stream Anthropic -> OpenAI Chat — max_tokens maps to length', async () => {
@@ -705,7 +695,7 @@ await run('conversion: stream Anthropic -> OpenAI Chat — max_tokens maps to le
   });
   const out = await readOpenAIChatChunks(stream);
   const chunks = out.filter((x) => x.chunk).map((x) => x.chunk);
-  const last = chunks[chunks.length - 1];
+  const last = chunks.findLast((c) => c.choices?.[0]?.finish_reason);
   assert.equal(last.choices[0].finish_reason, 'length');
 });
 
@@ -1112,10 +1102,7 @@ await run('conversion: stream Anthropic -> Responses — message_start only is N
   const stream = createResponsesStreamFromAnthropic(makeSseResponse(anthropicChunks), {
     responseId: 'resp_test3', model: 'code-max',
   });
-  const text = await readSseStream(stream);
-  // No commit event: the first-event boundary is preserved.
-  assert.doesNotMatch(text, /event: response\.completed/);
-  assert.doesNotMatch(text, /event: response\.output_text\.delta/);
+  await assert.rejects(readSseStream(stream), /interrupted/);
 });
 
 // ---- protocol-fallbacks config -------------------------------------------
