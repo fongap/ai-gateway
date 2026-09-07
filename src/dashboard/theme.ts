@@ -93,6 +93,7 @@ section{padding:32px 0;border-top:1px solid var(--line)}
 .mr-samples{color:var(--ink-3);text-align:right;font-size:12px;overflow:hidden;text-overflow:ellipsis}
 .mr-dot{width:6px;height:6px;border-radius:50%;background:var(--teal-4);box-shadow:0 0 0 3px var(--teal-soft);justify-self:start}
 .mr-dot.warn{background:var(--amber);box-shadow:0 0 0 3px #f3e8d9}
+.mr-dot.muted{background:var(--ink-3);box-shadow:0 0 0 3px #eceadf}
 .mr-dot.down{background:var(--red);box-shadow:0 0 0 3px #f1e1df}
 .mr-status{color:var(--ink-2);font-size:12px;text-align:right}
 

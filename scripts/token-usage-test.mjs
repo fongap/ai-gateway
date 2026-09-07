@@ -580,11 +580,12 @@ await test('dashboard D1 cache coalesces concurrent requests within TTL', async 
   assert.equal(html1, html2, 'concurrent requests share cached D1 result');
   // New query count: queryTokenSummary (2 reads: totals + hourly windows),
   // queryTokenDailySeries (3 reads: daily table + today overlay + fallback),
-  // queryTokenModelUsage (1), queryRecentModelEvidence (1),
-  // queryAllModelsTtftPercentiles (1 grouped query, all models) = 8 total.
-  assert.equal(d1._reads.length, 8, 'two concurrent pages issue summary + series + evidence + ttft queries');
+  // queryTokenModelUsage (1), queryRecentModelEvidence 24h (1),
+  // queryRecentModelEvidence 7d historical (1),
+  // queryAllModelsTtftPercentiles (1 grouped query, all models) = 9 total.
+  assert.equal(d1._reads.length, 9, 'two concurrent pages issue summary + series + evidence + ttft queries');
   await pageText(anonRequest(), env);
-  assert.equal(d1._reads.length, 8, 'a later request inside the TTL performs no additional reads');
+  assert.equal(d1._reads.length, 9, 'a later request inside the TTL performs no additional reads');
 });
 
 await test('dashboard D1 cache refreshes after TTL expires', async () => {
@@ -600,23 +601,23 @@ await test('dashboard D1 cache refreshes after TTL expires', async () => {
   try {
     const html1 = await pageText(anonRequest(), env);
     assert.ok(html1.includes('code-max'), 'initial data present');
-    // Initial load: 8 reads (see cache coalescing test).
-    assert.equal(d1._reads.length, 8);
+    // Initial load: 9 reads (see cache coalescing test).
+    assert.equal(d1._reads.length, 9);
     await persistTokenUsage(env, { prompt_tokens: 200, completion_tokens: 0 }, h0, 'ultra');
     fakeNow += 44_000;
     const cached = await pageText(anonRequest(), env);
     // Use token count '200' to verify cache: ultra's 200 tokens should NOT
     // appear in the model-usage section while the cache is still valid.
-    // (The model name 'ultra' always appears in the fixed 8-model status grid.)
+    // (The model name 'ultra' always appears in the fixed model status grid.)
     assert.ok(!cached.includes('>200<'), 'new data stays hidden before TTL expiry');
-    assert.equal(d1._reads.length, 8, 'no refresh before TTL expiry');
+    assert.equal(d1._reads.length, 9, 'no refresh before TTL expiry');
     fakeNow += 2_000;
     const refreshed = await pageText(anonRequest(), env);
     assert.ok(refreshed.includes('>200<'), 'new model data appears after TTL expiry');
     assert.ok(refreshed.includes('code-max'), 'old model remains after refresh');
-    // After TTL expiry: 8 initial + 8 refresh reads = 16 total. The grouped
+    // After TTL expiry: 9 initial + 9 refresh reads = 18 total. The grouped
     // TTFT query is 1 read regardless of how many models now have rows.
-    assert.equal(d1._reads.length, 16, 'TTL expiry performs exactly one new query set');
+    assert.equal(d1._reads.length, 18, 'TTL expiry performs exactly one new query set');
   } finally {
     Date.now = realNow;
   }
@@ -639,8 +640,8 @@ await test('dashboard cache does not leak across different D1 bindings', async (
   const htmlB = await pageText(anonRequest(), envB);
   assert.ok(htmlB.includes('model-b'));
   assert.ok(!htmlB.includes('model-a'));
-  assert.equal(d1a._reads.length, 8);
-  assert.equal(d1b._reads.length, 8);
+  assert.equal(d1a._reads.length, 9);
+  assert.equal(d1b._reads.length, 9);
 });
 
 // P2-5: public homepage must never leak raw D1 errors (table names, SQL,

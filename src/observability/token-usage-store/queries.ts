@@ -31,7 +31,7 @@ import {
 import { TTFT_BUCKET_BOUNDARIES_MS } from './keys.ts';
 
 type DailyWindowRow = { total: number, requests: number };
-type TtftEntry = { available: true, p50: number | null, p95: number | null, sampleCount: number, insufficient: boolean };
+type TtftEntry = { available: true, p50: number | null, p95: number | null, sampleCount: number, p50Insufficient: boolean, p95Insufficient: boolean };
 
 const asMessage = (e: unknown): string =>
   String((e as { message?: unknown } | null | undefined)?.message || e);
@@ -281,6 +281,13 @@ export async function queryTokenModelUsage(env: Record<string, unknown>, days: n
 // must pass it (or rely on this default) instead of hardcoding days.
 export const MODEL_STATUS_RECENT_WINDOW_MS = 24 * HOUR_MS;
 
+// Historical evidence window for the Public Model Status layer. This is the
+// model-hourly retention window (7d): the per-model table is pruned by
+// cleanupModelStats beyond that, so 7d is the maximum "has this model EVER
+// served" lookback we can honestly answer. Used to distinguish 无新记录
+// (recent window empty, history present) from 暂无记录 (no history at all).
+export const MODEL_STATUS_HISTORICAL_WINDOW_MS = 7 * DAY_MS;
+
 // Recent-success evidence for the Public Model Status layer
 // (src/runtime/model-status.ts). Returns a Set<string> of canonical
 // statistical model keys (trim + lowercase) that have at least one request
@@ -314,7 +321,7 @@ export async function queryRecentModelEvidence(env: Record<string, unknown>, win
   } catch (e) {
     // Fail-open: no evidence. Public Model Status then falls back to
     // the runtime-only signal; a fresh isolate with no runtime state
-    // reports `unobserved`, never `unavailable` for every model.
+    // reports `no_record`, never `down` for every model.
     return new Set();
   }
 }
@@ -326,13 +333,18 @@ export async function queryRecentModelEvidence(env: Record<string, unknown>, win
 // historical case variants merge in SQL, so the in-memory pass cannot
 // overwrite one variant's histogram with another's. Rows are keyed by the
 // canonical statistical model key (trim + lowercase). Each entry:
-//   { available: true, p50, p95, sampleCount, insufficient }
-//   samples < TTFT_MIN_SAMPLES -> p50/p95 null, insufficient: true
-//   (bucket-upper-bound precision, never a fabricated precise value).
-export async function queryAllModelsTtftPercentiles(env: Record<string, unknown>, days: number = 7, now: number = Date.now()) {
+//   { available: true, p50, p95, sampleCount, p50Insufficient, p95Insufficient }
+//   samples < TTFT_P50_MIN_SAMPLES -> p50/p95 null, both insufficient
+//   P50_MIN <= samples < P95_MIN   -> p50 set, p95 null (p95 insufficient)
+//   samples >= P95_MIN             -> both set
+// Percentiles are bucket-upper-bound precision (never a fabricated precise
+// value); the last open bucket returns Infinity, which the dashboard renders
+// as `>=10s`, never as a missing value. `windowMs` is an explicit millisecond
+// window (the model-status section passes the 24h recent-evidence window).
+export async function queryAllModelsTtftPercentiles(env: Record<string, unknown>, windowMs: number = MODEL_STATUS_RECENT_WINDOW_MS, now: number = Date.now()) {
   const d1 = tokenStatsD1(env);
   if (!d1) return { available: false, error: 'TOKEN_STATS_DB binding missing' };
-  const startHour = normalizeHour(now - days * DAY_MS);
+  const startHour = normalizeHour(now - windowMs);
   try {
     const res = await d1.prepare(
       `SELECT LOWER(TRIM(model)) AS model,
@@ -354,8 +366,8 @@ export async function queryAllModelsTtftPercentiles(env: Record<string, unknown>
       const key = normalizeModelKey(row?.model);
       if (!key) continue;
       const total = Number(row.total_ttft) || 0;
-      if (total < TTFT_MIN_SAMPLES) {
-        ttft.set(key, { available: true, p50: null, p95: null, sampleCount: total, insufficient: true });
+      if (total < TTFT_P50_MIN_SAMPLES) {
+        ttft.set(key, { available: true, p50: null, p95: null, sampleCount: total, p50Insufficient: true, p95Insufficient: true });
         continue;
       }
       const buckets = [
@@ -370,9 +382,10 @@ export async function queryAllModelsTtftPercentiles(env: Record<string, unknown>
       ttft.set(key, {
         available: true,
         p50: percentileFromBuckets(buckets, total, 0.5),
-        p95: percentileFromBuckets(buckets, total, 0.95),
+        p95: total >= TTFT_P95_MIN_SAMPLES ? percentileFromBuckets(buckets, total, 0.95) : null,
         sampleCount: total,
-        insufficient: false,
+        p50Insufficient: false,
+        p95Insufficient: total < TTFT_P95_MIN_SAMPLES,
       });
     }
     return { available: true, ttft };
@@ -384,11 +397,12 @@ export async function queryAllModelsTtftPercentiles(env: Record<string, unknown>
 // Query TTFT percentiles from the histogram buckets for a given model.
 // Returns the UPPER BOUND of the bucket containing the percentile
 // (matching the bucket precision contract — no fake precise values).
-// Minimum sample threshold: 5 successful TTFT samples are needed for
-// meaningful percentiles. Below that, `insufficient: true` is
-// returned so the dashboard can display "样本不足" instead of
-// misleading numbers.
-const TTFT_MIN_SAMPLES = 5;
+// P50 and P95 have separate minimum sample thresholds: P50 needs 5
+// samples, P95 needs 20 (the tail is far noisier, so the bar is higher).
+// Below the P50 floor both percentiles are null; between the floors P50
+// is reported and P95 stays null (dashboard tooltip: "P95 样本不足").
+const TTFT_P50_MIN_SAMPLES = 5;
+const TTFT_P95_MIN_SAMPLES = 20;
 
 function percentileFromBuckets(buckets: number[], total: number, pct: number): number {
   const threshold = Math.ceil(total * pct);

@@ -25,12 +25,13 @@
 // transport, request handler, protocol fallback, hedge or failover. It is a
 // pure read-only projection.
 //
-// Four states (kept stable for the UI):
-//   available    at least one credible path AND no current all-down signal
-//   degraded     recent evidence exists but current runtime shows partial outage
-//   unobserved   configured but no cross-isolate evidence either way
-//   unavailable  no configured node serves this model, or every candidate is
-//                currently marked unavailable with no recent success
+// Five states (kept stable for the UI):
+//   available     近 24 小时存在成功服务证据,且当前无全部候选故障事实
+//   fluctuating   当前存在明确异常,但近 24 小时仍有成功服务证据
+//   no_recent     近 24 小时无新成功记录,但近 7d 保留窗口内存在成功记录
+//   no_record     模型已配置公开,但统计保留窗口内没有任何成功记录
+//   down          当前已有明确 Runtime 故障事实(全部 serving candidate
+//                 unavailable 且近 24 小时无成功证据)
 //
 // Recent-success evidence source: the existing D1 per-model hourly aggregate
 // (token_usage_model_hourly). A row with requests > 0 in the recent window
@@ -64,9 +65,10 @@ import type { RuntimeNode } from '../types/node.ts';
 // here because Model Status semantics own the public surface.
 export {
   MODEL_STATUS_RECENT_WINDOW_MS,
+  MODEL_STATUS_HISTORICAL_WINDOW_MS,
 } from '../observability/token-usage-store.ts';
 
-export type PublicModelStatusState = 'available' | 'degraded' | 'unobserved' | 'unavailable';
+export type PublicModelStatusState = 'available' | 'fluctuating' | 'no_recent' | 'no_record' | 'down';
 
 export type PublicModelStatusEntry = {
   id: string,
@@ -75,7 +77,7 @@ export type PublicModelStatusEntry = {
   group: string,
 };
 
-// Pure function: compute the public four-state status for every logical
+// Pure function: compute the public five-state status for every logical
 // model known to the gateway.
 //
 // Source of model names: node mappings are the PRIMARY source — the operator
@@ -86,16 +88,19 @@ export type PublicModelStatusEntry = {
 // from having to enumerate every free model in a separate config file.
 //
 // Inputs:
-//   nodes     : Runtime Node[] (from loadGatewayConfig(env).nodes)
-//   env       : The Worker env (used to read MODELS_CONFIG via
-//               loadModelRegistry for visibility filtering only).
-//   evidence  : Set<string> of canonical statistical model keys (trim +
-//               lowercase) with recent-success evidence (typically from
-//               queryRecentModelEvidence()). An empty set is the fail-open
-//               shape — never null. Non-canonical entries are normalized
-//               once on entry; official logical model IDs are matched via
-//               normalizeModelKey so Code-Max finds its `code-max` stats row.
-//   now       : Optional clock for deterministic tests.
+//   nodes             : Runtime Node[] (from loadGatewayConfig(env).nodes)
+//   env               : The Worker env (used to read MODELS_CONFIG via
+//                       loadModelRegistry for visibility filtering only).
+//   evidence          : Set<string> of canonical statistical model keys (trim +
+//                       lowercase) with recent (24h) success. An empty set is the
+//                       fail-open shape — never null. Non-canonical entries are
+//                       normalized once on entry.
+//   historicalEvidence: Set<string> of canonical model keys with success within
+//                       the historical retention window (7d). Used only to
+//                       distinguish 无新记录 (history exists, recent does not)
+//                       from 暂无记录 (no history at all). Empty set is valid
+//                       and honest.
+//   now               : Optional clock for deterministic tests.
 //
 // Output:
 //   { observed_at: <ISO string>, models: [ { id, status }, ... ] }
@@ -119,7 +124,7 @@ function modelNamePriority(name: string): number {
   return MODEL_NAME_PRIORITY[lower] ?? 90;
 }
 
-export function getPublicModelStatus(nodes: ReadonlyArray<RuntimeNode>, env: Record<string, unknown> | null | undefined, evidence: ReadonlySet<string> = new Set(), now: number = Date.now()): { observed_at: string, models: PublicModelStatusEntry[] } {
+export function getPublicModelStatus(nodes: ReadonlyArray<RuntimeNode>, env: Record<string, unknown> | null | undefined, evidence: ReadonlySet<string> = new Set(), now: number = Date.now(), historicalEvidence: ReadonlySet<string> = new Set()): { observed_at: string, models: PublicModelStatusEntry[] } {
   const names = new Set<string>();
   for (const node of nodes || []) {
     for (const key of Object.keys(node.models || {})) names.add(key);
@@ -136,16 +141,19 @@ export function getPublicModelStatus(nodes: ReadonlyArray<RuntimeNode>, env: Rec
       }
     } catch { /* registry not loadable: everything is public + ui visible */ }
   }
-  const evidenceSet = evidence instanceof Set ? evidence : new Set();
   // Canonicalize evidence ONCE on entry: D1 statistics keys are
-  // trim + lowercase (queryRecentModelEvidence), while the public model
-  // ids below keep their official logical casing (Code-Max). Matching is
-  // always canonical-statistical-key vs canonical-statistical-key —
-  // routing/auth model-ID semantics stay exact and untouched.
+  // trim + lowercase, while the public model ids below keep their official
+  // logical casing (Code-Max). Matching is always canonical-statistical-key
+  // vs canonical-statistical-key.
   const canonicalEvidence = new Set<string>();
-  for (const key of evidenceSet) {
+  for (const key of evidence instanceof Set ? evidence : new Set()) {
     const canonical = normalizeModelKey(key);
     if (canonical) canonicalEvidence.add(canonical);
+  }
+  const canonicalHistorical = new Set<string>();
+  for (const key of historicalEvidence instanceof Set ? historicalEvidence : new Set()) {
+    const canonical = normalizeModelKey(key);
+    if (canonical) canonicalHistorical.add(canonical);
   }
   // The Known Model Catalog bounds wildcard nodes so a wildcard node only
   // serves models that actually exist in the gateway. The public name set
@@ -157,13 +165,13 @@ export function getPublicModelStatus(nodes: ReadonlyArray<RuntimeNode>, env: Rec
     if (visibility[name] === 'internal') continue;
     if (uiVisible[name] === false) continue;
     const serving = (nodes || []).filter((n) => servesModel(n, name, knownModels));
-    const status = modelStatus(name, serving, canonicalEvidence, now);
+    const status = modelStatus(name, serving, canonicalEvidence, canonicalHistorical, now);
     const entry: RegistryEntry | undefined = registry[name];
     models.push({
       id: name,
       status,
-      display_order: entry?.display_order !== undefined ? entry.display_order : 100,
-      group: entry?.group !== undefined ? entry.group : deriveGroup(name),
+      display_order: entry?.display_order !== undefined ? entry?.display_order : 100,
+      group: entry?.group !== undefined ? entry?.group : deriveGroup(name),
     });
   }
   models.sort((a, b) => {
@@ -179,52 +187,49 @@ export function getPublicModelStatus(nodes: ReadonlyArray<RuntimeNode>, env: Rec
   return { observed_at: new Date(now).toISOString(), models };
 }
 
-// Compute the status of one logical model.
-function modelStatus(name: string, serving: RuntimeNode[], canonicalEvidence: ReadonlySet<string>, now: number): PublicModelStatusState {
-  if (!serving.length) return 'unavailable';
+// Compute the public five-state status for one logical model.
+//
+// Priority (fixed, never reordered):
+//   1. No serving candidate at all            -> down (服务故障)
+//   2. Any candidate runtime-available now    -> available (服务可用)
+//   3. ALL candidates runtime-down + 24h hit  -> fluctuating (服务波动)
+//   4. ALL candidates runtime-down, no 24h hit -> down (服务故障)
+//   5. Some unobserved + 24h hit              -> available (服务可用)
+//   6. No available, not all-down, 7d hit     -> no_recent (无新记录)
+//   7. No available, not all-down, no 7d hit  -> no_record (暂无记录)
+function modelStatus(name: string, serving: RuntimeNode[], recentEvidence: ReadonlySet<string>, historicalEvidence: ReadonlySet<string>, now: number): PublicModelStatusState {
+  if (!serving.length) return 'down';
 
   const states = serving.map((n) => getRuntimeAvailability(n, name, now));
   // Statistics key (trim + lowercase), never the raw official ID: a model
   // named Code-Max must match its `code-max` D1 evidence row.
-  const hasRecent = canonicalEvidence.has(normalizeModelKey(name));
+  const key = normalizeModelKey(name);
+  const hasRecent = recentEvidence.has(key);
+  const hasHistory = historicalEvidence.has(key);
 
   // At least one candidate is currently available AND eligible.
   const anyAvailable = states.some((s) => s === 'available');
-  // At least one candidate is currently unavailable (cooldown / disabled /
-  // circuit open / hard-RPM exhausted).
-  const anyUnavailable = states.some((s) => s === 'unavailable');
+  // Every serving candidate is currently runtime-unavailable (circuit open,
+  // cooldown, disabled, hard-RPM exhausted).
+  const allDown = states.every((s) => s === 'unavailable');
   // At least one candidate is configured-but-unobserved by THIS isolate
   // (Tier 1 with no TTFT sample, or half-open).
   const anyUnobserved = states.some((s) => s === 'unobserved');
 
-  // Case A: every serving candidate is currently unavailable AND there is no
-  // recent cross-isolate evidence of success. The model is genuinely down.
-  if (!anyAvailable && !anyUnobserved && !hasRecent) return 'unavailable';
-  // Case B: every candidate is unavailable right now, but recent cross-isolate
-  // evidence says the model was working very recently. That is a partial /
-  // transient outage — display `degraded` (still attempting, currently
-  // failing). The operator should investigate, not declare the model dead.
-  if (!anyAvailable && !anyUnobserved && hasRecent) return 'degraded';
-  // Case C: at least one candidate is currently eligible AND observed by this
-  // isolate. We do not require recent D1 evidence — the runtime has just
-  // confirmed a working path. (If D1 evidence is also present, it only
-  // strengthens the same `available` conclusion.)
+  // 1. Already handled above (no serving candidates).
+  // 2. A working path exists right now in this isolate.
   if (anyAvailable) return 'available';
-  // Case D: no candidate is currently `available`, but at least one is
-  // `unobserved` (fresh isolate, no TTFT sample). The honest answer depends
-  // on whether we have cross-isolate evidence:
-  //   * recent D1 success -> `available` (a fresh isolate not having TTFT
-  //     does not contradict the model actually serving);
-  //   * no recent D1 success -> `unobserved` (we have no signal either way).
-  if (hasRecent) return 'available';
-  // Case E: mixed unobserved / unavailable, no recent evidence. We cannot
-  // claim `available`, but we also cannot rule out that the unobserved
-  // candidates work — the honest status is `unobserved` (not `unavailable`,
-  // which would require every candidate to be confirmed down).
-  if (anyUnobserved) return 'unobserved';
-  // Fallback: all candidates are unavailable and there is no recent
-  // evidence, but the loop above already returned `unavailable`. This branch
-  // is unreachable; we keep it defensive rather than silently returning
-  // `available`.
-  return 'unavailable';
+  // 3. Every candidate is explicitly down right now, but cross-isolate
+  //    evidence says the model served in the last 24h. Transient outage.
+  if (allDown) return hasRecent ? 'fluctuating' : 'down';
+  // 5. Some candidate is unobserved (fresh isolate, no TTFT sample) rather
+  //    than confirmed-down, and 24h evidence says the model works elsewhere.
+  if (anyUnobserved && hasRecent) return 'available';
+  // 6. No candidate is currently available and there is no confirmed all-down
+  //    (so we cannot claim down), but no 24h evidence. If 7d history exists
+  //    this is merely stale — not broken.
+  if (hasHistory) return 'no_recent';
+  // 7. No evidence anywhere we can honestly read. Configured, not yet
+  //    observed, not yet served: the honest answer is no_record.
+  return 'no_record';
 }

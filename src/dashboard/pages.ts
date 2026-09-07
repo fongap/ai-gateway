@@ -15,7 +15,7 @@
 //   * Unauthenticated, never leaks credentials, node ids, providers,
 //     tiers, cooldowns, faults, protocol notes or version numbers.
 //   * Logical-model status computed server-side, collapsed to a colored
-//     dot with text label (可用 | 波动 | 未观测 | 不可用).
+//     dot with text label (服务可用 | 服务波动 | 无新记录 | 暂无记录 | 服务故障).
 //   * Usage section exposes only AGGREGATE numbers — never per-provider /
 //     per-tier / per-node breakdowns.
 //   * Data from durable D1 hourly aggregate; degrades to "统计暂不可用"
@@ -160,6 +160,9 @@ export async function dashboardResponse(request: Request, env: Record<string, un
     const recentEvidence = stats.recentEvidence instanceof Set
       ? stats.recentEvidence
       : new Set<string>();
+    const historicalEvidence = stats.historicalEvidence instanceof Set
+      ? stats.historicalEvidence
+      : new Set<string>();
     // Use the cached stats' observation time as the status clock so concurrent
     // loads within the 45s cache window render byte-identical output and the
     // freshness timestamp reflects when the data was actually observed.
@@ -167,7 +170,7 @@ export async function dashboardResponse(request: Request, env: Record<string, un
       ? new Date(stats.observedAt).getTime()
       : now;
     const nodes: ReadonlyArray<RuntimeNode> = config.nodes || [];
-    const models = publicModelStatus(nodes, env, recentEvidence, statusNow);
+    const models = publicModelStatus(nodes, env, recentEvidence, statusNow, historicalEvidence);
     const apiBase = `${new URL(request.url).origin}/v1`;
 
     // Official display names keyed by canonical statistics key: the usage
@@ -194,7 +197,7 @@ export async function dashboardResponse(request: Request, env: Record<string, un
       '<section id="status">',
       '  <div class="wrap">',
       '    <div class="section-head">',
-      '      <span class="section-title">模型状态</span>',
+      '      <span class="section-title">模型状态 · 近 24 小时</span>',
       '    </div>',
       '    ' + modelsResult.html,
       '  </div>',

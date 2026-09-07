@@ -1492,10 +1492,10 @@ await test('public home shows degraded status when all serving nodes are cooling
   const t1Model = getTier1Model('de-a', 'air');
   t1Model.cooldownUntil = Date.now() + 60_000;
   t1Model.failureState = 'cooldown';
-  // Seed D1 with recent success evidence so the model shows `degraded`
+  // Seed D1 with recent success evidence so the model shows `fluctuating`
   // (recent success but currently all candidates cooling). Without this
   // evidence the new Public Model Status layer correctly reports
-  // `unavailable` (no recent proof + every candidate explicitly down).
+  // `down` (no recent proof + every candidate explicitly down).
   const d1 = createMockD1();
   env.TOKEN_STATS_DB = d1;
   await persistTokenUsage(env, { prompt_tokens: 10, completion_tokens: 5 }, Date.now(), 'air');
@@ -1513,7 +1513,7 @@ await test('public home shows degraded status when all serving nodes are cooling
   assert.ok(!html.includes('dot available'), 'must not claim a model available when cooling');
 });
 
-await test('public home shows unavailable when all serving nodes are cooling and no recent evidence', async () => {
+await test('public home shows down when all serving nodes are cooling and no recent evidence', async () => {
   resetMock();
   const env = makeEnv({
     tier1: [basicNode('de-b', { models: { air: 'up-air' } })],
@@ -1530,8 +1530,8 @@ await test('public home shows unavailable when all serving nodes are cooling and
   assert.equal(res.status, 200);
   const html = await res.text();
   // No D1 binding in this env: no recent evidence + every candidate explicitly
-  // down = `unavailable` (not `degraded`, which requires recent success).
-  assert.match(html, /不可用/);
+  // down = `down` (not `fluctuating`, which requires recent success).
+  assert.match(html, /故障/);
   assert.ok(!html.includes('dot available'), 'must not claim a model available when cooling');
 });
 
@@ -1752,7 +1752,7 @@ await test('public home: brand & GitHub once, model status flat list, no protoco
   // Accessibility and responsive structure: status is not color-only, tabs
   // expose their selected panel, and the dense heatmap has one concise label.
   // Accessibility: status is not color-only (text label is visible).
-  assert.match(html, /mr-status.*未观测/s);
+  assert.match(html, /mr-status.*暂无记录/s);
   assert.match(html, /role="tab" aria-controls="pane-openai" aria-selected="true"/);
   assert.match(html, /id="pane-anthropic" role="tabpanel" aria-labelledby="tab-anthropic" hidden/);
   assert.match(html, /ArrowLeft/);

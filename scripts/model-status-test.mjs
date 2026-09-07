@@ -3,17 +3,19 @@
 //
 // Public Model Status unit tests (src/runtime/model-status.ts). The core bug
 // fix is verified here: a freshly-isolated Worker that has no Tier 1
-// passive-TTFT sample must NOT mark every model `未观测` when D1 has recent
-// successful evidence for them. The other end of the spectrum is also
-// locked: a model that has never been called and has no D1 evidence must
-// still be `unobserved`, and a model with all candidates currently down and
-// no D1 evidence must be `unavailable`. D1 failure must fail open: never
-// fabricate `available`, never mark every model `unavailable`.
+// passive-TTFT sample must NOT mark every model `暂无记录` when D1 has recent
+// successful evidence for them. The five public states are: 服务可用
+// (available), 服务波动 (fluctuating), 无新记录 (no_recent), 暂无记录
+// (no_record), 服务故障 (down). A model with no runtime sample, no recent
+// evidence, and no historical evidence is `no_record`; a model with all
+// candidates currently down and no recent evidence is `down`. D1 failure
+// must fail open: never fabricate `available`, never mark every model `down`.
 
 import assert from 'node:assert/strict';
 import {
   getPublicModelStatus,
   MODEL_STATUS_RECENT_WINDOW_MS,
+  MODEL_STATUS_HISTORICAL_WINDOW_MS,
 } from '../src/runtime/model-status.ts';
 import { queryRecentModelEvidence } from '../src/observability/token-usage-store.ts';
 import { __resetTier1StateForTests, getTier1Model, recordTier1Ttft } from '../src/reliability/tier1-state.ts';
@@ -72,35 +74,35 @@ test('cold-start: no Tier 1 sample but D1 has recent traffic -> available', () =
   assert.equal(findModelStatus(list, 'air'), 'available');
 });
 
-// --- 2. New model: no runtime sample + no D1 evidence => unobserved ---------
+// --- 2. New model: no runtime sample + no D1 evidence => no_record ----------
 
-test('new model: no runtime sample and no D1 evidence -> unobserved', () => {
+test('new model: no runtime sample and no D1 evidence -> no_record', () => {
   const nodes = [node('a', { air: 'up-air' })];
   const list = getPublicModelStatus(nodes, ENV, new Set(), now());
-  assert.equal(findModelStatus(list, 'air'), 'unobserved');
+  assert.equal(findModelStatus(list, 'air'), 'no_record');
 });
 
-// --- 3. All candidates unavailable + no D1 => unavailable -------------------
+// --- 3. All candidates down + no recent D1 => down ---------------------------
 
-test('all candidates unavailable and no D1 evidence -> unavailable', () => {
+test('all candidates down and no D1 evidence -> down', () => {
   const nodes = [node('a', { air: 'up-air' })];
   // Force the Tier 1 model into cooldown so runtime returns 'unavailable'.
   const t1Model = getTier1Model('a', 'air');
   t1Model.cooldownUntil = now() + 60_000;
   t1Model.failureState = 'cooldown';
   const list = getPublicModelStatus(nodes, ENV, new Set(), now());
-  assert.equal(findModelStatus(list, 'air'), 'unavailable');
+  assert.equal(findModelStatus(list, 'air'), 'down');
 });
 
-// --- 4. All candidates unavailable + recent D1 => degraded --------------------
+// --- 4. All candidates down + recent D1 => fluctuating -----------------------
 
-test('all candidates cooling with recent D1 success -> degraded', () => {
+test('all candidates cooling with recent D1 success -> fluctuating', () => {
   const nodes = [node('a', { air: 'up-air' })];
   const t1Model = getTier1Model('a', 'air');
   t1Model.cooldownUntil = now() + 60_000;
   t1Model.failureState = 'cooldown';
   const list = getPublicModelStatus(nodes, ENV, new Set(['air']), now());
-  assert.equal(findModelStatus(list, 'air'), 'degraded');
+  assert.equal(findModelStatus(list, 'air'), 'fluctuating');
 });
 
 // --- 5. Tier 1 sample present + healthy => available -------------------------
@@ -212,9 +214,9 @@ test('null env (e.g. test isolation) falls back to node mappings', () => {
   assert.equal(result.models[0].id, 'air');
 });
 
-// --- 14. Edge: half-open state treated as unobserved ------------------------
+// --- 14. Edge: half-open state -> no_record without evidence ---------------
 
-test('Tier 1 half-open state behaves as unobserved -> falls through evidence rule', () => {
+test('Tier 1 half-open state -> no_record without evidence, available with recent', () => {
   const nodes = [node('a', { air: 'up-air' })];
   // Tier 1 half-open is the only state that returns 'unobserved' from runtime.
   // Mark it explicitly: cooldownUntil has elapsed, halfOpenSuccesses not yet 2.
@@ -222,9 +224,9 @@ test('Tier 1 half-open state behaves as unobserved -> falls through evidence rul
   t1Model.failureState = 'half_open';
   t1Model.cooldownUntil = 0;
   t1Model.halfOpenSuccesses = 0;
-  // No D1 evidence -> unobserved
-  assert.equal(findModelStatus(getPublicModelStatus(nodes, ENV, new Set(), now()), 'air'), 'unobserved');
-  // D1 evidence -> available (case D)
+  // No D1 evidence -> no_record (configured but never proven)
+  assert.equal(findModelStatus(getPublicModelStatus(nodes, ENV, new Set(), now()), 'air'), 'no_record');
+  // Recent D1 evidence -> available (proven recently)
   assert.equal(findModelStatus(getPublicModelStatus(nodes, ENV, new Set(['air']), now()), 'air'), 'available');
 });
 
@@ -286,10 +288,11 @@ await testAsync('queryRecentModelEvidence: requests=0 is NOT evidence', async ()
     'a row with requests > 0 (even if missing-usage) still counts as recent activity');
 });
 
-// --- 16. Constant MODEL_STATUS_RECENT_WINDOW_MS is exported -----------------
+// --- 16. Window constants: 24h recent + 7d historical ------------------------
 
-test('MODEL_STATUS_RECENT_WINDOW_MS is 24h and is the only window constant', () => {
+test('MODEL_STATUS_RECENT_WINDOW_MS is 24h; HISTORICAL is 7d', () => {
   assert.equal(MODEL_STATUS_RECENT_WINDOW_MS, 24 * 3600_000);
+  assert.equal(MODEL_STATUS_HISTORICAL_WINDOW_MS, 7 * 24 * 3600_000);
 });
 
 // --- 17. Multi-isolate cold-start: rebuild does not flip available -> unobserved
@@ -324,22 +327,53 @@ test('model served by tier 3 (legacy state) is read correctly', () => {
   assert.equal(findModelStatus(list, 'air'), 'available');
 });
 
-// --- 19. output has exactly the four documented states ----------------------
+// --- 19. output has exactly the five documented states ----------------------
 
-test('output only ever returns the four documented status values', () => {
+test('output only ever returns the five documented status values', () => {
   const nodes = [node('a', { air: 'up-air' }), node('b', { max: 'up-max' })];
-  // Various scenarios
+  // Various scenarios across recent + historical evidence combinations.
   const seen = new Set();
-  for (const evidence of [new Set(), new Set(['air']), new Set(['air', 'max']), new Set(['max'])]) {
-    for (const arr of [nodes, [], [node('a', { air: 'up-air' })]]) {
-      for (const result of [getPublicModelStatus(arr, ENV, evidence, now())]) {
-        for (const m of result.models) seen.add(m.status);
+  for (const recent of [new Set(), new Set(['air']), new Set(['air', 'max']), new Set(['max'])]) {
+    for (const history of [new Set(), new Set(['air']), new Set(['max'])]) {
+      for (const arr of [nodes, [], [node('a', { air: 'up-air' })]]) {
+        for (const result of [getPublicModelStatus(arr, ENV, recent, now(), history)]) {
+          for (const m of result.models) seen.add(m.status);
+        }
       }
     }
   }
   for (const s of seen) {
-    assert.ok(['available', 'degraded', 'unobserved', 'unavailable'].includes(s), `unexpected status: ${s}`);
+    assert.ok(['available', 'fluctuating', 'no_recent', 'no_record', 'down'].includes(s), `unexpected status: ${s}`);
   }
+});
+
+// --- 19b. Historical evidence: no recent but has history -> no_recent --------
+
+test('historical evidence without recent -> no_recent', () => {
+  const nodes = [node('a', { air: 'up-air' })];
+  // No recent evidence, no runtime sample (unobserved), but historical
+  // evidence exists -> no_recent (was served before, just not recently).
+  const list = getPublicModelStatus(nodes, ENV, new Set(), now(), new Set(['air']));
+  assert.equal(findModelStatus(list, 'air'), 'no_recent');
+});
+
+test('all candidates down + no recent + historical -> still down', () => {
+  // allDown short-circuits before historical evidence: a model whose every
+  // candidate is explicitly down with no recent success is `down`, regardless
+  // of older historical evidence.
+  const nodes = [node('a', { air: 'up-air' })];
+  const t1Model = getTier1Model('a', 'air');
+  t1Model.cooldownUntil = now() + 60_000;
+  t1Model.failureState = 'cooldown';
+  const list = getPublicModelStatus(nodes, ENV, new Set(), now(), new Set(['air']));
+  assert.equal(findModelStatus(list, 'air'), 'down');
+});
+
+test('canonical historical evidence matches official-cased model', () => {
+  const nodes = [node('a', { 'Code-Max': 'up-cm' })];
+  // Historical evidence is canonical (code-max), model is official-cased.
+  const list = getPublicModelStatus(nodes, ENV, new Set(), now(), new Set(['code-max']));
+  assert.equal(findModelStatus(list, 'Code-Max'), 'no_recent');
 });
 
 // --- 20. Dashboard wiring: queryRecentModelEvidence rides the existing 45s cache
@@ -362,12 +396,12 @@ await testAsync('dashboard path issues queryRecentModelEvidence at most once per
   ]);
   assert.equal(h1, h2, 'cached');
   // Two concurrent pages should add at most ONE new read of the model table
-  // (the cache coalesces). The model-status query uses GROUP BY model and is
-  // distinct from the existing model-usage GROUP BY model query, so it
-  // adds 1 read per cache window.
+  // (the cache coalesces). The recent-evidence and historical-evidence queries
+  // are both GROUP BY model and distinct from the model-usage GROUP BY model
+  // query, so the cache window adds 2 evidence reads plus 1 TTFT read.
   const readsAfter = d1._reads.length;
   const delta = readsAfter - readsBefore;
-  assert.ok(delta <= 8, `expected <=8 reads for one page load, got ${delta}`);
+  assert.ok(delta <= 9, `expected <=9 reads for one page load, got ${delta}`);
 });
 
 // --- 21. Config-driven model order and grouping ------------------------------
@@ -537,15 +571,15 @@ test('canonical evidence: every evidence case variant yields the same result', (
   }
 });
 
-test('canonical evidence drives the degraded state too', () => {
+test('canonical evidence drives the fluctuating state too', () => {
   const nodes = [node('a', { 'Code-Max': 'up-cm' })];
   const t1Model = getTier1Model('a', 'Code-Max');
   t1Model.cooldownUntil = now() + 60_000;
   t1Model.failureState = 'cooldown';
   // Lowercase D1 evidence for an officially-cased model must still produce
-  // `degraded` (transient outage), not `unavailable`.
+  // `fluctuating` (transient outage with recent success), not `down`.
   const list = getPublicModelStatus(nodes, ENV, new Set(['code-max']), now());
-  assert.equal(findModelStatus(list, 'Code-Max'), 'degraded');
+  assert.equal(findModelStatus(list, 'Code-Max'), 'fluctuating');
 });
 
 test('canonicalization does not alter the official model ID surface', () => {
