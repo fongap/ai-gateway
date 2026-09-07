@@ -306,18 +306,24 @@ await test('OpenAI Chat fails on all openai nodes: the healthy anthropic node is
     'failover must stay inside the openai protocol; the anthropic node must never be contacted');
 });
 
-await test('Anthropic fails on the anthropic node: the healthy openai node is NEVER contacted', async () => {
+await test('Anthropic fails on the anthropic node: native failover stays inside Anthropic, default-ON fallback is opt-out here', async () => {
   resetMock();
   routeHandlers['an5xx.example.com'] = () => jsonUpstream({ type: 'error', error: { type: 'api_error', message: 'boom' } }, 500);
   routeHandlers['healthy-oc.example.com'] = () => jsonUpstream(okCompletion());
+  // PROTOCOL_FALLBACKS=disable pins the legacy Native-Only behavior for this
+  // contract: even with a healthy openai node present, the request must NOT
+  // silently cross the protocol boundary. The Default-ON path is covered by
+  // Contract 03 in architecture-contract-test.mjs; this test pins the
+  // negative case (no implicit conversion when the operator opts out).
   const env = makeEnv({
     tier1: [anthropicNode('an5xx'), openaiChatNode('healthy-oc')],
     secrets: { an5xx: 'k', 'healthy-oc': 'k' },
+    extraEnv: { PROTOCOL_FALLBACKS: 'disable' },
   });
   const res = await worker.fetch(messagesRequest({}), env, {});
   assert.equal(res.status, 502);
   assert.deepEqual(upstreamCalls.map((c) => c.host), ['an5xx.example.com'],
-    'failover must stay inside the anthropic protocol');
+    'failover must stay inside the anthropic protocol; cross-protocol fallback is opt-in via disable');
   const body = await res.json();
   assert.equal(body.type, 'error', 'the client still receives an Anthropic-shaped error');
 });
@@ -407,7 +413,14 @@ await test('legacy anthropic-labeled node defaults to openai protocol (explicit 
   // field existed). Native anthropic service requires the explicit upgrade.
   routeHandlers['old-an.example.com'] = () => jsonUpstream(okCompletion());
   const legacyNode = { id: 'old-an', provider: 'anthropic', base_url: 'https://old-an.example.com/v1', models: { max: 'up-model' } };
-  const env = makeEnv({ tier1: [legacyNode], secrets: { 'old-an': 'k' } });
+  // PROTOCOL_FALLBACKS=disable pins the Native-Only contract: this test is
+  // about legacy nodes' *native* reach, not the cross-protocol fallback path.
+  // The Default-ON path is covered separately.
+  const env = makeEnv({
+    tier1: [legacyNode],
+    secrets: { 'old-an': 'k' },
+    extraEnv: { PROTOCOL_FALLBACKS: 'disable' },
+  });
   const res = await worker.fetch(chatRequest({}), env, {});
   assert.equal(res.status, 200);
   assert.equal(upstreamCalls[0].path, '/v1/chat/completions');

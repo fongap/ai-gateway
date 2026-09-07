@@ -38,8 +38,8 @@ CI 必须在 `main` 和 Pull Request 上通过。
 
 ### 协议一致性
 - 保持 OpenAI / Anthropic 双协议路径行为一致
-- Native First：跨协议 fallback 仅在 `PROTOCOL_FALLBACKS` 显式声明时启用
-- 协议矩阵测试 + 转换测试断言 Native First 和转换 fallback 行为
+- Native First：跨协议 fallback 默认启用（`PROTOCOL_FALLBACKS` 默认 `{"anthropic:messages":["openai:chat_completions"]}`；设 `disable` 关闭；显式 JSON 覆盖）
+- 协议矩阵测试 + 转换测试 + 架构契约测试断言 Native First 和转换 fallback 行为
 - 契约测试覆盖原生协议行为
 
 ### 配置安全

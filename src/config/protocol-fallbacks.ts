@@ -18,6 +18,23 @@
 // node, with cross-protocol request/response conversion applied at the
 // boundary.
 //
+// Modes:
+//   (1) unset / empty string  -> built-in default chain (Default ON).
+//   (2) "disable" (case-insensitive) -> empty config (legacy Native Only).
+//   (3) JSON object            -> parsed verbatim; any parse error or
+//                                unsupported target is a blocking config
+//                                error. An explicit JSON value ALWAYS
+//                                overrides the default — there is no silent
+//                                merge. `{"anthropic:messages":[]}` is a
+//                                valid operator choice that means "explicitly
+//                                turn off fallback for this route".
+//
+// Rationale for Default ON: the only supported conversion
+// (Anthropic Messages -> OpenAI Chat Completions) is the safe and widely-
+// expected fallback for Anthropic-only operators who also carry an OpenAI-
+// compatible pool. Operators who want the legacy behavior can opt out with
+// `PROTOCOL_FALLBACKS=disable`.
+//
 // Only explicitly supported conversions are allowed. Unsupported conversions
 // produce blocking configuration errors (not warnings).
 
@@ -34,6 +51,17 @@ const PROTOCOL_SURFACES = new Map<string, Set<string>>([
 export const SUPPORTED_CONVERSIONS: Readonly<Record<string, string[]>> = Object.freeze({
   'anthropic:messages': ['openai:chat_completions'],
 });
+
+// Built-in default chain. Applied when PROTOCOL_FALLBACKS is unset/empty.
+// The default is the only one allowed without an explicit operator JSON
+// value; see header for the three-mode contract.
+export const DEFAULT_FALLBACK_CHAIN: Readonly<Record<string, string[]>> = Object.freeze({
+  'anthropic:messages': ['openai:chat_completions'],
+});
+
+// Magic literal that turns the default off. Compared case-insensitively after
+// trimming surrounding whitespace.
+const DISABLE_LITERAL = 'disable';
 
 const ROUTE_PROTOCOL_SURFACE: Readonly<Record<string, string>> = Object.freeze({
   openai_chat: 'openai:chat_completions',
@@ -56,12 +84,26 @@ function analyzeProtocolFallbacks(env: Record<string, unknown>): { config: Recor
   if (cachedEnv === env && cached) return cached;
   cachedEnv = env;
   const raw = readEnv(env, 'PROTOCOL_FALLBACKS');
+  const trimmed = typeof raw === 'string' ? raw.trim() : '';
   const errors: string[] = [];
   const config: Record<string, string[]> = {};
-  if (raw) {
+  // Mode (1): unset / empty -> built-in default chain (Default ON).
+  if (!trimmed) {
+    cached = { config: { ...DEFAULT_FALLBACK_CHAIN }, errors };
+    return cached;
+  }
+  // Mode (2): explicit opt-out -> legacy Native Only.
+  if (trimmed.toLowerCase() === DISABLE_LITERAL) {
+    cached = { config, errors };
+    return cached;
+  }
+  // Mode (3): explicit JSON value — overrides the default verbatim, even if
+  // it ends up empty. Parse errors are still blocking; an operator typo is
+  // a config bug, not an excuse to silently fall back to the default.
+  {
     let parsed: unknown;
     try {
-      parsed = JSON.parse(raw);
+      parsed = JSON.parse(trimmed);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       errors.push(`PROTOCOL_FALLBACKS invalid JSON (${msg}); fallbacks disabled`);
@@ -74,8 +116,19 @@ function analyzeProtocolFallbacks(env: Record<string, unknown>): { config: Recor
       for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
         const parsedKey = parseSurfaceKey(key, errors, '');
         if (!parsedKey) continue;
-        if (!Array.isArray(value) || value.length === 0) {
-          errors.push(`PROTOCOL_FALLBACKS: "${key}" must be a non-empty array of "protocol:surface" strings`);
+        if (!Array.isArray(value)) {
+          errors.push(`PROTOCOL_FALLBACKS: "${key}" must be a JSON array of "protocol:surface" strings`);
+          continue;
+        }
+        // Empty array is a valid operator choice — it pins this route to
+        // "off" while leaving the rest of the operator's config alone. The
+        // route key is preserved (with an empty target list) so
+        // getFallbackChain() can tell "explicitly turned off" from "no entry
+        // at all". This is what makes the Default-ON contract safe: an
+        // operator can always pin a single route to off without giving up
+        // the rest of the default.
+        if (value.length === 0) {
+          config[parsedKey] = [];
           continue;
         }
         const targets: string[] = [];
