@@ -197,7 +197,7 @@ export async function dashboardResponse(request: Request, env: Record<string, un
       '<section id="status">',
       '  <div class="wrap">',
       '    <div class="section-head">',
-      '      <span class="section-title">模型状态</span>',
+      '      <span class="section-title">模型状态 · 近 24 小时</span>',
       '    </div>',
       '    ' + modelsResult.html,
       '  </div>',
