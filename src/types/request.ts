@@ -11,6 +11,7 @@ import type { Protocol, Surface } from './protocol.ts';
 import type { RuntimeNode } from './node.ts';
 import type { PolicyConfig } from './policy.ts';
 import type { Tier, RoutableRequest } from './scheduler.ts';
+import type { FailureKind } from '../reliability/classify.ts';
 
 /** The (protocol, surface, route) triple identifying one client-facing route. */
 export type RequestDescriptor = {
@@ -70,7 +71,11 @@ export type LoopState = {
   logicalAttempts: number,
   dispatches: number,
   hedges: number,
-  failureKinds: Record<string, number>,
+  // R3 (v1.3.0): the failure-kind histogram is now typed by FailureKind so
+  // the compiler rejects any new kind string that has not been declared in
+  // src/reliability/classify.ts. Partial because kinds are accumulated
+  // incrementally — an empty `{}` is a valid initial state.
+  failureKinds: Partial<Record<FailureKind, number>>,
   logger: { info: Function, debug: Function, error: Function },
   requestId: string,
   maxAttempts: number,
@@ -174,6 +179,10 @@ export type AttemptOutcome = {
   rotate?: boolean,
   stop?: boolean,
   budgetCharged?: boolean,
-  kind?: string,
+  // R3 (v1.3.0): kind is typed as FailureKind (the full taxonomy) so the
+  // compiler catches any drift between the classifier in
+  // src/reliability/classify.ts and the consumers in attempt/*.ts. The
+  // previous `string` type allowed any literal to leak through.
+  kind?: FailureKind,
   hedgedAway?: boolean,
 };

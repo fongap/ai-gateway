@@ -18,6 +18,7 @@ import { tier1BlockingWaitMs, tier1HasDeferredCapacity } from '../reliability/ti
 import { supportsRequest, isHardRpmExhausted, tierHasDeferredCapacity } from '../scheduler/scheduler.ts';
 import { TIER_ORDER } from './router.ts';
 import type { RequestDescriptor, LoopState } from '../types/request.ts';
+import { KIND as FAILURE_KIND } from '../reliability/classify.ts';
 import type { RuntimeNode } from '../types/node.ts';
 
 // Unified gateway error: Anthropic-style for Anthropic routes, OpenAI
@@ -257,19 +258,19 @@ function extractErrorMessage(text: string | Uint8Array | null | undefined): stri
 //   dominant rate_limit / distributed deny -> 429 (retryable)
 //   dominant headers/first-event timeout  -> 504 (spent, terminal)
 //   otherwise (server/network/auth/model) -> 502
-function dominantKind(failureKinds?: Record<string, number>): string | null {
+function dominantKind(failureKinds?: Partial<Record<string, number>>): string | null {
   let best: string | null = null;
   let bestN = 0;
   for (const [kind, n] of Object.entries(failureKinds || {})) {
-    if (n > bestN) { best = kind; bestN = n; }
+    if ((n || 0) > bestN) { best = kind; bestN = n || 0; }
   }
   return best;
 }
 
-function terminalStatus(failureKinds?: Record<string, number>): number | null {
+function terminalStatus(failureKinds?: Partial<Record<string, number>>): number | null {
   const dom = dominantKind(failureKinds);
   if (!dom) return null;
-  if (dom === 'rate_limit' || dom === 'rate_limit_global') return 429;
-  if (dom === 'headers_timeout' || dom === 'first_event_timeout') return 504;
+  if (dom === FAILURE_KIND.RATE_LIMIT || dom === FAILURE_KIND.RATE_LIMIT_GLOBAL) return 429;
+  if (dom === FAILURE_KIND.HEADERS_TIMEOUT || dom === FAILURE_KIND.FIRST_EVENT_TIMEOUT) return 504;
   return 502;
 }

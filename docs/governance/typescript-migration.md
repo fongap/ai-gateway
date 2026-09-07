@@ -111,7 +111,6 @@ PR 7  worker entry(index)+ 最终清理收口
 npm ci
 npm run validate:merge
 npm run typecheck
-npm run typecheck:strict
 npm run check:deploy
 ```
 

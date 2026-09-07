@@ -33,7 +33,7 @@
 import { peekAvailability, acquireSlot, getNodeState, rpmUsage, isModelCooling, getModelPerf } from '../reliability/node-state.ts';
 import { servesModel } from '../config/registry.ts';
 import type { RuntimeNode } from '../types/node.ts';
-import type { RoutableRequest } from '../types/scheduler.ts';
+import type { RoutableRequest, PickedCandidate } from '../types/scheduler.ts';
 import type { NodeState, ModelPerfEntry } from '../types/reliability.ts';
 
 // A request descriptor: { model, protocol, surface }. Every selection helper
@@ -87,7 +87,7 @@ export function rpmWindowRetryAfterSec(now: number = Date.now()): number {
 //   knownModels (optional) is the Known Model Catalog; it bounds wildcard
 //   nodes so an empty-models node only serves catalog models. The request path
 //   always passes it (defense in depth on top of the preflight authz gate).
-export function pickCandidate(tierNodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, now: number = Date.now(), excludeId: string | null = null, knownModels?: ReadonlySet<string> | null): RuntimeNode | null {
+export function pickCandidate(tierNodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, now: number = Date.now(), excludeId: string | null = null, knownModels?: ReadonlySet<string> | null): PickedCandidate | null {
   let best: RuntimeNode | null = null;
   let bestState: NodeState | null = null;
   let bestUncapped: RuntimeNode | null = null;
@@ -122,10 +122,14 @@ export function pickCandidate(tierNodes: ReadonlyArray<RuntimeNode>, req: Routab
 
   const chosen = best || bestUncapped;
   if (!chosen) return null;
-  // Claim the slot (and the half-open probe, if this node was probe-ready).
-  // Re-check inside acquireSlot keeps the claim atomic.
-  if (!acquireSlot(chosen.id, now)) return null;
-  return chosen;
+  // R4 (v1.3.0): return PickedCandidate so the caller can distinguish
+  // "no eligible candidate" (null) from "slot race lost" ({ raceLost: true }).
+  // Previously the race-loss case returned null, which was indistinguishable
+  // from "no eligible nodes" — the tier loop would move to the next tier
+  // instead of retrying the same tier. Tier 1 already had this right via
+  // { raceLost: true }; now both tiers share the same contract.
+  if (!acquireSlot(chosen.id, now)) return { raceLost: true };
+  return { node: chosen };
 }
 
 // True when this tier could serve the request if it had capacity right now

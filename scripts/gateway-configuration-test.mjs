@@ -543,5 +543,25 @@ test('valid MODELS_CONFIG + POLICIES_CONFIG resolve and stay ready', () => {
   assert.equal(cfg.diagnostics.length, 0, 'valid config yields no diagnostics');
 });
 
+// R5 (v1.3.0): budget_split policy field validation.
+test('POLICIES_CONFIG accepts budget_split: even and weighted', () => {
+  const diags = policyDiags({
+    ev: { max_attempts: 5, budget_split: 'even' },
+    wt: { max_attempts: 5, budget_split: 'weighted' },
+  });
+  assert.deepEqual(diags, [], 'even and weighted must not error');
+  const pol = loadPoliciesConfig(makeEnv({ extraEnv: {
+    POLICIES_CONFIG: JSON.stringify({ a: { budget_split: 'even' }, b: { budget_split: 'weighted' } }),
+  } }));
+  assert.equal(pol.a.budgetSplit, 'even', 'even budget_split survives parsing');
+  assert.equal(pol.b.budgetSplit, 'weighted', 'weighted budget_split survives parsing');
+});
+
+test('POLICIES_CONFIG rejects an unknown budget_split value', () => {
+  const diags = policyDiags({ bad: { max_attempts: 5, budget_split: 'random' } });
+  assert.ok(diags.some((d) => d.includes('budget_split must be "even" or "weighted"')),
+    `unknown budget_split value must be flagged, got ${diags}`);
+});
+
 if (!process.exitCode) console.log(`gateway configuration tests passed (${passed}).`);
 else process.exit(1);

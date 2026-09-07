@@ -41,7 +41,7 @@ flowchart TB
 
 - 多协议：OpenAI Chat / Responses、Anthropic Messages / count_tokens
 - 原生协议转发：Chat → 上游 `/v1/chat/completions`，Responses → 上游 `/v1/responses`，Messages → 上游 `/v1/messages`；节点通过 `protocol` + `surfaces` 显式声明，任何提供 OpenAI-compatible 或 Anthropic-compatible API 的服务均可接入
-- Native First：OpenAI Chat / Responses 只走原生路径；Anthropic Messages 优先原生，原生池耗尽后默认转换到 OpenAI Chat（`PROTOCOL_FALLBACKS` 默认启用 `{"anthropic:messages":["openai:chat_completions"]}`，仅支持 Anthropic → OpenAI Chat 单向转换；设 `disable` 关闭；显式 JSON 覆盖）
+- Native First + v1.3.0 跨协议 fallback：客户端请求优先转发到同 protocol、同 surface 的原生上游；原生池耗尽后默认启用跨协议 fallback（OpenAI Chat↔Anthropic Messages 双向 + Responses→Anthropic）。`PROTOCOL_FALLBACKS` 默认启用三向 fallback 链；设 `disable` 关闭；显式 JSON 覆盖。跨协议 fallback 与 native retry 共享 `max_attempts` / `FAILOVER_BUDGET_MS` budget，不获取新 attempt slot
 - `limits.rpm` 默认 hard，单 Worker isolate 内不主动越配额
 - 整请求 failover budget，超时即停
 - Tier 1 只从真实业务输出学习 `(account, model)` TTFT：不主动测速，不用 health、LRU 或静态 priority 排序；它不承诺每次选到全局最快账户，而是追求低成本、快速避障、自然均衡和会话连续
@@ -98,7 +98,7 @@ git push origin main
 | POST | `/v1/chat/completions` | OpenAI Chat |
 | POST | `/v1/responses` | OpenAI Responses |
 | POST | `/v1/messages` · `/count_tokens` | Anthropic Messages |
-| GET | `/` · `/version` | 入口页 · 版本 |
+| GET | `/` · `/version` | 入口页 · 版本（v1.3.0: `version` = release identity, `build` = deployment identity） |
 | GET | `/health` `/metrics` `/v1/models` | 诊断（需鉴权） |
 
 客户端可通过 `x-session-id`（8–128 字符）启用 Tier 1 session affinity。原始值在成为 KV key 前经 SHA-256 哈希，从不记录日志。

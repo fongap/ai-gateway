@@ -1719,6 +1719,41 @@ await test('/version is public and exposes only branding, no node/config topolog
   'public /version must not expose configuration/topology');
 });
 
+// R2 (v1.3.0) — Production Identity: /version must expose the deployment
+// identity as a `build` field derived from env.GITHUB_SHA. The contract is:
+//   * When GITHUB_SHA is a valid 7–40 hex string, /version.build echoes it.
+//   * When GITHUB_SHA is missing or malformed, /version.build is the literal
+//     string `unknown` (so local dev / pre-deploy probes never crash).
+//   * The build field is independent of the `version` field (semver).
+await test('/version exposes deployment identity as a `build` field (R2: Build SHA = Deployment identity)', async () => {
+  resetMock();
+  const buildSha = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0';
+  const res = await worker.fetch(
+    new Request('https://gateway.example.com/version'),
+    makeEnv({ tier1: [basicNode('vid')], secrets: { vid: 'k' }, extraEnv: { GITHUB_SHA: buildSha } }),
+    {},
+  );
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.build, buildSha, 'GITHUB_SHA injected via env should be reflected on /version.build');
+
+  // Missing / malformed: must fall back to the literal `unknown` so
+  // /version remains observable in dev / pre-deploy.
+  const resMissing = await worker.fetch(
+    new Request('https://gateway.example.com/version'),
+    makeEnv({ tier1: [basicNode('vid')], secrets: { vid: 'k' } }),
+    {},
+  );
+  assert.equal((await resMissing.json()).build, 'unknown', 'missing GITHUB_SHA must fall back to "unknown"');
+
+  const resMalformed = await worker.fetch(
+    new Request('https://gateway.example.com/version'),
+    makeEnv({ tier1: [basicNode('vid')], secrets: { vid: 'k' }, extraEnv: { GITHUB_SHA: 'not-a-sha' } }),
+    {},
+  );
+  assert.equal((await resMalformed.json()).build, 'unknown', 'malformed GITHUB_SHA must fall back to "unknown"');
+});
+
 await test('public home: brand & GitHub once, model status flat list, no protocol or version leak', async () => {
   resetMock();
   // Under v1.2.6 governance the public model set comes from node mappings.

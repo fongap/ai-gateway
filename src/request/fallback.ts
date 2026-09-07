@@ -3,11 +3,13 @@
 //
 // Protocol Fallback Orchestration.
 //
-// Only Anthropic Messages -> OpenAI Chat Completions is supported,
-// and only when PROTOCOL_FALLBACKS is explicitly configured for the
-// client route. There is no implicit cross-protocol fallback, no
-// Chat -> Anthropic direction, no OpenAI Responses -> Chat direction,
-// and no Gemini conversion.
+// Supported conversions (see SUPPORTED_CONVERSIONS in protocol-fallbacks.ts
+// for the single source of truth):
+//   * Anthropic Messages -> OpenAI Chat Completions
+//   * OpenAI Chat Completions -> Anthropic Messages
+// A conversion is only available when PROTOCOL_FALLBACKS is configured for
+// the client route. There is no implicit cross-protocol fallback, no
+// OpenAI Responses -> Chat direction, and no Gemini conversion.
 //
 // Contract:
 //   * Native-first: the native tier loop runs first and only when it
@@ -28,15 +30,16 @@
 //     reachable fallback steps is precomputed by route-feasibility.ts at
 //     preflight time and carried through loopCtx.feasibility; runFallbackChain
 //     iterates that set rather than re-implementing the feasibility check.
-//   * If the conversion itself throws ConversionError, the request
-//     is answered with 400 (the request was malformed for the
-//     fallback protocol). Other conversion errors propagate.
+//   * If the conversion itself throws ConversionError, the request is
+//     answered with 400 in the CLIENT protocol envelope (R0.4). Other
+//     conversion errors propagate.
 //   * If the fallback chain is exhausted, the request falls through
 //     to the standard exhausted handler.
 
-import { anthropicErrorResponse } from '../protocol/anthropic.ts';
 import { convertAnthropicToOpenAIRequest, ConversionError } from '../conversion/anthropic-to-openai.ts';
-import { buildBudgetExhaustedResponse } from './errors.ts';
+import { convertOpenAIChatRequestToAnthropic } from '../conversion/openai-chat-request-to-anthropic.ts';
+import { convertResponsesRequestToAnthropic } from '../conversion/responses-request-to-anthropic.ts';
+import { buildBudgetExhaustedResponse, gatewayError } from './errors.ts';
 import { computeTierCaps } from './tier-loop.ts';
 import type { LoopContext, ConversionContext } from '../types/request.ts';
 import type { RoutableRequest } from '../types/scheduler.ts';
@@ -74,12 +77,19 @@ export async function runFallbackChain({ loopCtx, route, requestedModel, runTier
     try {
       if (route === 'anthropic_messages' && fb.protocol === 'openai' && fb.surface === 'chat_completions') {
         convertedBody = convertAnthropicToOpenAIRequest(bodyJson);
+      } else if (route === 'openai_chat' && fb.protocol === 'anthropic' && fb.surface === 'messages') {
+        convertedBody = convertOpenAIChatRequestToAnthropic(bodyJson);
+      } else if (route === 'openai_responses' && fb.protocol === 'anthropic' && fb.surface === 'messages') {
+        convertedBody = convertResponsesRequestToAnthropic(bodyJson);
       } else {
         continue;
       }
     } catch (e) {
       if (e instanceof ConversionError) {
-        return anthropicErrorResponse(request, env, 400, e.code, requestId);
+        // The client request was malformed for the fallback protocol. Return
+        // a client-protocol-shaped error envelope (R0.4): the client must
+        // never see the upstream protocol's error format.
+        return gatewayError(request, env, route, 400, e.code, requestId);
       }
       throw e;
     }

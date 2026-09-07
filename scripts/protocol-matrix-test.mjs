@@ -291,7 +291,13 @@ await test('Anthropic streaming passes the native lifecycle through', async () =
 
 // ---- Cross-protocol isolation (HARD boundary) --------------------------------
 
-await test('OpenAI Chat fails on all openai nodes: the healthy anthropic node is NEVER contacted', async () => {
+await test('OpenAI Chat fails on all openai nodes: the healthy anthropic node is NEVER contacted (PROTOCOL_FALLBACKS=disable)', async () => {
+  // v1.3.0 R0 extended the default-ON chain to include
+  // openai:chat_completions -> anthropic:messages. This test pins the
+  // Native-Only opt-out (PROTOCOL_FALLBACKS=disable): even with a healthy
+  // anthropic node present, the request must NOT silently cross the protocol
+  // boundary. The default-ON path is covered by the conversion-test handler
+  // tests (R0 acceptance).
   resetMock();
   routeHandlers['xa.example.com'] = () => jsonUpstream({}, 500);
   routeHandlers['xb.example.com'] = () => jsonUpstream({}, 500);
@@ -299,11 +305,12 @@ await test('OpenAI Chat fails on all openai nodes: the healthy anthropic node is
   const env = makeEnv({
     tier1: [openaiChatNode('xa'), openaiChatNode('xb'), anthropicNode('healthy-an')],
     secrets: { xa: 'k', xb: 'k', 'healthy-an': 'k' },
+    extraEnv: { PROTOCOL_FALLBACKS: 'disable' },
   });
   const res = await worker.fetch(chatRequest({}), env, {});
   assert.equal(res.status, 502, 'all openai nodes failed -> terminal 502');
   assert.deepEqual(upstreamCalls.map((c) => c.host), ['xa.example.com', 'xb.example.com'],
-    'failover must stay inside the openai protocol; the anthropic node must never be contacted');
+    'with PROTOCOL_FALLBACKS=disable, failover must stay inside the openai protocol; the anthropic node must never be contacted');
 });
 
 await test('Anthropic fails on the anthropic node: native failover stays inside Anthropic, default-ON fallback is opt-out here', async () => {

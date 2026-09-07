@@ -11,6 +11,7 @@
 import { pickCandidate } from '../../scheduler/scheduler.ts';
 import { pickTier1Candidate } from '../../scheduler/tier1-scheduler.ts';
 import { attemptNode } from './dispatch.ts';
+import { classifyHedgeUnknown } from '../../reliability/classify.ts';
 import type { AttemptContext, AttemptOutcome } from '../../types/request.ts';
 import type { RuntimeNode } from '../../types/node.ts';
 import type { PickedCandidate } from '../../types/scheduler.ts';
@@ -92,6 +93,9 @@ export async function dispatchWithHedge(args: AttemptContext, tierNodes: Readonl
   // the twin's slot atomically (re-checked inside acquireSlot), and the
   // deadline gate above guarantees the claim is always followed by a real
   // dispatch or a legitimate loser lifecycle.
+  // R4 (v1.3.0): pickCandidate now returns PickedCandidate | null (same
+  // shape as pickTier1Candidate). The Tier 2/3 twin path no longer wraps
+  // a bare RuntimeNode — it passes the PickedCandidate through directly.
   const legacyTwin = args.tierNumber === 1
     ? null : pickCandidate(tierNodes, args.reqDescriptor, args.state.attempted, Date.now(), args.node.id);
   const twinPick: PickedCandidate | null = args.tierNumber === 1
@@ -102,7 +106,7 @@ export async function dispatchWithHedge(args: AttemptContext, tierNodes: Readonl
       affinityAccountId: args.tier1AffinityAccountId,
       evaluateAffinity: args.tier1EvaluateAffinity,
     })
-    : legacyTwin ? { node: legacyTwin, raceLost: false } : null;
+    : legacyTwin;
   if (!twinPick || twinPick.raceLost) return primary;
   // The raceLost guard above is exactly the "no node picked" case, so node is
   // defined here by the picker's contract.
@@ -130,11 +134,11 @@ export async function dispatchWithHedge(args: AttemptContext, tierNodes: Readonl
   };
   const twin = attemptNode(twinArgs).then(undefined, (error) => {
     args.logger.debug(`hedge: twin ${twinNode.id} error ${error?.message || error}`);
-    return { rotate: true, kind: 'unknown' };
+    return { rotate: true, kind: classifyHedgeUnknown().kind };
   });
   const safePrimary = primary.then(undefined, (error) => {
     args.logger.debug(`hedge: primary ${args.node.id} error ${error?.message || error}`);
-    return { rotate: true, kind: 'unknown' };
+    return { rotate: true, kind: classifyHedgeUnknown().kind };
   });
 
   return new Promise((resolve) => {

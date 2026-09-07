@@ -61,6 +61,7 @@ const UNIT_TESTS = [
   'scripts/migrations-check-test.mjs',
   'scripts/version-check-test.mjs',
   'scripts/architecture-contract-test.mjs',
+  'scripts/reliability-core-contract-test.mjs',
   'scripts/deployment-workflow-contract-test.mjs',
 ];
 

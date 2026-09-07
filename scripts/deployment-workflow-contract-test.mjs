@@ -38,6 +38,30 @@
 //   10  workflow_dispatch-triggered CI success -> deploy blocked (test-only).
 //   11  Manual workflow_dispatch deploys ALWAYS pass through the
 //       manual-validate job (full validation inside deploy.yml) — no bypass.
+//   12  Every `npm run <script>` referenced from a workflow file resolves
+//       to a script that actually exists in package.json. Catches dead
+//       references (e.g. the historic `typecheck:strict` step).
+//   13  Every workflow_run job that runs validation or deploys code
+//       explicitly checkouts `github.event.workflow_run.head_sha`. Relying
+//       on the default `GITHUB_SHA` is not auditable from the workflow
+//       YAML alone and can drift if a newer commit lands while CI is
+//       running. R1: validated SHA == deployed SHA.
+//   14  The deploy job captures the deployed SHA in `DEPLOYED_SHA` and the
+//       Deployment summary step writes it as a top-level field, so the
+//       deployment metadata SHA is auditable from the workflow run log.
+//   15  The rollback step (when it fires) records the SAME SHA that the
+//       deploy step recorded, so the rolled-back-from SHA is consistent
+//       with the metadata. R1: rollback records the deployed SHA.
+//   16  The deploy job injects `GITHUB_SHA` as a Worker env so the
+//       runtime can expose the deployment identity on `GET /version`
+//       (the `build` field). R2: validated SHA == deployed SHA ==
+//       Worker build identity.
+//   17  The deployment bridge allow-list includes `GITHUB_SHA` so the
+//       injected env var is actually plumbed through to the Worker
+//       vars map; otherwise the runtime would never see it.
+//   18  `versionResponse` (or its source in diagnostic-endpoints.ts)
+//       exposes a `build` field derived from `env.GITHUB_SHA` so the
+//       deployment identity is observable from outside.
 
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -311,8 +335,13 @@ const PUSH_SUCCESS_BASE = {
 
 // ---- Contract 11: manual deploy always passes through full validation ---------
 {
-  // Behavioral: the gate permits a manual dispatch (so validation can run),
-  // but the deploy job may only start after the manual-validate job SUCCEEDED.
+  // R1 (v1.3.0): the manual path uses a SINGLE validation entry point
+  // (`npm run validate:deploy`) plus the bundle dry-run (`check:deploy`).
+  // The bare `typecheck` step and the historic `typecheck:strict` step
+  // are removed. The contract is now: `validate:deploy` + `check:deploy`
+  // must both be present, and no other `npm run` validation steps are
+  // allowed in the manual path (the full deploy suite covers typecheck
+  // implicitly via `npm run typecheck` which is part of `validate:merge`).
   const gateAllowsManual = decideDeploy({ event: 'workflow_dispatch' }).deploy === true;
   const manualValidateExists = Boolean(manualValidateJob);
   const manualValidateGated = manualValidateExists
@@ -322,9 +351,11 @@ const PUSH_SUCCESS_BASE = {
     ? manualValidateJob.steps.map((s) => s.run || '').join('\n')
     : '';
   const fullSuiteCovered = manualValidationSteps.includes('npm run validate:deploy')
-    && manualValidationSteps.includes('npm run typecheck')
-    && manualValidationSteps.includes('npm run typecheck:strict')
     && manualValidationSteps.includes('npm run check:deploy');
+  // The historic extra typecheck steps must NOT appear in the manual path:
+  // the unified contract forbids scattered per-step validation.
+  const noRemovedTypecheckSteps = !manualValidationSteps.includes('npm run typecheck:strict')
+    && !/^\s*npm run typecheck\s*$/m.test(manualValidationSteps);
   const deployRequiresValidation = deployJob.needs.includes('manual-validate')
     && deployJob.if.startsWith('always()')
     && deployJob.if.includes("needs.manual-validate.result == 'success'")
@@ -332,9 +363,198 @@ const PUSH_SUCCESS_BASE = {
   // The old implicit bypass must be gone: no inline gate script may set
   // deploy=true for workflow_dispatch without the validation job.
   const inlineBypassGone = !/EVENT" = "workflow_dispatch"/.test(text);
-  check('C11 manual workflow_dispatch -> deploy only after manual-validate full validation (no silent bypass)',
-    gateAllowsManual && manualValidateGated && fullSuiteCovered && deployRequiresValidation && inlineBypassGone,
-    `manualValidate=${manualValidateExists} gated=${manualValidateGated} fullSuite=${fullSuiteCovered} deployRequires=${deployRequiresValidation} inlineBypassGone=${inlineBypassGone}`);
+  check('C11 manual workflow_dispatch -> deploy only after manual-validate runs the unified validate:deploy + check:deploy suite (no silent bypass, no scattered typecheck steps)',
+    gateAllowsManual && manualValidateGated && fullSuiteCovered && noRemovedTypecheckSteps && deployRequiresValidation && inlineBypassGone,
+    `manualValidate=${manualValidateExists} gated=${manualValidateGated} fullSuite=${fullSuiteCovered} noRemovedTypecheckSteps=${noRemovedTypecheckSteps} deployRequires=${deployRequiresValidation} inlineBypassGone=${inlineBypassGone}`);
+}
+
+// ---- Contract 12: every `npm run <script>` in workflows exists in package.json
+{
+  // Scan all workflow files for `npm run <script>` invocations and assert
+  // each script is a real entry in package.json. Catches dead references
+  // like the historic `typecheck:strict` step.
+  const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+  const scripts = packageJson.scripts || {};
+  const referenced = new Set();
+  const wfFiles = [
+    join(root, '.github', 'workflows', 'deploy.yml'),
+    join(root, '.github', 'workflows', 'ci.yml'),
+    join(root, '.github', 'workflows', 'provider-discovery.yml'),
+  ];
+  const npmRunRe = /npm\s+run\s+([A-Za-z0-9_:-]+)/g;
+  for (const wf of wfFiles) {
+    let body;
+    try { body = readFileSync(wf, 'utf8'); } catch { continue; }
+    let m;
+    while ((m = npmRunRe.exec(body)) !== null) {
+      // Skip the `npm` invocation in `if:` expressions like `if: npm run X`,
+      // but here we are scanning run: lines anyway. Just collect all.
+      referenced.add(m[1]);
+    }
+  }
+  const missing = [...referenced].filter((s) => !Object.prototype.hasOwnProperty.call(scripts, s));
+  check('C12 every `npm run <script>` referenced from a workflow exists in package.json',
+    missing.length === 0,
+    `missing scripts: ${JSON.stringify(missing)} (referenced: ${[...referenced].sort().join(', ')})`);
+}
+
+// ---- Contract 13: workflow_run jobs explicitly checkout the triggering SHA ---
+{
+  // For every job triggered by `workflow_run` that runs validation or
+  // deploys code, the actions/checkout step on the `workflow_run` branch
+  // MUST pin `ref: ${{ github.event.workflow_run.head_sha }}`. Relying on
+  // the default `GITHUB_SHA` is not auditable from the workflow YAML and
+  // can drift if a newer commit lands while CI is running. The gate job
+  // already pins it; the contract extends the same rule to
+  // `manual-validate` and `deploy`.
+  const workflowRunJobs = ['gate', 'manual-validate', 'deploy'];
+  const pinRe = /ref:\s*\$\{\{\s*github\.event\.workflow_run\.head_sha\s*\}\}/;
+  // parseWorkflow only captures a single line of `run:` content; the
+  // `with:` block is not preserved. To check the `ref:` pin we must scan
+  // the raw YAML text within each job block. The extraction helper is
+  // shared with C16 below.
+  const perJob = {};
+  for (const name of workflowRunJobs) {
+    const block = extractJobTextBlock(text, name);
+    if (!block) { perJob[name] = 'missing'; continue; }
+    perJob[name] = pinRe.test(block) ? 'pinned' : 'unpinned';
+  }
+  const allPinned = workflowRunJobs.every((n) => perJob[n] === 'pinned');
+  check('C13 every workflow_run job (gate, manual-validate, deploy) explicitly checkouts github.event.workflow_run.head_sha (validated SHA = deployed SHA)',
+    allPinned,
+    `perJob=${JSON.stringify(perJob)}`);
+}
+
+// ---- Contract 14: deployment summary records the deployed SHA ---------------
+{
+  // The `Deployment summary` step in the deploy job must write a line that
+  // names the deployed SHA, and the deploy job must capture that SHA via
+  // a `DEPLOYED_SHA` env (the single source of truth for that job).
+  const summaryStep = deployJob.steps.find((s) => (s.name || '').includes('Deployment summary'));
+  const shaCaptured = /DEPLOYED_SHA:/.test(text);
+  const summaryRecordsSha = summaryStep
+    && /DEPLOYED_SHA/.test(summaryStep.run || '')
+    && /Deployed SHA/.test(summaryStep.run || '');
+  check('C14 deployment summary records the deployed SHA (DEPLOYED_SHA env, single source of truth)',
+    Boolean(shaCaptured && summaryRecordsSha),
+    `summaryStep=${Boolean(summaryStep)} shaCaptured=${shaCaptured} summaryRecordsSha=${summaryRecordsSha}`);
+}
+
+// ---- Contract 15: rollback records the SAME SHA as the deploy --------------
+{
+  // When the rollback step fires, it must echo the DEPLOYED_SHA so the
+  // rolled-back-from SHA is the SAME as the validated / deployed SHA. The
+  // rollback step already inherits the job's `DEPLOYED_SHA` env, so
+  // referencing it in the run block is sufficient.
+  const rollback = deployJob.steps.find((s) => (s.name || '').includes('Rollback'));
+  const recordsSameSha = rollback
+    && /\$\{DEPLOYED_SHA\}/.test(rollback.run || '');
+  check('C15 rollback records the same SHA as the deploy (DEPLOYED_SHA in rollback step)',
+    Boolean(recordsSameSha),
+    `rollback if="${rollback && rollback.if}" rollbackRun="${(rollback && rollback.run) || ''}"`);
+}
+
+// ---- Contract 16: deploy job injects GITHUB_SHA as a Worker env ------------
+// R2: the runtime must be able to read the deployment identity from a
+// well-known env var. The deploy job must inject `GITHUB_SHA` (sourced
+// from the same validated SHA, so identity stays consistent end-to-end).
+{
+  const deployJobBlock = extractJobTextBlock(text, 'deploy');
+  // Accept either a single-line or block-scalar value, as long as the
+  // literal name `GITHUB_SHA` appears in the env section.
+  const injectsGithubSha = /GITHUB_SHA:\s*\$\{\{[^}]*head_sha[^}]*\}\}/.test(deployJobBlock)
+    || /GITHUB_SHA:\s*\$\{\{[^}]*DEPLOYED_SHA[^}]*\}\}/.test(deployJobBlock)
+    || /GITHUB_SHA:\s*\$\{\{[^}]*sha[^}]*\}\}/.test(deployJobBlock);
+  check('C16 deploy job injects GITHUB_SHA as a Worker env (R2: deployment identity visible to runtime)',
+    injectsGithubSha,
+    `deployJobBlock matched=${injectsGithubSha}`);
+}
+
+// ---- Contract 17: deployment bridge allow-list includes GITHUB_SHA ---------
+// R2: the bridge plumbs vars through the Worker vars map. If GITHUB_SHA
+// is not in EXTRA_VAR_ALLOW, the runtime will see it as undefined and
+// the /version `build` field will fall back to `unknown`.
+{
+  const bridgeSource = readFileSync(join(root, 'scripts', 'github-deployment-config.mjs'), 'utf8');
+  const allowLine = bridgeSource.match(/EXTRA_VAR_ALLOW\s*=\s*new Set\(\[([^\]]+)\]\)/);
+  const allowNames = allowLine
+    ? [...allowLine[1].matchAll(/'([^']+)'/g)].map((m) => m[1])
+    : [];
+  check('C17 deployment bridge allow-list includes GITHUB_SHA (plumbs identity to runtime vars)',
+    allowNames.includes('GITHUB_SHA'),
+    `allowNames=${JSON.stringify(allowNames)}`);
+}
+
+// ---- Contract 18: versionResponse exposes a `build` field ------------------
+// R2: the runtime must surface the deployment identity on GET /version
+// as a `build` field. The diagnostic-endpoints.ts source must:
+//   1. Export a `resolveBuildSha` helper that reads `env?.GITHUB_SHA` and
+//      falls back to `unknown` for malformed/missing values.
+//   2. Call that helper (directly or via the same module) from
+//      `versionResponse` and write the result as a `build` field in the
+//      JSON body. The helper indirection is the right factoring so the
+//      identity logic is testable in isolation; the contract accepts
+//      either the helper call OR a direct `env?.GITHUB_SHA` reference.
+{
+  const diagSource = readFileSync(join(root, 'src', 'observability', 'diagnostic-endpoints.ts'), 'utf8');
+  const versionBlock = extractFunctionBlock(diagSource, 'versionResponse');
+  const hasBuildField = /build\s*:/.test(versionBlock);
+  // Accept either direct env read or a `resolveBuildSha(env)` call.
+  const hasBuildResolver = /resolveBuildSha\(/.test(versionBlock)
+    || /env\?\.GITHUB_SHA/.test(versionBlock);
+  check('C18 versionResponse exposes a `build` field derived from env.GITHUB_SHA (R2: deployment identity observable)',
+    hasBuildField && hasBuildResolver,
+    `hasBuildField=${hasBuildField} hasBuildResolver=${hasBuildResolver}`);
+}
+
+// ---- Helpers ----------------------------------------------------------------
+
+// Extract the text block of a single top-level workflow job (`jobs.<name>:`
+// and all its indented children) by line index. Used by C13 and C16.
+function extractJobTextBlock(source, jobName) {
+  const lines = source.split('\n');
+  let start = -1;
+  let end = lines.length;
+  for (let i = 0; i < lines.length; i++) {
+    if (start === -1 && new RegExp(`^  ${jobName}:\\s*$`).test(lines[i])) start = i;
+    else if (start !== -1 && i > start && /^  [A-Za-z][\w-]*:\s*$/.test(lines[i])) { end = i; break; }
+  }
+  if (start === -1) return '';
+  return lines.slice(start, end).join('\n');
+}
+
+// Extract the text block of a single top-level function declaration
+// (`export function NAME(` ... matching `}` at the same indent level).
+// Used by C18 to scope the build-field check to `versionResponse`.
+function extractFunctionBlock(source, functionName) {
+  const re = new RegExp(`export\\s+function\\s+${functionName}\\s*\\(`, 'g');
+  const startMatch = re.exec(source);
+  if (!startMatch) return '';
+  const start = startMatch.index;
+  // Walk forward from the start, tracking braces to find the matching close.
+  let depth = 0;
+  let inString = null;
+  let inComment = false;
+  let i = source.indexOf('{', start);
+  if (i === -1) return '';
+  depth = 1;
+  for (let j = i + 1; j < source.length; j++) {
+    const ch = source[j];
+    const prev = source[j - 1];
+    if (inComment) { if (ch === '\n') inComment = false; continue; }
+    if (inString) {
+      if (ch === inString && prev !== '\\') inString = null;
+      continue;
+    }
+    if (ch === '/' && source[j + 1] === '/') { inComment = true; continue; }
+    if (ch === '"' || ch === "'" || ch === '`') { inString = ch; continue; }
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return source.slice(start, j + 1);
+    }
+  }
+  return source.slice(start);
 }
 
 if (failures > 0) {

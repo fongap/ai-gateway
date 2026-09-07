@@ -94,7 +94,7 @@ Anthropic 原生节点：
 | `STREAM_INCLUDE_USAGE` | auto | auto/always/never | 是否在流式请求中携带 `stream_options.include_usage` |
 | `STREAM_USAGE_INCLUDE_OFF_PROVIDERS` | *(empty)* | provider 列表 | 按 provider 排除 usage hint |
 | `PROJECT_REPOSITORY_URL` | — | https URL | Dashboard 显示 |
-| `PROTOCOL_FALLBACKS` | *内置默认（anthropic → openai/chat）* | unset / `disable` / JSON object | 跨协议 fallback 链。未设置或为空时启用默认链 `{"anthropic:messages":["openai:chat_completions"]}`；设 `disable` 关闭；显式 JSON（即使为空数组）覆盖默认 |
+| `PROTOCOL_FALLBACKS` | *内置默认（v1.3.0 双向 fallback）* | unset / `disable` / JSON object | 跨协议 fallback 链。v1.3.0 默认链 `{"anthropic:messages":["openai:chat_completions"], "openai:chat_completions":["anthropic:messages"], "openai:responses":["anthropic:messages"]}`；设 `disable` 关闭；显式 JSON（即使为空数组）覆盖默认。详细见 [protocol-model.md](../architecture/protocol-model.md#v130-协议转换-r0) |
 
 运行时参数的唯一事实来源是 `src/config/runtime-vars.js`。
 
@@ -132,6 +132,63 @@ Anthropic 原生节点：
 - 公开 Model Status：`token_usage_model_hourly`（24h 证据窗口，不变）
 
 Token 计数仅使用上游报告的 usage，缺失时从不估算。
+
+## POLICIES_CONFIG 详细字段 (v1.3.0)
+
+`POLICIES_CONFIG` 是 per-model 策略映射（`MODELS_CONFIG.<model>.policy` 引用），决定 attempt budget 与 hedge 行为。v1.3.0 新增 `budget_split` 字段用于自适应 budget 分配。
+
+### 完整 schema
+
+```json
+{
+  "default": {
+    "max_attempts": 5,
+    "tier_attempts": null,
+    "hedge": { "enabled": true },
+    "first_event_timeout_ms": null,
+    "budget_split": null
+  }
+}
+```
+
+### 字段说明
+
+| 字段 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `max_attempts` | int 1-8 | 5 | 整请求 logical attempt 上限（跨 tier 共享） |
+| `tier_attempts` | object \| null | `null` | 显式 per-tier budget: `{"tier1": N, "tier2": N, "tier3": N}`。`0` 禁用该 tier。设置后 `budget_split` 不影响该 tier |
+| `hedge.enabled` | bool | true | 是否启用 reactive hedge。`false` 完全禁用 |
+| `hedge.delay_ms` | int ≥ 0 | (env HEDGE_DELAY_MS) | Hedge twin 启动延迟 |
+| `hedge.tiers` | array \| null | null | 仅这些 tier 允许 hedge twin；null = 全部 |
+| `first_event_timeout_ms` | int 5000-600000 \| null | null | Per-model 首事件超时 override（覆盖 `FIRST_EVENT_TIMEOUT_MS`） |
+| **`budget_split`** | `'even' \| 'weighted' \| null` | `null` | **v1.3.0 新增**：per-tier surplus 分配策略 |
+
+### `budget_split` 详解 (R5)
+
+- **`'even'` (默认)**: 第一个 dispatchable tier 获得全部 surplus。最大化免费资源利用。
+- **`'weighted'`**: surplus 按每个 tier 的 **live dispatchable 节点数** 比例分配。容量大的低 tier 获得更多 attempts。
+
+**示例** (`max_attempts=6`, Tier 2=1 节点, Tier 3=4 节点, Tier 1 不可达):
+
+```json
+{ "balanced": { "max_attempts": 6, "budget_split": "even" } }
+// → Tier 2: 5, Tier 3: 1
+{ "spread":   { "max_attempts": 6, "budget_split": "weighted" } }
+// → Tier 2: 1, Tier 3: 5
+```
+
+详细算法与示例见 [reliability-model.md → Adaptive Budget (R5)](../architecture/reliability-model.md#adaptive-budget-r5-v130)。
+
+### 内置策略 (always present, user config merges on top)
+
+| Name | max_attempts | hedge | budget_split | 用途 |
+|---|---|---|---|---|
+| `default` | 5 | enabled | `null` (= even) | 平衡模式 |
+| `fast` | 1 | disabled | `null` | 速度优先 |
+| `stable` | 5 | enabled, tier1 only | `null` | 可靠性优先 |
+| `long-reasoning` | 3 | disabled | `null` | 长推理（first_event 120s） |
+
+未知字段被拒绝（产生 diagnostic），非法值产生 fatal 配置错误。详细校验规则在 `scripts/gateway-configuration-test.mjs` 中。
 
 ## Configuration Status
 
