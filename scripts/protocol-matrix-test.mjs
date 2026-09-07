@@ -12,7 +12,7 @@
 //   4. legacy node configs (no protocol/surfaces) still work via the
 //      deprecated openai/chat_completions defaults.
 import assert from 'node:assert/strict';
-import worker from '../src/index.js';
+import worker from '../src/index.ts';
 import { __resetAllStateForTests, getNodeState } from '../src/reliability/node-state.ts';
 import { __resetTier1StateForTests } from '../src/reliability/tier1-state.ts';
 import { __resetTier1AffinityForTests } from '../src/scheduler/tier1-affinity.ts';

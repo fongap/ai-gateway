@@ -4,7 +4,7 @@
 // worker.fetch() against a mocked global fetch upstream.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import worker from '../src/index.js';
+import worker from '../src/index.ts';
 import { __resetAllStateForTests, getNodeState, noteRpmRequest } from '../src/reliability/node-state.ts';
 import {
   __resetTier1StateForTests, tier1AccountInFlight,

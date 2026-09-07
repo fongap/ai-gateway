@@ -11,7 +11,7 @@
 //
 // Uses only node:test + node:assert. Exits 0 on success, 1 on failure.
 import assert from 'node:assert/strict';
-import worker from '../src/index.js';
+import worker from '../src/index.ts';
 import { __resetAllStateForTests } from '../src/reliability/node-state.ts';
 import { __resetTier1StateForTests } from '../src/reliability/tier1-state.ts';
 import { __resetTier1AffinityForTests } from '../src/scheduler/tier1-affinity.ts';

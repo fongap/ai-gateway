@@ -10,7 +10,7 @@
 //   * failover budget stops further upstream calls once spent
 // These are test-only; no production behavior is changed.
 import assert from 'node:assert/strict';
-import worker from '../src/index.js';
+import worker from '../src/index.ts';
 import { __resetAllStateForTests, getNodeState } from '../src/reliability/node-state.ts';
 import {
   __resetTier1StateForTests, getTier1Account, getTier1Model,

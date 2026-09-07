@@ -304,7 +304,7 @@ export function buildWranglerConfig(vars, d1DatabaseId = '', affinityKvId = '') 
   // the entry point and migrations resolve back to the checked-out repository.
   const out = {
     name: 'ai-gateway',
-    main: path.resolve(root, 'src/index.js'),
+    main: path.resolve(root, 'src/index.ts'),
     compatibility_date: '2026-08-06',
     workers_dev: true,
     // CI owns every plain runtime variable. Do not retain Dashboard drift.

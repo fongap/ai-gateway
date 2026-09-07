@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
 //
-// Scheduler-layer shared types. Module successor of the ambient declarations
-// in src/types/domain.d.ts (see src/types/protocol.ts header for the
-// transition plan).
+// Scheduler-layer shared types. Canonical source for Tier, RoutableRequest,
+// and PickedCandidate, consumed by the scheduler and request layers
+// (src/types/domain.d.ts has been deleted — see
+// docs/governance/typescript-migration.md).
 
 import type { RuntimeNode } from './node.ts';
 import type { Protocol, Surface } from './protocol.ts';

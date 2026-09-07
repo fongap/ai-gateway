@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
 //
-// Isolate-local node runtime state. Module successor of the ambient
-// declarations in src/types/domain.d.ts (see src/types/protocol.ts header
-// for the transition plan). Shapes mirror what node-state.ts actually
-// creates and mutates (createState / updateModelPerf), not the stale
-// typedef comments that used to live in domain.d.ts.
+// Isolate-local node runtime state. Canonical source for CircuitState,
+// ModelPerfEntry, and NodeState, consumed by the reliability layer.
+// Shapes mirror what node-state.ts actually creates and mutates
+// (createState / updateModelPerf) (src/types/domain.d.ts has been deleted —
+// see docs/governance/typescript-migration.md).
 
 export type ModelPerfEntry = {
   avgTtftMs: number,
