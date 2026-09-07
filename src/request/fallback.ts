@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT
-// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // Protocol Fallback Orchestration.
@@ -26,7 +25,7 @@
 //     does not suppress it, nor does it launch cross-protocol twins.
 //   * Each fallback step that has a supported candidate re-runs the
 //     tier loop. The first step that returns a Response wins. The set of
-//     reachable fallback steps is precomputed by route-feasibility.js at
+//     reachable fallback steps is precomputed by route-feasibility.ts at
 //     preflight time and carried through loopCtx.feasibility; runFallbackChain
 //     iterates that set rather than re-implementing the feasibility check.
 //   * If the conversion itself throws ConversionError, the request
@@ -37,21 +36,27 @@
 
 import { anthropicErrorResponse } from '../protocol/anthropic.js';
 import { convertAnthropicToOpenAIRequest, ConversionError } from '../conversion/anthropic-to-openai.js';
-import { buildBudgetExhaustedResponse } from './errors.js';
-import { computeTierCaps } from './tier-loop.js';
+import { buildBudgetExhaustedResponse } from './errors.ts';
+import { computeTierCaps } from './tier-loop.ts';
+import type { LoopContext, ConversionContext } from '../types/request.ts';
+import type { RoutableRequest } from '../types/scheduler.ts';
+
+type TierLoopRunner = (
+  loopCtx: LoopContext,
+  reqDescriptor: RoutableRequest,
+  conversionContext: ConversionContext | null,
+  overrideTierCaps: Record<number, number> | null,
+) => Promise<Response | null>;
 
 /**
  * Run the cross-protocol fallback chain.
- *
- * @param {{
- *   loopCtx: Record<string, any>,
- *   route: string,
- *   requestedModel: string,
- *   runTierLoop: (loopCtx: any, reqDescriptor: any, conversionContext: any, overrideTierCaps: any) => Promise<Response | null>,
- * }} args
- * @returns {Promise<Response | null>}
  */
-export async function runFallbackChain({ loopCtx, route, requestedModel, runTierLoop }) {
+export async function runFallbackChain({ loopCtx, route, requestedModel, runTierLoop }: {
+  loopCtx: LoopContext,
+  route: string,
+  requestedModel: string,
+  runTierLoop: TierLoopRunner,
+}): Promise<Response | null> {
   const {
     env, requestId, exposeUpstreamInfo, request, state, policy,
     failoverBudgetMs, requestStartMs, tiers, bodyJson, knownModels,
@@ -64,7 +69,7 @@ export async function runFallbackChain({ loopCtx, route, requestedModel, runTier
     if (remainingBudgetMs <= 0) {
       return buildBudgetExhaustedResponse(request, env, route, requestId, requestedModel, state, exposeUpstreamInfo);
     }
-    const fbReqDescriptor = { model: requestedModel, protocol: fb.protocol, surface: fb.surface };
+    const fbReqDescriptor: RoutableRequest = { model: requestedModel, protocol: fb.protocol, surface: fb.surface };
     let convertedBody;
     try {
       if (route === 'anthropic_messages' && fb.protocol === 'openai' && fb.surface === 'chat_completions') {
@@ -79,8 +84,7 @@ export async function runFallbackChain({ loopCtx, route, requestedModel, runTier
       throw e;
     }
     const fbTierCaps = computeTierCaps(tiers, fbReqDescriptor, state.attempted, policy, knownModels);
-    /** @type {{ fallbackProtocol: Protocol, fallbackSurface: Surface, convertedBody: Record<string, any>, clientRoute: string }} */
-    const conversionContext = {
+    const conversionContext: ConversionContext = {
       convertedBody,
       fallbackProtocol: fb.protocol,
       fallbackSurface: fb.surface,

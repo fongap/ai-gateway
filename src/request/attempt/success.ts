@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: MIT
-// @ts-check
 // Copyright (c) 2026 Fongap Studio
-// Part of src/request/attempt.js (behavior-preserving split); see
-// attempt/index.js for the module map.
+// Part of src/request/attempt.ts (behavior-preserving split); see
+// attempt/index.ts for the module map.
 
-// success.js - success finalization for one attempt: the first-event guard
+// success.ts - success finalization for one attempt: the first-event guard
 // for streaming, per-route stream passthrough / transformation wiring, and
 // the per-protocol non-stream (and stream-synthesized) result handling.
-// Node success / TTFT / token recording is delegated to observability.js.
+// Node success / TTFT / token recording is delegated to observability.ts.
 
 import { attemptFirstEventTimeoutMs } from '../../config/timeouts.ts';
 import { markProbeFailure, recordTtft, recordNeutralEnd, bumpNodeCounters } from '../../reliability/node-state.ts';
@@ -33,14 +32,15 @@ import {
 import { ensureFirstSseEvent, GUARD_ERROR, guardedStreamFailureReason } from '../../stream/guard.js';
 import { collectOpenAIStreamObject } from '../../stream/assemble.js';
 import { trackStreamResponse } from '../../stream/track.js';
-import { gatewayError, buildClientErrorResponse } from '../errors.js';
-import { finalHeaders, jsonResponse, streamInterruptionChunk, upstreamModelOf } from '../response-helpers.js';
+import { gatewayError, buildClientErrorResponse } from '../errors.ts';
+import { finalHeaders, jsonResponse, streamInterruptionChunk, upstreamModelOf } from '../response-helpers.ts';
 import { convertOpenAIToAnthropicResponse, convertOpenAIUsageToAnthropic } from '../../conversion/openai-to-anthropic.js';
 import { createAnthropicStreamFromOpenAI } from '../../conversion/stream-converter.js';
 import {
   recordTokens, recordNodeSuccess, makeNodeStreamTrack, recordTier1NonStreamTtft,
-} from './observability.js';
-import { recordOutcome, rotateWithNeutralEnd } from './outcome.js';
+} from './observability.ts';
+import { recordOutcome, rotateWithNeutralEnd } from './outcome.ts';
+import type { AttemptContext, AttemptOutcome } from '../../types/request.ts';
 
 // Anthropic-native first-event guard predicate: only text / thinking /
 // tool-input deltas count as real model output. message_start,
@@ -52,15 +52,19 @@ import { recordOutcome, rotateWithNeutralEnd } from './outcome.js';
 // OpenAI Chat Tier 1 uses its meaningful-output predicate while Tier 2/3 keep
 // the original parseable-event boundary. Responses uses response.*.delta.
 
-/**
- * @param {{ upstream: Response, c: AttemptContext, targetUrl: string, latencyMs: number, detach: () => void, upstreamWasStreaming: boolean, attemptStartMs?: number }} s
- * @returns {Promise<AttemptOutcome>}
- */
-export async function handleSuccess(s) {
+export async function handleSuccess(s: {
+  upstream: Response,
+  c: AttemptContext,
+  targetUrl: string,
+  latencyMs: number,
+  detach: () => void,
+  upstreamWasStreaming: boolean,
+  attemptStartMs?: number,
+}): Promise<AttemptOutcome> {
   const { upstream, c, latencyMs, detach, upstreamWasStreaming } = s;
   const { request, env, logger, requestId, route, node, requestedModel, bodyJson, clientWantsStream, fakeStream, limits, exposeUpstreamInfo, state, policy } = c;
   const surface = c.surface;
-  const elapsedSinceStart = () => Date.now() - /** @type {number} */ (c.attemptStartMs);
+  const elapsedSinceStart = () => Date.now() - (c.attemptStartMs as number);
   // Topology-leak policy (P1): by default a successful client response carries
   // only x-request-id. Node id / tier are operational details exposed only when
   // EXPOSE_UPSTREAM_INFO=true (debugging) or via the auth-protected /health.
@@ -75,9 +79,9 @@ export async function handleSuccess(s) {
   // BEFORE returning anything to the client.
   if (clientWantsStream && upstreamWasStreaming) {
     const guardStartMs = Date.now();
-    let guarded;
+    let guarded: any;
     try {
-      const remainingRequestBudgetMs = (c.failoverBudgetMs ?? limits.failoverBudgetMs) - (Date.now() - (c.requestStartMs || /** @type {number} */ (s.attemptStartMs) || Date.now()));
+      const remainingRequestBudgetMs = (c.failoverBudgetMs ?? limits.failoverBudgetMs) - (Date.now() - (c.requestStartMs || (s.attemptStartMs as number) || Date.now()));
       const remainingAttemptBudgetMs = (c.attemptDeadlineMs ?? Date.now()) - Date.now();
       // Policy-level first_event_timeout_ms overrides the global env default
       // for this model (e.g. long-reasoning needs 120s for chain-of-thought).
@@ -104,10 +108,10 @@ export async function handleSuccess(s) {
       guarded = await ensureFirstSseEvent(upstream, firstEventTimeout, request.signal, isRealOutput);
     } catch (e) {
       detach();
-      const code = (e && typeof e === 'object' && 'code' in e) ? String(e.code) : GUARD_ERROR.EMPTY;
+      const code = (e && typeof e === 'object' && 'code' in e) ? String((e as { code: unknown }).code) : GUARD_ERROR.EMPTY;
       if (request.signal?.aborted) {
         recordOutcome(state, node, classifyClientAbort(), c, {
-          latencyMs: Date.now() - /** @type {number} */ (c.attemptStartMs),
+          latencyMs: Date.now() - (c.attemptStartMs as number),
           ttftWaitMs: Date.now() - guardStartMs,
           status: upstream.status,
         });
@@ -128,7 +132,7 @@ export async function handleSuccess(s) {
         } else recordNeutralEnd(node.id);
         logger.info(
           `hedge loser: request=${requestId} node=${node.id} phase=first_event`
-          + ` reason=cancelled_after_peer_commit neutral=true latency_ms=${Date.now() - /** @type {number} */ (c.attemptStartMs)}`,
+          + ` reason=cancelled_after_peer_commit neutral=true latency_ms=${Date.now() - (c.attemptStartMs as number)}`,
         );
         return { rotate: true, hedgedAway: true, kind: 'cancelled_after_peer_commit' };
       }
@@ -137,7 +141,7 @@ export async function handleSuccess(s) {
       // failure. Tier 1 has a separate passive metric and never writes here.
       if (node.tier !== 'tier-1') markProbeFailure(node.id, state.requestedModel);
       recordOutcome(state, node, classification, c, {
-        latencyMs: Date.now() - /** @type {number} */ (c.attemptStartMs),
+        latencyMs: Date.now() - (c.attemptStartMs as number),
         ttftWaitMs: Date.now() - guardStartMs,
         status: upstream.status,
         diagnostic: code,
@@ -151,7 +155,7 @@ export async function handleSuccess(s) {
     // failed request that produced no meaningful output never reaches here
     // (it rotates through the failure pipeline instead). Tier 2/3 keep the
     // node-level EWMA in node-state for their existing latency preference.
-    c.ttftMs = Date.now() - /** @type {number} */ (c.attemptStartMs);
+    c.ttftMs = Date.now() - (c.attemptStartMs as number);
     if (node.tier === 'tier-1') {
       recordTier1Ttft(node.id, state.requestedModel, c.ttftMs);
     } else {
@@ -173,8 +177,8 @@ export async function handleSuccess(s) {
         // passive scan. Transformed routes below report usage from the
         // transform's parse point instead (onUsage NOT passed here), keeping
         // exactly one capture per stream.
-        onUsage: (/** @type {any} */ u) => recordTokens(c, node, u),
-        interruptionChunk: (/** @type {string} */ reason) => streamInterruptionChunk(route, requestId, reason),
+        onUsage: (u: any) => recordTokens(c, node, u),
+        interruptionChunk: (reason: string) => streamInterruptionChunk(route, requestId, reason),
         upstreamFailureReason: hiddenStreamFailure,
         ...makeNodeStreamTrack(c, node, latencyMs),
       });
@@ -192,8 +196,8 @@ export async function handleSuccess(s) {
         ...(needsModelRewrite ? { rewriteModel: requestedModel, rewriteModelAt: 'response.model' } : {}),
         // Native Responses SSE carries usage inside the response.completed
         // payload; the tracked stream's passive scan reports it (onUsage).
-        onUsage: (/** @type {any} */ u) => recordTokens(c, node, u),
-        interruptionChunk: (/** @type {string} */ reason, /** @type {{ nextSequenceNumber?: number }} */ details) => streamInterruptionChunk(route, requestId, reason, details),
+        onUsage: (u: any) => recordTokens(c, node, u),
+        interruptionChunk: (reason: string, details: { nextSequenceNumber?: number }) => streamInterruptionChunk(route, requestId, reason, details),
         upstreamFailureReason: hiddenStreamFailure,
         ...makeNodeStreamTrack(c, node, latencyMs),
       });
@@ -220,8 +224,8 @@ export async function handleSuccess(s) {
         {
           idleTimeoutMs: limits.streamIdleTimeoutMs,
           completionMarker: /event:\s*message_stop\b/,
-          onUsage: (/** @type {any} */ u) => recordTokens(c, node, u),
-          interruptionChunk: (/** @type {string} */ reason) => streamInterruptionChunk(route, requestId, reason),
+          onUsage: (u: any) => recordTokens(c, node, u),
+          interruptionChunk: (reason: string) => streamInterruptionChunk(route, requestId, reason),
           upstreamFailureReason: hiddenStreamFailure,
           ...makeNodeStreamTrack(c, node, latencyMs),
         },
@@ -239,8 +243,8 @@ export async function handleSuccess(s) {
       // must NOT be recorded as a node success.
       completionMarker: /event:\s*message_stop\b/,
       ...(needsModelRewrite ? { rewriteModel: requestedModel, rewriteModelAt: 'message.model' } : {}),
-      onUsage: (/** @type {any} */ u) => recordTokens(c, node, u),
-      interruptionChunk: (/** @type {string} */ reason) => streamInterruptionChunk(route, requestId, reason),
+      onUsage: (u: any) => recordTokens(c, node, u),
+      interruptionChunk: (reason: string) => streamInterruptionChunk(route, requestId, reason),
       upstreamFailureReason: hiddenStreamFailure,
       ...makeNodeStreamTrack(c, node, latencyMs),
     });
@@ -251,7 +255,7 @@ export async function handleSuccess(s) {
   // ---- OpenAI Responses (non-stream, NATIVE) ----
   if (route === 'openai_responses') {
     try {
-      let data;
+      let data: any;
       if (upstreamWasStreaming) {
         // Defensive: the native upstream streamed although the client asked
         // for JSON. Assemble the terminal response object — nothing has
@@ -334,8 +338,8 @@ export async function handleSuccess(s) {
           // Defensive consistency with the streaming passthrough above (this
           // branch is mutually exclusive with the assemble path below, so the
           // scan can never double-count against a recordTokens call).
-          onUsage: (/** @type {any} */ u) => recordTokens(c, node, u),
-          interruptionChunk: (/** @type {string} */ reason) => streamInterruptionChunk(route, requestId, reason),
+          onUsage: (u: any) => recordTokens(c, node, u),
+          interruptionChunk: (reason: string) => streamInterruptionChunk(route, requestId, reason),
           ...makeNodeStreamTrack(c, node, latencyMs),
         },
       );
@@ -346,7 +350,7 @@ export async function handleSuccess(s) {
     // stream:true requests. Handle explicitly instead of feeding the client
     // a body it cannot parse as a stream.
     const text = await safeReadErrorBody(upstream, 2 * 1024 * 1024);
-    let data;
+    let data: any;
     try {
       data = JSON.parse(text);
     } catch {
@@ -384,7 +388,7 @@ export async function handleSuccess(s) {
   // ---- Anthropic messages (non-stream, CROSS-PROTOCOL FALLBACK) ----
   if (route === 'anthropic_messages' && c.conversionContext) {
     try {
-      let data;
+      let data: any;
       if (upstreamWasStreaming) {
         // OpenAI fallback upstream streamed although the client asked for
         // JSON. Assemble the full OpenAI completion object, then convert to
@@ -428,7 +432,7 @@ export async function handleSuccess(s) {
 
   // ---- Anthropic messages (non-stream, NATIVE) ----
   try {
-    let data;
+    let data: any;
     if (upstreamWasStreaming) {
       // Defensive: the native upstream streamed although the client asked
       // for JSON. Assemble the final message object — nothing has reached

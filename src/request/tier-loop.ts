@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT
-// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // Tier Execution Loop — iterates tiers in TIER_ORDER, within each tier
@@ -11,14 +10,35 @@
 //
 // This module owns the pure helpers that compute per-tier budget and
 // dispatchable-count. The actual dispatchAttempt / attemptNode / handleSuccess
-// closures stay in handler.js; they capture the per-request logger and
-// reliability API. Relocation of the attempt body into attempt.js is
+// closures stay in handler.ts; they capture the per-request logger and
+// reliability API. Relocation of the attempt body into attempt.ts is
 // planned as a separate behavior-preserving refactor.
 
-import { TIER_ORDER } from './router.js';
+import { TIER_ORDER } from './router.ts';
 import { pickCandidate, tierHasDispatchableNode, countDispatchableNodes } from '../scheduler/scheduler.ts';
 import { pickTier1Candidate } from '../scheduler/tier1-scheduler.ts';
 import { tier1HasDispatchableNode, tier1CountDispatchableNodes, TIER1_MAX_ATTEMPTS } from '../reliability/tier1-state.ts';
+import type { Tier, RoutableRequest } from '../types/scheduler.ts';
+import type { RuntimeNode } from '../types/node.ts';
+import type { PolicyConfig } from '../types/policy.ts';
+
+export type TierPickResult = {
+  node?: RuntimeNode,
+  raceLost?: boolean,
+  tier1ReleaseToken?: { accountId: string, released: boolean } | null,
+  tier1EscapedFromAffinity?: boolean,
+  tier1UpdateAffinity?: boolean,
+  tier1AffinityHit?: boolean,
+} | null;
+
+type PickForTierOpts = {
+  knownModels?: ReadonlySet<string> | null,
+  affinityAccountId?: string | null,
+  evaluateAffinity?: boolean,
+  now?: number,
+  rng?: () => number,
+  excludeId?: string | null,
+};
 
 // Tier-aware picker. Tier 1 uses P2C + affinity + tier1-state eligibility;
 // Tier 2/3 use the existing node-state pickCandidate unchanged. Returns
@@ -26,15 +46,7 @@ import { tier1HasDispatchableNode, tier1CountDispatchableNodes, TIER1_MAX_ATTEMP
 // An optional deterministic RNG (from TIER1_SCHEDULER_SEED) makes P2C sampling
 // reproducible in tests without adding a production env knob — when the seed
 // is absent (production), Math.random is used and behaviour stays random.
-/**
- * @param {Tier} tierNumber
- * @param {ReadonlyArray<RuntimeNode>} tierNodes
- * @param {RoutableRequest} req
- * @param {Set<string>} attempted
- * @param {{ knownModels?: ReadonlySet<string> | null, affinityAccountId?: string | null, evaluateAffinity?: boolean, now?: number, rng?: () => number, excludeId?: string | null }} [opts]
- * @returns {{ node?: RuntimeNode, raceLost?: boolean, tier1ReleaseToken?: { accountId: string, released: boolean } | null, tier1EscapedFromAffinity?: boolean, tier1UpdateAffinity?: boolean, tier1AffinityHit?: boolean } | null}
- */
-export function pickForTier(tierNumber, tierNodes, req, attempted, opts = {}) {
+export function pickForTier(tierNumber: Tier, tierNodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, opts: PickForTierOpts = {}): TierPickResult {
   const { knownModels } = opts;
   if (tierNumber !== 1) {
     const node = pickCandidate(tierNodes, req, attempted, undefined, null, knownModels);
@@ -55,11 +67,7 @@ export function pickForTier(tierNumber, tierNodes, req, attempted, opts = {}) {
 // Mulberry32 — a tiny deterministic PRNG for test reproducibility only. It is
 // only wired in when env.TIER1_SCHEDULER_SEED is a non-empty string; production
 // leaves it unset and P2C uses Math.random.
-/**
- * @param {Record<string, any>} env
- * @returns {() => number}
- */
-export function makeTier1Rng(env) {
+export function makeTier1Rng(env: Record<string, unknown>): () => number {
   const seedRaw = String(env?.TIER1_SCHEDULER_SEED ?? '').trim();
   if (!seedRaw) return Math.random;
   let h = 1779033703 ^ seedRaw.length;
@@ -82,7 +90,7 @@ export function makeTier1Rng(env) {
 //     circuit/model cooldown clear, under concurrency, not hard-RPM exhausted);
 //     DEFERRED means capacity exists but cannot serve yet (saturated /
 //     over-quota). Deferred capacity feeds only Retry-After and diagnostic
-//     classification (see tierHasDeferredCapacity in scheduler.js) — it earns
+//     classification (see tierHasDeferredCapacity in scheduler.ts) — it earns
 //     NO budget, otherwise an attempt slot gets reserved for a tier that will
 //     refuse dispatch while the current tier may still have immediately usable
 //     candidates left to spend that slot on.
@@ -96,18 +104,9 @@ export function makeTier1Rng(env) {
 //     budget explicitly (0 disables it).
 // Budget is a per-tier UPPER bound; the shared state.maxAttempts still caps the
 // request's total upstream attempts, and FAILOVER_BUDGET_MS caps wall-clock.
-/**
- * @param {Record<number, RuntimeNode[]>} tiers
- * @param {{ model: string, protocol: Protocol, surface: Surface }} reqDescriptor
- * @param {Set<string>} attempted
- * @param {PolicyConfig} policy
- * @param {ReadonlySet<string>} knownModels
- * @returns {Record<number, number>}
- */
-export function computeTierCaps(tiers, reqDescriptor, attempted, policy, knownModels) {
+export function computeTierCaps(tiers: Record<number, RuntimeNode[]>, reqDescriptor: RoutableRequest, attempted: Set<string>, policy: PolicyConfig, knownModels: ReadonlySet<string>): Record<number, number> {
   const now = Date.now();
-  /** @type {Record<number, number>} */
-  const caps = {};
+  const caps: Record<number, number> = {};
   for (const t of TIER_ORDER) caps[t] = 0;
   const dispatchable = TIER_ORDER.filter((t) =>
     t === 1
@@ -129,18 +128,7 @@ export function computeTierCaps(tiers, reqDescriptor, attempted, policy, knownMo
 // applying live availability, per-tier caps, strict tier order, and the shared
 // policy cap.  This is deliberately recomputed before every attempt because a
 // pre-dispatch deny or a concurrent request can change the live candidate set.
-/**
- * @param {Record<number, RuntimeNode[]>} tiers
- * @param {{ model: string, protocol: Protocol, surface: Surface }} reqDescriptor
- * @param {Set<string>} attempted
- * @param {Record<number, number>} tierCaps
- * @param {Tier} currentTier
- * @param {number} usedInTier
- * @param {number} sharedRemaining
- * @param {ReadonlySet<string>} knownModels
- * @returns {number}
- */
-export function countRemainingDispatchableAttempts(tiers, reqDescriptor, attempted, tierCaps, currentTier, usedInTier, sharedRemaining, knownModels) {
+export function countRemainingDispatchableAttempts(tiers: Record<number, RuntimeNode[]>, reqDescriptor: RoutableRequest, attempted: Set<string>, tierCaps: Record<number, number>, currentTier: Tier, usedInTier: number, sharedRemaining: number, knownModels: ReadonlySet<string>): number {
   const now = Date.now();
   let total = 0;
   let currentReached = false;

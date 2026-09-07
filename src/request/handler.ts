@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT
-// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // Main request pipeline.
@@ -20,37 +19,34 @@ import { loadGatewayConfig } from '../config/nodes.ts';
 import { loadModelsConfig } from '../config/models.ts';
 import { loadPoliciesConfig, getPolicy } from '../config/policies.ts';
 import { getLimits } from '../config/timeouts.ts';
-import { TIER_ORDER, normalizePath, detectRoute, acceptsHtml } from './router.js';
+import { TIER_ORDER, normalizePath, detectRoute, acceptsHtml } from './router.ts';
 import { getLogger } from '../observability/logger.js';
 import { healthResponse, metricsResponse, modelsListResponse, versionResponse } from '../observability/diagnostic-endpoints.mjs';
 import { dashboardResponse } from '../dashboard/pages.js';
-import { authorize } from './auth.js';
+import { authorize } from './auth.ts';
 import { loadAccessKeysConfig, collectConfiguredModels } from '../config/access-keys.ts';
-import { authorizeModel, filterVisibleModels } from './model-authz.js';
-import { gatewayError, buildBudgetExhaustedResponse, buildExhaustedResponse, buildClientErrorResponse } from './errors.js';
+import { authorizeModel, filterVisibleModels } from './model-authz.ts';
+import { gatewayError, buildBudgetExhaustedResponse, buildExhaustedResponse, buildClientErrorResponse } from './errors.ts';
 import {
   resolveTier1SessionId, readTier1Affinity,
   shouldEvaluateAffinity, recordTier1AffinityDecision,
 } from '../scheduler/tier1-affinity.ts';
 import { tier1DeadlineTooSmall } from '../scheduler/tier1-scheduler.ts';
-import { preflight as runPreflight, getRouteProtocolSurface } from './preflight.js';
-import { pickForTier, makeTier1Rng, computeTierCaps, countRemainingDispatchableAttempts } from './tier-loop.js';
-import { runFallbackChain } from './fallback.js';
-import { attemptNode, dispatchWithHedge } from './attempt.js';
+import { preflight as runPreflight, getRouteProtocolSurface } from './preflight.ts';
+import { pickForTier, makeTier1Rng, computeTierCaps, countRemainingDispatchableAttempts } from './tier-loop.ts';
+import { runFallbackChain } from './fallback.ts';
+import { attemptNode, dispatchWithHedge } from './attempt.ts';
+import type { LoopContext, ConversionContext } from '../types/request.ts';
+import type { RoutableRequest } from '../types/scheduler.ts';
+import type { RuntimeNode } from '../types/node.ts';
 
-/**
- * @param {Request} request
- * @param {Record<string, any>} env
- * @param {{ waitUntil?: Function }} ctx
- * @returns {Promise<Response>}
- */
-export async function handleRequest(request, env, ctx) {
+export async function handleRequest(request: Request, env: Record<string, unknown>, ctx: { waitUntil?: Function }): Promise<Response> {
   const logger = getLogger(env);
   const pre = await runPreflight(request, env, ctx);
-  if (!pre.ok) {
-    return /** @type {Response} */ (/** @type {{ ok: false, response: Response }} */ (pre).response);
+  if (pre.ok === false) {
+    return pre.response;
   }
-  if (pre.authResult.group) {
+  if ('group' in pre.authResult && pre.authResult.group) {
     logger.info('request authorized', { key_group: pre.authResult.group, request_id: pre.requestId });
   }
 
@@ -77,8 +73,8 @@ export async function handleRequest(request, env, ctx) {
   //   hedges          — hedge twins launched. Hard-capped by
   //                     MAX_HEDGES_PER_REQUEST; worst case
   //                     maxDispatches = maxAttempts + maxHedgesPerRequest.
-  const state = {
-    attempted: new Set(), attempts: [], logicalAttempts: 0, dispatches: 0, hedges: 0,
+  const state: LoopContext['state'] = {
+    attempted: new Set<string>(), attempts: [], logicalAttempts: 0, dispatches: 0, hedges: 0,
     failureKinds: {}, logger, requestId, maxAttempts: policy.maxAttempts,
     maxDispatches: policy.maxAttempts + limits.maxHedgesPerRequest,
     requestedModel,
@@ -92,7 +88,7 @@ export async function handleRequest(request, env, ctx) {
   const tier1EvaluateAffinity = shouldEvaluateAffinity(tier1Session);
   const tier1Rng = makeTier1Rng(env);
 
-  const loopCtx = {
+  const loopCtx: LoopContext = {
     request, env, ctx, logger, requestId, route, requestedModel,
     clientWantsStream, fakeStream, bodyJson, limits, exposeUpstreamInfo, state,
     failoverBudgetMs, requestStartMs, policy, tiers,
@@ -130,14 +126,7 @@ export async function handleRequest(request, env, ctx) {
 // fallback it carries the converted outbound body and protocol/surface info.
 // `overrideTierCaps` lets the caller inject pre-computed caps (used by the
 // fallback path which recomputes for the fallback protocol).
-/**
- * @param {LoopContext} loopCtx
- * @param {RequestDescriptor} reqDescriptor
- * @param {{ fallbackProtocol: Protocol, fallbackSurface: Surface, convertedBody: Record<string, any> } | null} conversionContext
- * @param {Record<number, number>} [overrideTierCaps]
- * @returns {Promise<Response | null>}
- */
-async function runTierLoop(loopCtx, reqDescriptor, conversionContext, overrideTierCaps) {
+async function runTierLoop(loopCtx: LoopContext, reqDescriptor: RoutableRequest, conversionContext: ConversionContext | null, overrideTierCaps?: Record<number, number> | null): Promise<Response | null> {
   const {
     request, env, ctx, logger, requestId, route, requestedModel,
     clientWantsStream, fakeStream, bodyJson, limits, exposeUpstreamInfo, state,
@@ -169,8 +158,9 @@ async function runTierLoop(loopCtx, reqDescriptor, conversionContext, overrideTi
         knownModels,
       });
       if (!pick || pick.raceLost) break;
-      // raceLost is guarded above, so the picker always returned a node.
-      const node = /** @type {RuntimeNode} */ (pick.node);
+      // raceLost is guarded above, so the picker always returned a node
+      // (single-writer invariant of pickForTier's success shape).
+      const node = pick.node as RuntimeNode;
       if (tierNumber === 1) {
         recordTier1AffinityDecision({
           affinityHit: pick.tier1AffinityHit,

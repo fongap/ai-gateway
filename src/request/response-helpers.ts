@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT
-// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // Pure response and stream helpers for the request pipeline.
 //
 // These functions have no closure dependency on the giant `c` context used
-// by handler.js. Extracting them shrinks handler.js and makes the response
+// by handler.ts. Extracting them shrinks handler.ts and makes the response
 // shaping logic independently inspectable without changing behavior.
 
 import { corsHeaders } from '../protocol/http.js';
+import type { RuntimeNode } from '../types/node.ts';
 
 const streamErrorEncoder = new TextEncoder();
 
@@ -16,14 +16,7 @@ const streamErrorEncoder = new TextEncoder();
 // content-type and x-accel-buffering from the upstream response, layering
 // extra headers on top, and finally adding the CORS headers derived from
 // the request and env.
-/**
- * @param {Record<string, any>} env
- * @param {Request} request
- * @param {Headers | null} [sourceHeaders]
- * @param {Record<string, string>} [extraHeaders]
- * @returns {Headers}
- */
-export function finalHeaders(env, request, sourceHeaders, extraHeaders) {
+export function finalHeaders(env: Record<string, unknown>, request: Request, sourceHeaders?: Headers | null, extraHeaders?: Record<string, string>): Headers {
   const headers = new Headers();
   if (sourceHeaders) {
     const contentType = sourceHeaders.get('content-type');
@@ -38,15 +31,7 @@ export function finalHeaders(env, request, sourceHeaders, extraHeaders) {
 
 // Build a JSON Response with no-store caching, optional extra headers, and
 // the gateway's standard CORS headers.
-/**
- * @param {number} status
- * @param {unknown} data
- * @param {Record<string, any>} env
- * @param {Request} request
- * @param {Record<string, string>} [extraHeaders]
- * @returns {Response}
- */
-export function jsonResponse(status, data, env, request, extraHeaders) {
+export function jsonResponse(status: number, data: unknown, env: Record<string, unknown>, request: Request, extraHeaders?: Record<string, string>): Response {
   return new Response(JSON.stringify(data), {
     status,
     headers: {
@@ -62,14 +47,7 @@ export function jsonResponse(status, data, env, request, extraHeaders) {
 // when a transparent failover is no longer safe. The shape is route-specific:
 // Responses uses event: error + type/error, Anthropic uses event: error +
 // type/error nested under .error, and OpenAI Chat uses a plain data: payload.
-/**
- * @param {string} route
- * @param {string} requestId
- * @param {string} reason
- * @param {{ nextSequenceNumber?: number }} [details]
- * @returns {Uint8Array}
- */
-export function streamInterruptionChunk(route, requestId, reason, { nextSequenceNumber = 0 } = {}) {
+export function streamInterruptionChunk(route: string, requestId: string, reason: string, { nextSequenceNumber = 0 }: { nextSequenceNumber?: number } = {}): Uint8Array {
   const message = `Gateway upstream stream interrupted (${reason || 'unknown'}).`;
   let event;
   if (route === 'openai_responses') {
@@ -85,11 +63,6 @@ export function streamInterruptionChunk(route, requestId, reason, { nextSequence
 // Resolve the upstream model name for a given node + logical model. The
 // node's `models` map translates the client-facing logical name to the
 // provider-specific name; the original logical name is the fallback.
-/**
- * @param {RuntimeNode} node
- * @param {string} logicalModel
- * @returns {string}
- */
-export function upstreamModelOf(node, logicalModel) {
+export function upstreamModelOf(node: RuntimeNode, logicalModel: string): string {
   return node.models[logicalModel] || logicalModel;
 }

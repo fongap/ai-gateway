@@ -12,7 +12,7 @@ src/                          Worker 代码：所有运行时逻辑
 ├─ conversion/                协议转换：仅用于显式协议 fallback 所需的兼容转换（当前只支持 Anthropic Messages → OpenAI Chat 单向；OpenAI Chat 不 fallback 到 Anthropic；OpenAI Responses 不转换 Chat；不存在通用双向 conversion）
 ├─ stream/                    流处理：First-Event Guard、SSE 扫描、流追踪与改写
 ├─ request/                   请求处理：鉴权、路由、错误构建、编排
-│   └─ attempt/               Attempt Boundary 内部拆分：index（边界 re-export）、dispatch（单节点出站+超时+分类入口）、hedge（竞速/共享 deadline/胜负生命周期）、success（首事件守卫+各协议成功处理）、outcome（AttemptOutcome 与 attempt/dispatch 记账）、observability（token/D1/流指标记录，不影响调度）；src/request/attempt.js 本身保持稳定公共边界
+│   └─ attempt/               Attempt Boundary 内部拆分：index（边界 re-export）、dispatch（单节点出站+超时+分类入口）、hedge（竞速/共享 deadline/胜负生命周期）、success（首事件守卫+各协议成功处理）、outcome（AttemptOutcome 与 attempt/dispatch 记账）、observability（token/D1/流指标记录，不影响调度）；src/request/attempt.ts 本身保持稳定公共边界
 ├─ observability/             可观测性：日志、指标、D1 聚合、诊断端点
 ├─ runtime/                   Runtime availability 抽象：调度态可观测 + Public Model Status（只读投影，绝不反向影响调度）
 └─ dashboard/                 浏览器页面

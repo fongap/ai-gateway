@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT
-// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // Request Preflight — the entry-phase orchestration before any node
@@ -34,13 +33,13 @@ import { loadGatewayConfig } from '../config/nodes.ts';
 import { loadModelsConfig } from '../config/models.ts';
 import { loadPoliciesConfig, getPolicy } from '../config/policies.ts';
 import { getLimits } from '../config/timeouts.ts';
-import { gatewayError } from './errors.js';
-import { authorize } from './auth.js';
+import { gatewayError } from './errors.ts';
+import { authorize } from './auth.ts';
 import { loadAccessKeysConfig } from '../config/access-keys.ts';
 import { collectKnownModels } from '../config/registry.ts';
-import { authorizeModel } from './model-authz.js';
-import { evaluateRouteFeasibility } from './route-feasibility.js';
-import { detectRoute, normalizePath, acceptsHtml } from './router.js';
+import { authorizeModel } from './model-authz.ts';
+import { evaluateRouteFeasibility } from './route-feasibility.ts';
+import { detectRoute, normalizePath, acceptsHtml } from './router.ts';
 import { dashboardResponse } from '../dashboard/pages.js';
 import { corsHeaders, readBodyTextWithLimit, BodyTooLargeError } from '../protocol/http.js';
 import { validateOpenAIChatRequest } from '../protocol/openai.js';
@@ -50,59 +49,59 @@ import {
   estimateAnthropicInputTokens,
 } from '../protocol/anthropic.js';
 import { validateOpenAIResponsesRequest } from '../protocol/responses/index.js';
-import { jsonResponse } from './response-helpers.js';
+import { jsonResponse } from './response-helpers.ts';
 import { admitKeyRequest } from '../ratelimit/key-rpm.ts';
+import type { AuthResult, RequestDescriptor, RouteFeasibilityResult } from '../types/request.ts';
+import type { GatewayConfig } from '../config/nodes.ts';
+import type { PolicyConfig } from '../types/policy.ts';
+import type { Limits } from '../config/timeouts.ts';
+import type { RuntimeNode } from '../types/node.ts';
 
 // (protocol, surface) keyed by the client route. The same map lives in
-// handler.js for now; this is a long-term import path. Until the rest of
+// handler.ts for now; this is a long-term import path. Until the rest of
 // the refactor lands, the preflight result simply forwards the values the
-// orchestrator needs and lets handler.js own the source-of-truth
+// orchestrator needs and lets handler.ts own the source-of-truth
 // constant.
 const ROUTE_PROTOCOL_SURFACE = Object.freeze({
-  openai_chat: { protocol: /** @type {'openai'} */ ('openai'), surface: /** @type {'chat_completions'} */ ('chat_completions') },
-  openai_responses: { protocol: /** @type {'openai'} */ ('openai'), surface: /** @type {'responses'} */ ('responses') },
-  anthropic_messages: { protocol: /** @type {'anthropic'} */ ('anthropic'), surface: /** @type {'messages'} */ ('messages') },
-});
+  openai_chat: { protocol: 'openai', surface: 'chat_completions' },
+  openai_responses: { protocol: 'openai', surface: 'responses' },
+  anthropic_messages: { protocol: 'anthropic', surface: 'messages' },
+} as const);
 
-/**
- * @param {keyof typeof ROUTE_PROTOCOL_SURFACE} route
- */
-export function getRouteProtocolSurface(route) {
+export function getRouteProtocolSurface(route: keyof typeof ROUTE_PROTOCOL_SURFACE): { protocol: 'openai' | 'anthropic', surface: 'chat_completions' | 'responses' | 'messages' } {
   return ROUTE_PROTOCOL_SURFACE[route];
 }
 
-/**
- * @typedef {{
- *   ok: false,
- *   response: Response,
- * }} PreflightTerminal
- *
- * @typedef {{
- *   ok: true,
- *   request: Request,
- *   env: any,
- *   ctx: any,
- *   requestId: string,
- *   requestStartMs: number,
- *   route: string,
- *   requestedModel: string,
- *   clientWantsStream: boolean,
- *   fakeStream: boolean,
- *   bodyJson: any,
- *   limits: any,
- *   exposeUpstreamInfo: boolean,
- *   authResult: any,
- *   requestDescriptor: RequestDescriptor,
- *   config: any,
- *   tiers: Record<number, RuntimeNode[]>,
- *   policy: any,
- *   failoverBudgetMs: number,
- *   knownModels: Set<string>,
- *   feasibility: { reachable: boolean, nativeSupported: boolean, fallbackSupported: boolean, fallbacks: { protocol: string, surface: string }[] },
- * }} PreflightOk
- *
- * @typedef {PreflightTerminal | PreflightOk} PreflightResult
- */
+export type PreflightTerminal = {
+  ok: false,
+  response: Response,
+};
+
+export type PreflightOk = {
+  ok: true,
+  request: Request,
+  env: Record<string, unknown>,
+  ctx: { waitUntil?: Function },
+  requestId: string,
+  requestStartMs: number,
+  route: string,
+  requestedModel: string,
+  clientWantsStream: boolean,
+  fakeStream: boolean,
+  bodyJson: Record<string, any>,
+  limits: Record<string, number>,
+  exposeUpstreamInfo: boolean,
+  authResult: AuthResult,
+  requestDescriptor: RequestDescriptor,
+  config: GatewayConfig,
+  tiers: Record<number, RuntimeNode[]>,
+  policy: PolicyConfig,
+  failoverBudgetMs: number,
+  knownModels: Set<string>,
+  feasibility: RouteFeasibilityResult,
+};
+
+export type PreflightResult = PreflightTerminal | PreflightOk;
 
 /**
  * Run the preflight sequence. Returns a `PreflightResult`.
@@ -113,13 +112,8 @@ export function getRouteProtocolSurface(route) {
  *   - On success, `result.ok === true` and the caller enters the
  *     native tier loop with the carried `requestDescriptor`, `tiers`,
  *     `policy`, and `bodyJson`.
- *
- * @param {Request} request
- * @param {any} env
- * @param {any} ctx
- * @returns {Promise<PreflightResult>}
  */
-export async function preflight(request, env, ctx) {
+export async function preflight(request: Request, env: Record<string, unknown>, ctx: { waitUntil?: Function }): Promise<PreflightResult> {
   const requestId = crypto.randomUUID();
   const requestUrl = new URL(request.url);
   const pathname = normalizePath(requestUrl.pathname);
@@ -144,7 +138,7 @@ export async function preflight(request, env, ctx) {
         'Gateway misconfigured: no GATEWAY_ACCESS_KEY_<GROUP> (or legacy GATEWAY_ACCESS_KEY) is set.', requestId),
     };
   }
-  const authResult = route !== 'version' ? await authorize(request, env) : { authorized: true, mode: 'skip', group: null };
+  const authResult: AuthResult = route !== 'version' ? await authorize(request, env) : { authorized: true, mode: 'skip', group: null };
   if (route !== 'version' && !authResult.authorized) {
     return {
       ok: false,
@@ -159,15 +153,16 @@ export async function preflight(request, env, ctx) {
   // are useful for an operator to monitor the cap itself.
   if (route !== 'version' && route !== 'health' && route !== 'metrics') {
     const limits = getLimits(env);
-    const fingerprint = authResult.group || (authResult.mode === 'legacy' ? 'LEGACY' : 'ANON');
+    // `in` narrowing keeps this correct under both the loose and strict
+    // typecheck gates: only the authorized variants carry `group`.
+    const fingerprint = ('group' in authResult ? authResult.group : null)
+      || (authResult.mode === 'legacy' ? 'LEGACY' : 'ANON');
     const verdict = admitKeyRequest(fingerprint, limits.gatewayKeyRpm);
     if (verdict.ok === false) {
-      // Narrow the union to the failure variant. `verdict.ok` is a
-      // literal `false` after the `===` check, so the union narrows
-      // and `retryAfterSec` becomes available without a cast.
-      const denied = /** @type {{ ok: false, retryAfterSec: number }} */ (verdict);
+      // The union narrows to the deny variant via the `ok === false`
+      // check, so `retryAfterSec` is available without a cast.
       const headers = {
-        'retry-after': String(denied.retryAfterSec),
+        'retry-after': String(verdict.retryAfterSec),
         ...(corsHeaders(request, env) || {}),
       };
       return {
@@ -175,10 +170,10 @@ export async function preflight(request, env, ctx) {
         response: new Response(
           JSON.stringify({
             error: {
-              message: `Gateway access-key RPM cap exceeded. Retry after ${denied.retryAfterSec}s.`,
+              message: `Gateway access-key RPM cap exceeded. Retry after ${verdict.retryAfterSec}s.`,
               type: 'rate_limit_error',
               code: 'gateway_key_rpm',
-              retry_after_seconds: denied.retryAfterSec,
+              retry_after_seconds: verdict.retryAfterSec,
             },
           }),
           { status: 429, headers: { 'content-type': 'application/json', ...headers } },
@@ -209,7 +204,7 @@ export async function preflight(request, env, ctx) {
 
   // ---- Request body ----
   const limits = getLimits(env);
-  let bodyJson;
+  let bodyJson: Record<string, any>;
   try {
     const contentType = (request.headers.get('content-type') || '').toLowerCase();
     if (!contentType.includes('application/json')) {
@@ -254,7 +249,7 @@ export async function preflight(request, env, ctx) {
   }
 
   // ---- Protocol-specific request validation ----
-  let validationError;
+  let validationError: string | null | undefined;
   if (route === 'openai_responses') validationError = validateOpenAIResponsesRequest(bodyJson);
   else if (route === 'anthropic_messages') validationError = validateAnthropicMessagesRequest(bodyJson);
   else validationError = validateOpenAIChatRequest(bodyJson);
@@ -276,10 +271,10 @@ export async function preflight(request, env, ctx) {
   const gatewayConfigForAuth = loadGatewayConfig(env);
   const knownModels = collectKnownModels(gatewayConfigForAuth.nodes, env);
   const modelAuthz = authorizeModel(requestedModel, knownModels, authResult);
-  if (!modelAuthz.allowed) {
-    // JSDoc widens the `allowed` literal to boolean, so TS cannot
-    // discriminate the union; assert the deny variant the branch guarantees.
-    const denyStatus = /** @type {{ status: 401 | 403 | 404 }} */ (modelAuthz).status;
+  if (modelAuthz.allowed === false) {
+    // The `allowed` literal discriminates the union, so the deny variant
+    // (and its `status`) is available here without a cast.
+    const denyStatus = modelAuthz.status;
     return {
       ok: false,
       response: gatewayError(request, env, route, denyStatus, denyStatus === 403
@@ -300,14 +295,12 @@ export async function preflight(request, env, ctx) {
         { configuration_status: config.status, ...(exposeUpstreamInfo ? { diagnostics: config.diagnostics.slice(0, 5) } : {}) }),
     };
   }
-  /** @type {Record<number, RuntimeNode[]>} */
   const tiers = config.tiers;
   // Only the three dispatch routes reach this point (GET surfaces and
   // anthropic_count_tokens return earlier), so the route narrow below is
   // runtime-proven, not a guess.
-  /** @type {RequestDescriptor} */
-  const requestDescriptor = {
-    route: /** @type {'openai_chat' | 'openai_responses' | 'anthropic_messages'} */ (route),
+  const requestDescriptor: RequestDescriptor = {
+    route: route as 'openai_chat' | 'openai_responses' | 'anthropic_messages',
     model: requestedModel,
     ...ROUTE_PROTOCOL_SURFACE[route],
   };

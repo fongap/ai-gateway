@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: MIT
-// @ts-check
 // Copyright (c) 2026 Fongap Studio
-// Part of src/request/attempt.js (behavior-preserving split); see
-// attempt/index.js for the module map.
+// Part of src/request/attempt.ts (behavior-preserving split); see
+// attempt/index.ts for the module map.
 
-// outcome.js - AttemptOutcome construction and accounting: failure /
+// outcome.ts - AttemptOutcome construction and accounting: failure /
 // rotate / stop outcomes, the logical-attempt vs dispatch charge rules,
 // pre-dispatch neutral ends, and the single per-dispatch completion log.
 
@@ -17,18 +16,13 @@ import {
   applyTier1Outcome, classifyTier1Failure,
   rollbackTier1Rpm,
 } from '../../reliability/tier1-state.ts';
+import type { FailureClassification } from '../../reliability/classify.ts';
 import { trimDiagnostic } from '../../protocol/http.js';
-import { upstreamModelOf } from '../response-helpers.js';
+import { upstreamModelOf } from '../response-helpers.ts';
+import type { LoopState, AttemptContext, AttemptOutcome } from '../../types/request.ts';
+import type { RuntimeNode } from '../../types/node.ts';
 
-/**
- * @param {LoopState} state
- * @param {RuntimeNode} node
- * @param {string} reason
- * @param {Partial<AttemptContext>} [c]
- * @param {boolean} [preDispatch]
- * @returns {AttemptOutcome}
- */
-export function rotateWithNeutralEnd(state, node, reason, c = {}, preDispatch = false) {
+export function rotateWithNeutralEnd(state: LoopState, node: RuntimeNode, reason: string, c: Partial<AttemptContext> = {}, preDispatch: boolean = false): AttemptOutcome {
   state.attempted.add(node.id);
   // Pre-dispatch neutrals (invalid base URL) never reached an upstream, so they
   // do not consume any budget — no dispatch/attempt charge, and the outcome
@@ -65,11 +59,7 @@ export function rotateWithNeutralEnd(state, node, reason, c = {}, preDispatch = 
 // Aggregate failure-kind counter for the exhausted response. Kinds alone (no
 // node ids / no ordering) are safe to expose to clients by default and answer
 // the only question that matters when everything failed: HOW did it fail?
-/**
- * @param {LoopState} state
- * @param {string} kind
- */
-export function noteFailure(state, kind) {
+export function noteFailure(state: LoopState, kind: string): void {
   state.failureKinds[kind] = (state.failureKinds[kind] || 0) + 1;
 }
 
@@ -79,14 +69,7 @@ export function noteFailure(state, kind) {
 //   * dispatches counts every real upstream dispatch (never a pre-dispatch deny);
 //   * logicalAttempts counts the logical attempt the dispatch belongs to — a
 //     hedge twin belongs to its primary's attempt and does not increment it.
-/**
- * @param {LoopState} state
- * @param {RuntimeNode} node
- * @param {{ kind: string, counted: boolean, action: string, cooldownMs?: number, retryAfterMs?: number, modelScoped?: boolean }} classification
- * @param {AttemptContext} c
- * @param {{latencyMs?: number, ttftWaitMs?: number, status?: number, diagnostic?: string}} [opts]
- */
-export function recordOutcome(state, node, classification, c, { latencyMs = -1, ttftWaitMs, status = 0, diagnostic } = {}) {
+export function recordOutcome(state: LoopState, node: RuntimeNode, classification: FailureClassification, c: AttemptContext, { latencyMs = -1, ttftWaitMs, status = 0, diagnostic }: { latencyMs?: number, ttftWaitMs?: number, status?: number, diagnostic?: string } = {}): void {
   state.attempted.add(node.id);
   state.dispatches++;
   if (!c?.hedgedAttempt) state.logicalAttempts++;
@@ -95,7 +78,7 @@ export function recordOutcome(state, node, classification, c, { latencyMs = -1, 
 
   if (node.tier === 'tier-1') {
     // Tier 1 owns its own per-(account,model) failure state machine. The
-    // shared classify.js outcome is mapped to a Tier 1 scope/cooldown; 429
+    // shared classify outcome is mapped to a Tier 1 scope/cooldown; 429
     // defaults to MODEL scope with a scope_ambiguous diagnostic flag when no
     // provider-specific rule disambiguated it.
     releaseTier1Slot(node.id, c.tier1ReleaseToken);
@@ -130,8 +113,7 @@ export function recordOutcome(state, node, classification, c, { latencyMs = -1, 
     + `${diagnostic && c?.exposeUpstreamInfo ? ` detail=${trimDiagnostic(diagnostic, 200)}` : ''}`,
   );
 
-  /** @type {Record<string, unknown>} */
-  const record = {
+  const record: Record<string, unknown> = {
     attempt: state.logicalAttempts, dispatch: state.dispatches, node_id: node.id,
     provider: node.provider, protocol: c?.upstreamProtocol ?? node.protocol, surface: c?.surface,
     status, kind: classification.kind, hedged,

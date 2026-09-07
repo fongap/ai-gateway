@@ -7,7 +7,7 @@
 // ./queries.js, ./aggregation.js, and ./retention.js. This module
 // is the single import point for external consumers
 // (src/runtime/cron.js, src/dashboard/pages.js,
-// src/runtime/model-status.js, src/request/handler.js).
+// src/runtime/model-status.js, src/request/handler.ts).
 
 export {
   // Keys / shared constants

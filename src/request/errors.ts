@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT
-// @ts-check
 // Copyright (c) 2026 Fongap Studio
 //
 // Gateway error-response builders. Every terminal client-facing error goes
@@ -17,22 +16,13 @@ import { responsesErrorResponse } from '../protocol/responses/index.js';
 import { getCooldownRemainingMs, getModelCooldownRemainingMs, getNodeState } from '../reliability/node-state.ts';
 import { tier1BlockingWaitMs, tier1HasDeferredCapacity } from '../reliability/tier1-state.ts';
 import { supportsRequest, isHardRpmExhausted, tierHasDeferredCapacity } from '../scheduler/scheduler.ts';
-import { TIER_ORDER } from './router.js';
+import { TIER_ORDER } from './router.ts';
+import type { RequestDescriptor, LoopState } from '../types/request.ts';
+import type { RuntimeNode } from '../types/node.ts';
 
 // Unified gateway error: Anthropic-style for Anthropic routes, OpenAI
 // Responses-style for /v1/responses, OpenAI Chat-style otherwise.
-/**
- * @param {Request} request
- * @param {Record<string, any>} env
- * @param {string} route
- * @param {number} status
- * @param {string} message
- * @param {string} requestId
- * @param {Record<string, unknown>} [details]
- * @param {Record<string, string>} [extraHeaders]
- * @returns {Response}
- */
-export function gatewayError(request, env, route, status, message, requestId, details, extraHeaders) {
+export function gatewayError(request: Request, env: Record<string, unknown>, route: string, status: number, message: string, requestId: string, details?: Record<string, unknown>, extraHeaders?: Record<string, string>): Response {
   if (route === 'anthropic_messages' || route === 'anthropic_count_tokens') {
     return new Response(JSON.stringify({
       type: 'error',
@@ -66,17 +56,7 @@ export function gatewayError(request, env, route, status, message, requestId, de
   });
 }
 
-/**
- * @param {Request} request
- * @param {Record<string, any>} env
- * @param {string} route
- * @param {string} requestId
- * @param {string} requestedModel
- * @param {LoopState} state
- * @param {boolean} exposeUpstreamInfo
- * @returns {Response}
- */
-export function buildBudgetExhaustedResponse(request, env, route, requestId, requestedModel, state, exposeUpstreamInfo) {
+export function buildBudgetExhaustedResponse(request: Request, env: Record<string, unknown>, route: string, requestId: string, requestedModel: string, state: LoopState, exposeUpstreamInfo: boolean): Response {
   // The gateway spent the whole failover budget rotating and still has no answer.
   // Stop: return a clear, terminal error and the attempt COUNT only. Do not keep
   // calling further upstreams, and do not leak the internal failure sequence by
@@ -97,20 +77,7 @@ export function buildBudgetExhaustedResponse(request, env, route, requestId, req
     `Gateway failover budget exhausted after ${state.logicalAttempts} attempt(s).`, requestId, details);
 }
 
-/**
- * @param {Request} request
- * @param {Record<string, any>} env
- * @param {string} route
- * @param {string} requestId
- * @param {string} requestedModel
- * @param {LoopState} state
- * @param {Record<number, RuntimeNode[]>} tiers
- * @param {boolean} exposeUpstreamInfo
- * @param {RequestDescriptor} reqDescriptor
- * @param {ReadonlySet<string>} [knownModels]
- * @returns {Response}
- */
-export function buildExhaustedResponse(request, env, route, requestId, requestedModel, state, tiers, exposeUpstreamInfo, reqDescriptor, knownModels) {
+export function buildExhaustedResponse(request: Request, env: Record<string, unknown>, route: string, requestId: string, requestedModel: string, state: LoopState, tiers: Record<number, RuntimeNode[]>, exposeUpstreamInfo: boolean, reqDescriptor: RequestDescriptor, knownModels?: ReadonlySet<string>): Response {
   const last = state.attempts[state.attempts.length - 1];
   const nothingAttempted = state.attempts.length === 0;
 
@@ -133,9 +100,9 @@ export function buildExhaustedResponse(request, env, route, requestId, requested
   // taken so a concurrency-saturated node (frees in ~1s) is not masked by an
   // unrelated node's long RPM window (e.g. 50s).
   const now = Date.now();
-  let status;
-  let message;
-  let retryAfterSec;
+  let status: number;
+  let message: string;
+  let retryAfterSec: number | undefined;
   if (nothingAttempted) {
     if (state.tier1ExhaustionReason === 'deadline_too_small') {
       status = 503;
@@ -196,14 +163,7 @@ export function buildExhaustedResponse(request, env, route, requestId, requested
 // never contributes — only nodes that actually serve THIS request AND are
 // currently blocking it. The min across blocking reasons is returned so the
 // shortest real wait wins.
-/**
- * @param {Record<number, RuntimeNode[]>} tiers
- * @param {RequestDescriptor} reqDescriptor
- * @param {number} [now]
- * @param {ReadonlySet<string>} [knownModels]
- * @returns {number | undefined}
- */
-function earliestBlockingRetryAfterSec(tiers, reqDescriptor, now = Date.now(), knownModels) {
+function earliestBlockingRetryAfterSec(tiers: Record<number, RuntimeNode[]>, reqDescriptor: RequestDescriptor, now: number = Date.now(), knownModels?: ReadonlySet<string>): number | undefined {
   let minMs = Infinity;
   for (const t of TIER_ORDER) {
     for (const node of tiers[t] ?? []) {
@@ -222,13 +182,7 @@ function earliestBlockingRetryAfterSec(tiers, reqDescriptor, now = Date.now(), k
 // RPM exhaustion is bounded by the remaining minute window; concurrency
 // saturation has no timer so it estimates ~1s (slots free as in-flight
 // requests complete).
-/**
- * @param {RuntimeNode} node
- * @param {string} requestedModel
- * @param {number} now
- * @returns {number}
- */
-function blockingWaitMs(node, requestedModel, now) {
+function blockingWaitMs(node: RuntimeNode, requestedModel: string, now: number): number {
   if (node.tier === 'tier-1') return tier1BlockingWaitMs(node, requestedModel, now);
   const nodeCd = getCooldownRemainingMs(node.id, now);
   if (nodeCd > 0) return nodeCd;
@@ -243,23 +197,11 @@ function blockingWaitMs(node, requestedModel, now) {
 // Seconds until the next fixed-window (60s) reset of the Cloudflare Rate
 // Limiting binding backing the distributed deny. Used as the Retry-After for a
 // pure rate_limit_global failure, where no node cooldown exists.
-function distributedWindowRetryAfterSec(now = Date.now()) {
+function distributedWindowRetryAfterSec(now: number = Date.now()): number {
   return Math.max(1, Math.ceil((60_000 - (now % 60_000)) / 1000));
 }
 
-/**
- * @param {Request} request
- * @param {Record<string, any>} env
- * @param {string} route
- * @param {string} requestId
- * @param {string} requestedModel
- * @param {number} status
- * @param {string | Uint8Array} errorText
- * @param {LoopState} state
- * @param {boolean} exposeUpstreamInfo
- * @returns {Response}
- */
-export function buildClientErrorResponse(request, env, route, requestId, requestedModel, status, errorText, state, exposeUpstreamInfo) {
+export function buildClientErrorResponse(request: Request, env: Record<string, unknown>, route: string, requestId: string, requestedModel: string, status: number, errorText: string | Uint8Array, state: LoopState, exposeUpstreamInfo: boolean): Response {
   const detail = extractErrorMessage(errorText) || `Upstream returned HTTP ${status}.`;
   const attemptsDetail = exposeUpstreamInfo && state.attempts.length
     ? { attempts_detail: state.attempts.slice(-1) }
@@ -300,11 +242,7 @@ export function buildClientErrorResponse(request, env, route, requestId, request
   });
 }
 
-/**
- * @param {string | Uint8Array | null | undefined} text
- * @returns {string}
- */
-function extractErrorMessage(text) {
+function extractErrorMessage(text: string | Uint8Array | null | undefined): string {
   const raw = String(text || '').trim();
   if (!raw) return '';
   try {
@@ -319,12 +257,8 @@ function extractErrorMessage(text) {
 //   dominant rate_limit / distributed deny -> 429 (retryable)
 //   dominant headers/first-event timeout  -> 504 (spent, terminal)
 //   otherwise (server/network/auth/model) -> 502
-/**
- * @param {Record<string, number>} [failureKinds]
- * @returns {string | null}
- */
-function dominantKind(failureKinds) {
-  let best = null;
+function dominantKind(failureKinds?: Record<string, number>): string | null {
+  let best: string | null = null;
   let bestN = 0;
   for (const [kind, n] of Object.entries(failureKinds || {})) {
     if (n > bestN) { best = kind; bestN = n; }
@@ -332,11 +266,7 @@ function dominantKind(failureKinds) {
   return best;
 }
 
-/**
- * @param {Record<string, number>} [failureKinds]
- * @returns {number | null}
- */
-function terminalStatus(failureKinds) {
+function terminalStatus(failureKinds?: Record<string, number>): number | null {
   const dom = dominantKind(failureKinds);
   if (!dom) return null;
   if (dom === 'rate_limit' || dom === 'rate_limit_global') return 429;

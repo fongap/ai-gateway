@@ -9,7 +9,6 @@
   "include": [
     "src/types/domain.d.ts",
     "src/**/*.ts",
-    "src/request/**/*.js",
     "src/observability/token-usage.mjs"
   ]
 }

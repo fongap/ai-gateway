@@ -15,7 +15,7 @@
 
 import assert from 'node:assert/strict';
 import { collectKnownModels, collectConfiguredModels, servesModel, isWildcardNode } from '../src/config/registry.ts';
-import { authorizeModel, filterVisibleModels } from '../src/request/model-authz.js';
+import { authorizeModel, filterVisibleModels } from '../src/request/model-authz.ts';
 import { supportsRequest } from '../src/scheduler/scheduler.ts';
 import { __resetAccessKeysCacheForTests } from '../src/config/access-keys.ts';
 

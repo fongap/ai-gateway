@@ -6,8 +6,8 @@
 
 import assert from 'node:assert/strict';
 import { loadAccessKeysConfig, keyAllowsModel, __resetAccessKeysCacheForTests, collectConfiguredModels, collectKnownModels } from '../src/config/access-keys.ts';
-import { authorize } from '../src/request/auth.js';
-import { filterVisibleModels } from '../src/request/model-authz.js';
+import { authorize } from '../src/request/auth.ts';
+import { filterVisibleModels } from '../src/request/model-authz.ts';
 
 let passed = 0;
 function test(name, fn) {
