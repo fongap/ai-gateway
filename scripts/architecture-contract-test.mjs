@@ -150,19 +150,37 @@ await test('Contract 02: Native Empty + Explicit Fallback -> 200 via OpenAI', as
 });
 
 // =========================================================================
-// Contract 03 — No Implicit Conversion
+// Contract 03 — Default-ON fallback (no explicit PROTOCOL_FALLBACKS)
 // =========================================================================
-await test('Contract 03: No Implicit Conversion -> 404 without fallback config', async () => {
+await test('Contract 03: Default ON — Anthropic request with only OpenAI nodes -> 200 via fallback', async () => {
   resetMock();
   routeHandlers['o1.example.com'] = () => jsonUpstream(okCompletion());
   const env = makeEnv({
     tier1: [openaiChatNode('o1')],
     secrets: { o1: 'k' },
-    // NO PROTOCOL_FALLBACKS
+    // NO PROTOCOL_FALLBACKS — built-in default chain (anthropic:messages ->
+    // openai:chat_completions) is applied silently.
   });
   const res = await worker.fetch(messagesRequest({}), env, {});
-  assert.equal(res.status, 404, 'no fallback config -> fail closed');
-  assert.equal(upstreamCalls.length, 0, 'no upstream contacted');
+  assert.equal(res.status, 200, 'default-on fallback routes Anthropic -> OpenAI');
+  const hosts = upstreamCalls.map(c => c.host);
+  assert.deepEqual(hosts, ['o1.example.com'], 'OpenAI fallback node served the request');
+});
+
+// =========================================================================
+// Contract 03b — PROTOCOL_FALLBACKS=disable restores legacy Native-Only
+// =========================================================================
+await test('Contract 03b: PROTOCOL_FALLBACKS=disable -> 404 (legacy Native-Only)', async () => {
+  resetMock();
+  routeHandlers['o1.example.com'] = () => jsonUpstream(okCompletion());
+  const env = makeEnv({
+    tier1: [openaiChatNode('o1')],
+    secrets: { o1: 'k' },
+    extraEnv: { PROTOCOL_FALLBACKS: 'disable' },
+  });
+  const res = await worker.fetch(messagesRequest({}), env, {});
+  assert.equal(res.status, 404, 'explicit disable -> fail closed (no native, no fallback)');
+  assert.equal(upstreamCalls.length, 0, 'no upstream contacted when fallback is disabled');
 });
 
 // =========================================================================

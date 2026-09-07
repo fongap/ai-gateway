@@ -330,9 +330,50 @@ await run('config: invalid JSON returns {} with diagnostic', () => {
   assert.ok(diag.some((d) => /invalid JSON/i.test(d)), 'diagnostic mentions invalid JSON');
 });
 
-await run('config: empty config -> empty fallback chain', () => {
-  const chain = getFallbackChain('anthropic_messages', {});
-  assert.deepEqual(chain, []);
+await run('config: default ON — unset env applies built-in default chain', () => {
+  // Unset PROTOCOL_FALLBACKS: built-in default `anthropic:messages ->
+  // openai:chat_completions` is applied silently. This is the only supported
+  // conversion, so a default of "no fallback at all" would mean operators
+  // who also carry an OpenAI pool would lose Anthropic traffic whenever
+  // their native pool hiccups; the safe-by-default is the conversion.
+  const cfg = loadProtocolFallbacks({});
+  assert.deepEqual(cfg, { 'anthropic:messages': ['openai:chat_completions'] });
+  assert.deepEqual(getProtocolFallbacksDiagnostics({}), [], 'default chain has no diagnostics');
+});
+
+await run('config: default ON — empty string is treated as unset', () => {
+  const cfg = loadProtocolFallbacks({ PROTOCOL_FALLBACKS: '' });
+  assert.deepEqual(cfg, { 'anthropic:messages': ['openai:chat_completions'] });
+});
+
+await run('config: "disable" literal turns the default off', () => {
+  // The magic literal is the documented opt-out path for operators who want
+  // the legacy Native-Only behavior.
+  const cfg = loadProtocolFallbacks({ PROTOCOL_FALLBACKS: 'disable' });
+  assert.deepEqual(cfg, {}, 'disable literal produces empty config');
+  assert.deepEqual(getFallbackChain('anthropic_messages', { PROTOCOL_FALLBACKS: 'disable' }), []);
+});
+
+await run('config: explicit empty JSON overrides default (intentional turn-off)', () => {
+  // An explicit `{"anthropic:messages":[]}` MUST override the default — the
+  // operator wrote JSON, we honor it literally. This is the contract that
+  // makes the default safe to ship: operators can always pin a route to
+  // off without giving up the rest of the default.
+  const cfg = loadProtocolFallbacks({ PROTOCOL_FALLBACKS: '{"anthropic:messages":[]}' });
+  assert.deepEqual(cfg, { 'anthropic:messages': [] });
+  assert.deepEqual(getFallbackChain('anthropic_messages', { PROTOCOL_FALLBACKS: '{"anthropic:messages":[]}' }), []);
+});
+
+await run('config: "disable" + explicit JSON both yield the same opt-out (sanity)', () => {
+  // disable = literal Native-Only. explicit empty JSON = per-route opt-out.
+  // Both result in no fallback for anthropic_messages, but the explicit JSON
+  // case still preserves a per-route key in the config map (so a future
+  // route that DOES have a default would not be affected). This test pins
+  // that distinction in the loadProtocolFallbacks output.
+  const disable = loadProtocolFallbacks({ PROTOCOL_FALLBACKS: 'disable' });
+  const explicit = loadProtocolFallbacks({ PROTOCOL_FALLBACKS: '{"anthropic:messages":[]}' });
+  assert.equal(Object.keys(disable).length, 0, 'disable drops the key entirely');
+  assert.equal(Object.keys(explicit).length, 1, 'explicit empty keeps the key');
 });
 
 await run('config: bad key format -> diagnostic, key rejected', () => {
@@ -553,9 +594,15 @@ await run('handler: conversion disabled (no fallback) -> Anthropic exhausted is 
   routeHandlers['a1.example.com'] = () => jsonUpstream({ error: { message: 'overloaded' } }, 529);
   // OpenAI node is present and would be reachable, but no fallback is configured.
   routeHandlers['o1.example.com'] = () => jsonUpstream(okOpenAICompletion());
+  // PROTOCOL_FALLBACKS=disable pins the Native-Only contract: the openai
+  // node is reachable but must NOT be invoked across the protocol boundary.
+  // The Default-ON path is covered by Contract 03 in
+  // architecture-contract-test.mjs and the explicit-JSON path is covered
+  // by the next test; this test pins the opt-out (disable) behavior.
   const env = makeEnv({
     tier1: [anthropicNode('a1'), openaiNode('o1')],
     secrets: { a1: 'k', o1: 'k' },
+    extraEnv: { PROTOCOL_FALLBACKS: 'disable' },
   });
   const res = await worker.fetch(messagesRequest({
     model: 'claude-x', max_tokens: 64, messages: [{ role: 'user', content: 'hi' }],
@@ -564,7 +611,7 @@ await run('handler: conversion disabled (no fallback) -> Anthropic exhausted is 
   assert.ok(res.status >= 500 && res.status < 600, `expected 5xx, got ${res.status}`);
   // No upstream call should have been made to the OpenAI node.
   const openAiHosts = upstreamCalls.filter((c) => c.host === 'o1.example.com');
-  assert.equal(openAiHosts.length, 0, 'no OpenAI calls when fallback is not configured');
+  assert.equal(openAiHosts.length, 0, 'no OpenAI calls when fallback is disabled');
 });
 
 await run('handler: OpenAI 429 then 200 -> fallback retries and succeeds', async () => {
@@ -876,10 +923,14 @@ await run('regression: no native candidate + no fallback configured -> 404', asy
   resetMock();
   // OpenAI chat node present and would serve the model, but PROTOCOL_FALLBACKS
   // is NOT configured. No implicit cross-protocol conversion may happen.
+  // PROTOCOL_FALLBACKS=disable pins the Native-Only contract for this
+  // regression; the Default-ON path is covered by Contract 03 in
+  // architecture-contract-test.mjs.
   routeHandlers['o1.example.com'] = () => jsonUpstream(okOpenAICompletion());
   const env = makeEnv({
     tier1: [openaiNode('o1')],
     secrets: { o1: 'k' },
+    extraEnv: { PROTOCOL_FALLBACKS: 'disable' },
   });
   const res = await worker.fetch(messagesRequest({
     model: 'claude-x', max_tokens: 64, messages: [{ role: 'user', content: 'hi' }],

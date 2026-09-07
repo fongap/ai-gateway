@@ -2,15 +2,17 @@
 
 ## 原生协议转发
 
-网关原生支持恰好两种协议族——OpenAI 和 Anthropic。采用 Native First 策略：OpenAI Chat / Responses 只走原生路径；Anthropic Messages 优先原生，原生池耗尽后可选转换到 OpenAI Chat Completions（通过 `PROTOCOL_FALLBACKS` 显式配置，仅支持单向转换）。
+网关原生支持恰好两种协议族——OpenAI 和 Anthropic。采用 Native First 策略：OpenAI Chat / Responses 只走原生路径；Anthropic Messages 优先原生，原生池耗尽后默认会尝试转换到 OpenAI Chat Completions（通过 `PROTOCOL_FALLBACKS` 启用默认链 `{"anthropic:messages":["openai:chat_completions"]}`，仅支持单向转换）。
 
 ```text
 Client /v1/chat/completions → OpenAI transport    → upstream /v1/chat/completions
 Client /v1/responses        → OpenAI transport    → upstream /v1/responses
 Client /v1/messages         → Anthropic transport → upstream /v1/messages
+                                 ↘ (native pool exhausted, fallback enabled)
+                                 → OpenAI transport → upstream /v1/chat/completions
 ```
 
-节点通过 `protocol`（`openai` | `anthropic`）和 `surfaces` 声明自己真正支持的接口。调度器按 protocol + surface + model 三重过滤。`/v1/responses` 只路由到 `surfaces` 含 `responses` 的 openai 节点；`/v1/messages` 优先路由到 anthropic 节点；跨协议 fallback 仅在 `PROTOCOL_FALLBACKS` 显式声明时启用。
+节点通过 `protocol`（`openai` | `anthropic`）和 `surfaces` 声明自己真正支持的接口。调度器按 protocol + surface + model 三重过滤。`/v1/responses` 只路由到 `surfaces` 含 `responses` 的 openai 节点；`/v1/messages` 优先路由到 anthropic 节点。跨协议 fallback 默认启用（仅 Anthropic Messages → OpenAI Chat）；要恢复 Native-Only 行为，设 `PROTOCOL_FALLBACKS=disable`；要换映射或单独关掉某条路由，传显式 JSON（例如 `{"anthropic:messages":[]}` 把这一条显式关掉）。
 
 ## Transport 层
 
@@ -52,9 +54,9 @@ Transport 层不调度节点；Scheduler 和 Reliability 层不解析协议事�
 ## Protocol 隔离规则
 
 - Native First：OpenAI Chat / Responses 只走原生路径，不做转换
-- Anthropic Messages 优先原生；原生池耗尽后，仅在 `PROTOCOL_FALLBACKS` 配置时尝试转换到 OpenAI Chat Completions
+- Anthropic Messages 优先原生；原生池耗尽后默认启用 Anthropic → OpenAI Chat fallback（`PROTOCOL_FALLBACKS=disable` 关闭；显式 JSON 覆盖）
 - Hedge twin 由同一三重过滤选择器挑选，必然与 primary 同 protocol、同 surface；跨协议 hedge 被禁止
-- 协议矩阵测试 (`scripts/protocol-matrix-test.mjs`) + 转换测试 (`scripts/conversion-test.mjs`) 断言上述行为
+- 协议矩阵测试 (`scripts/protocol-matrix-test.mjs`) + 转换测试 (`scripts/conversion-test.mjs`) + 架构契约测试 (`scripts/architecture-contract-test.mjs`) 断言上述行为
 
 ## Header / Endpoint / Stream 职责边界
 
