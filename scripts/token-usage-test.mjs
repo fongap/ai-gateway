@@ -11,7 +11,7 @@ import {
   normalizeTokenUsage, recordTokenUsage, summarizeTokenStats,
   tokenMetricSeries, __resetTokenStatsForTests,
 } from '../src/observability/token-usage.ts';
-import { dashboardResponse, __resetDashboardCacheForTests } from '../src/dashboard/pages.js';
+import { dashboardResponse, __resetDashboardCacheForTests } from '../src/dashboard/pages.ts';
 import { metricsResponse } from '../src/observability/diagnostic-endpoints.ts';
 import { persistTokenUsage } from '../src/observability/token-usage-store.ts';
 import { withUsageStreamOptions } from '../src/protocol/openai.ts';

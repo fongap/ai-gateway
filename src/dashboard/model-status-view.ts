@@ -10,22 +10,24 @@
 
 import { getPublicModelStatus } from '../runtime/model-status.ts';
 import { normalizeModelKey } from '../observability/token-usage-store.ts';
-import { escapeHtml, fmtTtft } from './format.js';
+import { escapeHtml, fmtTtft } from './format.ts';
+import type { PublicModelStatusEntry, PublicModelStatusState } from '../runtime/model-status.ts';
+import type { RuntimeNode } from '../types/node.ts';
 
-const STATE_LABEL = { available: '可用', unobserved: '未观测', degraded: '波动', unavailable: '不可用' };
-const STATE_STYLE = { available: '', unobserved: ' warn', degraded: ' warn', unavailable: ' down' };
+const STATE_LABEL: Record<PublicModelStatusState, string> = { available: '可用', unobserved: '未观测', degraded: '波动', unavailable: '不可用' };
+const STATE_STYLE: Record<PublicModelStatusState, string> = { available: '', unobserved: ' warn', degraded: ' warn', unavailable: ' down' };
 
-export function publicModelStatus(nodes, env, evidence = new Set(), now = Date.now()) {
+export function publicModelStatus(nodes: ReadonlyArray<RuntimeNode>, env: Record<string, unknown> | null | undefined, evidence: ReadonlySet<string> = new Set(), now: number = Date.now()) {
   return getPublicModelStatus(nodes, env, evidence, now);
 }
 
 // Flat list of { id, status } rows from the status envelope, sorted by id.
-export function modelStatusRows(status) {
+export function modelStatusRows(status: { models?: PublicModelStatusEntry[] } | null | undefined): PublicModelStatusEntry[] {
   if (!status || !Array.isArray(status.models)) return [];
   return status.models;
 }
 
-function fmtTtftSeconds(s) {
+function fmtTtftSeconds(s: string | number | null | undefined): string {
   if (s === '--' || s == null) return '--s';
   if (typeof s !== 'string') return '--s';
   if (s.endsWith('ms')) {
@@ -37,14 +39,16 @@ function fmtTtftSeconds(s) {
   return `${s}s`;
 }
 
+export type TtftEntry = { available?: boolean, p50?: number | null, p95?: number | null, sampleCount?: number, insufficient?: boolean };
+
 // Guarantee one TTFT result container per public model, even when the D1
 // window has no rows for it: missing keys become { insufficient, noSamples }
 // so the dashboard renders '--s / -- samples' instead of dropping the model.
 // Lookup key is the canonical statistical model key (trim + lowercase),
 // matching how the observability store aggregates model rows.
-export function ensureModelTtftContainers(ttft, models) {
-  const map = ttft instanceof Map ? ttft : new Map();
-  const rows = Array.isArray(models) ? models : (Array.isArray(models?.models) ? models.models : []);
+export function ensureModelTtftContainers(ttft: Map<string, TtftEntry> | null | undefined, models: PublicModelStatusEntry[] | { models?: PublicModelStatusEntry[] } | null | undefined): Map<string, TtftEntry> {
+  const map = ttft instanceof Map ? ttft : new Map<string, TtftEntry>();
+  const rows: PublicModelStatusEntry[] = Array.isArray(models) ? models : (Array.isArray((models as { models?: PublicModelStatusEntry[] })?.models) ? (models as { models: PublicModelStatusEntry[] }).models : []);
   for (const m of rows) {
     const key = normalizeModelKey(m?.id);
     if (!key || map.has(key)) continue;
@@ -53,7 +57,7 @@ export function ensureModelTtftContainers(ttft, models) {
   return map;
 }
 
-export function fmtModelTtft(modelTtft) {
+export function fmtModelTtft(modelTtft: TtftEntry | null | undefined): { p50: string, p95: string, samples: number, insufficient: boolean, noSamples: boolean } {
   if (!modelTtft || modelTtft.available === false) return { p50: '--s', p95: '--s', samples: 0, insufficient: true, noSamples: true };
   if (modelTtft.insufficient) return { p50: '--s', p95: '--s', samples: modelTtft.sampleCount || 0, insufficient: true, noSamples: true };
   return {
@@ -65,7 +69,7 @@ export function fmtModelTtft(modelTtft) {
   };
 }
 
-function renderModelRow(m, ttft) {
+function renderModelRow(m: PublicModelStatusEntry, ttft: Map<string, TtftEntry> | null | undefined): string {
   const label = STATE_LABEL[m.status] || '不可用';
   const style = STATE_STYLE[m.status] ?? ' down';
   const t = fmtModelTtft(ttft?.get?.(normalizeModelKey(m.id)));
@@ -83,9 +87,7 @@ function renderModelRow(m, ttft) {
   </div>`;
 }
 
-function splitModelsByGroup() { return {}; }
-
-function renderModelBlock(models, ttft, title) {
+function renderModelBlock(models: PublicModelStatusEntry[], ttft: Map<string, TtftEntry> | null | undefined): string {
   if (!models.length) return '';
   const rows = models.map((m) => renderModelRow(m, ttft)).join('');
   return `<div class="status-block">
@@ -93,7 +95,7 @@ function renderModelBlock(models, ttft, title) {
   </div>`;
 }
 
-export function renderModels(status, ttft) {
+export function renderModels(status: { models?: PublicModelStatusEntry[] } | null | undefined, ttft: Map<string, TtftEntry> | null | undefined): { html: string } {
   const allModels = modelStatusRows(status);
   const mid = Math.ceil(allModels.length / 2);
   const left = allModels.slice(0, mid);

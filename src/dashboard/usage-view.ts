@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Fongap Studio
 //
 // 使用情况 section — KPI strip, 52-week heatmap, model usage donut + bars.
-// Extracted from pages.js for the v5 Compact Quiet Technical Interface.
+// Extracted from pages.ts for the v5 Compact Quiet Technical Interface.
 
 import {
   queryTokenSummary,
@@ -11,19 +11,21 @@ import {
   utc8DayStartUtcMs,
   isoDayUtc8,
 } from '../observability/token-usage-store.ts';
-import { escapeHtml, fmtTokens, fmtInt } from './format.js';
-import { buildCalendarHeatmap } from './heatmap.js';
-import { renderHeatmap } from './heatmap-view.js';
+import { escapeHtml, fmtTokens, fmtInt } from './format.ts';
+import { buildCalendarHeatmap } from './heatmap.ts';
+import { renderHeatmap } from './heatmap-view.ts';
+import type { HeatmapDataEntry } from './heatmap.ts';
+import type { TtftEntry } from './model-status-view.ts';
 
 const DAY_MS = 86_400_000;
 const HEATMAP_WEEKS = 52;
 const HEATMAP_DAYS = HEATMAP_WEEKS * 7;
 
 // Teal ramp shared by the donut ring and the bar list.  Rank 1 gets the
-// deepest teal, later ranks fade toward a light tint.
+// deepest teal, later ranks fade towards a light tint.
 const TEAL_SHADES = ['#0f5d53', '#3f8b7c', '#7cb4a5', '#a9d0c4', '#dce9e3'];
 
-function modelShade(i, n) {
+function modelShade(i: number, n: number): string {
   if (i < TEAL_SHADES.length) return TEAL_SHADES[i];
   const from = [0x0f, 0x5d, 0x53], to = [0xdc, 0xe9, 0xe3];
   const t = n <= 1 ? 0 : i / (n - 1);
@@ -34,8 +36,8 @@ function modelShade(i, n) {
 // ---- Heatmap ---------------------------------------------------------------
 //
 // The heatmap is now built through the shared `buildCalendarHeatmap`
-// utility (`src/dashboard/heatmap.js`) and rendered by `renderHeatmap`
-// (`src/dashboard/heatmap-view.js`). The utility supports two modes
+// utility (`src/dashboard/heatmap.ts`) and rendered by `renderHeatmap`
+// (`src/dashboard/heatmap-view.ts`). The utility supports two modes
 // (rolling-52-weeks and calendar-year) and is the single source of
 // truth for the date / weekday / month plumbing. The renderer is the
 // single source of truth for the HTML output.
@@ -44,7 +46,7 @@ function modelShade(i, n) {
 // in `usageSection` and the test contract (which asserts on the HTML
 // output) continue to work without churn.
 
-export function buildHeatmap(daily, now) {
+export function buildHeatmap(daily: Map<string, HeatmapDataEntry> | null, now: number): { cells: string[], labels: string[], ariaLabel: string, weekCount: number } {
   const heatmap = buildCalendarHeatmap({
     mode: 'rolling-52-weeks',
     today: now,
@@ -62,7 +64,7 @@ export function buildHeatmap(daily, now) {
 
 // ---- KPI -------------------------------------------------------------------
 
-function statCell(value, label) {
+function statCell(value: string, label: string): string {
   const exact = typeof value === 'string' && /^[\d,]+$/.test(value) ? Number(value.replace(/,/g, '')) : null;
   const titleAttr = exact !== null ? ` title="${escapeHtml(fmtInt(exact))}"` : '';
   return `<div class="stat"><div class="stat-value"${titleAttr}>${value}</div><div class="stat-label">${label}</div></div>`;
@@ -74,7 +76,9 @@ const DONUT_R = 60;
 const DONUT_STROKE = 16;
 const DONUT_CIRC = 2 * Math.PI * DONUT_R;
 
-function renderDonut(rows) {
+type ModelUsageRow = { model: string, total: number, requests: number };
+
+function renderDonut(rows: ModelUsageRow[]): string {
   const total = rows.reduce((s, r) => s + r.total, 0);
   if (total <= 0) return '';
   let acc = 0;
@@ -101,7 +105,7 @@ function renderDonut(rows) {
 
 // ---- Model usage bars ------------------------------------------------------
 
-function renderBars(rows) {
+function renderBars(rows: ModelUsageRow[]): string {
   const max = rows.reduce((m, r) => (r.total > m ? r.total : m), 0);
   const items = rows.map((r, i) => {
     const color = modelShade(i, rows.length);
@@ -123,20 +127,22 @@ function renderBars(rows) {
 // code-max). Unknown keys (model not declared on any node) fall back to the
 // raw statistics key.
 
-function renderModelUsage(modelUsage, officialNames) {
+type ModelUsageResult = { available?: boolean, rows?: ModelUsageRow[], error?: string };
+
+function renderModelUsage(modelUsage: ModelUsageResult | null | undefined, officialNames: Map<string, string> | null | undefined): string {
   if (!modelUsage || modelUsage.available === false) {
     return `<div class="subhead" style="margin-bottom:32px"><b>模型使用</b></div>` +
       `<div class="model-usage-empty">—</div>`;
   }
-  const displayName = (key) => (officialNames instanceof Map && officialNames.get(key)) || key;
-  const rows = (Array.isArray(modelUsage.rows) ? modelUsage.rows : [])
+  const displayName = (key: string): string => (officialNames instanceof Map && officialNames.get(key)) || key;
+  const rows: ModelUsageRow[] = (Array.isArray(modelUsage.rows) ? modelUsage.rows : [])
     .map((r) => ({ ...r, model: displayName(r.model) }));
   if (!rows.length) {
     return `<div class="subhead" style="margin-bottom:32px"><b>模型使用</b></div>` +
       `<div class="model-usage-empty">近 7 天暂无数据</div>`;
   }
   const TOP_N = 4;
-  let chartRows = rows;
+  let chartRows: ModelUsageRow[] = rows;
   if (rows.length > TOP_N) {
     const rest = rows.slice(TOP_N);
     chartRows = [...rows.slice(0, TOP_N), {
@@ -153,11 +159,36 @@ function renderModelUsage(modelUsage, officialNames) {
 
 // ---- Full section ----------------------------------------------------------
 
-export async function usageSection(env, now = Date.now(), stats = null, officialNames = null) {
+function isSummaryAvailable(s: SummaryResult | null): s is Extract<SummaryResult, { available: true }> {
+  return s != null && s.available === true;
+}
+
+function isSummaryError(s: SummaryResult | null): s is { available: false, error: string } {
+  return s != null && s.available === false;
+}
+
+function isDailyAvailable(d: DailyResult | null): d is Map<string, HeatmapDataEntry> {
+  return d instanceof Map;
+}
+
+function isDailyError(d: DailyResult | null): d is { available: false, error: string } {
+  return d != null && !(d instanceof Map);
+}
+
+function dailyErrorMessage(d: DailyResult | null): string | undefined {
+  return isDailyError(d) ? d.error : undefined;
+}
+
+function summaryErrorMessage(s: SummaryResult | null): string | undefined {
+  return isSummaryError(s) ? s.error : undefined;
+}
+
+export async function usageSection(env: Record<string, unknown>, now: number = Date.now(), stats: DashboardStats | null = null, officialNames: Map<string, string> | null = null): Promise<string> {
   const cache = stats || await getCachedDashboardStats(env, now);
   const { summary, daily, modelUsage } = cache;
-  const summaryOk = summary && summary.available !== false;
-  const dailyOk = daily && daily.available !== false;
+  const summaryOk = isSummaryAvailable(summary);
+  const dailyOk = isDailyAvailable(daily);
+  const dailyMap = dailyOk ? daily : null;
   const available = summaryOk && dailyOk;
   const kpis = available
     ? [
@@ -173,21 +204,21 @@ export async function usageSection(env, now = Date.now(), stats = null, official
         statCell('—', '累计'),
       ].join('');
   let totalRequests = 0;
-  if (available && daily) {
-    for (const v of daily.values()) totalRequests += v.requests;
+  if (available && dailyMap) {
+    for (const v of dailyMap.values()) totalRequests += v.requests;
   }
-  const errors = [];
-  if (summary && summary.error) errors.push(summary.error);
-  if (daily && daily.error) errors.push(daily.error);
+  const errors: string[] = [];
+  if (summaryErrorMessage(summary)) errors.push(summaryErrorMessage(summary) as string);
+  if (dailyErrorMessage(daily)) errors.push(dailyErrorMessage(daily) as string);
   if (!summary) errors.push('TOKEN_STATS_DB binding missing');
-  if (summary && !summary.available && !summary.error) errors.push('summary unavailable');
-  if (daily && !daily.available && !daily.error) errors.push('daily unavailable');
+  if (isSummaryError(summary) && !summary.error) errors.push('summary unavailable');
+  if (isDailyError(daily) && !daily.error) errors.push('daily unavailable');
   if (errors.length && env && env.LOG_LEVEL !== 'none') {
     try { console.warn(`[dashboard D1 degraded] ${errors.join('; ')}`); } catch { /* ignore */ }
   }
-  const activity = available
+  const activity = available && dailyMap
     ? (() => {
-        const { cells, labels, ariaLabel, weekCount } = buildHeatmap(daily, now);
+        const { cells, labels, ariaLabel, weekCount } = buildHeatmap(dailyMap, now);
         // `--week-count` makes `.months` share the heatmap's exact week
         // column tracks, so each label's grid-column anchoring is real
         // positioning, not a flex approximation.
@@ -210,31 +241,53 @@ export async function usageSection(env, now = Date.now(), stats = null, official
 </section>`;
 }
 
-// Re-export cache helpers used by pages.js
+// Re-export cache helpers used by pages.ts
 import { MODEL_STATUS_RECENT_WINDOW_MS, queryAllModelsTtftPercentiles, queryRecentModelEvidence } from '../observability/token-usage-store.ts';
 
-const DASHBOARD_CACHE_TTL_MS = 45_000;
-let dashboardCaches = new WeakMap();
-let missingBindingCache = { expiresAt: 0, inFlight: null, value: null };
+type SummaryBucket = { total: number, requests: number };
+type SummaryResult = ({
+  available: true,
+  today: SummaryBucket,
+  h24: SummaryBucket,
+  d7: SummaryBucket,
+  cumulative: SummaryBucket & { reports: number, missing: number },
+  coverage: number | null,
+} | { available: false, error: string });
+type DailyResult = Map<string, HeatmapDataEntry> | { available: false, error: string };
 
-function newDashboardCacheEntry() {
+export type DashboardStats = {
+  summary: SummaryResult | null,
+  daily: DailyResult | null,
+  modelUsage: ModelUsageResult | null,
+  recentEvidence: Set<string> | null,
+  ttft: Map<string, TtftEntry> | null,
+  observedAt: string,
+};
+
+const DASHBOARD_CACHE_TTL_MS = 45_000;
+let dashboardCaches = new WeakMap<object, { expiresAt: number, inFlight: Promise<DashboardStats> | null, value: DashboardStats | null }>();
+let missingBindingCache: { expiresAt: number, inFlight: Promise<DashboardStats> | null, value: DashboardStats | null } = { expiresAt: 0, inFlight: null, value: null };
+
+type CacheEntry = { expiresAt: number, inFlight: Promise<DashboardStats> | null, value: DashboardStats | null };
+
+function newDashboardCacheEntry(): CacheEntry {
   return { expiresAt: 0, inFlight: null, value: null };
 }
 
-function dashboardCacheFor(env) {
+function dashboardCacheFor(env: Record<string, unknown> | null | undefined): CacheEntry {
   const d1 = env?.TOKEN_STATS_DB;
-  if (!d1 || (typeof d1 !== 'object' && typeof d1 !== 'function') || typeof d1.prepare !== 'function') {
+  if (!d1 || (typeof d1 !== 'object' && typeof d1 !== 'function') || typeof (d1 as { prepare?: unknown }).prepare !== 'function') {
     return missingBindingCache;
   }
-  let entry = dashboardCaches.get(d1);
+  let entry = dashboardCaches.get(d1 as object);
   if (!entry) {
     entry = newDashboardCacheEntry();
-    dashboardCaches.set(d1, entry);
+    dashboardCaches.set(d1 as object, entry);
   }
   return entry;
 }
 
-export async function getCachedDashboardStats(env, now) {
+export async function getCachedDashboardStats(env: Record<string, unknown>, now: number): Promise<DashboardStats> {
   const cache = dashboardCacheFor(env);
   const nowMs = typeof now === 'number' ? now : Date.now();
   if (cache.inFlight && cache.expiresAt > nowMs) return cache.inFlight;
@@ -254,12 +307,12 @@ export async function getCachedDashboardStats(env, now) {
   }
 }
 
-export function __resetDashboardCacheForTests() {
+export function __resetDashboardCacheForTests(): void {
   dashboardCaches = new WeakMap();
   missingBindingCache = newDashboardCacheEntry();
 }
 
-async function loadDashboardStats(env, now) {
+async function loadDashboardStats(env: Record<string, unknown>, now: number): Promise<DashboardStats> {
   const gridStartUtc8 = utc8DayStartUtcMs(now);
   const dow = (new Date(isoDayUtc8(gridStartUtc8)).getUTCDay() + 6) % 7;
   const currentWeekStartUtc8 = gridStartUtc8 - dow * DAY_MS;
@@ -273,7 +326,7 @@ async function loadDashboardStats(env, now) {
   ]);
   // One grouped D1 query covers ALL models in the window — no Top-4 slice,
   // no per-model N+1. Entries are keyed by the canonical statistical model
-  // key; models without rows are filled per-public-catalog in pages.js.
-  const ttft = ttftQuery?.available && ttftQuery.ttft instanceof Map ? ttftQuery.ttft : new Map();
+  // key; models without rows are filled per-public-catalog in pages.ts.
+  const ttft = ttftQuery?.available && ttftQuery.ttft instanceof Map ? ttftQuery.ttft : new Map<string, TtftEntry>();
   return { summary, daily, modelUsage, recentEvidence, ttft, observedAt: new Date(now).toISOString() };
 }

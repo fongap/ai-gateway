@@ -31,8 +31,8 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { buildCalendarHeatmap } from '../src/dashboard/heatmap.js';
-import { renderHeatmap } from '../src/dashboard/heatmap-view.js';
+import { buildCalendarHeatmap } from '../src/dashboard/heatmap.ts';
+import { renderHeatmap } from '../src/dashboard/heatmap-view.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
@@ -191,7 +191,7 @@ const findCell = (h, iso) => flat(h).find((c) => c.date === iso) || null;
 
 // ---- C15: months CSS shares the heatmap week tracks -----------------------------------
 {
-  const css = readFileSync(join(root, 'src/dashboard/theme.js'), 'utf8');
+  const css = readFileSync(join(root, 'src/dashboard/theme.ts'), 'utf8');
   const monthsRule = css.match(/\.months\{[^}]*\}/)?.[0] || '';
   const heatmapRule = css.match(/\.heatmap\{[^}]*\}/)?.[0] || '';
   const cellRule = css.match(/\.cell\{[^}]*\}/)?.[0] || '';
@@ -202,7 +202,7 @@ const findCell = (h, iso) => flat(h).find((c) => c.date === iso) || null;
   // The heatmap fills the content width: 1fr tracks stretch, cells must not
   // pin a fixed width.
   const cellsStretch = heatmapRule.includes('1fr') && !cellRule.includes('width:10px');
-  const usageView = readFileSync(join(root, 'src/dashboard/usage-view.js'), 'utf8');
+  const usageView = readFileSync(join(root, 'src/dashboard/usage-view.ts'), 'utf8');
   const weekCountWired = /class="heatmap" style="\$\{weekTracks\}"/.test(usageView)
     && /class="months" style="\$\{weekTracks\}"/.test(usageView);
   const titleUpdated = usageView.includes('Token 活动 · 近 52 周');

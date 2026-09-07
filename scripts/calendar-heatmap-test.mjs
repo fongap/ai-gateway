@@ -10,7 +10,7 @@
 // label anchoring.
 
 import assert from 'node:assert/strict';
-import { buildCalendarHeatmap } from '../src/dashboard/heatmap.js';
+import { buildCalendarHeatmap } from '../src/dashboard/heatmap.ts';
 
 function dateAtIso(iso) {
   // TRUE UTC+8 midnight for the business date `iso` (= 16:00Z on the

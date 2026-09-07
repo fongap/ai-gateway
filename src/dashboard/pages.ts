@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
 //
 // Public entry page served on GET /.
@@ -26,16 +26,17 @@
 import { loadGatewayConfig } from '../config/nodes.ts';
 import { htmlResponse } from '../protocol/http.ts';
 import { normalizeModelKey } from '../observability/token-usage-store.ts';
-import { escapeHtml } from './format.js';
-import { THEME_CSS } from './theme.js';
-import { ensureModelTtftContainers, publicModelStatus, renderModels } from './model-status-view.js';
-import { getCachedDashboardStats, usageSection } from './usage-view.js';
-import { quickStartSection } from './quick-start-view.js';
+import { escapeHtml } from './format.ts';
+import { THEME_CSS } from './theme.ts';
+import { ensureModelTtftContainers, publicModelStatus, renderModels } from './model-status-view.ts';
+import { getCachedDashboardStats, usageSection } from './usage-view.ts';
+import { quickStartSection } from './quick-start-view.ts';
+import type { RuntimeNode } from '../types/node.ts';
 
 export const GITHUB_URL = 'https://github.com/fongap/ai-gateway';
 
-// Re-export for tests that import from pages.js
-export { __resetDashboardCacheForTests } from './usage-view.js';
+// Re-export for tests that import from pages.ts
+export { __resetDashboardCacheForTests } from './usage-view.ts';
 
 const GH_ICON = `<a class="github" href="${GITHUB_URL}" target="_blank" rel="noopener noreferrer" aria-label="GitHub · ai-gateway 仓库" title="GitHub · ai-gateway">
 <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
@@ -120,7 +121,7 @@ root.addEventListener('focusout',function(e){
 });
 })()</script>`;
 
-function shell({ title, body }) {
+function shell({ title, body }: { title: string, body: string }): string {
   return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="description" content="Smart AI Gateway — 聚合不同模型、协议与供应商，在变化的上游之上保持一个稳定的 API 入口。">
@@ -151,28 +152,29 @@ ${PAGE_SCRIPT}
 </body></html>`;
 }
 
-export async function dashboardResponse(request, env) {
+export async function dashboardResponse(request: Request, env: Record<string, unknown>): Promise<Response> {
   try {
     const config = loadGatewayConfig(env);
     const now = Date.now();
     const stats = await getCachedDashboardStats(env, now);
     const recentEvidence = stats.recentEvidence instanceof Set
       ? stats.recentEvidence
-      : new Set();
+      : new Set<string>();
     // Use the cached stats' observation time as the status clock so concurrent
     // loads within the 45s cache window render byte-identical output and the
     // freshness timestamp reflects when the data was actually observed.
     const statusNow = typeof stats.observedAt === 'string'
       ? new Date(stats.observedAt).getTime()
       : now;
-    const models = publicModelStatus(config.nodes || [], env, recentEvidence, statusNow);
+    const nodes: ReadonlyArray<RuntimeNode> = config.nodes || [];
+    const models = publicModelStatus(nodes, env, recentEvidence, statusNow);
     const apiBase = `${new URL(request.url).origin}/v1`;
 
     // Official display names keyed by canonical statistics key: the usage
     // panel aggregates by the D1 key (trim + lowercase) but must present the
     // same official logical IDs as the model status section. Node mappings
     // are the primary source of official IDs (same as model status).
-    const officialNames = new Map();
+    const officialNames = new Map<string, string>();
     for (const node of config.nodes || []) {
       for (const id of Object.keys(node.models || {})) {
         const key = normalizeModelKey(id);
@@ -203,7 +205,7 @@ export async function dashboardResponse(request, env) {
 
     return htmlResponse(shell({ title: 'Smart AI Gateway', body }));
   } catch (e) {
-    try { console.error('[dashboard] dashboardResponse error:', e?.message || e, e?.stack || ''); } catch { /* ignore */ }
+    try { console.error('[dashboard] dashboardResponse error:', (e as Error)?.message || e, (e as Error)?.stack || ''); } catch { /* ignore */ }
     const body = `
   <div class="hero wrap">
     <h1>AI Gateway</h1>
