@@ -46,11 +46,14 @@ function makeEnv({ tier1, secrets, extraEnv } = {}) {
 // ---- Shard index capture groups -------------------------------------------
 
 test('collectShards parses the correct index group per shard kind', () => {
+  const diags = [];
   const secretShards = collectShards(
     { TIER1_NODES_SECRETS_01: '{}', TIER1_NODES_SECRETS_09: '{}', TIER1_NODES_SECRETS_12: '{}' },
-    SECRET_SHARD_PATTERN, 'TIER1_NODES_SECRETS_', 'TIER1_NODES_SECRETS_01', 2, [],
+    SECRET_SHARD_PATTERN, 'TIER1_NODES_SECRETS_', 'TIER1_NODES_SECRETS_01', 2, diags,
   );
-  assert.deepEqual(secretShards.map((s) => s.index).sort((a, b) => a - b), [1, 9, 12]);
+  // Index 12 is out of the 01..10 range and must be rejected with a diagnostic.
+  assert.deepEqual(secretShards.map((s) => s.index).sort((a, b) => a - b), [1, 9]);
+  assert.ok(diags.some((d) => /TIER1_NODES_SECRETS_12/.test(d) && /out of range/.test(d)), 'shard 12 flagged as out of range');
   assert.ok(secretShards.every((s) => Number.isInteger(s.index)), 'secret index must be a number, never NaN');
 
   const tierShards = collectShards(
@@ -430,7 +433,7 @@ test('POLICIES_CONFIG parses a valid hedge policy', () => {
   assert.deepEqual(policies.hp.hedge.tiers, ['tier1']);
 });
 
-test('POLICIES_CONFIG hedge null/absent returns null (legacy behavior)', () => {
+test('POLICIES_CONFIG hedge null/absent returns null (custom policy without hedge)', () => {
   const policies = loadPoliciesConfig(makeEnv({
     extraEnv: { POLICIES_CONFIG: JSON.stringify({ 'hp': { max_attempts: 5 } }) },
   }));
@@ -543,7 +546,7 @@ test('valid MODELS_CONFIG + POLICIES_CONFIG resolve and stay ready', () => {
   assert.equal(cfg.diagnostics.length, 0, 'valid config yields no diagnostics');
 });
 
-// R5 (v1.3.0): budget_split policy field validation.
+// budget_split policy field validation.
 test('POLICIES_CONFIG accepts budget_split: even and weighted', () => {
   const diags = policyDiags({
     ev: { max_attempts: 5, budget_split: 'even' },

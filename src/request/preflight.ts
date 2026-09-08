@@ -309,7 +309,7 @@ export async function preflight(request: Request, env: Record<string, unknown>, 
   // neither holds, the request returns 404 and never reaches the tier loop or
   // the fallback chain. This restores the pre-refactor feasibility gate that
   // was lost when the candidate-existence check was extracted into preflight
-  // (the old handler.js checked native OR fallback before returning 404).
+  // (the old handler checked native OR fallback before returning 404).
   const feasibility = evaluateRouteFeasibility({
     route, requestedModel, requestDescriptor, tiers, knownModels, env,
   });

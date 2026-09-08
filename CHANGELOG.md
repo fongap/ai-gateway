@@ -1,72 +1,34 @@
 ﻿# Changelog
 
-## Unreleased
+## 1.3.0 - 2026-09-09
 
-### Added — TypeScript Migration (v1.3.0 阶段)
+### Added
 
-- **TypeScript Migration 治理(v1.3.0 阶段)**:新增 `docs/governance/typescript-migration.md`,固化 v1.2.6 为最后一个 JavaScript Runtime baseline 与 rollback 基线;迁移全程 behavior-preserving,Feature / Architecture / Protocol / Scheduler Freeze 持续有效至 v1.3.0 发布。禁止新增功能、修改核心行为、借迁移重构与新增 Runtime 依赖(production dependencies 保持 0)。固定 PR0–PR7 迁移顺序与每阶段 `branch → PR → CI → merge main` 节奏(文件迁移必须 `git mv` 保 history);明确工具链(Wrangler bundler + tsc noEmit typecheck、Node 原生 type stripping、erasable-only TS、真实扩展名 import 规则)、tsconfig 最终 strict 收口、类型纪律(@ts-ignore = 0、禁批量 any / `!`)、公开 API 零变化(/version 仅可加 build/revision)、Bundle 对比与每 PR 最低验证/报告要求;测试分层:轻量行为契约入 `validate:merge`,慢速套件保留 `validate:deploy`。
+- **Cross-Protocol Fallback (v1.3.0)**: OpenAI Chat ↔ Anthropic Messages 双向 fallback（默认 ON，可 `disable` 关闭或显式 JSON 覆盖）。OpenAI Responses 为 Native Only。跨协议 fallback 与 native retry 共享 `max_attempts` / `FAILOVER_BUDGET_MS` budget，不获取新 attempt slot。错误 envelope 保证客户端始终收到自己协议形状的错误。
+- **Production Identity**: `/version` 新增 `build` 字段（commit SHA，7-40 hex），与 `version`（semver）分离。Deploy job 注入 `GITHUB_SHA`，bridge 白名单包含 `GITHUB_SHA`。
+- **Adaptive Budget**: `POLICIES_CONFIG.budget_split` 控制 per-tier attempt surplus 分配（`even` / `weighted`）。`tier_attempts` 显式 override 不受 `budget_split` 影响。
+- **协议矩阵测试** (`scripts/protocol-matrix-test.mjs`)、**转换测试** (`scripts/conversion-test.mjs`)、**架构契约测试** (`scripts/architecture-contract-test.mjs`)、**Deployment Workflow Contract Test** (`scripts/deployment-workflow-contract-test.mjs`)、**Reliability Core Contract** (`scripts/reliability-core-contract-test.mjs`)。
+- **FailureKind 词汇闭合到 16 值**: `RATE_LIMIT_GLOBAL` / `INVALID_BASE_URL` / `STREAM_INTERRUPTED` / `NON_JSON_BODY` / `CANCELLED_AFTER_PEER_COMMIT` / `UNKNOWN`。`KIND` 为 `export const`，全 codebase 单一事实源。
+- **`pickCandidate` 返回 `PickedCandidate`**（含 `raceLost` / `releaseToken`），与 `pickTier1Candidate` 一致，race-loss 可见。
+- **Scheduler / Reliability / Transport / Request / Stream 核心未做结构性修改**。
 
-### Added — Cross-Protocol Fallback (R0 v1.3.0)
+### Changed
 
-- **OpenAI Chat ↔ Anthropic Messages 双向 fallback**:客户端 OpenAI Chat / Anthropic Messages 互转,各由独立 converter 文件实现(`src/conversion/openai-chat-request-to-anthropic.ts` + `anthropic-response-to-openai-chat.ts` + `anthropic-stream-to-openai-chat.ts`)。Native First 不变,跨协议 fallback 默认 ON,跨协议 fallback 与 native retry 共享 `max_attempts` / `FAILOVER_BUDGET_MS` budget,不获取新 attempt slot。
-- **OpenAI Responses → Anthropic Messages 客户端**(Codex 路径):Responses request / response / stream 各由独立 converter 实现(`src/conversion/responses-request-to-anthropic.ts` + `anthropic-response-to-responses.ts` + `anthropic-stream-to-responses.ts`)。仅支持 Codex 实际下发的字段子集,不支持的字段(`reasoning` items / `image_generation_call` / `mcp_*` items / `code_interpreter_call` 等)被**明确拒绝**(`conversion_not_supported`),不静默丢字段。
-- **错误 envelope 跨协议契约(R0.4)**:跨协议 fallback 后,客户端始终收到**自己协议形状**的错误 envelope;上游的内部错误 JSON 永远不泄漏到客户端。OpenAI Chat 客户端收到 `{ error: { message, type, ... } }`,Anthropic 客户端收到 `{ type: 'error', error: { type, message } }`,Responses 客户端收到 `{ error: { message, type, param, code } }`。
-- **跨协议 fallback 矩阵测试 (`scripts/conversion-test.mjs`)** 覆盖全部 6 个 client×upstream 组合(非流式成功 / 流式成功 / 错误 envelope / Native 不回归 / 工具调用 fallback)与 16 个 boundary 单元测试;90/90 passed。
+- **Deploy Correctness**: 三个 `workflow_run` job 全部显式 `checkout: ref: ${{ github.event.workflow_run.head_sha }}`，消除 SHA 漂移。手动 deploy 统一为 `npm run validate:deploy` 单一入口。Deployment summary / rollback 记录同一 `DEPLOYED_SHA`。
+- **Deployment Workflow Contract Test 扩展至 ×18**: 覆盖 SHA pinning、DEPLOYED_SHA 注入、rollback 记录同一 SHA、npm 引用验证等。
+- **Typed JS**: strict typecheck 范围扩展至 `src/request/**`、`src/config/**`、`src/reliability/**`、`src/scheduler/**` 并保持清零。核心类型提升为 ambient `type` 声明。
+- **Dashboard 热力图色阶对比度增强**: 新增 `--heat-1..4` 专属色阶。
 
-### Changed — Deploy Correctness (R1 v1.3.0)
+### Removed
 
-- **CI 自动 deploy 显式 pin triggering commit**:三个 workflow_run job (gate / manual-validate / deploy) 全部 `with: ref: ${{ github.event.workflow_run.head_sha }}` 显式 checkout,消除 CI 跑期间 main 推进时的 SHA 漂移。Validated SHA == Deployed SHA == Worker build identity。
-- **手动 deploy 单一验证入口**:移除 `typecheck:strict` / 裸 `typecheck` 步骤(后者历史上引用了不存在的 npm script)。manual-validate 简化为 `npm run validate:deploy` + `npm run check:deploy` 干跑 bundle,与自动路径完全一致。
-- **Deployment summary / rollback 记录同一 SHA**:deploy job env 新增 `DEPLOYED_SHA`,Deployment summary 步骤追加 `Identity / Deployed SHA: ${DEPLOYED_SHA}`,rollback 步骤 `echo "::notice::Rolling back Worker code for deployed SHA: ${DEPLOYED_SHA}"`。完整审计链:Workflow run `DEPLOYED_SHA` == Worker `build` identity == 部署日志 == 回滚记录。
-- **Deployment Workflow Contract Test 扩展至 ×18**(`scripts/deployment-workflow-contract-test.mjs`):保留 C01–C11,新增 C12 (npm run 引用必须真实存在)、C13 (workflow_run SHA 显式 pin)、C14 (DEPLOYED_SHA env + summary 记录)、C15 (rollback 记录同一 SHA)。
-
-### Added — Production Identity (R2 v1.3.0)
-
-- **`/version` 新增 `build` 字段**(向后兼容的纯增量):从 `env.GITHUB_SHA` 读取 commit SHA,显示 7-40 hex;缺失或非法值回退为字面量 `unknown`(保证 `wrangler dev` / pre-deploy probe 不崩溃)。`version`(semver)是 release identity(手动 bump),`build`(commit SHA)是 deployment identity(CI 自动注入),两者分离。
-- **Deploy job env 注入 `GITHUB_SHA`**:与 `DEPLOYED_SHA` 同源(`github.event.workflow_run.head_sha || github.sha`)。
-- **Deployment bridge `EXTRA_VAR_ALLOW` 允许 `GITHUB_SHA`**:让 deploy bridge 从 env 收集到 Worker vars map,运行时可读取。
-- **Deployment Workflow Contract C16-C18**:deploy job 必须注入 `GITHUB_SHA` (C16),bridge 白名单必须包含 `GITHUB_SHA` (C17),`versionResponse` 必须暴露 `build` 字段 (C18)。
-- **集成测试**:`/version.build` 在注入合法 SHA 时返回该 SHA,缺失/非法时回退 `unknown`。
-
-### Changed — Reliability Core (R3 v1.3.0)
-
-- **FailureKind 词汇从 10 增到 16 闭合值**(`src/reliability/classify.ts`):新增 `RATE_LIMIT_GLOBAL` / `INVALID_BASE_URL` / `STREAM_INTERRUPTED` / `NON_JSON_BODY` / `CANCELLED_AFTER_PEER_COMMIT` / `UNKNOWN` 6 个。`KIND` 改为 `export const`,作为整个 codebase 的单一事实源。
-- **6 个新 classifier helper**:`classifyPreDispatchRateLimit` / `classifyPreDispatchInvalidBaseUrl` / `classifyStreamInterrupted` / `classifyNonJsonBody` / `classifyHedgeRaceLoss` / `classifyHedgeUnknown`。所有消费方(dispatch / success / hedge / observability / errors)通过 helper 或 `KIND.*` 常量引用,无开放字符串字面量。
-- **类型收紧**:`AttemptOutcome.kind: FailureKind` (之前 `string`)、`LoopState.failureKinds: Partial<Record<FailureKind, number>>` (之前 `Record<string, number>`)、`rotateWithNeutralEnd(reason: FailureKind)` / `noteFailure(kind: FailureKind)`。编译期捕获 drift。
-- **`terminalStatus` 使用 `KIND.*` 常量**:替代硬编码字面量比较。
-- **Reliability Core Contract ×4**(`scripts/reliability-core-contract-test.mjs`):C19 KIND 闭合 16 值、C20 src/ 无开放 kind 字面量、C21 AttemptOutcome.kind 类型为 FailureKind、C22 类型来自 classify.ts。
-
-### Changed — Scheduler Core (R4 v1.3.0)
-
-- **统一 picker 返回类型**:`pickCandidate` (Tier 2/3) 从 `RuntimeNode | null` 改为 `PickedCandidate | null`,与 `pickTier1Candidate` (Tier 1) 一致。修复 Tier 2/3 slot race-loss 返回 `null` (与 "无合格候选" 不可区分) 的 bug——之前 tier loop 跳到下一 tier 而不是重试,现在 `{ raceLost: true }` 让 race-loss 可见。
-- **`hedge.ts` twin pick 简化**:从手动包装 `{ node: legacyTwin, raceLost: false }` 改为直接传递 `PickedCandidate`。
-- **Architecture Contract C15**:`pickCandidate` 返回 `PickedCandidate` (有 `raceLost` / `releaseToken` 字段),不是裸 `RuntimeNode`。
-
-### Added — Adaptive Budget (R5 v1.3.0)
-
-- **`POLICIES_CONFIG.budget_split` opt-in 策略**:控制 per-tier attempt surplus 分配。`'even'` (默认, 向后兼容) 第一个 dispatchable tier 拿全部 surplus;`'weighted'` 按每个 tier 的 live dispatchable 节点数比例分配。
-- **`tier_attempts` 仍然胜出**:显式 override 不受 `budget_split` 影响(两者正交)。
-- **算法保证总和 = `max_attempts`**:floor 取整 / override 导致的余项由最后一个 dispatchable tier 吸收。
-- **Architecture Contract C16** + 2 个单元测试(`POLICIES_CONFIG accepts/rejects budget_split`)端到端验证两种 split 行为。
-
-### Documentation (R6 v1.3.0)
-
-- **协议模型 (R0)**:新增 v1.3.0 跨协议 fallback 矩阵(双向 OpenAI Chat↔Anthropic + Responses→Anthropic)、错误 envelope 跨协议契约、v1.3.0 协议转换表。
-- **可靠性模型 (R3)**:完整 16 个 FailureKind 表、新增 6 个 classifier helper、类型安全契约、Adaptive Budget (R5) 章节、Unified Scheduler Return (R4) 章节。
-- **调度模型 (R5)**:Adaptive Budget 章节。
-- **配置参考 (R5)**:POLICIES_CONFIG 详细字段 + `budget_split` 详解。
-- **部署文档 (R1)**:Build Identity / Deployment SHA 章节,完整审计链。
-- **Troubleshooting (R3)**:`failure_kinds` 章节列出 6 个常见 kind 与触发条件。
-
-### Changed — Dashboard
-
-- **热力图活动色阶对比度增强(用户反馈)**:新增热力图专属色阶 `--heat-1..4`(`#bfdcd2 → #8cc3b2 → #4f9f8a → #0f5d53`,同为 teal 色系),替代此前借用 `--teal-1..4` 的配色——旧 level 1(`#dce9e3`)与空底 `--line-soft`(`#eceae2`)明度几乎相同,低 token 活动日在图上不可辨。新色阶相邻档位明度差约 10%,level 1 清晰可辨、level 4 触达品牌深 teal,层次梯度更丰富;`--teal-*` 其他组件(如模型状态圆点)不受影响。纯 CSS token 调整,量化逻辑(level 0-4)与数据契约不变。
+- **Legacy 协议转换代码**: `src/protocol/convert.js`、`src/stream/transform.js`、`src/protocol/responses/{request,stream,response,reasoning,tools}.js`、`src/config/profiles.js`。原生透传替代转换。
+- **`src/protocol/responses` 双向模拟**: Responses 原生透传 `src/protocol/responses/native-stream.js` + `src/stream/anthropic-native.js`。
 
 ## 1.2.6 - 2026-09-06
 
 > 发布安全、事实一致性与架构收口版本。本阶段不含功能扩展；目标是将既有架构原则固化为代码、CI 与测试契约。
 >
-> 版本序列说明：计划中的 "1.2.7" 版本号从未发版（tag 序列停在 v1.2.5），属版本号笔误；本次发布定版为 **1.2.6**，包含自 v1.2.5 以来的全部变更（见下方两个部分）。
+> 版本序列说明：`v1.2.7` 为 legacy/v1.2.7 分支维护版本，已真实发布；当前 mainline 从 v1.2.6 基线继续演进并收口为 **v1.3.0**。
 
 ### Added — 发布链路与事实契约测试
 
@@ -85,7 +47,7 @@
 
 ### Changed — Dashboard 事实一致性(P1)
 
-- **兑现原 "1.2.7"(未发版)已声明但 main 未实现的两项 Dashboard 事实**(契约测试已固化防止复发):
+- **兑现原 v1.2.7 已声明但 main 未实现的两项 Dashboard 事实**(契约测试已固化防止复发):
   - **Recent Evidence 窗口唯一事实源**:`MODEL_STATUS_RECENT_WINDOW_MS = 24h` 定义收敛至 `token-usage-store/queries.js`(紧邻 `queryRecentModelEvidence` 默认参数),`src/runtime/model-status.js` re-export 同一绑定,Dashboard 调用点传常量。此前的硬编码 `7 * 24 * 60 * 60 * 1000`(实际 7 天)已移除。
   - **TTFT 全模型 grouped 查询**:新增 `queryAllModelsTtftPercentiles()` 单次 `GROUP BY model` D1 查询覆盖窗口内全部模型,内存计算 P50/P95/sampleCount/insufficient;Dashboard 不再 `slice(0, 4)` 依赖 Usage Top 4,不再每模型一次 D1 查询(N+1)。`ensureModelTtftContainers()` 保证每个 Public Model 都有结果容器——无数据模型渲染 `--s / -- samples` 而非缺失 key。统计维度保持 canonical key(trim + lowercase),桶上界精度与最小样本阈值(5)不变。
 - **Request Attempt Boundary 收口(P1-F)**:`src/request/attempt.js`(约 1100 行)保持稳定公共边界(handler.js 导入不变),内部按职责拆分为 `src/request/attempt/{index,dispatch,hedge,success,outcome,observability}.js`。行为保持:retry/logicalAttempts/dispatch/hedge/maxAttempts/maxDispatches/tier cap/failover budget/headers timeout/first event timeout/stream commit/penalty/cooldown/RPM/affinity/half-open/protocol fallback/response format 语义零修改,全部架构契约与测试套件原样通过。
@@ -112,7 +74,7 @@
 
 ### Changed — 协议层架构收敛（OpenAI / Anthropic 双原生协议）
 
-- **上游协议正式收敛为 OpenAI 与 Anthropic 两种原生协议族。** 客户端请求优先转发到**同协议、同 surface** 的原生上游 endpoint。`Native First`,不是 `Native Only`——仅在显式配置 `PROTOCOL_FALLBACKS` 时允许 `anthropic:messages → openai:chat_completions` 单向转换 fallback。不存在任何隐式跨协议转换:
+- **上游协议正式收敛为 OpenAI 与 Anthropic 两种原生协议族。** 客户端请求优先转发到**同协议、同 surface** 的原生上游 endpoint。`Native First`,不是 `Native Only`——仅在显式配置 `PROTOCOL_FALLBACKS` 时允许 `anthropic:messages ↔ openai:chat_completions` 双向转换 fallback。不存在任何隐式跨协议转换:
   - `Chat → 上游 /v1/chat/completions`(原已原生,不变)
   - `Responses → 上游 /v1/responses`(原为 Responses↔Chat 双向模拟,现删除转换、原生透传)
   - `Messages → 上游 /v1/messages`(原为 Anthropic→Chat→Anthropic 双重转换,现删除转换、原生透传)
@@ -135,65 +97,7 @@
 ### Added
 
 - **协议矩阵测试 `scripts/protocol-matrix-test.mjs` ×16**(已纳入 `npm test`):OpenAI Chat 成功/failover/hedge;Responses 原生链路(不经 Chat 转换、chat-only 节点被排除);Anthropic 原生链路(native 路径、`x-api-key`、`anthropic-beta` 透传、无 Bearer);**跨协议隔离**双向断言(failover 不跨越 protocol boundary);hedge 同协议同 surface 断言;旧配置(无 `protocol`/`surfaces`)端到端迁移与 deprecated diagnostic 断言。
-
 ---
-### 自 v1.2.5 以来未发版的治理内容（原计划版本号 "1.2.7"）
-
-#### Changed — 模型治理与一致性收敛（v1.2.7）
-
-- **模型目录（Model Registry）新增 `ui_visible` 字段**：控制 Dashboard 与模型选择器的显示，与 API 可见性（`visibility`）解耦。8 个 Public 模型（Air/Pro/Max/Ultra, Code-Air/Code-Pro/Code-Max/Code-Ultra）为 `true`；Agent 能力模型 Omni/OCR 为 `false`，不出现在普通用户选择器与 Dashboard「模型状态」中，但保留完整的后台统计、健康监控与 Agent 发现能力。
-- **正式逻辑模型收敛为 10 个**：8 个面向用户 + 2 个 Agent 能力（Omni/OCR）。Group 分类收敛为 `general` / `code` / `omni` / `ocr`，`deriveGroup` 仅作兼容 fallback。
-- **MODELS_CONFIG 扩展 `ui_visible` 与 `ocr` capability**：Omni 默认 `vision=true`，OCR 为 `ocr=true`，均 `ui_visible=false`。`ui_visible` 默认 `true`，未知字段/非法类型仍产生 diagnostics。
-- **Key-scoped `/v1/models`**：模型列表按 Key Scope（`configuredModels ∩ allowlist`）过滤。AGENT Key 可发现全部 10 个模型；受限 Key 仅返回被授权子集。Visible == Callable。
-- **Closed Catalog 收敛**：`collectKnownModels = node mappings ∪ MODELS_CONFIG`。Wildcard node 仅服务已知目录模型，拒绝任意字符串，防止未声明模型被调用。
-- **Key-scoped 权限去重**：`access-keys.js` 与 `model-authz.js` 的 `filterVisibleModels` 收敛为单一源，`/v1/models` 与请求授权共用同一逻辑。
-- **Tier Secret 强制校验**：Node Tier 必须与 Secret Tier 一致（Tier1 node 不得使用 Tier2 secret），不匹配直接 diagnostics / fail closed。
-- **Malformed shard 检测全覆盖**：TIER1/2/3 的 NODES_CONFIG / NODES_SECRETS 统一校验后缀格式（如 `_01`），格式错误直接报错不再静默忽略。
-
-#### Fixed — 可观测性一致性收敛
-
-- **统计维度大小写归一化**：`normalizeModelKey = trim + toLowerCase`。新写入直接写入 canonical key；历史读取统一 `GROUP BY LOWER(TRIM(model))`，合并 `Code-Max` / `code-max` / `CODE-MAX` 为同一统计维度。覆盖 Token / Requests / Top-N / Percentage / Recent Evidence / TTFT / Coverage 全维度。不修改历史 D1 行，新写入走 canonical key，历史按读取时归一化聚合，7 天保留期后旧大小写自然淘汰。Public Model Status 消费 Recent Evidence 前统一 canonicalize,official logical ID 与 canonical statistics key 正确匹配（`Code-Max` ↔ `code-max`）,路由/鉴权 Model ID 精确语义不变。
-- **Dashboard TTFT P50/P95 统一**：`queryAllModelsTtft` 单次 grouped D1 查询（`GROUP BY LOWER(TRIM(model))`）一次性拉取所有模型的 7 桶直方图，内存算 P50/P95，不再 N+1 查询 Top 4。8 个 Public Model 均可获取 TTFT（只要有数据），不再仅限 Usage Top 4。
-- **Recent Evidence 窗口收敛 24h**：统一使用 `MODEL_STATUS_RECENT_WINDOW_MS = 24h`，不再有硬编码 7 天。
-- **Public Model Status 仅显示 8 个 Public 模型**：Omni/OCR 后台继续完整统计与监控，但 Dashboard「模型状态」与 `/v1/models`（受限 Key）不再暴露。
-
-#### Changed — 协议文档与版本收敛
-
-- **协议架构描述统一**：OpenAI / Anthropic 双原生协议，Native First；仅 Anthropic Messages 在显式配置 `PROTOCOL_FALLBACKS` 时允许单向 fallback 至 OpenAI Chat；不存在隐式跨协议 fallback；Hedge 永不跨 protocol / surface。文档与代码注释同步修正。
-- **版本序列修正**：计划中的 "1.2.7" 从未发版；连同本次治理变更，本发布定版为 **1.2.6**（`package.json` / `APP_META` / `CHANGELOG` 统一为 1.2.6）。
-
-#### Removed
-
-- 删除废弃的转换代码残留与未使用的兼容层。
-- 冻结 Dashboard 布局调整（宽度/像素/间距/字体），专注治理正确性。
-
----
-
-#### Added
-
-- **Public Model Status 使用 Runtime + D1 recent evidence。**
-- **TTFT histogram** (7-bucket, per-model, per-hour)。
-- **TTFT P50 / P95** 显示在模型状态区域。
-- **Provider Discovery** 治理框架 (观察-only workflow)。
-- **模型状态性能展示** (status + TTFT P50 + P95 + sample count)。
-- 相关测试 (`reliability-performance-test.mjs` ×40)。
-
-#### Changed
-
-- **Dashboard 信息架构调整**：TTFT 从"使用情况"移动至"模型状态"。
-- **模型状态统一展示**当前状态和近期 TTFT (P50 / P95 / 样本数)。
-- **使用情况只保留** Token / 请求 / 活动 / 模型占比。
-- **Reliability 指标修正为 Usage Coverage 语义** (`queryModelUsageCoverage`)。
-- npm 脚本重命名：`test:required` → `test:unit`、`test:full` → `test:all`、`verify` → `validate:merge`、`verify:full` → `validate:deploy`。
-
-#### Fixed
-
-- **Public Model Status 在新 isolate 下容易全部显示"未观测"**。
-- **Provider Discovery upload-artifact SHA 错误** (`bbb15f1f` → `330a01c4`)。
-- **Usage Coverage 被错误称为 Reliability / Success Rate**。
-- **migration 0003 注释与实际 SQL 不一致** (删除"idempotent"声明)。
-- **版本信息不一致** (package.json / runtime / integration-test 统一为 1.2.6)。
-- **ci.yml validate-deploy 使用 v6 SHAs** (统一为 v7.0.1)。
 
 ## 1.2.4 - 2026-08-29
 

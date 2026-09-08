@@ -1,12 +1,12 @@
 {
   "name": "ai-gateway",
-  "version": "1.2.6",
+  "version": "1.3.0",
   "private": true,
   "description": "AI aggregation gateway for Cloudflare Workers: many APIs, keys, and models behind one stable endpoint — node-local cooldowns, tier fallback, circuit-breaker recovery.",
   "type": "module",
   "license": "MIT",
   "engines": {
-    "node": ">=22.18.0"
+    "node": ">=22.18.0 <23"
   },
   "scripts": {
     "build": "npm run validate:merge",
@@ -36,7 +36,6 @@
     "config:check": "node scripts/config-cli.mjs check",
     "config:show": "node scripts/config-cli.mjs show",
     "config:diff": "node scripts/config-cli.mjs diff",
-    "config:migrate": "node scripts/config-cli.mjs migrate",
     "discovery:check": "node scripts/provider-discovery.mjs check-snapshot scripts/provider-discovery/samples/catalog.example.json",
     "discovery:summary": "node scripts/provider-discovery.mjs summary scripts/provider-discovery/samples/catalog.example.json"
   },

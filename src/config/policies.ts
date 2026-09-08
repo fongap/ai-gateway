@@ -4,7 +4,7 @@
 // POLICIES_CONFIG: policy name -> { max_attempts, tier_attempts?, hedge? }. Optional.
 // `max_attempts` bounds total LOGICAL attempts per request across ALL tiers
 // (valid range 1-8). `tier_attempts` optionally overrides the per-tier
-// attempt budget (see handler.js computeTierCaps for the default distribution).
+// attempt budget (see handler.ts computeTierCaps for the default distribution).
 // Tier order is fixed (tier-1 -> tier-2 -> tier-3, hard precedence).
 //
 // Built-in policies (always present, user config merges on top):
@@ -13,9 +13,11 @@
 //   stable         - reliability: maxAttempts=5, hedge enabled for Tier 1 only
 //   long-reasoning - extended first-event: maxAttempts=3, hedge disabled, firstEventTimeoutMs=120000
 //
-// Hedging is explicit opt-in: hedge.enabled must be true for hedging to
-// activate. default and stable enable hedging for Tier 1 only; Tier 2/3
-// never hedge. Operators can override via POLICIES_CONFIG.
+// Hedging is controlled per policy: hedge.enabled must be true for hedging to
+// activate. default and stable enable hedge for the tiers listed in
+// hedge.tiers (currently ['tier1']); fast and long-reasoning disable it.
+// Custom policies may specify any subset of tier1/tier2/tier3 via
+// hedge.tiers; tiers not listed never launch hedge twins.
 //
 // Like the node config, POLICIES_CONFIG is strict: malformed JSON, unknown
 // fields, invalid max_attempts, and invalid tier_attempts produce diagnostics
@@ -83,7 +85,9 @@ function analyzePolicies(env: Record<string, unknown>): { policies: Record<strin
   cachedEnv = env;
   const raw = readEnv(env, 'POLICIES_CONFIG');
   const errors: string[] = [];
-  // Start with built-ins; user config merges on top (override).
+  // Start with built-ins; user config merges on top (override) — partial override:
+  // explicitly declared fields override; absent fields inherit from the built-in
+  // (or null for custom names).
   const policies: Record<string, PolicyConfig> = { ...BUILTIN_POLICIES };
   if (raw) {
     let parsed: unknown;
@@ -110,29 +114,28 @@ function analyzePolicies(env: Record<string, unknown>): { policies: Record<strin
             errors.push(`POLICIES_CONFIG: "${name}" has unknown field "${field}" (allowed: ${[...ALLOWED_FIELDS].join(', ')})`);
           }
         }
-        const tierAttempts = parseTierAttempts(cfg.tier_attempts, name, errors);
-        const hedge = parseHedge(cfg.hedge, name, errors);
-        const firstEventTimeoutMs = parseFirstEventTimeoutMs(cfg.first_event_timeout_ms, name, errors);
-        const budgetSplit = parseBudgetSplit(cfg.budget_split, name, errors);
+        const key = name.trim();
+        const base = policies[key];
+        const tierAttempts = cfg.tier_attempts === undefined ? (base?.tierAttempts ?? null) : parseTierAttempts(cfg.tier_attempts, key, errors);
+        const hedge = cfg.hedge === undefined ? (base?.hedge ?? null) : parseHedge(cfg.hedge, key, errors);
+        const firstEventTimeoutMs = cfg.first_event_timeout_ms === undefined ? (base?.firstEventTimeoutMs ?? null) : parseFirstEventTimeoutMs(cfg.first_event_timeout_ms, key, errors);
+        const budgetSplit = cfg.budget_split === undefined ? (base?.budgetSplit ?? null) : parseBudgetSplit(cfg.budget_split, key, errors);
         let attempts: number;
         if (cfg.max_attempts !== undefined) {
-          // `typeof` leads the guard so the integer range checks run on a
-          // narrowed number — identical rejection behavior to the original
-          // Number.isInteger short-circuit.
           const rawMax = cfg.max_attempts;
           if (typeof rawMax !== 'number'
             || !Number.isInteger(rawMax)
             || rawMax < MIN_ATTEMPTS
             || rawMax > MAX_ATTEMPTS) {
-            errors.push(`POLICIES_CONFIG: "${name}": max_attempts must be an integer between ${MIN_ATTEMPTS} and ${MAX_ATTEMPTS}`);
-            attempts = BUILTIN_POLICIES.default.maxAttempts;
+            errors.push(`POLICIES_CONFIG: "${key}": max_attempts must be an integer between ${MIN_ATTEMPTS} and ${MAX_ATTEMPTS}`);
+            attempts = base?.maxAttempts ?? BUILTIN_POLICIES.default.maxAttempts;
           } else {
             attempts = rawMax;
           }
         } else {
-          attempts = BUILTIN_POLICIES.default.maxAttempts;
+          attempts = base?.maxAttempts ?? BUILTIN_POLICIES.default.maxAttempts;
         }
-        policies[name.trim()] = {
+        policies[key] = {
           maxAttempts: attempts,
           tierAttempts,
           hedge,
@@ -151,9 +154,9 @@ function analyzePolicies(env: Record<string, unknown>): { policies: Record<strin
 //   delay_ms  — integer >= 0; overrides HEDGE_DELAY_MS for this policy.
 //   tiers     — array of "tier1"/"tier2"/"tier3"; if present, only those
 //               tiers may launch hedge twins. Absent = all tiers.
-// When the field is absent entirely (user config omits hedge), null is returned
-// and the handler falls back to the legacy global behavior (hedge enabled
-// everywhere except tier3). Built-in policies always declare hedge explicitly.
+// When the field is absent entirely (user config omits hedge), null is returned.
+// null means "no hedge for this policy". Built-in policies always declare hedge
+// explicitly. Custom policies without an explicit hedge have no hedge.
 function parseHedge(value: unknown, policyName: string, errors: string[]): HedgePolicy {
   if (value === undefined || value === null) return null;
   if (typeof value !== 'object' || Array.isArray(value)) {
@@ -225,7 +228,7 @@ function parseFirstEventTimeoutMs(value: unknown, policyName: string, errors: st
   return value;
 }
 
-// R5 (v1.3.0): Parse an optional budget_split strategy.
+// Parse an optional budget_split strategy.
 //   "even"     (default, backward-compatible): first dispatchable tier gets
 //              the entire surplus.
 //   "weighted": surplus is distributed proportionally to each tier's live

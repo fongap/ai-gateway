@@ -29,11 +29,11 @@
 //                                valid operator choice that means "explicitly
 //                                turn off fallback for this route".
 //
-// Rationale for Default ON: the only supported conversion
-// (Anthropic Messages -> OpenAI Chat Completions) is the safe and widely-
-// expected fallback for Anthropic-only operators who also carry an OpenAI-
-// compatible pool. Operators who want the legacy behavior can opt out with
-// `PROTOCOL_FALLBACKS=disable`.
+// Rationale for Default ON: the only supported conversions
+// (Anthropic Messages <-> OpenAI Chat Completions, bidirectional) are the safe
+// and widely-expected fallback for operators who carry both an Anthropic pool
+// and an OpenAI-compatible pool. Operators who want the legacy Native-Only
+// behavior can opt out with `PROTOCOL_FALLBACKS=disable`.
 //
 // Only explicitly supported conversions are allowed. Unsupported conversions
 // produce blocking configuration errors (not warnings).
@@ -49,8 +49,7 @@ const PROTOCOL_SURFACES = new Map<string, Set<string>>([
 // Single source of truth for supported cross-protocol conversions.
 // Key: client route (protocol:surface), Value: array of allowed fallback targets.
 // A conversion is listed here ONLY after the full Request + Response + Stream +
-// Error Converter has been implemented and tested. See R0 of the v1.3.0
-// development instructions.
+// Error Converter has been implemented and tested.
 export const SUPPORTED_CONVERSIONS: Readonly<Record<string, string[]>> = Object.freeze({
   'anthropic:messages': ['openai:chat_completions'],
   'openai:chat_completions': ['anthropic:messages'],

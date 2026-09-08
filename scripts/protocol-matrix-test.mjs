@@ -304,12 +304,12 @@ await test('Anthropic streaming passes the native lifecycle through', async () =
 // ---- Cross-protocol isolation (HARD boundary) --------------------------------
 
 await test('OpenAI Chat fails on all openai nodes: the healthy anthropic node is NEVER contacted (PROTOCOL_FALLBACKS=disable)', async () => {
-  // v1.3.0 R0 extended the default-ON chain to include
+  // v1.3.0 extended the default-ON chain to include
   // openai:chat_completions -> anthropic:messages. This test pins the
   // Native-Only opt-out (PROTOCOL_FALLBACKS=disable): even with a healthy
   // anthropic node present, the request must NOT silently cross the protocol
   // boundary. The default-ON path is covered by the conversion-test handler
-  // tests (R0 acceptance).
+  // tests (cross-protocol acceptance).
   resetMock();
   routeHandlers['xa.example.com'] = () => jsonUpstream({}, 500);
   routeHandlers['xb.example.com'] = () => jsonUpstream({}, 500);

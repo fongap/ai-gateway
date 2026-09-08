@@ -6,10 +6,10 @@
 
 | 来源 | 用途 | 示例 |
 |---|---|---|
-| `TIER{1,2,3}_NODES_CONFIG_01..99` | 各层节点池 | JSON 数组 |
+| `TIER{1,2,3}_NODES_CONFIG_01..10` | 各层节点池 | JSON 数组 |
 | `MODELS_CONFIG` | 模型注册表覆盖 | JSON 对象 |
 | `POLICIES_CONFIG` | Attempt budgets 和 tier 策略 | JSON 对象 |
-| `TIER{1,2,3}_NODES_SECRETS_01..99` | 节点凭据（tier-scoped，与 config shard 一一对应） | `{ "node-id": "credential" }` |
+| `TIER{1,2,3}_NODES_SECRETS_01..10` | 节点凭据（tier-scoped，与 config shard 一一对应） | `{ "node-id": "credential" }` |
 | `GATEWAY_ACCESS_KEY` | 网关访问密钥 | Bearer token |
 | 运行时参数 | 超时、冷却等 | 见下方表格 |
 
@@ -20,7 +20,7 @@ GitHub Deployment Variables 持有非敏感配置；GitHub Secrets 持有凭据�
 | 配置项 | 必需 | 内容 |
 |---|---|---|
 | `GATEWAY_ACCESS_KEY` | 是 | 客户端访问网关的密钥 |
-| `TIER{1,2,3}_NODES_SECRETS_01..99` | 至少一个 | JSON 对象 `{ "node-id": "credential" }`，按 entry 边界分片。Secret 的 tier 前缀必须与所配对的 `TIER{1,2,3}_NODES_CONFIG_*` 一致——把 TIER1 凭据放 TIER2 Secret 是配置错误，operator 会在启动时看到诊断信息 |
+| `TIER{1,2,3}_NODES_SECRETS_01..10` | 至少一个 | JSON 对象 `{ "node-id": "credential" }`，按 entry 边界分片。Secret 的 tier 前缀必须与所配对的 `TIER{1,2,3}_NODES_CONFIG_*` 一致——把 TIER1 凭据放 TIER2 Secret 是配置错误，operator 会在启动时看到诊断信息 |
 
 节点按 `id` 查找 credential。缺少 credential 的节点被排除调度；没有节点的 credential 在 `/health` 诊断中报告。
 
@@ -94,9 +94,9 @@ Anthropic 原生节点：
 | `STREAM_INCLUDE_USAGE` | auto | auto/always/never | 是否在流式请求中携带 `stream_options.include_usage` |
 | `STREAM_USAGE_INCLUDE_OFF_PROVIDERS` | *(empty)* | provider 列表 | 按 provider 排除 usage hint |
 | `PROJECT_REPOSITORY_URL` | — | https URL | Dashboard 显示 |
-| `PROTOCOL_FALLBACKS` | *内置默认（v1.3.0 双向 fallback）* | unset / `disable` / JSON object | 跨协议 fallback 链。v1.3.0 默认链 `{"anthropic:messages":["openai:chat_completions"], "openai:chat_completions":["anthropic:messages"], "openai:responses":["anthropic:messages"]}`；设 `disable` 关闭；显式 JSON（即使为空数组）覆盖默认。详细见 [protocol-model.md](../architecture/protocol-model.md#v130-协议转换-r0) |
+| `PROTOCOL_FALLBACKS` | *内置默认（v1.3.0 双向 fallback）* | unset / `disable` / JSON object | 跨协议 fallback 链。v1.3.0 默认链 `{"anthropic:messages":["openai:chat_completions"], "openai:chat_completions":["anthropic:messages"]}`；设 `disable` 关闭；显式 JSON（即使为空数组）覆盖默认。详细见 [protocol-model.md](../architecture/protocol-model.md) |
 
-运行时参数的唯一事实来源是 `src/config/runtime-vars.js`。
+运行时参数的唯一事实来源是 `src/config/runtime-vars.ts`。
 
 ## limits.rpm 语义
 
@@ -163,7 +163,7 @@ Token 计数仅使用上游报告的 usage，缺失时从不估算。
 | `first_event_timeout_ms` | int 5000-600000 \| null | null | Per-model 首事件超时 override（覆盖 `FIRST_EVENT_TIMEOUT_MS`） |
 | **`budget_split`** | `'even' \| 'weighted' \| null` | `null` | **v1.3.0 新增**：per-tier surplus 分配策略 |
 
-### `budget_split` 详解 (R5)
+### `budget_split` 详解
 
 - **`'even'` (默认)**: 第一个 dispatchable tier 获得全部 surplus。最大化免费资源利用。
 - **`'weighted'`**: surplus 按每个 tier 的 **live dispatchable 节点数** 比例分配。容量大的低 tier 获得更多 attempts。
@@ -177,7 +177,7 @@ Token 计数仅使用上游报告的 usage，缺失时从不估算。
 // → Tier 2: 1, Tier 3: 5
 ```
 
-详细算法与示例见 [reliability-model.md → Adaptive Budget (R5)](../architecture/reliability-model.md#adaptive-budget-r5-v130)。
+详细算法与示例见 [reliability-model.md → Adaptive Budget](../architecture/reliability-model.md#adaptive-budget-r5-v130)。
 
 ### 内置策略 (always present, user config merges on top)
 

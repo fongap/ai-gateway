@@ -190,7 +190,7 @@ await run('conversion: unsupported tool_choice throws ConversionError', () => {
 
 // =====================================================================
 //   OpenAI Chat Completions REQUEST -> Anthropic Messages REQUEST
-//   (R0.1 — new independent request converter)
+//   (new independent request converter)
 // =====================================================================
 
 await run('conversion: OpenAI Chat -> Anthropic request — text roundtrip', () => {
@@ -436,13 +436,13 @@ await run('conversion: OpenAI Chat -> Anthropic request — unknown role is reje
 });
 
 await run('conversion: OpenAI Chat -> Anthropic request — DEFAULT_MAX_TOKENS is the single source of truth', () => {
-  // Pin the value so any drift is caught in CI (R6 semantic contract).
+  // Pin the value so any drift is caught in CI (semantic contract).
   assert.equal(DEFAULT_MAX_TOKENS, 1024);
 });
 
 // =====================================================================
 //   Anthropic Messages RESPONSE -> OpenAI Chat Completions RESPONSE
-//   (R0.2 — new independent response converter)
+//   (new independent response converter)
 // =====================================================================
 
 await run('conversion: Anthropic response -> OpenAI Chat — text only (end_turn)', () => {
@@ -548,7 +548,7 @@ await run('conversion: Anthropic response -> OpenAI Chat — thinking-only respo
 
 // =====================================================================
 //   Anthropic Messages STREAM (SSE) -> OpenAI Chat Completions STREAM
-//   (R0.3 — real-time SSE conversion; First Event Guard preserved)
+//   (real-time SSE conversion; First Event Guard preserved)
 // =====================================================================
 
 function sseAnthropicEvent(name, data) {
@@ -1546,7 +1546,7 @@ await run('regression: fallback target surface unsupported (responses-only) -> 4
 
 // =====================================================================
 //   REVERSE FALLBACK: OpenAI Chat CLIENT -> Anthropic MESSAGES UPSTREAM
-//   (R0.4 / R0.5 / R0 acceptance: the OpenAI Chat client and the
+//   (cross-protocol acceptance: the OpenAI Chat client and the
 //   Anthropic Messages client can now reach each other across the
 //   protocol boundary; the client always sees its own error envelope.)
 // =====================================================================
@@ -1637,7 +1637,7 @@ await run('handler: OpenAI Chat client + only Anthropic upstream -> success (str
   assert.doesNotMatch(text, /text_delta/);
 });
 
-await run('handler: OpenAI Chat client + Anthropic 529 -> OpenAI error envelope (R0.4)', async () => {
+await run('handler: OpenAI Chat client + Anthropic 529 -> OpenAI error envelope (cross-protocol error shape)', async () => {
   resetMock();
   // Only Anthropic upstream, which always 529s.
   routeHandlers['a1.example.com'] = () => jsonUpstream({ error: { message: 'overloaded' } }, 529);
@@ -1786,7 +1786,7 @@ await run('handler: conversion error skips the fallback target -> gateway exhaus
 
 // =====================================================================
 //   REVERSE FALLBACK: OpenAI Responses CLIENT -> Anthropic UPSTREAM
-//   (R0.6 / Codex path)
+//   (Codex path)
 // =====================================================================
 
 const anthropicResponsesNode = (id, extra = {}) => ({

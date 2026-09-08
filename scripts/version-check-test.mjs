@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Unit tests for scripts/version-check.mjs metadata drift detection.
+// Unit tests for scripts/version-check.mjs version contract validation.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -7,8 +7,6 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const versionCheckUrl = pathToFileURL(path.join(root, 'scripts', 'version-check.mjs')).href;
-// The release version being checked — mutator regexes below must track the
-// live package version so a version bump does not break the drift tests.
 const currentVersion = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
 
 const results = [];
@@ -29,7 +27,6 @@ async function reloadCheck() {
   return import(`${versionCheckUrl}?t=${Date.now()}&r=${Math.random()}`);
 }
 
-// Capture console.error to inspect the FAIL lines emitted by version-check.mjs.
 async function captureCheckFailures(p) {
   const origError = console.error;
   const captured = [];
@@ -100,37 +97,37 @@ const tests = [
       restore();
     }
   }],
-  ['version-check.mjs rejects APP_META.version drift', async () => {
-    const restore = writeAndRestore('src/observability/diagnostic-endpoints.ts', (text) => {
-      // Track the live package version so a version bump does not break the
-      // drift-detection tests themselves.
-      return text.replace(new RegExp(`version:\\s*'${currentVersion.replace(/\./g, '\\.')}'`), "version: '9.9.9-fake'");
+  ['version-check.mjs rejects invalid semver in package.json', async () => {
+    const restore = writeAndRestore('package.json', (text) => {
+      const obj = JSON.parse(text);
+      obj.version = 'not-a-semver';
+      return JSON.stringify(obj, null, 2) + '\n';
     });
     try {
       const out = await captureCheckFailures(reloadCheck());
-      expectFailuresInCapture(out, /APP_META\.version=9\.9\.9-fake/);
+      expectFailuresInCapture(out, /not a valid semver/);
     } finally {
       restore();
     }
   }],
-  ['version-check.mjs rejects a missing CHANGELOG heading', async () => {
-    const restore = writeAndRestore('CHANGELOG.md', (text) => {
-      return text.replace(new RegExp(`## ${currentVersion.replace(/\./g, '\\.')} - `), '## moved-heading-no-trailing-dash ');
-    });
+  ['version-check.mjs rejects missing generated version module', async () => {
+    const versionModulePath = path.join(root, 'src', 'config', 'version.ts');
+    const original = fs.readFileSync(versionModulePath, 'utf8');
+    fs.unlinkSync(versionModulePath);
     try {
       const out = await captureCheckFailures(reloadCheck());
-      expectFailuresInCapture(out, /CHANGELOG\.md does not contain/);
+      expectFailuresInCapture(out, /Generated version module.*missing/);
     } finally {
-      restore();
+      fs.writeFileSync(versionModulePath, original);
     }
   }],
-  ['version-check.mjs rejects README Node version drift', async () => {
-    const restore = writeAndRestore('README.md', (text) => {
-      return text.replace(/Node\.js-%3E%3D22/, 'Node.js-%3E%3D99');
+  ['version-check.mjs rejects generated version module version mismatch', async () => {
+    const restore = writeAndRestore('src/config/version.ts', (text) => {
+      return text.replace(new RegExp(`export const VERSION = '${currentVersion.replace(/\./g, '\\.')}'`), "export const VERSION = '9.9.9-fake'");
     });
     try {
       const out = await captureCheckFailures(reloadCheck());
-      expectFailuresInCapture(out, /README\.md Node\.js majors/);
+      expectFailuresInCapture(out, /does not match package\.json\.version/);
     } finally {
       restore();
     }

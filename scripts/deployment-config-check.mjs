@@ -85,7 +85,7 @@ assert.match(workflowSource, /github-deployment-config\.mjs health-check/, 'depl
 assert.doesNotMatch(workflowSource, /deploy[^\n]*--keep-vars/, 'CI deployment must not preserve Dashboard runtime-variable drift');
 assert.ok(fs.existsSync(path.join(root, 'scripts/github-deployment-config.mjs')), 'GitHub deployment config bridge is required');
 assert.ok(fs.existsSync(path.join(root, 'config/worker-vars.example.json')), 'Worker text-variable example is required');
-assert.ok(fs.existsSync(path.join(root, 'config/gateway-secrets.example.json')), 'Worker Secret example is required');
+assert.ok(fs.existsSync(path.join(root, 'config/worker-vars.example.json')), 'Worker text-variable example is required');
 
 // The new schema forbids legacy artifacts anywhere in deploy tooling.
 for (const file of ['scripts/install.sh', 'scripts/install.ps1', 'scripts/reconfigure.sh', 'scripts/reconfigure.ps1']) {

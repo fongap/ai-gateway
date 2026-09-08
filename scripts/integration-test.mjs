@@ -83,8 +83,9 @@ function makeEnv({ tier1, tier2, tier3, secrets, extraEnv } = {}) {
 }
 
 // Helper: create env with hedging explicitly enabled for the default policy.
-// Built-in policies have hedge.enabled=false (explicit opt-in). Hedge tests
-// must use this to enable hedging in the test policy.
+// Built-in default/stable enable Tier 1 hedge; fast/long-reasoning do not.
+// This helper allows overriding hedge config for tests that need specific
+// hedge behavior (e.g. tier2 hedging, custom delay) beyond the builtin default.
 function makeEnvWithHedge({ tier1, tier2, tier3, secrets, extraEnv, hedgeConfig } = {}) {
   const hedge = hedgeConfig ?? { enabled: true, tiers: ['tier1', 'tier2'] };
   return makeEnv({
@@ -1733,13 +1734,13 @@ await test('/version is public and exposes only branding, no node/config topolog
   'public /version must not expose configuration/topology');
 });
 
-// R2 (v1.3.0) — Production Identity: /version must expose the deployment
+// Production Identity: /version must expose the deployment
 // identity as a `build` field derived from env.GITHUB_SHA. The contract is:
 //   * When GITHUB_SHA is a valid 7–40 hex string, /version.build echoes it.
 //   * When GITHUB_SHA is missing or malformed, /version.build is the literal
 //     string `unknown` (so local dev / pre-deploy probes never crash).
 //   * The build field is independent of the `version` field (semver).
-await test('/version exposes deployment identity as a `build` field (R2: Build SHA = Deployment identity)', async () => {
+await test('/version exposes deployment identity as a `build` field (Build SHA = Deployment identity)', async () => {
   resetMock();
   const buildSha = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0';
   const res = await worker.fetch(
@@ -2664,26 +2665,27 @@ await test('hedge policy: enabled=false disables hedging entirely', async () => 
   assert.equal(upstreamCalls.length, 2, 'exactly 2 upstream calls (primary timeout + attempt-2 success)');
 });
 
-// ---- Negative hedge contracts --------------------------------------------------
-// These tests prove that hedging ONLY fires when hedge.enabled=true is explicit.
-
-await test('hedge negative: no POLICIES_CONFIG + HEDGE_DELAY_MS > 0 => hedges=0', async () => {
+await test('hedge builtin: default policy enables Tier 1 hedge without POLICIES_CONFIG', async () => {
   resetMock();
   installMockFetch();
-  // Two nodes, both slow — if hedge were on, a twin would fire after the delay.
-  // makeEnv() sets no POLICIES_CONFIG, so the built-in default (hedge.enabled=false) applies.
-  const slow = async () => { await new Promise((r) => setTimeout(r, 400)); return jsonUpstream({}, 500); };
-  routeHandlers['ng-a.example.com'] = slow;
-  routeHandlers['ng-b.example.com'] = slow;
+  routeHandlers['bi-slow.example.com'] = hangUntilAbort();
+  routeHandlers['bi-fast.example.com'] = () => sseResponse([chunk('fast'), 'data: [DONE]']);
+  // No POLICIES_CONFIG — relies on the builtin default policy which has
+  // hedge: { enabled: true, tiers: ['tier1'] }.
   const env = makeEnv({
-    tier1: [basicNode('ng-a'), basicNode('ng-b')],
-    secrets: { 'ng-a': 'k', 'ng-b': 'k' },
-    extraEnv: { HEDGE_DELAY_MS: '50', FAILOVER_BUDGET_MS: '30000' },
+    tier1: [basicNode('bi-slow'), basicNode('bi-fast')],
+    secrets: { 'bi-slow': 'k', 'bi-fast': 'k' },
+    extraEnv: { HEDGE_DELAY_MS: '100', FAILOVER_BUDGET_MS: '30000' },
   });
-  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-  assert.equal(res.status, 502);
-  const body = await res.json();
-  assert.equal(body.error.details.hedges, 0, 'HEDGE_DELAY_MS without explicit hedge.enabled must NOT launch a twin');
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
+  assert.equal(res.status, 200);
+  const text = await streamText(res);
+  assert.ok(text.includes('fast'), 'response served by the fast twin');
+  const hosts = upstreamCalls.map((c) => c.host);
+  assert.ok(hosts.includes('bi-slow.example.com'), 'primary was dispatched');
+  assert.ok(hosts.includes('bi-fast.example.com'), 'twin was dispatched');
+  assert.equal(hosts.indexOf('bi-slow.example.com') < hosts.indexOf('bi-fast.example.com'), true,
+    'primary dispatched before twin');
 });
 
 await test('hedge negative: hedge.enabled=false => hedges=0 even with two candidates', async () => {

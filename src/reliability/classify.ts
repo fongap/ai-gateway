@@ -10,7 +10,7 @@
 
 import { parseRetryAfterMs, getLimits } from '../config/timeouts.ts';
 
-// R3 (v1.3.0): `KIND` is the single source of truth for every failure-kind
+// `KIND` is the single source of truth for every failure-kind
 // string that appears on the request hot path (LoopState.failureKinds,
 // AttemptOutcome.kind, terminalStatus dispatch, Tier1 mapping). It is
 // exported so consumers (e.g. errors.ts) can compare against the canonical
@@ -30,7 +30,7 @@ export const KIND = {
   // (status=200 in attempt records; the wait after headers is the TTFT wait).
   FIRST_EVENT_TIMEOUT: 'first_event_timeout',
   CLIENT_ABORT: 'client_abort',
-  // --- R3 (v1.3.0): pre-dispatch and intra-request kinds ---------------
+  // --- pre-dispatch and intra-request kinds ---------------
   // A pre-dispatch denial by a distributed rate-limiter binding: the request
   // never reached an upstream, so it must NOT consume any failover budget.
   RATE_LIMIT_GLOBAL: 'rate_limit_global',
@@ -143,7 +143,7 @@ export function classifyClientAbort(): FailureClassification {
   return { kind: KIND.CLIENT_ABORT, action: 'neutral', cooldownMs: 0, counted: false };
 }
 
-// R3 (v1.3.0): pre-dispatch and intra-request classification helpers.
+// Pre-dispatch and intra-request classification helpers.
 // These cover failures that never produced an HTTP status (the upstream was
 // never contacted) or that happen mid-stream. They are kept here so the
 // entire `kind` vocabulary lives in one place: `KIND` is the single source of

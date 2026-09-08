@@ -123,7 +123,7 @@ export function pickCandidate(tierNodes: ReadonlyArray<RuntimeNode>, req: Routab
 
   const chosen = best || bestUncapped;
   if (!chosen) return null;
-  // R4 (v1.3.0): return PickedCandidate so the caller can distinguish
+  // return PickedCandidate so the caller can distinguish
   // "no eligible candidate" (null) from "slot race lost" ({ raceLost: true }).
   // Previously the race-loss case returned null, which was indistinguishable
   // from "no eligible nodes" — the tier loop would move to the next tier

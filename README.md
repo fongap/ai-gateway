@@ -41,7 +41,7 @@ flowchart TB
 
 - 多协议：OpenAI Chat / Responses、Anthropic Messages / count_tokens
 - 原生协议转发：Chat → 上游 `/v1/chat/completions`，Responses → 上游 `/v1/responses`，Messages → 上游 `/v1/messages`；节点通过 `protocol` + `surfaces` 显式声明，任何提供 OpenAI-compatible 或 Anthropic-compatible API 的服务均可接入
-- Native First + v1.3.0 跨协议 fallback：客户端请求优先转发到同 protocol、同 surface 的原生上游；原生池耗尽后默认启用跨协议 fallback（OpenAI Chat↔Anthropic Messages 双向 + Responses→Anthropic）。`PROTOCOL_FALLBACKS` 默认启用三向 fallback 链；设 `disable` 关闭；显式 JSON 覆盖。跨协议 fallback 与 native retry 共享 `max_attempts` / `FAILOVER_BUDGET_MS` budget，不获取新 attempt slot
+- Native First + v1.3.0 跨协议 fallback：客户端请求优先转发到同 protocol、同 surface 的原生上游；原生池耗尽后默认启用跨协议 fallback（OpenAI Chat↔Anthropic Messages 双向；Responses 为 Native Only）。`PROTOCOL_FALLBACKS` 默认启用双向 fallback 链；设 `disable` 关闭；显式 JSON 覆盖。跨协议 fallback 与 native retry 共享 `max_attempts` / `FAILOVER_BUDGET_MS` budget，不获取新 attempt slot
 - `limits.rpm` 默认 hard，单 Worker isolate 内不主动越配额
 - 整请求 failover budget，超时即停
 - Tier 1 只从真实业务输出学习 `(account, model)` TTFT：不主动测速，不用 health、LRU 或静态 priority 排序；它不承诺每次选到全局最快账户，而是追求低成本、快速避障、自然均衡和会话连续

@@ -45,16 +45,16 @@
 //       explicitly checkouts `github.event.workflow_run.head_sha`. Relying
 //       on the default `GITHUB_SHA` is not auditable from the workflow
 //       YAML alone and can drift if a newer commit lands while CI is
-//       running. R1: validated SHA == deployed SHA.
+//       running. Validated SHA == deployed SHA.
 //   14  The deploy job captures the deployed SHA in `DEPLOYED_SHA` and the
 //       Deployment summary step writes it as a top-level field, so the
 //       deployment metadata SHA is auditable from the workflow run log.
 //   15  The rollback step (when it fires) records the SAME SHA that the
 //       deploy step recorded, so the rolled-back-from SHA is consistent
-//       with the metadata. R1: rollback records the deployed SHA.
+//       with the metadata.
 //   16  The deploy job injects `GITHUB_SHA` as a Worker env so the
 //       runtime can expose the deployment identity on `GET /version`
-//       (the `build` field). R2: validated SHA == deployed SHA ==
+//       (the `build` field). Validated SHA == deployed SHA ==
 //       Worker build identity.
 //   17  The deployment bridge allow-list includes `GITHUB_SHA` so the
 //       injected env var is actually plumbed through to the Worker
@@ -335,7 +335,7 @@ const PUSH_SUCCESS_BASE = {
 
 // ---- Contract 11: manual deploy always passes through full validation ---------
 {
-  // R1 (v1.3.0): the manual path uses a SINGLE validation entry point
+  // The manual path uses a SINGLE validation entry point
   // (`npm run validate:deploy`) plus the bundle dry-run (`check:deploy`).
   // The bare `typecheck` step and the historic `typecheck:strict` step
   // are removed. The contract is now: `validate:deploy` + `check:deploy`
@@ -455,7 +455,7 @@ const PUSH_SUCCESS_BASE = {
 }
 
 // ---- Contract 16: deploy job injects GITHUB_SHA as a Worker env ------------
-// R2: the runtime must be able to read the deployment identity from a
+// The runtime must be able to read the deployment identity from a
 // well-known env var. The deploy job must inject `GITHUB_SHA` (sourced
 // from the same validated SHA, so identity stays consistent end-to-end).
 {
@@ -465,13 +465,13 @@ const PUSH_SUCCESS_BASE = {
   const injectsGithubSha = /GITHUB_SHA:\s*\$\{\{[^}]*head_sha[^}]*\}\}/.test(deployJobBlock)
     || /GITHUB_SHA:\s*\$\{\{[^}]*DEPLOYED_SHA[^}]*\}\}/.test(deployJobBlock)
     || /GITHUB_SHA:\s*\$\{\{[^}]*sha[^}]*\}\}/.test(deployJobBlock);
-  check('C16 deploy job injects GITHUB_SHA as a Worker env (R2: deployment identity visible to runtime)',
+  check('C16 deploy job injects GITHUB_SHA as a Worker env (deployment identity visible to runtime)',
     injectsGithubSha,
     `deployJobBlock matched=${injectsGithubSha}`);
 }
 
 // ---- Contract 17: deployment bridge allow-list includes GITHUB_SHA ---------
-// R2: the bridge plumbs vars through the Worker vars map. If GITHUB_SHA
+// The bridge plumbs vars through the Worker vars map. If GITHUB_SHA
 // is not in EXTRA_VAR_ALLOW, the runtime will see it as undefined and
 // the /version `build` field will fall back to `unknown`.
 {
@@ -486,7 +486,7 @@ const PUSH_SUCCESS_BASE = {
 }
 
 // ---- Contract 18: versionResponse exposes a `build` field ------------------
-// R2: the runtime must surface the deployment identity on GET /version
+// The runtime must surface the deployment identity on GET /version
 // as a `build` field. The diagnostic-endpoints.ts source must:
 //   1. Export a `resolveBuildSha` helper that reads `env?.GITHUB_SHA` and
 //      falls back to `unknown` for malformed/missing values.
@@ -502,7 +502,7 @@ const PUSH_SUCCESS_BASE = {
   // Accept either direct env read or a `resolveBuildSha(env)` call.
   const hasBuildResolver = /resolveBuildSha\(/.test(versionBlock)
     || /env\?\.GITHUB_SHA/.test(versionBlock);
-  check('C18 versionResponse exposes a `build` field derived from env.GITHUB_SHA (R2: deployment identity observable)',
+  check('C18 versionResponse exposes a `build` field derived from env.GITHUB_SHA (deployment identity observable)',
     hasBuildField && hasBuildResolver,
     `hasBuildField=${hasBuildField} hasBuildResolver=${hasBuildResolver}`);
 }
