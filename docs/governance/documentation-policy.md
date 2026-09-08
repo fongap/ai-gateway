@@ -25,7 +25,7 @@
 | `src/transport/*` | [architecture/protocol-model.md](../architecture/protocol-model.md) |
 | `src/protocol/*` | [architecture/protocol-model.md](../architecture/protocol-model.md) |
 | `src/stream/*` | [architecture/protocol-model.md](../architecture/protocol-model.md), [architecture/reliability-model.md](../architecture/reliability-model.md) |
-| `src/config/runtime-vars.js` | [operations/configuration.md](../operations/configuration.md)（运行时参数表） |
+| `src/config/runtime-vars.ts` | [operations/configuration.md](../operations/configuration.md)（运行时参数表） |
 | `wrangler.jsonc` | [operations/deployment.md](../operations/deployment.md) |
 | 顶层目录调整 | [architecture/repository-layout.md](../architecture/repository-layout.md) |
 | CI / workflow | [governance/quality-policy.md](quality-policy.md) |

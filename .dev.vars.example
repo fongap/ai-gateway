@@ -24,17 +24,17 @@ TIER1_NODES_CONFIG_01='[
 # TIER1_NODES_SECRETS_01='{"nvidia-01":"nvapi-xxx","openrouter-01":"sk-or-xxx"}'
 # TIER2_NODES_SECRETS_01='{"fallback-01":"sk-fb"}'
 # TIER3_NODES_SECRETS_01='{"last-resort-01":"sk-lr"}'
-# More shards: TIER1_NODES_SECRETS_02, TIER1_NODES_SECRETS_03, ... (01..99)
+# More shards: TIER1_NODES_SECRETS_02, TIER1_NODES_SECRETS_03, ... (01..10)
 
 # ============ Optional policy / model config ============
 # MODELS_CONFIG='{"general-air":{"policy":"fast"}}'
 # POLICIES_CONFIG='{"fast":{"max_attempts":5}}'
 
 # ============ Runtime knobs (all optional) ============
-# The full list and defaults live in src/config/runtime-vars.js (single source
+# The full list and defaults live in src/config/runtime-vars.ts (single source
 # of truth). The GitHub deployment bridge and deploy.yml inject every name
 # listed there; local dev can override any of them in this file.
-# DEFAULT VALUES (from runtime-vars.js) ARE SHOWN IN COMMENTS — DO NOT UNCOMMENT
+# DEFAULT VALUES (from runtime-vars.ts) ARE SHOWN IN COMMENTS — DO NOT UNCOMMENT
 # UNLESS YOU INTENTIONALLY WANT TO OVERRIDE THE CODE DEFAULTS.
 # MAX_BODY_BYTES="20971520"              # default: 20971520 (20 MB)
 # UPSTREAM_HEADERS_TIMEOUT_MS="15000"     # default: 15000 (15 s)

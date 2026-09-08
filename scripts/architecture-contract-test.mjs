@@ -426,16 +426,15 @@ await test('Contract 14: D1 failure does not block routing', async () => {
   assert.equal(res.status, 200, 'AI request succeeds without D1 binding');
 });
 
-// Contract 15 — Unified Scheduler Return Type (R4)
+// Contract 15 — Unified Scheduler Return Type
 // =========================================================================
-// R4 (v1.3.0): pickCandidate (Tier 2/3) and pickTier1Candidate (Tier 1)
-// both return PickedCandidate | null. The Tier 2/3 path previously returned
+// pickCandidate (Tier 2/3) and pickTier1Candidate (Tier 1) both return PickedCandidate | null. The Tier 2/3 path previously returned
 // RuntimeNode | null, so a slot-race loss was indistinguishable from "no
 // eligible candidate" — the tier loop would move to the next tier instead
 // of retrying. Now both pickers return { node } | { raceLost: true } | null.
 // This contract pins the unified contract: race-loss on Tier 2/3 is visible
 // to the caller, and the return type is PickedCandidate (not RuntimeNode).
-await test('Contract 15: Tier 2/3 race-loss returns { raceLost: true }, not null (R4 unified return)', async () => {
+await test('Contract 15: Tier 2/3 race-loss returns { raceLost: true }, not null (unified return)', async () => {
   resetMock();
   // Two nodes with concurrency=1 each. We'll saturate one node's slot
   // between eligibility check and acquireSlot by having a concurrent
@@ -484,9 +483,9 @@ await test('Contract 15: Tier 2/3 race-loss returns { raceLost: true }, not null
   reset();
 });
 
-// Contract 16 — Adaptive Budget (R5)
+// Contract 16 — Adaptive Budget
 // =========================================================================
-// R5 (v1.3.0): when `policy.budgetSplit === 'weighted'`, the per-tier
+// when `policy.budgetSplit === 'weighted'`, the per-tier
 // attempt surplus is distributed proportionally to each tier's live
 // dispatchable node count. A tier with more live nodes gets more attempts.
 // When `budgetSplit === 'even'` (default) or unset, behavior is unchanged:
@@ -500,7 +499,7 @@ await test('Contract 15: Tier 2/3 race-loss returns { raceLost: true }, not null
 // we exercise the weighted split on Tier 2/3 only, which share the
 // non-Tier-1 picker. Tier 1's TIER1_MAX_ATTEMPTS cap is independently
 // covered by S12 in stress-test.mjs.
-await test('Contract 16: weighted budget split distributes surplus by live node count (R5)', async () => {
+await test('Contract 16: weighted budget split distributes surplus by live node count', async () => {
   resetMock();
   const { computeTierCaps } = await import('../src/request/tier-loop.ts');
   const { __resetAllStateForTests: reset } = await import('../src/reliability/node-state.ts');

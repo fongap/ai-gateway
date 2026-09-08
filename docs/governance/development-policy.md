@@ -256,7 +256,7 @@ TypeScript 可以作为 `devDependency`。
 
 ## 文档同步要求
 
-影响对外行为时更新 `README.md` 与 `README_EN.md`；修改版本时同步 `package.json`、`APP_META.version` 与 `CHANGELOG.md`。
+影响对外行为时更新 `README.md` 与 `README_EN.md`；修改版本时更新 `package.json` 后运行 `scripts/generate-version.mjs` 生成 `src/config/version.ts`，并更新 `CHANGELOG.md`。
 
 影响调度/可靠性/配置格式时，同步更新集成测试（`scripts/integration-test.mjs`）与文档。
 

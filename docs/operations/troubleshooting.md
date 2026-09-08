@@ -34,7 +34,7 @@
 ### 502 Bad Gateway
 
 - 所有节点均失败
-- 检查 `failure_kinds` 确定失败类型（v1.3.0 R3：`failure_kinds` 是 16 个闭合 FailureKind 值之一，见 [reliability-model.md → 错误分类](../architecture/reliability-model.md#错误分类)）
+- 检查 `failure_kinds` 确定失败类型（`failure_kinds` 是 16 个闭合 FailureKind 值之一，见 [reliability-model.md → 错误分类](../architecture/reliability-model.md#错误分类)）
 - 检查上游服务状态
 - 常见 kind:
   - `server`：上游 5xx

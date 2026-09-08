@@ -89,7 +89,7 @@ export async function dispatchWithHedge(args: AttemptContext, tierNodes: Readonl
   // the twin's slot atomically (re-checked inside acquireSlot), and the
   // deadline gate above guarantees the claim is always followed by a real
   // dispatch or a legitimate loser lifecycle.
-  // R4 (v1.3.0): pickCandidate now returns PickedCandidate | null (same
+  // pickCandidate returns PickedCandidate | null (same
   // shape as pickTier1Candidate). The Tier 2/3 twin path no longer wraps
   // a bare RuntimeNode — it passes the PickedCandidate through directly.
   const legacyTwin = args.tierNumber === 1

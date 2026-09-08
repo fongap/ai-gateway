@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
 //
-// R3 (v1.3.0) — Reliability Core contract test.
+// Reliability Core contract test.
 //
 // The failure-kind vocabulary (KIND) is the single source of truth for every
 // string that appears on the request hot path as LoopState.failureKinds,

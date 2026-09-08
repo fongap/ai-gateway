@@ -4,7 +4,7 @@
 // POLICIES_CONFIG: policy name -> { max_attempts, tier_attempts?, hedge? }. Optional.
 // `max_attempts` bounds total LOGICAL attempts per request across ALL tiers
 // (valid range 1-8). `tier_attempts` optionally overrides the per-tier
-// attempt budget (see handler.js computeTierCaps for the default distribution).
+// attempt budget (see handler.ts computeTierCaps for the default distribution).
 // Tier order is fixed (tier-1 -> tier-2 -> tier-3, hard precedence).
 //
 // Built-in policies (always present, user config merges on top):
@@ -150,14 +150,14 @@ function analyzePolicies(env: Record<string, unknown>): { policies: Record<strin
 }
 
 // Parse an optional hedge policy: { enabled?, delay_ms?, tiers? }.
-  //   enabled   — boolean (default true); false disables hedging for this policy.
-  //   delay_ms  — integer >= 0; overrides HEDGE_DELAY_MS for this policy.
-  //   tiers     — array of "tier1"/"tier2"/"tier3"; if present, only those
-  //               tiers may launch hedge twins. Absent = all tiers.
-  // When the field is absent entirely (user config omits hedge), null is returned.
-  // null means "no hedge for this policy". Built-in policies always declare hedge
-  // explicitly. Custom policies without an explicit hedge have no hedge.
-  function parseHedge(value: unknown, policyName: string, errors: string[]): HedgePolicy {
+//   enabled   — boolean (default true); false disables hedging for this policy.
+//   delay_ms  — integer >= 0; overrides HEDGE_DELAY_MS for this policy.
+//   tiers     — array of "tier1"/"tier2"/"tier3"; if present, only those
+//               tiers may launch hedge twins. Absent = all tiers.
+// When the field is absent entirely (user config omits hedge), null is returned.
+// null means "no hedge for this policy". Built-in policies always declare hedge
+// explicitly. Custom policies without an explicit hedge have no hedge.
+function parseHedge(value: unknown, policyName: string, errors: string[]): HedgePolicy {
   if (value === undefined || value === null) return null;
   if (typeof value !== 'object' || Array.isArray(value)) {
     errors.push(`POLICIES_CONFIG: "${policyName}": hedge must be an object { enabled?, delay_ms?, tiers? }`);
@@ -228,7 +228,7 @@ function parseFirstEventTimeoutMs(value: unknown, policyName: string, errors: st
   return value;
 }
 
-// R5 (v1.3.0): Parse an optional budget_split strategy.
+// Parse an optional budget_split strategy.
 //   "even"     (default, backward-compatible): first dispatchable tier gets
 //              the entire surplus.
 //   "weighted": surplus is distributed proportionally to each tier's live

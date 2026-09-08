@@ -50,7 +50,7 @@ type PickForTierOpts = {
 export function pickForTier(tierNumber: Tier, tierNodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, opts: PickForTierOpts = {}): TierPickResult {
   const { knownModels, raceLostIds } = opts;
   if (tierNumber !== 1) {
-    // R4 (v1.3.0): pickCandidate now returns PickedCandidate | null,
+    // pickCandidate now returns PickedCandidate | null,
     // matching pickTier1Candidate. The Tier 2/3 path no longer wraps a
     // bare RuntimeNode — it receives { node } | { raceLost: true } | null
     // directly, so race-loss is visible to the caller (previously it was
@@ -130,7 +130,7 @@ export function computeTierCaps(tiers: Record<number, RuntimeNode[]>, reqDescrip
       : tierHasDispatchableNode(tiers[t], reqDescriptor, attempted, now, knownModels));
   if (dispatchable.length === 0) return caps;
   const max = policy.maxAttempts;
-  // R5: when budget_split === 'weighted', count live dispatchable nodes per
+  // when budget_split === 'weighted', count live dispatchable nodes per
   // tier and distribute the surplus proportionally. A lower tier with
   // significantly more capacity gets a larger share.
   const liveCount = (tierNumber: number): number => {

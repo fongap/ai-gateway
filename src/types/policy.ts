@@ -10,7 +10,7 @@ export type PolicyConfig = {
   tierAttempts?: { tier1?: number, tier2?: number, tier3?: number } | null,
   hedge?: { enabled?: boolean, delayMs?: number, tiers?: ReadonlyArray<'tier1' | 'tier2' | 'tier3'> } | null,
   firstEventTimeoutMs?: number | null,
-  // R5 (v1.3.0): Adaptive Budget. `budget_split` controls how the per-tier
+  // Adaptive Budget. `budget_split` controls how the per-tier
   // attempt surplus (max_attempts - dispatchable_tier_count) is distributed
   // across dispatchable tiers:
   //   'even' (default, backward-compatible): the first (most-preferred)

@@ -22,7 +22,7 @@ Node Runtime Requirement
 
 ```text
 package-lock.json
-APP_META.version
+src/config/version.ts（由 scripts/generate-version.mjs 从 package.json 生成）
 CHANGELOG.md
 README.md
 README_EN.md
@@ -95,7 +95,7 @@ Production Deploy 成功(gate: 仅 push 触发的 CI 允许部署)
 
 ### 流程步骤
 
-1. 更新版本号(`package.json`、`APP_META.version`,同步副本自动校验)
+1. 更新版本号(`package.json`,然后运行 `scripts/generate-version.mjs` 生成 `src/config/version.ts`,同步副本自动校验)
 2. 更新 CHANGELOG
 3. 通过 PR(squash)合入 `main`
 4. 等待 main 完整 CI + Production Deploy 成功

@@ -54,7 +54,7 @@ CI 必须在 `main` 和 Pull Request 上通过。
 - 内部 Markdown 链接有效（`scripts/link-check.mjs`）
 
 ### 发布验证
-- `package.json`、`APP_META.version`、`CHANGELOG.md` 版本一致
+- `package.json`、`src/config/version.ts`、`CHANGELOG.md` 版本一致（`version.ts` 由 `scripts/generate-version.mjs` 从 `package.json` 生成）
 - ZIP 与 TAR.GZ 均可正常解压
 - `release/SHA256SUMS` 与发布资产一致
 
