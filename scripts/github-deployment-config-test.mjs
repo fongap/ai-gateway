@@ -57,8 +57,8 @@ assert.deepEqual(
 
 // ---- Individual GitHub Variables / Secrets collected from env ----
 
-function envFixture({ legacy = false } = {}) {
-  const env = {
+function envFixture() {
+  return {
     CLOUDFLARE_ACCOUNT_ID: 'acct',
     TOKEN_STATS_D1_ID: 'd1-id',
     TIER1_AFFINITY_KV_ID: 'kv-id',
@@ -72,59 +72,17 @@ function envFixture({ legacy = false } = {}) {
     GATEWAY_ACCESS_KEY_AIR: 'gw-key',
     TIER1_NODES_SECRETS_01: JSON.stringify({ 'node-a': 'upstream-key' }),
   };
-  if (legacy) {
-    delete env.TIER1_NODES_CONFIG_01;
-    delete env.MODELS_CONFIG;
-    delete env.POLICIES_CONFIG;
-    delete env.RATE_LIMIT_COOLDOWN_MS;
-    delete env.FIRST_EVENT_TIMEOUT_MS;
-    delete env.GATEWAY_ACCESS_KEY_AIR;
-    delete env.TIER1_NODES_SECRETS_01;
-    env.GATEWAY_CONFIG = JSON.stringify({
-      TIER1_NODES_CONFIG_01: env.TIER1_NODES_CONFIG_01 || JSON.stringify([{ id: 'node-a', base_url: 'https://provider.example.com/v1', models: { 'code-pro': 'up' } }]),
-      MODELS_CONFIG: { 'code-pro': { policy: 'default' } },
-      POLICIES_CONFIG: { default: { max_attempts: 5 } },
-    });
-    env.GATEWAY_SECRETS_CONFIG = JSON.stringify({ GATEWAY_ACCESS_KEY_AIR: 'gw-key', TIER1_NODES_SECRETS_01: { 'node-a': 'upstream-key' } });
-  }
-  return env;
 }
 
 // Individual sources are collected and validate.
 {
   const built = buildRuntimeFromEnv(envFixture());
-  assert.equal(built.usedLegacyVars, false, 'individual vars used, not legacy');
-  assert.equal(built.usedLegacySecrets, false, 'individual secrets used, not legacy');
-  assert.deepEqual(built.warnings, [], 'no deprecation warnings when individual sources present');
   const c = validateGatewayRuntime(built.runtime);
   assert.equal(c.ready, true);
   assert.equal(JSON.parse(built.runtime.vars.TIER1_NODES_CONFIG_01)[0].id, 'node-a');
   assert.equal(built.runtime.vars.RATE_LIMIT_COOLDOWN_MS, '15000', 'runtime tunable passthrough');
   assert.equal(built.runtime.vars.FIRST_EVENT_TIMEOUT_MS, '15000', 'first-event tunable passthrough');
   assert.equal(JSON.parse(built.runtime.secrets.TIER1_NODES_SECRETS_01)['node-a'], 'upstream-key');
-}
-
-// Legacy blobs are read (with warnings) when individual sources are absent.
-{
-  const built = buildRuntimeFromEnv(envFixture({ legacy: true }));
-  assert.equal(built.usedLegacyVars, true, 'legacy GATEWAY_CONFIG used');
-  assert.equal(built.usedLegacySecrets, true, 'legacy GATEWAY_SECRETS_CONFIG used');
-  assert.ok(built.warnings.some((w) => w.includes('GATEWAY_CONFIG is deprecated')), 'vars deprecation warning');
-  assert.ok(built.warnings.some((w) => w.includes('GATEWAY_SECRETS_CONFIG is deprecated')), 'secrets deprecation warning');
-  const c = validateGatewayRuntime(built.runtime);
-  assert.equal(c.ready, true, 'legacy blob still produces a ready runtime');
-}
-
-// New individual sources win; legacy blobs are never merged in.
-{
-  const env = envFixture();
-  env.GATEWAY_CONFIG = JSON.stringify({ TIER1_NODES_CONFIG_01: JSON.stringify([{ id: 'stale-node', base_url: 'https://stale.example.com/v1' }]) });
-  env.GATEWAY_SECRETS_CONFIG = JSON.stringify({ GATEWAY_ACCESS_KEY_AIR: 'stale-key', TIER1_NODES_SECRETS_01: { 'node-a': 'stale' } });
-  const built = buildRuntimeFromEnv(env);
-  assert.equal(built.usedLegacyVars, false, 'individual vars take precedence over the legacy blob');
-  assert.equal(built.usedLegacySecrets, false, 'individual secrets take precedence over the legacy blob');
-  assert.equal(JSON.parse(built.runtime.vars.TIER1_NODES_CONFIG_01)[0].id, 'node-a', 'legacy node-a did not leak');
-  assert.equal(built.runtime.secrets.GATEWAY_ACCESS_KEY_AIR, 'gw-key', 'legacy access key did not leak');
 }
 
 // Credentials must never appear in the vars map.
@@ -145,11 +103,45 @@ function envFixture({ legacy = false } = {}) {
   assert.ok(!('TIER1_NODES_SECRETS_02' in s.secrets), 'empty secret skipped');
 }
 
-// Malformed legacy blob JSON fails clearly.
-assert.throws(
-  () => buildRuntimeFromEnv({ ...envFixture({ legacy: true }), GATEWAY_CONFIG: '{not json' }),
-  /GATEWAY_CONFIG is not valid JSON/,
-);
+// TIER*_NODES_CONFIG_* always comes from vars, never from secrets.
+{
+  const env = envFixture();
+  const v = collectVarsFromEnv(env);
+  const s = collectSecretsFromEnv(env);
+  assert.ok('TIER1_NODES_CONFIG_01' in v.vars, 'TIER1_NODES_CONFIG_01 collected as a variable');
+  assert.ok(!('TIER1_NODES_CONFIG_01' in s.secrets), 'TIER1_NODES_CONFIG_01 NOT in secrets');
+}
+
+// TIER*_NODES_SECRETS_* always comes from secrets, never from vars.
+{
+  const env = envFixture();
+  const v = collectVarsFromEnv(env);
+  const s = collectSecretsFromEnv(env);
+  assert.ok('TIER1_NODES_SECRETS_01' in s.secrets, 'TIER1_NODES_SECRETS_01 collected as a secret');
+  assert.ok(!('TIER1_NODES_SECRETS_01' in v.vars), 'TIER1_NODES_SECRETS_01 NOT in vars');
+}
+
+// GATEWAY_ACCESS_MODELS_* as Variables (not Secrets) regression.
+{
+  const env = envFixture();
+  env.GATEWAY_ACCESS_KEY_MAX = 'max-secret';
+  env.GATEWAY_ACCESS_MODELS_MAX = 'Max,Code-Max';
+  const v = collectVarsFromEnv(env);
+  const s = collectSecretsFromEnv(env);
+  assert.equal(v.vars.GATEWAY_ACCESS_MODELS_MAX, 'Max,Code-Max', 'MODELS_MAX collected in vars');
+  assert.ok(!('GATEWAY_ACCESS_MODELS_MAX' in s.secrets), 'MODELS_MAX NOT in secrets');
+}
+
+// GATEWAY_ACCESS_KEY_* remains a secret, not a variable.
+{
+  const env = envFixture();
+  env.GATEWAY_ACCESS_KEY_PRO = 'pro-secret';
+  env.GATEWAY_ACCESS_MODELS_PRO = 'Pro';
+  const v = collectVarsFromEnv(env);
+  const s = collectSecretsFromEnv(env);
+  assert.ok(!('GATEWAY_ACCESS_KEY_PRO' in v.vars), 'KEY_PRO NOT in vars');
+  assert.equal(s.secrets.GATEWAY_ACCESS_KEY_PRO, 'pro-secret', 'KEY_PRO collected in secrets');
+}
 
 // Preflight passes for a complete configuration.
 {

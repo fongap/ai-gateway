@@ -5,8 +5,7 @@
 //
 // Local operator tool for the individual-shard configuration model. Reads
 // tier / secrets / models / policies JSON files and validates, summarises,
-// diffs, and migrates the legacy GATEWAY_CONFIG / GATEWAY_SECRETS_CONFIG blobs
-// into the individual-shard structure.
+// and diffs configurations.
 //
 // This CLI is an enhancement; it is NOT a deployment prerequisite. Operators
 // can still maintain Variables / Secrets directly in the GitHub UI.
@@ -15,8 +14,6 @@
 //   check   Validate node configs + secrets + cross-references and shard sizes
 //   show    Print a per-node summary (tier, provider, models, credential state)
 //   diff    Compare two configurations and print added/removed/changed items
-//   migrate Parse the legacy GATEWAY_CONFIG / GATEWAY_SECRETS_CONFIG blobs
-//           and emit a manifest (and optionally individual shard files)
 //
 // Secret values are NEVER printed. Credential state is reported as
 // "configured" or "missing" only.
@@ -300,72 +297,17 @@ function runDiff(args) {
   if (!nodeLines.length && !runtimeLines.length && !secretLines.length) console.log('No changes.');
 }
 
-function runMigrate(args) {
-  const schema = {
-    'gateway-config': { required: true },
-    'gateway-secrets': { required: true },
-    out: { required: false },
-    'include-access-key': { required: false },
-  };
-  const a = parseArgs(args, schema);
-  const blob = parseJsonFile(a['gateway-config'], 'GATEWAY_CONFIG');
-  const secretsBlob = parseJsonFile(a['gateway-secrets'], 'GATEWAY_SECRETS_CONFIG');
-
-  console.error('WARNING: GATEWAY_CONFIG is deprecated. Migrate to individual GitHub Repository Variables.');
-  console.error('WARNING: GATEWAY_SECRETS_CONFIG is deprecated. Migrate to GATEWAY_ACCESS_KEY + TIER{1,2,3}_NODES_SECRETS_XX.');
-
-  const variables = ['CLOUDFLARE_ACCOUNT_ID', 'TOKEN_STATS_D1_ID', 'GATEWAY_PUBLIC_BASE_URL'];
-  for (const [key, value] of Object.entries(blob)) {
-    if (MANAGED_VAR_PATTERN.test(key)) variables.push(key);
-    else if (key === 'MODELS_CONFIG' || key === 'POLICIES_CONFIG') variables.push(key);
-  }
-  const secrets = [];
-  for (const key of Object.keys(secretsBlob)) {
-    if (key === 'GATEWAY_ACCESS_KEY' || MANAGED_SECRET_PATTERN.test(key)) secrets.push(key);
-  }
-
-  console.log('Variables:');
-  for (const v of variables) console.log(v);
-  console.log('');
-  console.log('Secrets:');
-  for (const s of secrets) console.log(s);
-
-  if (a.out) {
-    const outDir = a.out;
-    fs.mkdirSync(outDir, { recursive: true });
-    for (const [key, value] of Object.entries(blob)) {
-      if (MANAGED_VAR_PATTERN.test(key) || key === 'MODELS_CONFIG' || key === 'POLICIES_CONFIG') {
-        const payload = typeof value === 'string' ? value : JSON.stringify(value);
-        fs.writeFileSync(path.join(outDir, `${key}.json`), payload + '\n');
-      }
-    }
-    for (const [key, value] of Object.entries(secretsBlob)) {
-      if (MANAGED_SECRET_PATTERN.test(key)) {
-        const payload = typeof value === 'string' ? value : JSON.stringify(value);
-        fs.writeFileSync(path.join(outDir, `${key}.json`), payload + '\n');
-      }
-    }
-    if (a['include-access-key']) {
-      fs.writeFileSync(path.join(outDir, 'GATEWAY_ACCESS_KEY'), secretsBlob.GATEWAY_ACCESS_KEY);
-    } else {
-      console.log('');
-      console.log('GATEWAY_ACCESS_KEY: set manually in GitHub Secret (value not written to disk)');
-    }
-  }
-}
-
-const USAGE = `usage: config-cli.mjs <check|show|diff|migrate> [options]
+const USAGE = `usage: config-cli.mjs <check|show|diff> [options]
 
   check   --tier1 FILE [--tier2 FILE] [--tier3 FILE] --secrets FILE [--models FILE] [--policies FILE]
   show    --tier1 FILE [--tier2 FILE] [--tier3 FILE] --secrets FILE
   diff    --old-tier1 FILE --new-tier1 FILE [--old-tier2 FILE --new-tier2 FILE] [--old-tier3 FILE --new-tier3 FILE]
           [--old-secrets FILE --new-secrets FILE]
-          [--old-models FILE --new-models FILE] [--old-policies FILE --new-policies FILE]
-  migrate --gateway-config FILE --gateway-secrets FILE [--out DIR] [--include-access-key]`;
+          [--old-models FILE --new-models FILE] [--old-policies FILE --new-policies FILE]`;
 
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
-  if (!command || !['check', 'show', 'diff', 'migrate'].includes(command)) {
+  if (!command || !['check', 'show', 'diff'].includes(command)) {
     console.error(USAGE);
     process.exit(command ? 1 : 0);
   }
@@ -373,7 +315,6 @@ async function main() {
     if (command === 'check') runCheck(rest);
     else if (command === 'show') runShow(rest);
     else if (command === 'diff') runDiff(rest);
-    else if (command === 'migrate') runMigrate(rest);
   } catch (e) {
     if (e && e.message) console.error(`error: ${e.message}`);
     else console.error(e);

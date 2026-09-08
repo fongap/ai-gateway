@@ -82,8 +82,10 @@ assert.match(workflowSource, /prepare --from-env/, 'deploy workflow must read in
 assert.match(workflowSource, /TIER1_NODES_SECRETS_01:/, 'deploy workflow must inject individual credential shards via a fixed range');
 assert.match(workflowSource, /TIER1_NODES_CONFIG_01:/, 'deploy workflow must inject individual node-config shards via a fixed range');
 assert.match(workflowSource, /TIER1_AFFINITY_KV_ID:/, 'deploy workflow must inject the Tier 1 affinity KV namespace id');
-assert.match(workflowSource, /GATEWAY_CONFIG:/, 'deploy workflow must keep the legacy GATEWAY_CONFIG blob as a deprecated fallback');
-assert.match(workflowSource, /GATEWAY_SECRETS_CONFIG:/, 'deploy workflow must keep the legacy GATEWAY_SECRETS_CONFIG blob as a deprecated fallback');
+assert.doesNotMatch(workflowSource, /secrets\.TIER[123]_NODES_CONFIG/, 'deploy workflow must not read node-config from GitHub Secrets (vars only)');
+assert.doesNotMatch(workflowSource, /vars\.TIER[123]_NODES_SECRETS/, 'deploy workflow must not read node-secrets from GitHub Variables (secrets only)');
+assert.doesNotMatch(workflowSource, /GATEWAY_CONFIG/, 'deploy workflow must not reference legacy GATEWAY_CONFIG');
+assert.doesNotMatch(workflowSource, /GATEWAY_SECRETS_CONFIG/, 'deploy workflow must not reference legacy GATEWAY_SECRETS_CONFIG');
 assert.match(workflowSource, /--secrets-file|secret bulk/, 'deploy workflow must deploy Worker Secrets (atomic via --secrets-file or legacy via secret bulk)');
 assert.match(workflowSource, /github-deployment-config\.mjs health-check/, 'deploy workflow must verify the deployed gateway over its public API');
 assert.doesNotMatch(workflowSource, /deploy[^\n]*--keep-vars/, 'CI deployment must not preserve Dashboard runtime-variable drift');

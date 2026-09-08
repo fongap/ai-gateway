@@ -2487,7 +2487,7 @@ await test('hedge gate: a valid deadline claims and dispatches the twin normally
   // twin is claimed AND dispatched, then both sides die at the shared deadline.
   routeHandlers['hg-p.example.com'] = hangUntilAbort();
   routeHandlers['hg-t.example.com'] = hangUntilAbort();
-  const env = makeEnv({
+  const env = makeEnvWithHedge({
     tier1: [basicNode('hg-p'), basicNode('hg-t')],
     secrets: { 'hg-p': 'k', 'hg-t': 'k' },
     extraEnv: { HEDGE_DELAY_MS: '200', FAILOVER_BUDGET_MS: '2000' },
@@ -2514,7 +2514,7 @@ await test('hedge loser: twin loses the race, releases its slot, keeps its RPM c
     return sseResponse([chunk('primary'), 'data: [DONE]']);
   };
   routeHandlers['lw-t.example.com'] = hangUntilAbort();
-  const env = makeEnv({
+  const env = makeEnvWithHedge({
     tier1: [basicNode('lw-p'), basicNode('lw-t')],
     secrets: { 'lw-p': 'k', 'lw-t': 'k' },
     extraEnv: { HEDGE_DELAY_MS: '100', FAILOVER_BUDGET_MS: '30000' },
@@ -2578,7 +2578,7 @@ await test('hedge twin inherits the logical attempt deadline (no fresh budget)',
   // end near 1300ms).
   routeHandlers['sd-a.example.com'] = hangUntilAbort();
   routeHandlers['sd-b.example.com'] = hangUntilAbort();
-  const env = makeEnv({
+  const env = makeEnvWithHedge({
     tier1: [basicNode('sd-a'), basicNode('sd-b')],
     secrets: { 'sd-a': 'k', 'sd-b': 'k' },
     extraEnv: { HEDGE_DELAY_MS: '300', FAILOVER_BUDGET_MS: '2000', EXPOSE_UPSTREAM_INFO: 'true' },
