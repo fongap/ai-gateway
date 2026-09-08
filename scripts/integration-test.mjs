@@ -82,6 +82,20 @@ function makeEnv({ tier1, tier2, tier3, secrets, extraEnv } = {}) {
   };
 }
 
+// Helper: create env with hedging explicitly enabled for the default policy.
+// Built-in policies have hedge.enabled=false (explicit opt-in). Hedge tests
+// must use this to enable hedging in the test policy.
+function makeEnvWithHedge({ tier1, tier2, tier3, secrets, extraEnv, hedgeConfig } = {}) {
+  const hedge = hedgeConfig ?? { enabled: true, tiers: ['tier1', 'tier2'] };
+  return makeEnv({
+    tier1, tier2, tier3, secrets,
+    extraEnv: {
+      POLICIES_CONFIG: JSON.stringify({ default: { max_attempts: 5, hedge } }),
+      ...extraEnv,
+    },
+  });
+}
+
 const basicNode = (id, extra = {}) => ({
   id,
   provider: 'mock',
@@ -2117,7 +2131,7 @@ await test('hedge: a slow primary is raced after HEDGE_DELAY_MS and the twin win
   const slow = async () => { await new Promise((r) => setTimeout(r, 3000)); return sseResponse([chunk('slow'), 'data: [DONE]']); };
   routeHandlers['hs-slow.example.com'] = slow;
   routeHandlers['hs-fast.example.com'] = () => sseResponse([chunk('fast'), 'data: [DONE]']);
-  const env = makeEnv({
+  const env = makeEnvWithHedge({
     tier1: [basicNode('hs-slow'), basicNode('hs-fast')],
     secrets: { 'hs-slow': 'k', 'hs-fast': 'k' },
     extraEnv: { HEDGE_DELAY_MS: '400', FAILOVER_BUDGET_MS: '30000' },
@@ -2140,7 +2154,7 @@ await test('hedge: single candidate means no twin and normal behavior', async ()
   installMockFetch();
   const slow = async () => { await new Promise((r) => setTimeout(r, 700)); return sseResponse([chunk('solo'), 'data: [DONE]']); };
   routeHandlers['hs-solo.example.com'] = slow;
-  const env = makeEnv({
+  const env = makeEnvWithHedge({
     tier1: [basicNode('hs-solo')],
     secrets: { 'hs-solo': 'k' },
     extraEnv: { HEDGE_DELAY_MS: '200', FAILOVER_BUDGET_MS: '30000' },
@@ -2185,7 +2199,7 @@ await test('hedge: a twin is not a logical attempt; the tier cap funds logical a
       HEDGE_DELAY_MS: '100',
       FAILOVER_BUDGET_MS: '30000',
       MODELS_CONFIG: JSON.stringify({ 'general-air': { policy: 'fast' } }),
-      POLICIES_CONFIG: JSON.stringify({ fast: { max_attempts: 5, tier_attempts: { tier1: 2 } } }),
+      POLICIES_CONFIG: JSON.stringify({ fast: { max_attempts: 5, tier_attempts: { tier1: 2 }, hedge: { enabled: true, tiers: ['tier1'] } } }),
     },
   });
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
@@ -2226,7 +2240,7 @@ await test('hedge: twin is decoupled from max_attempts but bounded by max_dispat
       HEDGE_DELAY_MS: '100',
       FAILOVER_BUDGET_MS: '30000',
       MODELS_CONFIG: JSON.stringify({ 'general-air': { policy: 'fast' } }),
-      POLICIES_CONFIG: JSON.stringify({ fast: { max_attempts: 2 } }),
+      POLICIES_CONFIG: JSON.stringify({ fast: { max_attempts: 2, hedge: { enabled: true, tiers: ['tier1'] } } }),
     },
   });
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
@@ -2254,7 +2268,7 @@ await test('hedge: a tier cap of 1 still allows a twin (a hedge is not an attemp
       HEDGE_DELAY_MS: '100',
       FAILOVER_BUDGET_MS: '30000',
       MODELS_CONFIG: JSON.stringify({ 'general-air': { policy: 'fast' } }),
-      POLICIES_CONFIG: JSON.stringify({ fast: { max_attempts: 5, tier_attempts: { tier1: 1 } } }),
+      POLICIES_CONFIG: JSON.stringify({ fast: { max_attempts: 5, tier_attempts: { tier1: 1 }, hedge: { enabled: true, tiers: ['tier1'] } } }),
     },
   });
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
@@ -2285,7 +2299,7 @@ await test('hedge: no hedge at all when MAX_HEDGES_PER_REQUEST=0', async () => {
   const slow = async () => { await new Promise((r) => setTimeout(r, 400)); return sseResponse([chunk('solo'), 'data: [DONE]']); };
   routeHandlers['nh-slow.example.com'] = slow;
   routeHandlers['nh-idle.example.com'] = () => sseResponse([chunk('never'), 'data: [DONE]']);
-  const env = makeEnv({
+  const env = makeEnvWithHedge({
     tier1: [basicNode('nh-slow'), basicNode('nh-idle')],
     secrets: { 'nh-slow': 'k', 'nh-idle': 'k' },
     extraEnv: { HEDGE_DELAY_MS: '100', MAX_HEDGES_PER_REQUEST: '0', FAILOVER_BUDGET_MS: '30000' },
@@ -2312,7 +2326,7 @@ await test('hedge: Tier 1 remains capped at 3 logical attempts plus one twin', a
       HEDGE_DELAY_MS: '100',
       FAILOVER_BUDGET_MS: '60000',
       MODELS_CONFIG: JSON.stringify({ 'general-air': { policy: 'fast' } }),
-      POLICIES_CONFIG: JSON.stringify({ fast: { max_attempts: 5 } }),
+      POLICIES_CONFIG: JSON.stringify({ fast: { max_attempts: 5, hedge: { enabled: true, tiers: ['tier1'] } } }),
     },
   });
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
@@ -2330,7 +2344,7 @@ await test('hedge winner: primary aborted and recorded NEUTRAL (no failure, no p
   installMockFetch();
   routeHandlers['hw-slow.example.com'] = hangUntilAbort();
   routeHandlers['hw-fast.example.com'] = () => sseResponse([chunk('fast'), 'data: [DONE]']);
-  const env = makeEnv({
+  const env = makeEnvWithHedge({
     tier1: [basicNode('hw-slow'), basicNode('hw-fast')],
     secrets: { 'hw-slow': 'k', 'hw-fast': 'k' },
     extraEnv: { HEDGE_DELAY_MS: '200', FAILOVER_BUDGET_MS: '30000' },
@@ -2357,7 +2371,7 @@ await test('hedge winner at the first-event guard: primary loser stays neutral',
   // path — that cancellation must NOT be miscounted as a first-event timeout.
   routeHandlers['gl-stall.example.com'] = stallSseUntilAbort();
   routeHandlers['gl-fast.example.com'] = () => sseResponse([chunk('fast'), 'data: [DONE]']);
-  const env = makeEnv({
+  const env = makeEnvWithHedge({
     tier1: [basicNode('gl-stall'), basicNode('gl-fast')],
     secrets: { 'gl-stall': 'k', 'gl-fast': 'k' },
     extraEnv: { HEDGE_DELAY_MS: '200', FAILOVER_BUDGET_MS: '30000' },
@@ -2380,7 +2394,7 @@ await test('hedge: primary wins the race and the hanging twin is neutral', async
     return sseResponse([chunk('primary'), 'data: [DONE]']);
   };
   routeHandlers['pw-twin.example.com'] = hangUntilAbort();
-  const env = makeEnv({
+  const env = makeEnvWithHedge({
     tier1: [basicNode('pw-slow'), basicNode('pw-twin')],
     secrets: { 'pw-slow': 'k', 'pw-twin': 'k' },
     extraEnv: { HEDGE_DELAY_MS: '100', FAILOVER_BUDGET_MS: '30000' },
@@ -2409,7 +2423,7 @@ await test('hedge: both sides fail -> one logical attempt consumed, the next one
     return jsonUpstream(okCompletion());
   };
   for (const id of ['bf-p', 'bf-t', 'bf-next']) routeHandlers[`${id}.example.com`] = bothFailThenSuccess;
-  const env = makeEnv({
+  const env = makeEnvWithHedge({
     tier1: [basicNode('bf-p'), basicNode('bf-t'), basicNode('bf-next')],
     secrets: { 'bf-p': 'k', 'bf-t': 'k', 'bf-next': 'k' },
     extraEnv: { HEDGE_DELAY_MS: '100', FAILOVER_BUDGET_MS: '30000' },

@@ -349,15 +349,35 @@ function readSecretList(file) {
   return parsed;
 }
 
-export async function verifyRemote(baseUrl, accessKey, expectedBuild) {
+const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export async function verifyRemote(baseUrl, accessKey, expectedBuild, { graceMs = 30_000, intervalMs = 5_000 } = {}) {
   const origin = String(baseUrl || '').replace(/\/+$/, '');
   if (!/^https:\/\//.test(origin)) throw new Error('GATEWAY_PUBLIC_BASE_URL must be an absolute https URL');
   const headers = { authorization: `Bearer ${accessKey}` };
   if (expectedBuild !== undefined) {
     if (!/^[a-f0-9]{40}$/i.test(expectedBuild)) throw new Error('Expected build must be a full commit SHA');
-    const version = await fetch(`${origin}/version`, { headers, signal: AbortSignal.timeout(15000) });
-    const identity = await version.json().catch(() => null);
-    if (!version.ok || identity?.build !== expectedBuild) throw new Error('Remote /version.build does not match the validated deployment SHA');
+    // Bounded retry for build propagation: after deploy, edge nodes may
+    // briefly serve the old build. Retry within a grace window before
+    // declaring a real mismatch.
+    const deadline = Date.now() + graceMs;
+    let lastError = null;
+    while (Date.now() < deadline) {
+      try {
+        const version = await fetch(`${origin}/version`, { headers, signal: AbortSignal.timeout(15000) });
+        const identity = await version.json().catch(() => null);
+        if (version.ok && identity?.build === expectedBuild) {
+          lastError = null;
+          break;
+        }
+        lastError = new Error(`Remote /version.build does not match the validated deployment SHA (got ${identity?.build ?? 'unknown'}, expected ${expectedBuild})`);
+      } catch (e) {
+        lastError = e;
+      }
+      const remaining = deadline - Date.now();
+      if (remaining > 0) await sleepMs(Math.min(intervalMs, remaining));
+    }
+    if (lastError) throw lastError;
   }
   const health = await fetch(`${origin}/health`, { headers, signal: AbortSignal.timeout(15000) });
   const healthBody = await health.json().catch(() => null);

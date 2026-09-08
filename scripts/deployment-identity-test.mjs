@@ -8,17 +8,19 @@ import { readFileSync } from 'node:fs';
 test('online verification rejects the wrong Worker build before accepting health', async () => {
   const original = globalThis.fetch;
   const expected = 'a'.repeat(40);
+  const shortGrace = { graceMs: 100, intervalMs: 10 };
   let calls = [];
   globalThis.fetch = async url => {
     calls.push(url);
     return Response.json(url.endsWith('/version') ? { build: 'b'.repeat(40) } : { ready: true });
   };
   try {
-    await assert.rejects(verifyRemote('https://gateway.example', 'test-placeholder', expected), /does not match/);
-    assert.deepEqual(calls, ['https://gateway.example/version']);
+    // With propagation grace window, wrong build is retried before failing.
+    await assert.rejects(verifyRemote('https://gateway.example', 'test-placeholder', expected, shortGrace), /does not match/);
+    assert.ok(calls.length >= 2, `expected retries, got ${calls.length} calls`);
     calls = [];
     globalThis.fetch = async url => { calls.push(url); return Response.json(url.endsWith('/version') ? { build: expected } : { ready: true }); };
-    await verifyRemote('https://gateway.example', 'test-placeholder', expected);
+    await verifyRemote('https://gateway.example', 'test-placeholder', expected, shortGrace);
     assert.equal(calls.length, 4);
     calls = [];
     await verifyRemote('https://gateway.example', 'test-placeholder');

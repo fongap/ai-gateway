@@ -44,6 +44,7 @@ export function tier1DeadlineTooSmall(remainingBudgetMs: number, p99TtftMs?: num
 export function pickTier1Candidate(tier1Nodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, {
   affinityAccountId = null, evaluateAffinity = false, now = Date.now(),
   excludeId = null, rng = Math.random, knownModels = null,
+  raceLostIds = null,
 }: {
   affinityAccountId?: string | null,
   evaluateAffinity?: boolean,
@@ -51,10 +52,12 @@ export function pickTier1Candidate(tier1Nodes: ReadonlyArray<RuntimeNode>, req: 
   excludeId?: string | null,
   rng?: () => number,
   knownModels?: ReadonlySet<string> | null,
+  raceLostIds?: Set<string> | null,
 } = {}): PickedCandidate | null {
   const eligible: RuntimeNode[] = [];
   for (const node of tier1Nodes) {
     if (node.id === excludeId) continue;
+    if (raceLostIds?.has(node.id)) continue;
     if (attempted.has(node.id)) continue;
     // Lazily move expired cooldowns to HALF_OPEN so a real request can probe
     // recovery — no background probe is ever sent.

@@ -129,6 +129,7 @@ async function runTierLoop(loopCtx: LoopContext, reqDescriptor: RoutableRequest,
   for (const tierNumber of TIER_ORDER) {
     const cap = tierCaps[tierNumber] ?? 0;
     let usedInTier = 0;
+    const raceLostIds = new Set<string>();
     while (usedInTier < cap && state.logicalAttempts < policy.maxAttempts) {
       const remainingBudgetMs = failoverBudgetMs - (Date.now() - requestStartMs);
       if (remainingBudgetMs <= 0) {
@@ -147,8 +148,15 @@ async function runTierLoop(loopCtx: LoopContext, reqDescriptor: RoutableRequest,
         evaluateAffinity: tierNumber === 1 && tier1EvaluateAffinity,
         rng: tier1Rng,
         knownModels,
+        raceLostIds,
       });
-      if (!pick || pick.raceLost) break;
+      if (!pick) break;
+      if (pick.raceLost) {
+        // raceLost means the best candidate's slot was claimed by a concurrent
+        // request. Exclude it and retry within the same tier — there may be
+        // other eligible nodes. Bounded by cap (shared logical attempt budget).
+        continue;
+      }
       // raceLost is guarded above, so the picker always returned a node
       // (single-writer invariant of pickForTier's success shape).
       const node = pick.node as RuntimeNode;

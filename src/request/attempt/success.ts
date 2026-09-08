@@ -38,8 +38,6 @@ import { convertOpenAIToAnthropicResponse, convertOpenAIUsageToAnthropic } from 
 import { createAnthropicStreamFromOpenAI } from '../../conversion/stream-converter.ts';
 import { convertAnthropicResponseToOpenAIChat } from '../../conversion/anthropic-response-to-openai-chat.ts';
 import { createOpenAIChatStreamFromAnthropic } from '../../conversion/anthropic-stream-to-openai-chat.ts';
-import { convertAnthropicResponseToResponses } from '../../conversion/anthropic-response-to-responses.ts';
-import { createResponsesStreamFromAnthropic } from '../../conversion/anthropic-stream-to-responses.ts';
 import {
   recordTokens, recordNodeSuccess, makeNodeStreamTrack, recordTier1NonStreamTtft,
 } from './observability.ts';
@@ -238,33 +236,6 @@ export async function handleSuccess(s: {
       return { response: tracked };
     }
 
-    // Cross-protocol fallback (streaming, Codex path): the client is OpenAI
-    // Responses, the upstream is Anthropic Messages. The first-event guard
-    // already committed on a real Anthropic output event. Convert the
-    // Anthropic SSE stream to Responses SSE through the stream converter,
-    // then track it with Responses completion markers.
-    if (route === 'openai_responses' && c.conversionContext) {
-      const responsesStream = createResponsesStreamFromAnthropic(guarded.body, {
-        responseId: `resp_${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`,
-        model: requestedModel,
-        createdAt: Math.floor(Date.now() / 1000),
-      });
-      const tracked = trackStreamResponse(
-        new Response(responsesStream, { status: 200, headers }),
-        {
-          idleTimeoutMs: limits.streamIdleTimeoutMs,
-          completionMarker: /event:\s*response\.(?:completed|incomplete)\b/,
-          failureMarker: /event:\s*response\.failed\b/,
-          ...(needsModelRewrite ? { rewriteModel: requestedModel, rewriteModelAt: 'response.model' } : {}),
-          onUsage: (u: unknown) => recordTokens(c, node, u),
-          interruptionChunk: (reason: string | null, details?: { nextSequenceNumber?: number }) => streamInterruptionChunk(route, requestId, reason, details),
-          upstreamFailureReason: hiddenStreamFailure,
-          ...makeNodeStreamTrack(c, node, latencyMs),
-        },
-      );
-      return { response: new Response(tracked.body, { status: 200, headers }) };
-    }
-
     // Cross-protocol fallback (streaming): the upstream is OpenAI Chat SSE but
     // the client is Anthropic. The first-event guard already committed on a
     // real OpenAI output event (isOpenAIChatRealOutput). Convert the OpenAI
@@ -318,55 +289,6 @@ export async function handleSuccess(s: {
     return { response: new Response(tracked.body, { status: 200, headers }) };
   }
   detach();
-
-  // ---- OpenAI Responses (non-stream, CROSS-PROTOCOL FALLBACK) ----
-  // The client is OpenAI Responses; the upstream is Anthropic Messages
-  // (Codex fallback path — R0.6). The conversion at the request boundary
-  // already turned the Responses body into an Anthropic Messages body, so
-  // the upstream answered with a standard Anthropic /v1/messages response.
-  // We must convert it back to Responses shape here so the client sees a
-  // familiar envelope, and any upstream error must surface as a Responses
-  // error (R0.4).
-  if (route === 'openai_responses' && c.conversionContext) {
-    try {
-      let data: (Record<string, unknown> & { error?: { status?: unknown, message?: string } }) | null;
-      if (upstreamWasStreaming) {
-        data = await collectAnthropicMessageObject(upstream, request.signal);
-      } else {
-        const text = await safeReadErrorBody(upstream, 2 * 1024 * 1024);
-        data = JSON.parse(text);
-      }
-      if (data && typeof data === 'object' && (data.type === 'error' || data.error)) {
-        const status = Number(data.error?.status) >= 400 && Number(data.error?.status) < 600
-          ? Math.trunc(Number(data.error?.status))
-          : 502;
-        const message = data.error?.message || 'Upstream returned an embedded error.';
-        const classification = classifyUpstreamStatus(status, upstream.headers, env, undefined, message);
-        recordOutcome(state, node, classification, c, { latencyMs, status, diagnostic: trimDiagnostic(message, 200) });
-        if (classification.action === 'stop') {
-          return { response: buildClientErrorResponse(request, env, route, requestId, requestedModel, status, JSON.stringify(data), state, exposeUpstreamInfo) };
-        }
-        return { rotate: true, kind: classification.kind };
-      }
-      const converted = convertAnthropicResponseToResponses(data, { createdAt: Math.floor(Date.now() / 1000) });
-      converted.model = requestedModel;
-      recordNodeSuccess(c, node, latencyMs);
-      recordTokens(c, node, converted?.usage);
-      if (clientWantsStream) {
-        return { response: synthesizeResponsesFromObject(converted, requestedModel, { ...extraHeaders, ...corsHeaders(request, env) }) };
-      }
-      return { response: jsonResponse(200, converted, env, request, extraHeaders) };
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      if (request.signal?.aborted) {
-        recordOutcome(state, node, classifyClientAbort(), c, { latencyMs: elapsedSinceStart(), status: upstream.status });
-        return { response: gatewayError(request, env, route, 499, 'Client closed the request during assembly.', requestId) };
-      }
-      const classification = classifyFirstEventFailure();
-      recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: errorMessage });
-      return { rotate: true, kind: classification.kind };
-    }
-  }
 
   // ---- OpenAI Responses (non-stream, NATIVE) ----
   if (route === 'openai_responses' && !c.conversionContext) {

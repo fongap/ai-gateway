@@ -69,6 +69,18 @@ function makeEnv({ tier1, tier2, secrets, extraEnv } = {}) {
   };
 }
 
+// Helper: create env with hedging explicitly enabled for the default policy.
+function makeEnvWithHedge({ tier1, tier2, secrets, extraEnv, hedgeConfig } = {}) {
+  const hedge = hedgeConfig ?? { enabled: true, tiers: ['tier1', 'tier2'] };
+  return makeEnv({
+    tier1, tier2, secrets,
+    extraEnv: {
+      POLICIES_CONFIG: JSON.stringify({ default: { max_attempts: 5, hedge } }),
+      ...extraEnv,
+    },
+  });
+}
+
 const openaiChatNode = (id, extra = {}) => ({
   id, provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'],
   base_url: `https://${id}.example.com/v1`, models: { 'max': 'up-model' }, ...extra,
@@ -359,7 +371,7 @@ await test('hedge twin is same-protocol same-surface: no eligible twin -> no hed
   // primary (and eventually hits the failover budget).
   routeHandlers['hp.example.com'] = hangUntilAbort();
   routeHandlers['h-an.example.com'] = () => jsonUpstream(okMessage());
-  const env = makeEnv({
+  const env = makeEnvWithHedge({
     tier1: [openaiChatNode('hp'), anthropicNode('h-an')],
     secrets: { hp: 'k', 'h-an': 'k' },
     extraEnv: { HEDGE_DELAY_MS: '120', FAILOVER_BUDGET_MS: '1500', UPSTREAM_HEADERS_TIMEOUT_MS: '2000' },
@@ -375,7 +387,7 @@ await test('hedge twin picks the same-surface node: responses-only nodes are exc
   routeHandlers['hp2.example.com'] = hangUntilAbort();
   routeHandlers['h-resp.example.com'] = () => jsonUpstream(okResponsesObject());
   routeHandlers['h-twin.example.com'] = () => jsonUpstream(okCompletion());
-  const env = makeEnv({
+  const env = makeEnvWithHedge({
     tier1: [openaiChatNode('hp2'), openaiResponsesNode('h-resp'), openaiChatNode('h-twin')],
     secrets: { hp2: 'k', 'h-resp': 'k', 'h-twin': 'k' },
     extraEnv: { HEDGE_DELAY_MS: '120', FAILOVER_BUDGET_MS: '30000' },
