@@ -2,17 +2,15 @@
 
 ## 原生协议转发
 
-网关原生支持恰好两种协议族——OpenAI 和 Anthropic。采用 Native First 策略：OpenAI Chat / Responses 只走原生路径；Anthropic Messages 优先原生，原生池耗尽后默认会尝试转换到 OpenAI Chat Completions（通过 `PROTOCOL_FALLBACKS` 启用默认链 `{"anthropic:messages":["openai:chat_completions"]}`，仅支持单向转换）。
+网关原生支持恰好两种协议族——OpenAI 和 Anthropic。采用 Native First 策略：OpenAI Chat / Responses 只走原生路径；Anthropic Messages 优先原生，原生池耗尽后默认会尝试转换到 OpenAI Chat Completions（通过 `PROTOCOL_FALLBACKS` 启用默认链 `{"anthropic:messages":["openai:chat_completions"]}`，仅支持单向转换）。OpenAI Responses 为 Native Only，不参与跨协议 fallback。
 
 ```text
 Client /v1/chat/completions → OpenAI transport    → upstream /v1/chat_completions
 Client /v1/responses        → OpenAI transport    → upstream /v1/responses
 Client /v1/messages         → Anthropic transport → upstream /v1/messages
-                                 ↘ (native pool exhausted, fallback enabled, v1.3.0 R0)
-                                 → OpenAI transport → upstream /v1/chat_completions
+                                  ↘ (native pool exhausted, fallback enabled, v1.3.0 R0)
+                                  → OpenAI transport → upstream /v1/chat_completions
 Client /v1/chat/completions ↘ (native OpenAI pool exhausted, fallback enabled, v1.3.0 R0)
-                            → Anthropic transport → upstream /v1/messages
-Client /v1/responses        ↘ (native OpenAI pool exhausted, fallback enabled, v1.3.0 R0)
                             → Anthropic transport → upstream /v1/messages
 ```
 
@@ -23,7 +21,7 @@ Client /v1/responses        ↘ (native OpenAI pool exhausted, fallback enabled,
 | 客户端 / 上游 | OpenAI Chat | OpenAI Responses | Anthropic Messages |
 | --- | --- | --- | --- |
 | OpenAI Chat | Native | n/a (无 Responses → Chat 转换) | ✅ v1.3.0 默认 ON |
-| OpenAI Responses | n/a (无 Responses → Chat 转换) | Native | ✅ v1.3.0 默认 ON |
+| OpenAI Responses | n/a (无 Responses → Chat 转换) | Native | n/a (Native Only) |
 | Anthropic Messages | ✅ v1.3.0 默认 ON | n/a (无 Messages → Responses 转换) | Native |
 
 跨协议 fallback 默认启用；要恢复 Native-Only 行为，设 `PROTOCOL_FALLBACKS=disable`；要换映射或单独关掉某条路由，传显式 JSON（例如 `{"anthropic:messages":[]}` 把这一条显式关掉）。所有跨协议 fallback 共享同一个 `max_attempts` / `FAILOVER_BUDGET_MS` budget,**不获取新的尝试配额**(R0 契约)。
@@ -92,7 +90,7 @@ Transport 层不调度节点；Scheduler 和 Reliability 层不解析协议事�
 ## Protocol 隔离规则
 
 - **Native First**: 客户端请求优先走同 protocol、同 surface 的原生上游
-- **跨协议 fallback 默认启用**(v1.3.0): 双向 `openai:chat_completions ↔ anthropic:messages` 与 `openai:responses → anthropic:messages`
+- **跨协议 fallback 默认启用**(v1.3.0): 双向 `openai:chat_completions ↔ anthropic:messages`；`openai:responses` 为 Native Only
 - 跨协议 fallback 共享 native retry 的 budget,fallback 不获取新 attempt slot
 - Hedge twin 必须与 primary 同 protocol、同 surface;跨协议 hedge 被禁止
 - 协议矩阵测试 (`scripts/protocol-matrix-test.mjs`) + 转换测试 (`scripts/conversion-test.mjs`) + 架构契约测试 (`scripts/architecture-contract-test.mjs`) 断言上述行为
