@@ -3,16 +3,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { convertOpenAIChatRequestToAnthropic as chat } from '../src/conversion/openai-chat-request-to-anthropic.ts';
-import { convertResponsesRequestToAnthropic as responses } from '../src/conversion/responses-request-to-anthropic.ts';
 import { convertAnthropicToOpenAIRequest as anthropic } from '../src/conversion/anthropic-to-openai.ts';
 import { createOpenAIChatStreamFromAnthropic as chatStream } from '../src/conversion/anthropic-stream-to-openai-chat.ts';
-import { createResponsesStreamFromAnthropic as responsesStream } from '../src/conversion/anthropic-stream-to-responses.ts';
 import { createAnthropicStreamFromOpenAI as anthropicStream } from '../src/conversion/stream-converter.ts';
 
 const message = { role: 'user', content: 'hello' };
 for (const [name, convert, base] of [
   ['Chat', chat, { model: 'm', messages: [message] }],
-  ['Responses', responses, { model: 'm', input: 'hello' }],
   ['Messages', anthropic, { model: 'm', max_tokens: 20, messages: [message] }],
 ]) {
   for (const [field, value] of [['reasoning', { effort: 'high' }], ['unknown_option', true]]) {
@@ -22,18 +19,13 @@ for (const [name, convert, base] of [
   }
 }
 // `metadata` is an Anthropic attribution field with no OpenAI-equivalent
-// semantic. The OpenAI client converters (Chat / Responses) reject it because
+// semantic. The OpenAI client converter (Chat) rejects it because
 // it is not part of their request schema. The Anthropic -> OpenAI Messages
 // converter must ACCEPT it and safely drop it, because a legal Anthropic
 // request carrying metadata must still be able to fall back to OpenAI.
-for (const [name, convert, base] of [
-  ['Chat', chat, { model: 'm', messages: [message] }],
-  ['Responses', responses, { model: 'm', input: 'hello' }],
-]) {
-  test(`${name} rejects unsupported metadata instead of dropping semantics`, () => {
-    assert.throws(() => convert({ ...base, metadata: { user_id: 'x' } }), /conversion_not_supported/);
-  });
-}
+test('Chat rejects unsupported metadata instead of dropping semantics', () => {
+  assert.throws(() => chat({ model: 'm', messages: [message], metadata: { user_id: 'x' } }), /conversion_not_supported/);
+});
 test('Messages accepts metadata (safe drop) instead of blocking fallback', () => {
   const out = anthropic({ model: 'm', max_tokens: 20, metadata: { user_id: 'x' }, messages: [message] });
   assert.equal(out.model, 'm');
@@ -45,12 +37,7 @@ test('Chat rejects non-equivalent sampling, strict tools, and invalid JSON argum
   assert.throws(() => chat({ model: 'm', messages: [message], tools: [{ type: 'function', function: { name: 'f', strict: true } }] }), /conversion_not_supported/);
   for (const argumentsValue of ['{broken', '[]', 'null', '1']) {
     assert.throws(() => chat({ model: 'm', messages: [{ role: 'assistant', tool_calls: [{ id: 'c', type: 'function', function: { name: 'f', arguments: argumentsValue } }] }] }), /conversion_not_supported/);
-    assert.throws(() => responses({ model: 'm', input: [{ type: 'function_call', call_id: 'c', name: 'f', arguments: argumentsValue }] }), /conversion_not_supported/);
   }
-});
-test('Responses preserves assistant string content and accepts omitted message type', () => {
-  const out = responses({ model: 'm', input: [{ role: 'assistant', content: 'kept' }, message] });
-  assert.deepEqual(out.messages[0], { role: 'assistant', content: [{ type: 'text', text: 'kept' }] });
 });
 test('Messages preserves text after tool_use and emits parallel tool results at top level', () => {
   const out = anthropic({ model: 'm', messages: [
@@ -77,23 +64,6 @@ const toolBlock = index => [
 ];
 const stop = reason => [{ type: 'message_delta', delta: { stop_reason: reason }, usage: { input_tokens: 2, output_tokens: 3 } }, { type: 'message_stop' }];
 
-test('Responses text/tool/text uses stable indices, complete output, and one terminal event', async () => {
-  const events = eventsFrom(await read(responsesStream(source([...textBlock(0, 'a'), ...toolBlock(1), ...textBlock(2, 'b'), ...stop('end_turn'), ...stop('end_turn'), ...textBlock(3, 'late')]))));
-  const added = events.filter(e => e.type === 'response.output_item.added');
-  const done = events.filter(e => e.type === 'response.output_item.done');
-  assert.deepEqual(added.map(e => e.output_index), [0, 1, 2]);
-  assert.deepEqual(done.map(e => e.output_index), [0, 1, 2]);
-  for (let i = 0; i < 3; i++) assert.equal(added[i].item.id, done[i].item.id);
-  assert.equal(events.filter(e => e.type === 'response.completed').length, 1);
-  assert.deepEqual(events.at(-1).response.output, done.map(e => e.item));
-  assert.deepEqual(events.map(e => e.sequence_number), events.map((_, i) => i));
-  assert.equal(events.filter(e => e.type === 'response.function_call_arguments.done').length, 1);
-});
-test('Responses max_tokens emits response.incomplete with a reason', async () => {
-  const events = eventsFrom(await read(responsesStream(source([...textBlock(0, 'a'), ...stop('max_tokens')]))));
-  assert.equal(events.at(-1).type, 'response.incomplete');
-  assert.deepEqual(events.at(-1).response.incomplete_details, { reason: 'max_output_tokens' });
-});
 test('Chat tool index starts at zero after text and usage does not duplicate finish', async () => {
   const text = await read(chatStream(source([...textBlock(0, 'a'), ...toolBlock(1), ...stop('tool_use'), ...stop('tool_use')])));
   const events = eventsFrom(text);
@@ -105,7 +75,6 @@ test('Chat tool index starts at zero after text and usage does not duplicate fin
 
 for (const [name, convert, initial, terminal] of [
   ['Chat', chatStream, textBlock(0, 'a'), { type: 'message_stop' }],
-  ['Responses', responsesStream, textBlock(0, 'a'), { type: 'message_stop' }],
   ['Messages', anthropicStream, [{ choices: [{ delta: { content: 'a' } }] }], '[DONE]'],
 ]) {
   test(`${name} rejects truncated and malformed streams`, async () => {

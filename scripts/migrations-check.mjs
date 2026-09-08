@@ -11,10 +11,11 @@
 //      whose content drifts from the previous git tree;
 //   3. every CREATE statement uses IF NOT EXISTS (so re-applying the
 //      sequence is a no-op — D1 has no migrations table to track history);
-//   4. no SQL data-loss op (DROP / RENAME / DELETE) without a sibling
-//      0007_drop_redundant_usage_indexes.sql-style migration also being
-//      safe (we only require the destructive op to live in a dedicated
-//      file — i.e. the file name has to mention the table being affected).
+//   4. destructive SQL (DROP TABLE, DROP COLUMN, RENAME COLUMN, RENAME TABLE,
+//      DELETE FROM) is blocked by default — the old Worker must remain
+//      compatible with the new schema after a rollback. Only explicitly
+//      allowlisted destructive migrations pass (e.g. index cleanup that the
+//      previous Worker version can tolerate).
 //
 // This is a pure-Node check; it does not need a D1 binding.
 
@@ -30,6 +31,16 @@ const migDir = path.join(root, 'migrations');
 
 const FILENAME_RE = /^(\d{3,})_([a-z0-9_]+)\.sql$/;
 const MIGRATION_NUMBER_RE = /^(\d+)_/;
+
+// Explicit allowlist of migration files that contain destructive SQL but are
+// verified to be backward-compatible with the previous Worker version.
+// To add a new exception: verify the old Worker still runs with the new
+// schema, then add the filename here with a comment explaining why.
+const DESTRUCTIVE_ALLOWLIST = new Set([
+  // Index cleanup: DROP INDEX only removes redundant indexes; the previous
+  // Worker version uses the PK index and is unaffected.
+  '0007_drop_redundant_usage_indexes.sql',
+]);
 
 function listMigrations() {
   return fs.readdirSync(migDir)
@@ -90,23 +101,25 @@ function checkImmutability(files) {
 }
 
 function checkDestructiveOps(files) {
-  // DROP TABLE / DROP INDEX / RENAME / DELETE FROM must live in a file
-  // whose slug names the affected object — operators must be able to scan
-  // the file name and know exactly what it touches.
+  // Destructive SQL (DROP TABLE, DROP COLUMN, RENAME COLUMN, RENAME TABLE,
+  // DELETE FROM) is blocked by default. A destructive migration can break a
+  // rolling deploy: the old Worker code runs against the new schema and may
+  // reference columns/tables that no longer exist. Only explicitly allowlisted
+  // migrations pass — each exception must be verified backward-compatible.
   for (const f of files) {
     const sql = fs.readFileSync(path.join(migDir, f), 'utf8');
     const destructive = [];
-    if (/\bDROP\s+(TABLE|INDEX|UNIQUE\s+INDEX)\b/i.test(sql)) destructive.push('DROP');
-    if (/\bRENAME\s+(TABLE|TO|COLUMN)\b/i.test(sql)) destructive.push('RENAME');
-    if (/\bDELETE\s+FROM\b/i.test(sql)) destructive.push('DELETE');
+    if (/\bDROP\s+TABLE\b/i.test(sql)) destructive.push('DROP TABLE');
+    if (/\bDROP\s+COLUMN\b/i.test(sql)) destructive.push('DROP COLUMN');
+    if (/\bDROP\s+(INDEX|UNIQUE\s+INDEX)\b/i.test(sql)) destructive.push('DROP INDEX');
+    if (/\bRENAME\s+TABLE\b/i.test(sql)) destructive.push('RENAME TABLE');
+    if (/\bRENAME\s+COLUMN\b/i.test(sql)) destructive.push('RENAME COLUMN');
+    if (/\bDELETE\s+FROM\b/i.test(sql)) destructive.push('DELETE FROM');
     if (destructive.length === 0) continue;
-    const slug = parseName(f).slug;
-    // Heuristic: the slug has to mention the table name it touches. We
-    // accept the well-known `drop_redundant_<table>_indexes` shape and
-    // any slug that names a token_usage_* table explicitly.
-    const slugMentionsTable = /drop_/.test(slug) || /token_usage_/.test(slug);
-    assert.ok(slugMentionsTable,
-      `${f}: destructive op (${destructive.join(',')}) — the file slug must describe the affected table (e.g. drop_redundant_<table>_indexes)`);
+    assert.ok(DESTRUCTIVE_ALLOWLIST.has(f),
+      `${f}: destructive migration (${destructive.join(', ')}) is blocked by default. ` +
+      `A destructive op can break rolling deploys (old Worker + new schema). ` +
+      `Verify backward compatibility, then add to DESTRUCTIVE_ALLOWLIST in migrations-check.mjs.`);
   }
 }
 

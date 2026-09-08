@@ -87,7 +87,7 @@ export function rpmWindowRetryAfterSec(now: number = Date.now()): number {
 //   knownModels (optional) is the Known Model Catalog; it bounds wildcard
 //   nodes so an empty-models node only serves catalog models. The request path
 //   always passes it (defense in depth on top of the preflight authz gate).
-export function pickCandidate(tierNodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, now: number = Date.now(), excludeId: string | null = null, knownModels?: ReadonlySet<string> | null): PickedCandidate | null {
+export function pickCandidate(tierNodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, now: number = Date.now(), excludeId: string | null = null, knownModels?: ReadonlySet<string> | null, excludeIds?: ReadonlySet<string> | null): PickedCandidate | null {
   let best: RuntimeNode | null = null;
   let bestState: NodeState | null = null;
   let bestUncapped: RuntimeNode | null = null;
@@ -95,6 +95,7 @@ export function pickCandidate(tierNodes: ReadonlyArray<RuntimeNode>, req: Routab
 
   for (const node of tierNodes) {
     if (node.id === excludeId) continue;
+    if (excludeIds?.has(node.id)) continue;
     if (attempted.has(node.id)) continue;
     if (!supportsRequest(node, req, knownModels)) continue;
     if (peekAvailability(node.id, now) === 'no') continue;

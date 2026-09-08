@@ -10,6 +10,7 @@
 // A conversion is only available when PROTOCOL_FALLBACKS is configured for
 // the client route. There is no implicit cross-protocol fallback, no
 // OpenAI Responses -> Chat direction, and no Gemini conversion.
+// OpenAI Responses is native-only (no fallback to other protocols).
 //
 // Contract:
 //   * Native-first: the native tier loop runs first and only when it
@@ -43,7 +44,6 @@
 
 import { convertAnthropicToOpenAIRequest, ConversionError } from '../conversion/anthropic-to-openai.ts';
 import { convertOpenAIChatRequestToAnthropic } from '../conversion/openai-chat-request-to-anthropic.ts';
-import { convertResponsesRequestToAnthropic } from '../conversion/responses-request-to-anthropic.ts';
 import { buildBudgetExhaustedResponse } from './errors.ts';
 import { computeTierCaps } from './tier-loop.ts';
 import type { LoopContext, ConversionContext } from '../types/request.ts';
@@ -84,8 +84,6 @@ export async function runFallbackChain({ loopCtx, route, requestedModel, runTier
         convertedBody = convertAnthropicToOpenAIRequest(bodyJson);
       } else if (route === 'openai_chat' && fb.protocol === 'anthropic' && fb.surface === 'messages') {
         convertedBody = convertOpenAIChatRequestToAnthropic(bodyJson);
-      } else if (route === 'openai_responses' && fb.protocol === 'anthropic' && fb.surface === 'messages') {
-        convertedBody = convertResponsesRequestToAnthropic(bodyJson);
       } else {
         continue;
       }
