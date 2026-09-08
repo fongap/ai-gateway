@@ -22,10 +22,6 @@
 
 如不需要持久化 token 统计，这是预期行为。如需启用，设置 `TOKEN_STATS_D1_ID` Variable。
 
-### `GATEWAY_CONFIG is deprecated`
-
-仍在使用旧版单 blob 格式。迁移到 individual Variables 和 Secrets。使用 `npm run config:migrate` 生成清单。
-
 ## 运行时错误
 
 ### 429 Too Many Requests

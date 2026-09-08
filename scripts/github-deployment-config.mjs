@@ -3,22 +3,18 @@
 //
 // GitHub Actions deployment-config bridge.
 //
-// Two equivalent configuration sources, in priority order:
+// Configuration is read from individual GitHub Repository Variables and Secrets:
 //
-//   1. Individual GitHub Repository Variables / Secrets (long-term target):
-//        Variables: TIER{1,2,3}_NODES_CONFIG_01.., MODELS_CONFIG, POLICIES_CONFIG,
-//                    CLOUDFLARE_ACCOUNT_ID, TOKEN_STATS_D1_ID,
-//                    TIER1_AFFINITY_KV_ID, GATEWAY_PUBLIC_BASE_URL
-//        Secrets:    GATEWAY_ACCESS_KEY, TIER[123]_NODES_SECRETS_01.., CLOUDFLARE_API_TOKEN
-//      The workflow injects these into the process environment; this script
-//      collects the non-empty ones. A single node change only touches the
-//      matching Variable/Secret — no giant blob to rewrite.
+//   Variables: TIER{1,2,3}_NODES_CONFIG_01..10 (node structure: provider, base_url,
+//              protocol, models, priority — NOT credentials), MODELS_CONFIG,
+//              POLICIES_CONFIG, CLOUDFLARE_ACCOUNT_ID, TOKEN_STATS_D1_ID,
+//              TIER1_AFFINITY_KV_ID, GATEWAY_PUBLIC_BASE_URL
+//   Secrets:   TIER{1,2,3}_NODES_SECRETS_01..10 (credentials: api_key, token),
+//              GATEWAY_ACCESS_KEY_<GROUP>, CLOUDFLARE_API_TOKEN
 //
-//   2. Legacy blob (deprecated, short-term compatibility):
-//        Variable  GATEWAY_CONFIG         = { TIER*_NODES_CONFIG_*, MODELS_CONFIG, ... }
-//        Secret    GATEWAY_SECRETS_CONFIG = { GATEWAY_ACCESS_KEY, TIER[123]_NODES_SECRETS_* }
-//      Read only when the individual sources are absent, and always emits a
-//      deprecation warning. New config wins; the two are never merged.
+// The workflow injects these into the process environment; this script
+// collects the non-empty ones. A single node change only touches the
+// matching Variable or Secret — no giant blob to rewrite.
 //
 // Values are never printed; stdout contains safe counts only. Secret material
 // is never written to logs or artifacts.
@@ -121,10 +117,8 @@ export function loadRuntimeConfig(varsText, secretsText, varsLabel = 'Worker var
 
 // Collect individual Worker text variables from the process environment. Only
 // non-empty managed shards + allow-listed extras are kept; credential names
-// are skipped. Falls back to the legacy GATEWAY_CONFIG blob (with a warning)
-// when no individual variable is present.
+// are skipped.
 export function collectVarsFromEnv(env) {
-  const warnings = [];
   const vars = {};
   for (const [name, value] of Object.entries(env)) {
     if (value == null || String(value).trim() === '') continue;
@@ -133,25 +127,11 @@ export function collectVarsFromEnv(env) {
       vars[name] = String(value);
     }
   }
-  const legacy = env.GATEWAY_CONFIG;
-  let usedLegacy = false;
-  if (Object.keys(vars).length === 0 && legacy && String(legacy).trim() !== '') {
-    const blob = parseConfigObject(legacy, 'GATEWAY_CONFIG');
-    for (const [name, value] of Object.entries(blob)) {
-      if (CREDENTIAL_NAMES.has(name) || NODE_SECRET.test(name)) continue;
-      vars[name] = encodeValue(value, `GATEWAY_CONFIG.${name}`);
-    }
-    usedLegacy = true;
-    warnings.push('GATEWAY_CONFIG is deprecated. Migrate to individual GitHub Repository Variables (TIER*_NODES_CONFIG_XX, MODELS_CONFIG, POLICIES_CONFIG).');
-  }
-  return { vars, usedLegacy, warnings };
+  return { vars };
 }
 
-// Collect individual credential secrets from the process environment. Falls
-// back to the legacy GATEWAY_SECRETS_CONFIG blob (with a warning) when no
-// individual secret is present.
+// Collect individual credential secrets from the process environment.
 export function collectSecretsFromEnv(env) {
-  const warnings = [];
   const secrets = {};
   for (const [name, value] of Object.entries(env)) {
     if (value == null || String(value).trim() === '') continue;
@@ -159,27 +139,16 @@ export function collectSecretsFromEnv(env) {
       secrets[name] = String(value);
     }
   }
-  const legacy = env.GATEWAY_SECRETS_CONFIG;
-  let usedLegacy = false;
-  if (Object.keys(secrets).length === 0 && legacy && String(legacy).trim() !== '') {
-    const blob = parseConfigObject(legacy, 'GATEWAY_SECRETS_CONFIG');
-    for (const [name, value] of Object.entries(blob)) {
-      if (SECRET_NAME.test(name)) secrets[name] = encodeValue(value, `GATEWAY_SECRETS_CONFIG.${name}`);
-    }
-    usedLegacy = true;
-    warnings.push('GATEWAY_SECRETS_CONFIG is deprecated. Migrate to GATEWAY_ACCESS_KEY + TIER[123]_NODES_SECRETS_XX.');
-  }
-  return { secrets, usedLegacy, warnings };
+  return { secrets };
 }
 
-// Build a runtime config from individual env sources (+ legacy fallback).
-// Returns { runtime, warnings } or throws on validation failure.
+// Build a runtime config from individual env sources.
+// Returns { runtime } or throws on validation failure.
 export function buildRuntimeFromEnv(env) {
   const v = collectVarsFromEnv(env);
   const s = collectSecretsFromEnv(env);
-  const warnings = [...v.warnings, ...s.warnings];
   const runtime = normalizeRuntimeConfig({ vars: v.vars, secrets: s.secrets });
-  return { runtime, warnings, usedLegacyVars: v.usedLegacy, usedLegacySecrets: s.usedLegacy };
+  return { runtime };
 }
 
 // Deployment preflight: verify required configuration is present without
@@ -219,7 +188,7 @@ export function preflight(env) {
     warnings.push(`Worker variable + secret count is ${totalManaged} (threshold ${CF_VAR_WARNING_THRESHOLD}). Cloudflare Workers has a platform limit on bindings; consolidate shards or reduce node count.`);
   }
   if (!tierShards) {
-    errors.push('No TIER{1,2,3}_NODES_CONFIG_XX Variable is configured. Set at least one node-config shard.');
+    errors.push('No TIER{1,2,3}_NODES_CONFIG_XX GitHub Variable is configured. Configure at least one node-config shard under GitHub Actions Variables.');
   }
   if (tier1Shards && (!env.TIER1_AFFINITY_KV_ID || String(env.TIER1_AFFINITY_KV_ID).trim() === '')) {
     errors.push('TIER1_AFFINITY_KV_ID is required when Tier 1 nodes are configured (session routing is not isolate-sticky).');
@@ -234,8 +203,6 @@ export function preflight(env) {
   if (!env.TOKEN_STATS_D1_ID || String(env.TOKEN_STATS_D1_ID).trim() === '') {
     warnings.push('D1 persistence disabled: TOKEN_STATS_D1_ID is not configured.');
   }
-  if (v.usedLegacy) warnings.push('GATEWAY_CONFIG is deprecated; migrate to individual GitHub Repository Variables.');
-  if (s.usedLegacy) warnings.push('GATEWAY_SECRETS_CONFIG is deprecated; migrate to GATEWAY_ACCESS_KEY + TIER[123]_NODES_SECRETS_XX.');
   return { ok: errors.length === 0, errors, warnings };
 }
 
@@ -396,11 +363,10 @@ export async function verifyRemote(baseUrl, accessKey, expectedBuild, { graceMs 
 }
 
 // Resolve a runtime config either from individual env sources (--from-env) or
-// from the two legacy file inputs (--vars/--secrets-input).
+// from file inputs (--vars/--secrets-input).
 function resolveRuntime(argv) {
   if (hasFlag(argv, '--from-env')) {
     const built = buildRuntimeFromEnv(process.env);
-    for (const w of built.warnings) console.warn(`WARNING: ${w}`);
     return built.runtime;
   }
   const varsInput = argValue(argv, '--vars');
