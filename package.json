@@ -36,7 +36,6 @@
     "config:check": "node scripts/config-cli.mjs check",
     "config:show": "node scripts/config-cli.mjs show",
     "config:diff": "node scripts/config-cli.mjs diff",
-    "config:migrate": "node scripts/config-cli.mjs migrate",
     "discovery:check": "node scripts/provider-discovery.mjs check-snapshot scripts/provider-discovery/samples/catalog.example.json",
     "discovery:summary": "node scripts/provider-discovery.mjs summary scripts/provider-discovery/samples/catalog.example.json"
   },

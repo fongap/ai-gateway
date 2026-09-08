@@ -9,7 +9,7 @@
 ### Added — Cross-Protocol Fallback (R0 v1.3.0)
 
 - **OpenAI Chat ↔ Anthropic Messages 双向 fallback**:客户端 OpenAI Chat / Anthropic Messages 互转,各由独立 converter 文件实现(`src/conversion/openai-chat-request-to-anthropic.ts` + `anthropic-response-to-openai-chat.ts` + `anthropic-stream-to-openai-chat.ts`)。Native First 不变,跨协议 fallback 默认 ON,跨协议 fallback 与 native retry 共享 `max_attempts` / `FAILOVER_BUDGET_MS` budget,不获取新 attempt slot。
-- **OpenAI Responses → Anthropic Messages 客户端**(Codex 路径):Responses request / response / stream 各由独立 converter 实现(`src/conversion/responses-request-to-anthropic.ts` + `anthropic-response-to-responses.ts` + `anthropic-stream-to-responses.ts`)。仅支持 Codex 实际下发的字段子集,不支持的字段(`reasoning` items / `image_generation_call` / `mcp_*` items / `code_interpreter_call` 等)被**明确拒绝**(`conversion_not_supported`),不静默丢字段。
+- **OpenAI Responses → Anthropic Messages 客户端**(Codex 路径):Responses request 是 native-only，不经转换直接发送至上游 `/v1/responses`。不存在 `responses-request-to-anthropic` 与 `anthropic-response-to-responses` 两个 converter。不支持的字段(`reasoning` items / `image_generation_call` / `mcp_*` items / `code_interpreter_call` 等)被**明确拒绝**(`conversion_not_supported`),不静默丢字段。
 - **错误 envelope 跨协议契约(R0.4)**:跨协议 fallback 后,客户端始终收到**自己协议形状**的错误 envelope;上游的内部错误 JSON 永远不泄漏到客户端。OpenAI Chat 客户端收到 `{ error: { message, type, ... } }`,Anthropic 客户端收到 `{ type: 'error', error: { type, message } }`,Responses 客户端收到 `{ error: { message, type, param, code } }`。
 - **跨协议 fallback 矩阵测试 (`scripts/conversion-test.mjs`)** 覆盖全部 6 个 client×upstream 组合(非流式成功 / 流式成功 / 错误 envelope / Native 不回归 / 工具调用 fallback)与 16 个 boundary 单元测试;90/90 passed。
 
