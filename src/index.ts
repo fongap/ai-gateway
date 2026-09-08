@@ -18,7 +18,10 @@
  * error boundary. All logic lives in src/config, src/scheduler,
  * src/reliability, src/protocol, src/stream, src/request, src/observability.
  *
- * State is isolate-local best-effort (Map); no KV/D1/DO on the hot path.
+ * State is isolate-local best-effort (Map); no D1/DO on the hot path.
+ * Tier 1 affinity uses KV; affinity cache miss can trigger a KV read.
+ * D1 is not on the AI request critical scheduling path.
+ * D1 is used for statistics persistence and maintenance (scheduled).
  */
 
 import { handleRequest } from './request/handler.ts';

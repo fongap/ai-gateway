@@ -3,6 +3,7 @@ param()
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
-& npx --yes 'wrangler@4.114.0' whoami
-if ($LASTEXITCODE -ne 0) { & npx --yes 'wrangler@4.114.0' login }
+
+# Thin wrapper for compatibility - delegate to install.ps1
 & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'install.ps1')
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

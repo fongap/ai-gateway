@@ -1,6 +1,6 @@
 name: Provider Discovery
 
-# Provider Discovery v1.1 — scheduled / manual observation of Provider
+# Provider Discovery v1.1 — manual observation of Provider
 # capability, surface, and base URL state, plus Runtime-vs-Catalog
 # consistency checks.
 #
@@ -31,8 +31,6 @@ name: Provider Discovery
 #     output.
 
 on:
-  schedule:
-    - cron: '0 4 * * *' # nightly at 04:00 UTC (after the 03:00 nightly verify-full)
   workflow_dispatch:
     inputs:
       catalog_before:

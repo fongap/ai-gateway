@@ -84,18 +84,64 @@ function checkIdempotent(files) {
   }
 }
 
+function getBaseCommit() {
+  // Determine the base commit for comparison.
+  // PR context: GITHUB_BASE_REF or git merge-base with origin/main
+  // Push context: HEAD~1 or merge-base with origin/main
+  // CI provides GITHUB_BASE_REF for PRs; for pushes we use HEAD~1.
+  const envBase = process.env.GITHUB_BASE_REF;
+  if (envBase) {
+    // PR: try to get the merge-base with the base branch
+    const r = spawnSync('git', ['merge-base', `origin/${envBase}`, 'HEAD'], { cwd: root, encoding: 'utf8' });
+    if (r.status === 0 && r.stdout.trim()) {
+      return r.stdout.trim();
+    }
+    // Fallback: try origin/main
+    const r2 = spawnSync('git', ['merge-base', 'origin/main', 'HEAD'], { cwd: root, encoding: 'utf8' });
+    if (r2.status === 0 && r2.stdout.trim()) {
+      return r2.stdout.trim();
+    }
+  }
+  // Push or fallback: use HEAD~1 (parent of current commit)
+  const r3 = spawnSync('git', ['rev-parse', 'HEAD~1'], { cwd: root, encoding: 'utf8' });
+  if (r3.status === 0 && r3.stdout.trim()) {
+    return r3.stdout.trim();
+  }
+  return null;
+}
+
+function ensureHistory(baseCommit) {
+  // If the base commit is not reachable (shallow checkout), fetch more history.
+  if (!baseCommit) return;
+  const r = spawnSync('git', ['merge-base', '--is-ancestor', baseCommit, 'HEAD'], { cwd: root });
+  if (r.status !== 0) {
+    // Not an ancestor — need more history. Fetch the base branch.
+    const baseBranch = process.env.GITHUB_BASE_REF ? `origin/${process.env.GITHUB_BASE_REF}` : 'origin/main';
+    spawnSync('git', ['fetch', '--no-tags', '--depth=50', 'origin', baseBranch.replace('origin/', '')], { cwd: root, stdio: 'ignore' });
+  }
+}
+
 function checkImmutability(files) {
-  // Files committed to git must not change unless explicitly added.
-  // The check is a no-op on a fresh checkout with no diff; otherwise it
-  // asserts every .sql in the working tree is either new or untouched.
-  const r = spawnSync('git', ['status', '--porcelain', 'migrations/'], { cwd: root, encoding: 'utf8' });
+  // Compare against base commit using git diff --name-status.
+  // Only migrations/ paths are considered.
+  // New files (A) are allowed. Modified (M), Deleted (D), Renamed (R) are blocked.
+  const baseCommit = getBaseCommit();
+  if (!baseCommit) {
+    console.warn('migrations:check: could not determine base commit; skipping immutability check');
+    return;
+  }
+  ensureHistory(baseCommit);
+
+  const r = spawnSync('git', ['diff', '--name-status', baseCommit, '--', 'migrations/'], { cwd: root, encoding: 'utf8' });
   if (r.status !== 0) return;
   const lines = r.stdout.split('\n').filter(Boolean);
   for (const line of lines) {
-    const code = line.slice(0, 2);
-    const file = line.slice(3).trim();
+    const code = line.slice(0, 1);
+    const file = line.slice(2).trim();
     if (!file.endsWith('.sql')) continue;
-    assert.ok(code === '??' || code === 'A ' || code === 'AM',
+    // Allow: Added (A) — new migration files
+    // Block: Modified (M), Deleted (D), Renamed (R), Copied (C)
+    assert.ok(code === 'A',
       `${file} is in a non-add state (${code}). Applied migrations are immutable; create a new NNN_*.sql file instead.`);
   }
 }

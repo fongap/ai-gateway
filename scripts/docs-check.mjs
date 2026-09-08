@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 //
 // Docs governance check: validates document structure, naming, and
-// cross-reference integrity. Run as part of `npm run verify`.
+// cross-reference integrity. Run as part of `npm run validate:merge`.
 
 import fs from 'node:fs';
 import path from 'node:path';

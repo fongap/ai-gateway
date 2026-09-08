@@ -7,7 +7,7 @@
 // patterns that indicate the old cross-protocol-conversion / legacy-blob /
 // physical-attempt-semantics architecture has crept back.
 //
-// Run as part of `npm run verify`.
+// Run as part of `npm run validate:merge`.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

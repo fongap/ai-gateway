@@ -194,7 +194,7 @@ Providers checked: 4
 
 ## 工作流
 
-`.github/workflows/provider-discovery.yml` 在夜间计划（04:00 UTC）和 `workflow_dispatch` 上运行管道。它：
+`.github/workflows/provider-discovery.yml` 通过 `workflow_dispatch` 手动运行管道。它：
 
 1. 读取上一个和当前的 catalog 快照。
 2. 规范化两者。
