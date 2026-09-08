@@ -20,7 +20,7 @@ const TTL_SECONDS = 30 * 60;
 const CACHE_TTL_MS = 5_000;
 const ESCAPE_CHECK_REQUESTS = 10;
 const ESCAPE_CHECK_MS = 5 * 60_000;
-const ESCAPE_THRESHOLD = 1.5;
+const ESCAPE_THRESHOLD = 1.2;
 
 // Capacity limits — internal constants, not user-facing knobs. The affinity
 // cache holds recent KV lookups (5s TTL) so a few hundred entries covers a
