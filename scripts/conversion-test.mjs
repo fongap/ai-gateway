@@ -436,7 +436,7 @@ await run('conversion: OpenAI Chat -> Anthropic request — unknown role is reje
 });
 
 await run('conversion: OpenAI Chat -> Anthropic request — DEFAULT_MAX_TOKENS is the single source of truth', () => {
-  // Pin the value so any drift is caught in CI (R6 semantic contract).
+  // Pin the value so any drift is caught in CI (semantic contract).
   assert.equal(DEFAULT_MAX_TOKENS, 1024);
 });
 

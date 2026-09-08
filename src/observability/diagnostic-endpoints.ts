@@ -25,7 +25,7 @@ export const APP_META = Object.freeze({
   version: VERSION,
 });
 
-// R2 (v1.3.0) — Production Identity. Build SHA is the deployment identity
+// Production Identity. Build SHA is the deployment identity
 // and is injected by the CI/Deploy workflow as the `GITHUB_SHA` Worker
 // text variable (see .github/workflows/deploy.yml `env.GITHUB_SHA` and
 // scripts/github-deployment-config.mjs `EXTRA_VAR_ALLOW`). The value is
@@ -343,13 +343,13 @@ export function versionResponse(request: Request, env: Record<string, unknown>):
     const url = new URL(repositoryRaw);
     repository = url.protocol === 'https:' ? url.href.replace(/\/$/, '') : undefined;
   } catch { repository = undefined; }
-  // Public endpoint: expose only branding/version + build identity. Never
-  // leak configuration status, node counts, or topology here — that
-  // belongs to the auth-protected /health (and server logs).
-  // R2 (v1.3.0): `version` is the release identity (semver, hand-bumped
-  // at release time); `build` is the deployment identity (commit SHA,
-  // injected by CI). The two are SEPARATE — a release version and the
-  // specific build deployed under that version.
+// Public endpoint: expose only branding/version + build identity. Never
+// leak configuration status, node counts, or topology here — that
+// belongs to the auth-protected /health (and server logs).
+// `version` is the release identity (semver, hand-bumped at release time);
+// `build` is the deployment identity (commit SHA, injected by CI).
+// The two are SEPARATE — a release version and the specific build
+// deployed under that version.
   return new Response(JSON.stringify({
     name: APP_META.name,
     display_name: APP_META.displayName,

@@ -14,9 +14,10 @@
 //   long-reasoning - extended first-event: maxAttempts=3, hedge disabled, firstEventTimeoutMs=120000
 //
 // Hedging is controlled per policy: hedge.enabled must be true for hedging to
-// activate. default and stable enable Tier 1 hedge by default; fast and
-// long-reasoning disable hedge. Tier 2/3 never hedge. Operators can override
-// or disable via POLICIES_CONFIG.
+// activate. default and stable enable hedge for the tiers listed in
+// hedge.tiers (currently ['tier1']); fast and long-reasoning disable it.
+// Custom policies may specify any subset of tier1/tier2/tier3 via
+// hedge.tiers; tiers not listed never launch hedge twins.
 //
 // Like the node config, POLICIES_CONFIG is strict: malformed JSON, unknown
 // fields, invalid max_attempts, and invalid tier_attempts produce diagnostics

@@ -3,7 +3,7 @@
 //
 // Docs contract test: blocks old-architecture semantics from re-entering docs.
 // Scans README.md, README_EN.md, and docs/*.md (EXCLUDING CHANGELOG.md, whose
-// historical entries legitimately mention removed features) for forbidden
+// entries legitimately mention removed features) for forbidden
 // patterns that indicate the old cross-protocol-conversion / legacy-blob /
 // physical-attempt-semantics architecture has crept back.
 //
@@ -51,6 +51,32 @@ const FORBIDDEN = [
     message: 'max_attempts is LOGICAL attempts, not physical upstream dispatches',
   },
 ];
+
+// Protocol fact contract: docs must not contradict code facts.
+// Only OpenAI Chat ↔ Anthropic Messages bidirectional fallback exists.
+// OpenAI Responses is Native Only.
+const PROTOCOL_FACT_FILES = ['README.md', 'README_EN.md', 'docs/architecture/protocol-model.md', 'docs/operations/configuration.md'];
+for (const file of PROTOCOL_FACT_FILES) {
+  const text = readDoc(file);
+  // Must not claim Responses → Anthropic conversion exists.
+  assert.doesNotMatch(text, /Responses\s*→\s*Anthropic|Responses\s*->\s*Anthropic/, `${file}: must not claim Responses → Anthropic cross-protocol conversion`);
+  // Must not claim three-way fallback.
+  assert.doesNotMatch(text, /three-way|三向/, `${file}: must not claim three-way protocol fallback`);
+  // Must not include openai:responses → anthropic:messages in default chain.
+  assert.doesNotMatch(text, /"openai:responses"\s*:\s*\["anthropic:messages"\]/, `${file}: must not include openai:responses → anthropic:messages in default fallback chain`);
+  passed++;
+  console.log(`ok - ${file} respects protocol fact contract`);
+}
+
+// configuration.md must not list a wrong default chain.
+const configDocText = readDoc('docs/operations/configuration.md');
+assert.doesNotMatch(
+  configDocText,
+  /openai:responses.*anthropic:messages.*openai:chat_completions.*anthropic:messages.*openai:responses/,
+  'configuration.md default chain must not include openai:responses → anthropic:messages',
+);
+passed++;
+console.log('ok - configuration.md default chain matches SUPPORTED_CONVERSIONS');
 
 for (const file of DOCS) {
   const text = readDoc(file);

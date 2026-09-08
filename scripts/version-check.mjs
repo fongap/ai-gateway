@@ -69,6 +69,23 @@ if (!fs.existsSync(versionModulePath)) {
   }
 }
 
+// Check CHANGELOG version sections match package.json version.
+const changelogPath = path.join(root, 'CHANGELOG.md');
+const changelogContent = fs.readFileSync(changelogPath, 'utf8');
+const hasUnreleased = /## Unreleased/i.test(changelogContent);
+if (hasUnreleased) {
+  fail('CHANGELOG.md still has ## Unreleased — must be resolved to a versioned section');
+}
+const hasVersionSection = new RegExp(`## ${version} - \\d{4}-\\d{2}-\\d{2}`).test(changelogContent);
+if (!hasVersionSection) {
+  fail(`CHANGELOG.md must have a ## ${version} - YYYY-MM-DD section matching package.json`);
+}
+// Must not have stale v1.2.7 "never released" narrative.
+const hasStale127 = /1\.2\.7.*从未发版|从未.*1\.2\.7|1\.2\.7.*not yet released/i.test(changelogContent);
+if (hasStale127) {
+  fail('CHANGELOG.md must not claim v1.2.7 was never released');
+}
+
 if (failures.length > 0) {
   for (const m of failures) console.error(`FAIL - ${m}`);
   throw new Error(`Version check failed: ${failures.length} mismatch(es)`);

@@ -6,7 +6,7 @@
 
 ## 概览
 
-网关原生支持两种协议族——OpenAI 和 Anthropic。任何提供 OpenAI-compatible 或 Anthropic-compatible API 的服务均可作为节点接入。网关采用 Native First 策略：OpenAI Chat / Responses 只走原生路径；Anthropic Messages 优先原生，原生池耗尽后默认转换到 OpenAI Chat（`PROTOCOL_FALLBACKS` 默认启用 `{"anthropic:messages":["openai:chat_completions"]}`，仅支持 Anthropic → OpenAI Chat 单向转换；设 `disable` 关闭；显式 JSON 覆盖）。
+网关原生支持两种协议族——OpenAI 和 Anthropic。任何提供 OpenAI-compatible 或 Anthropic-compatible API 的服务均可作为节点接入。网关采用 Native First 策略：OpenAI Chat / Responses 只走原生路径；Anthropic Messages 优先原生，原生池耗尽后默认转换到 OpenAI Chat（`PROTOCOL_FALLBACKS` 默认启用 `{"anthropic:messages":["openai:chat_completions"], "openai:chat_completions":["anthropic:messages"]}` 双向转换；设 `disable` 关闭；显式 JSON 覆盖）。
 
 ```text
 Client (OpenAI / Anthropic SDK)
@@ -39,7 +39,7 @@ Reliability (src/reliability)             →  whether a node is currently usabl
 ## 不变量
 
 - 原生协议转发：Chat → 上游 `/v1/chat/completions`，Responses → 上游 `/v1/responses`，Messages → 上游 `/v1/messages`
-- Native First：OpenAI Chat / Responses 只走原生路径；Anthropic Messages 优先原生，原生池耗尽后默认转换到 OpenAI Chat（`PROTOCOL_FALLBACKS` 默认启用，显式 JSON 覆盖）
+- Native First：OpenAI Chat / Responses 只走原生路径；Anthropic Messages 优先原生，原生池耗尽后默认转换到 OpenAI Chat（`PROTOCOL_FALLBACKS` 默认启用双向转换，显式 JSON 覆盖）
 - `limits.rpm` 默认 hard，单 Worker isolate 内不主动越配额
 - 整请求 failover budget，超时即停
 - 所有短期运行时状态（Tier 1 TTFT/inFlight/cooldown，Tier 2/3 health/circuit/concurrency/RPM）均为 isolate-local best-effort，随 isolate 重启丢失

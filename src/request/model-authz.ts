@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
 //
-// Model authorization. v1.2.7 governance model.
+// Model authorization.
 //
 // Two complementary primitives:
 //
