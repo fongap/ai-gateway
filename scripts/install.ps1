@@ -21,8 +21,13 @@ function Read-FilePath([string]$Prompt, [bool]$Required) {
   return $p
 }
 
-if (-not (Get-Command node -ErrorAction SilentlyContinue)) { throw 'Node.js 20+ is required.' }
-if ([int]((node --version).TrimStart('v').Split('.')[0]) -lt 20) { throw 'Node.js 20 or newer is required.' }
+# Node.js version contract: single source of truth is package.json -> engines.node
+# Reuse version-check.mjs for consistent semver validation.
+$versionCheck = node scripts/version-check.mjs 2>$null
+if ($LASTEXITCODE -ne 0) {
+  $required = (Get-Content (Join-Path $Root 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json).engines.node
+  throw "Node.js version check failed. Required: $required"
+}
 
 $defaultWorkerName = ((Get-Content (Join-Path $Root 'wrangler.jsonc') -Raw -Encoding UTF8 | ConvertFrom-Json).name)
 $workerName = (Read-Host "Worker name [$defaultWorkerName]").Trim()
@@ -37,10 +42,15 @@ $config.name = $workerName
 
 Write-Host '==> Installing dependencies and verifying project'
 npm ci; if ($LASTEXITCODE -ne 0) { throw 'npm ci failed.' }
-npm run verify; if ($LASTEXITCODE -ne 0) { throw 'project verification failed.' }
+npm run validate:merge; if ($LASTEXITCODE -ne 0) { throw 'project verification failed.' }
 
-Invoke-Wrangler @('whoami')
-if ($LASTEXITCODE -ne 0) { Invoke-Wrangler @('login') }
+# Cloudflare login: whoami -> login (only if not logged in)
+try {
+  Invoke-Wrangler @('whoami')
+} catch {
+  Write-Host 'Not logged in to Cloudflare. Starting login...'
+  Invoke-Wrangler @('login')
+}
 
 Write-Host '==> Node configuration'
 Write-Host 'Node configs are PLAIN variables without credentials; credentials go into a separate NODE_SECRETS file.'
@@ -56,12 +66,13 @@ if ($LASTEXITCODE -ne 0) { throw 'node configuration is invalid.' }
 
 Write-Host '==> Sharding config into variables + secrets'
 $planFile = Join-Path ([IO.Path]::GetTempPath()) ("gateway-plan-" + [guid]::NewGuid().ToString('N') + '.json')
-$planArgs = @('plan', '--secrets', $secretsFile, '--out', $planFile)
-foreach ($n in 1, 2, 3) { if ($tierFiles[$n]) { $planArgs += @("--tier$n", $tierFiles[$n]) } }
-node scripts/plan-node-configuration.mjs @planArgs
-if ($LASTEXITCODE -ne 0) { throw 'sharding failed.' }
-
+$tmpFiles = @($planFile)
 try {
+  $planArgs = @('plan', '--secrets', $secretsFile, '--out', $planFile)
+  foreach ($n in 1, 2, 3) { if ($tierFiles[$n]) { $planArgs += @("--tier$n", $tierFiles[$n]) } }
+  node scripts/plan-node-configuration.mjs @planArgs
+  if ($LASTEXITCODE -ne 0) { throw 'sharding failed.' }
+
   $plan = Get-Content $planFile -Raw -Encoding UTF8 | ConvertFrom-Json
 
   # Build wrangler.user.jsonc with the plain vars for deploy.
@@ -77,19 +88,17 @@ try {
 
   # Secrets bulk file: GATEWAY_ACCESS_KEY + NODE_SECRETS_xx
   $bulkPath = Join-Path ([IO.Path]::GetTempPath()) ("gateway-secrets-" + [guid]::NewGuid().ToString('N') + '.json')
+  $tmpFiles += $bulkPath
   $bulk = [ordered]@{}
   $bulk['GATEWAY_ACCESS_KEY'] = Read-SecretText 'GATEWAY_ACCESS_KEY'
   foreach ($prop in $plan.secrets.PSObject.Properties) { $bulk[$prop.Name] = $prop.Value }
   [IO.File]::WriteAllText($bulkPath, ($bulk | ConvertTo-Json -Depth 30), [Text.UTF8Encoding]::new($false))
 
-  Write-Host "==> Deploying worker '$workerName'"
-  Invoke-Wrangler @('deploy', '-c', 'wrangler.user.jsonc', '--keep-vars')
-  Write-Host '==> Writing secrets'
-  Invoke-Wrangler @('secret', 'bulk', $bulkPath)
+  Write-Host "==> Deploying worker '$workerName' with secrets file"
+  Invoke-Wrangler @('deploy', '-c', 'wrangler.user.jsonc', '--keep-vars', '--secrets-file', $bulkPath)
 }
 finally {
-  if (Test-Path $planFile) { Remove-Item $planFile -Force }
-  if (Test-Path $bulkPath) { Remove-Item $bulkPath -Force }
+  foreach ($f in $tmpFiles) { if ($f -and (Test-Path $f)) { Remove-Item $f -Force } }
 }
 
 $url = (Read-Host 'Gateway URL after deploy (empty to skip verification)').Trim()

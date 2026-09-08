@@ -35,14 +35,14 @@ for (const file of [
 
 for (const file of ['scripts/install.sh', 'scripts/install.ps1']) {
   const source = read(file);
-  assert.match(source, /secret['", ]+bulk|secret bulk/, `${file} must deploy secrets via secret bulk`);
+  assert.match(source, /--secrets-file/, `${file} must deploy secrets via --secrets-file`);
   assert.match(source, /keep-vars/, `${file} must preserve remote vars`);
   assert.match(source, /plan-node-configuration\.mjs/, `${file} must shard node configs via the shared planner`);
   assert.match(source, /TIER1_AFFINITY/, `${file} must configure the required Tier 1 affinity KV binding`);
 }
 for (const file of ['scripts/reconfigure.sh', 'scripts/reconfigure.ps1']) {
   const source = read(file);
-  assert.match(source, /secret['", ]+bulk|secret bulk/, `${file} must update runtime secrets without code changes`);
+  assert.match(source, /--secrets-file/, `${file} must update runtime secrets using --secrets-file`);
   assert.match(source, /plan-node-configuration\.mjs/, `${file} must shard node configs via the shared planner`);
   assert.match(source, /TIER1_AFFINITY/, `${file} must preserve or configure the Tier 1 affinity KV binding`);
 }
@@ -50,18 +50,12 @@ for (const file of ['scripts/update.sh', 'scripts/update.ps1', 'scripts/deploy.s
   const source = read(file);
   assert.match(source, /keep-vars|scripts\/deploy\.sh|deploy\.ps1/, `${file} must preserve remote vars (directly or via deploy script)`);
 }
-for (const file of ['scripts/deploy.sh', 'scripts/deploy.ps1']) {
-  assert.match(read(file), /TIER1_AFFINITY/, `${file} must refuse a deploy without the required affinity KV binding`);
-}
+// cloudflare-wrangler.mjs is the single source of truth for deploy business logic
+// (already checked above for TIER1_AFFINITY, migrations, etc.)
+// Thin wrappers deploy.sh / deploy.ps1 delegate to it.
 
-// Deploy scripts must apply D1 migrations when the operator config has a
-// TOKEN_STATS_DB binding, so migrations are never skipped locally even when
-// the GitHub Actions deploy workflow is the only path that applies them.
-for (const file of ['scripts/deploy.sh', 'scripts/deploy.ps1']) {
-  const source = read(file);
-  assert.match(source, /migrations apply|migrations.*apply/i, `${file} must apply D1 migrations`);
-  assert.match(source, /TOKEN_STATS_DB/i, `${file} must check for TOKEN_STATS_DB binding before migrating`);
-}
+// D1 migration-before-deploy is enforced by cloudflare-wrangler.mjs (checked above).
+// Thin wrappers deploy.sh / deploy.ps1 delegate to it.
 
 // The package.json deploy entry goes through cloudflare-wrangler.mjs. That wrapper
 // must also migrate before a real deploy, otherwise the most obvious local

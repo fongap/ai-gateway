@@ -1,4 +1,7 @@
 // Stable local wrapper around the pinned Cloudflare Wrangler CLI.
+// Single source of truth for: Wrangler version, required KV binding,
+// D1 migration-before-deploy, Worker deploy invocation.
+// Shell/PowerShell entry points delegate here.
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -70,6 +73,18 @@ function databaseNameForBinding(configSource, binding) {
   }
 }
 
+// Check required TIER1_AFFINITY KV binding in config
+function checkAffinityKvBinding(configSource) {
+  if (!configSource) return false;
+  try {
+    const config = JSON.parse(configSource);
+    return config?.kv_namespaces?.some((entry) =>
+      entry?.binding === 'TIER1_AFFINITY' && typeof entry.id === 'string' && entry.id.length > 0) || false;
+  } catch {
+    return false;
+  }
+}
+
 // `npm run deploy` is a first-class production path, so it must uphold the
 // same migration-before-code ordering as deploy.sh/deploy.ps1 and CI. Only a
 // real deploy triggers the remote mutation; `deploy --dry-run` remains local.
@@ -79,11 +94,7 @@ if (passthrough[0] === 'deploy' && !passthrough.includes('--dry-run')) {
   const configSource = resolvedConfig && fs.existsSync(resolvedConfig)
     ? fs.readFileSync(resolvedConfig, 'utf8')
     : '';
-  let deployConfig;
-  try { deployConfig = JSON.parse(configSource); } catch { deployConfig = null; }
-  const hasAffinityKv = deployConfig?.kv_namespaces?.some((entry) =>
-    entry?.binding === 'TIER1_AFFINITY' && typeof entry.id === 'string' && entry.id.length > 0);
-  if (!hasAffinityKv) {
+  if (!checkAffinityKvBinding(configSource)) {
     console.error('Refusing deploy: configure the required TIER1_AFFINITY KV binding in wrangler.user.jsonc.');
     process.exitCode = 1;
     process.exit();

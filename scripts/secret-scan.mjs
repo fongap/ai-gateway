@@ -46,7 +46,7 @@ function scanFile(rel) {
 // In a working tree, scan exactly what could enter a commit: tracked files plus
 // untracked files not excluded by .gitignore. Local deployment material such
 // as wrangler.user.jsonc remains on disk by design and must not make every
-// post-configuration `npm run verify` fail. A forcibly tracked sensitive file
+// post-configuration `npm run validate:merge` fail. A forcibly tracked sensitive file
 // is still returned by `git ls-files --cached` and is therefore rejected.
 // Source archives may not contain .git; fall back to the conservative walk in
 // that case so release artifacts still receive a useful scan.

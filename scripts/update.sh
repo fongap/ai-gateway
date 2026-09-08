@@ -4,5 +4,5 @@ set -e
 cd "$(dirname "$0")/.."
 git pull --ff-only
 npm ci
-npm run verify
+npm run validate:merge
 sh scripts/deploy.sh

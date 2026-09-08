@@ -1,9 +1,10 @@
 #!/bin/sh
 # Reconfigure an already-deployed worker (new schema, no legacy support).
+# Delegates deploy to cloudflare-wrangler.mjs for migration-before-deploy.
 set -e
 cd "$(dirname "$0")/.."
 
-npx --yes wrangler@4.114.0 whoami || { echo "login first: npm run cf:login" >&2; exit 1; }
+npx --yes wrangler@4.114.0 whoami >/dev/null 2>&1 || { echo "login first: npm run cf:login" >&2; exit 1; }
 
 read -r -p "tier-1 node config JSON file: " TIER1
 [ -n "$TIER1" ] && [ -f "$TIER1" ] || { echo "tier-1 file is required." >&2; exit 1; }
@@ -75,6 +76,8 @@ if [ "$ROTATE" = "y" ] || [ "$ROTATE" = "Y" ]; then
 fi
 
 TMP_BULK="$(mktemp)"
+trap 'rm -f "$EXISTING_VARS_FILE" "$TMP_PLAN" "$TMP_BULK"' EXIT INT TERM
+
 GW_KEY="$BULK_ARGS" node -e '
 const fs = require("fs");
 const plan = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
@@ -83,8 +86,8 @@ if (process.env.GW_KEY) bulk.GATEWAY_ACCESS_KEY = process.env.GW_KEY;
 fs.writeFileSync(process.argv[2], JSON.stringify(bulk));
 ' "$TMP_PLAN" "$TMP_BULK"
 
-npx --yes wrangler@4.114.0 deploy -c wrangler.user.jsonc --keep-vars
-npx --yes wrangler@4.114.0 secret bulk "$TMP_BULK"
+# Delegate deploy to cloudflare-wrangler.mjs (handles D1 migrations)
+node scripts/cloudflare-wrangler.mjs deploy -c wrangler.user.jsonc --keep-vars --secrets-file "$TMP_BULK"
 
 node -e '
 const plan = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
@@ -94,5 +97,4 @@ for (const key of plan.deleteSecrets) console.log(key);
   echo "y" | npx --yes wrangler@4.114.0 secret delete "$KEY" >/dev/null && echo "deleted stale secret: $KEY"
 done
 
-rm -f "$EXISTING_VARS_FILE" "$TMP_PLAN" "$TMP_BULK"
 echo "Configuration updated."

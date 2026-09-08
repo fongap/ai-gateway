@@ -17,7 +17,8 @@ function Read-FilePath([string]$Prompt, [bool]$Required) {
   return (Resolve-Path $p).Path
 }
 
-npx --yes 'wrangler@4.114.0' whoami
+# Check login
+npx --yes 'wrangler@4.114.0' whoami >$null 2>&1
 if ($LASTEXITCODE -ne 0) { throw 'Login to Cloudflare first (npm run cf:login).' }
 $workerName = ((Get-Content (Join-Path $Root 'wrangler.jsonc') -Raw -Encoding UTF8 | ConvertFrom-Json).name)
 Write-Host "Target worker: $workerName"
@@ -85,12 +86,9 @@ try {
   [IO.File]::WriteAllText($bulkPath, ($bulk | ConvertTo-Json -Depth 30), [Text.UTF8Encoding]::new($false))
 
   Write-Host "==> Deploying updated variables and code for '$workerName'"
-  & npx --yes 'wrangler@4.114.0' deploy -c 'wrangler.user.jsonc' --keep-vars
+  # Delegate to cloudflare-wrangler.mjs for migration-before-deploy
+  & node scripts/cloudflare-wrangler.mjs deploy -c 'wrangler.user.jsonc' --keep-vars --secrets-file $bulkPath
   if ($LASTEXITCODE -ne 0) { throw 'deploy failed.' }
-
-  Write-Host '==> Writing secrets'
-  & npx --yes 'wrangler@4.114.0' secret bulk $bulkPath
-  if ($LASTEXITCODE -ne 0) { throw 'secret bulk failed.' }
 
   foreach ($key in $plan.deleteSecrets) {
     'y' | & npx --yes 'wrangler@4.114.0' secret delete $key | Out-Null

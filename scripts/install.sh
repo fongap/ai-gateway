@@ -3,8 +3,12 @@
 set -e
 cd "$(dirname "$0")/.."
 
-command -v node >/dev/null 2>&1 || { echo "Node.js 20+ is required." >&2; exit 1; }
-[ "$(node --version | sed 's/^v//' | cut -d. -f1)" -ge 20 ] || { echo "Node.js 20+ is required." >&2; exit 1; }
+# Node.js version contract: single source of truth is package.json -> engines.node
+# Reuse version-check.mjs logic for consistent semver validation.
+if ! node scripts/version-check.mjs 2>/dev/null; then
+  echo "Node.js version check failed. Required: $(node -e 'console.log(require("./package.json").engines.node)')" >&2
+  exit 1
+fi
 
 echo "==> Worker name"
 DEFAULT_NAME="$(node -e 'console.log(JSON.parse(require("fs").readFileSync("wrangler.jsonc","utf8")).name)')"
@@ -25,9 +29,10 @@ fs.writeFileSync("wrangler.jsonc", JSON.stringify(c, null, 2) + "\n");
 
 echo "==> Installing dependencies and verifying project"
 npm ci
-npm run verify
+npm run validate:merge
 
-npx --yes wrangler@4.114.0 whoami || npx --yes wrangler@4.114.0 login
+# Cloudflare login: whoami -> login (only if not logged in)
+npx --yes wrangler@4.114.0 whoami >/dev/null 2>&1 || npx --yes wrangler@4.114.0 login
 
 echo "==> Node configuration"
 echo "Node configs are PLAIN variables without credentials; credentials go into a separate NODE_SECRETS file."
@@ -72,6 +77,10 @@ read -r ACCESS_KEY
 stty echo 2>/dev/null || true
 echo ""
 TMP_BULK="$(mktemp)"
+
+# Ensure temp secret files are cleaned up on exit, error, or interrupt
+trap 'rm -f "$TMP_PLAN" "$TMP_BULK"' EXIT INT TERM
+
 GW_KEY="$ACCESS_KEY" node -e '
 const fs = require("fs");
 const plan = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
@@ -79,9 +88,8 @@ const bulk = { GATEWAY_ACCESS_KEY: process.env.GW_KEY, ...plan.secrets };
 fs.writeFileSync(process.argv[2], JSON.stringify(bulk));
 ' "$TMP_PLAN" "$TMP_BULK"
 
-npx --yes wrangler@4.114.0 deploy -c wrangler.user.jsonc --keep-vars
-npx --yes wrangler@4.114.0 secret bulk "$TMP_BULK"
-rm -f "$TMP_PLAN" "$TMP_BULK"
+# Single deploy with secrets file — avoids code/secret two-phase deploy
+npx --yes wrangler@4.114.0 deploy -c wrangler.user.jsonc --keep-vars --secrets-file "$TMP_BULK"
 
 read -r -p "Gateway URL after deploy (empty to skip verification): " URL
 if [ -n "$URL" ]; then

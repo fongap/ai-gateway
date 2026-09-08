@@ -1,5 +1,8 @@
 #!/usr/bin/env node
-// Syntax-check every ES module in src/, scripts/ and benchmark/.
+// Syntax-check every ES module in src/, scripts/, benchmark/, tests/.
+// This script ONLY checks .js and .mjs files using `node --check`.
+// TypeScript files (.ts) are validated by `tsc --noEmit` (npm run typecheck),
+// not by this script. Do not add TypeScript syntax checking here.
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -32,4 +35,4 @@ for (const file of files) {
     throw new Error(`syntax check failed: ${path.relative(root, file)}`);
   }
 }
-console.log(`Syntax check passed (${files.length} files).`);
+console.log(`Syntax check passed (${files.length} JS/MJS files).`);
