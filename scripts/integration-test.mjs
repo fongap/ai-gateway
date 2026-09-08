@@ -2459,7 +2459,7 @@ await test('hedge gate: exhausted deadline claims NOTHING from the twin (no slot
   const slowLimiter = {
     limit: async () => { await new Promise((r) => setTimeout(r, 400)); return { success: true }; },
   };
-  const env = makeEnv({
+  const env = makeEnvWithHedge({
     tier1: [
       basicNode('hz-p', { limits: { concurrency: 5, rpm: 100 } }),
       basicNode('hz-t', { limits: { concurrency: 5, rpm: 100 } }),
@@ -2487,7 +2487,7 @@ await test('hedge gate: a valid deadline claims and dispatches the twin normally
   // twin is claimed AND dispatched, then both sides die at the shared deadline.
   routeHandlers['hg-p.example.com'] = hangUntilAbort();
   routeHandlers['hg-t.example.com'] = hangUntilAbort();
-  const env = makeEnv({
+  const env = makeEnvWithHedge({
     tier1: [basicNode('hg-p'), basicNode('hg-t')],
     secrets: { 'hg-p': 'k', 'hg-t': 'k' },
     extraEnv: { HEDGE_DELAY_MS: '200', FAILOVER_BUDGET_MS: '2000' },
@@ -2514,7 +2514,7 @@ await test('hedge loser: twin loses the race, releases its slot, keeps its RPM c
     return sseResponse([chunk('primary'), 'data: [DONE]']);
   };
   routeHandlers['lw-t.example.com'] = hangUntilAbort();
-  const env = makeEnv({
+  const env = makeEnvWithHedge({
     tier1: [basicNode('lw-p'), basicNode('lw-t')],
     secrets: { 'lw-p': 'k', 'lw-t': 'k' },
     extraEnv: { HEDGE_DELAY_MS: '100', FAILOVER_BUDGET_MS: '30000' },
@@ -2547,7 +2547,7 @@ await test('hedge gate: an exhausted deadline never strands a half-open probe on
   const slowLimiter = {
     limit: async () => { await new Promise((r) => setTimeout(r, 400)); return { success: true }; },
   };
-  const env = makeEnv({
+  const env = makeEnvWithHedge({
     tier1: [
       basicNode('hx-p', { limits: { concurrency: 5, rpm: 100 } }),
       basicNode('hx-t', { limits: { concurrency: 5, rpm: 100 } }),
@@ -2578,7 +2578,7 @@ await test('hedge twin inherits the logical attempt deadline (no fresh budget)',
   // end near 1300ms).
   routeHandlers['sd-a.example.com'] = hangUntilAbort();
   routeHandlers['sd-b.example.com'] = hangUntilAbort();
-  const env = makeEnv({
+  const env = makeEnvWithHedge({
     tier1: [basicNode('sd-a'), basicNode('sd-b')],
     secrets: { 'sd-a': 'k', 'sd-b': 'k' },
     extraEnv: { HEDGE_DELAY_MS: '300', FAILOVER_BUDGET_MS: '2000', EXPOSE_UPSTREAM_INFO: 'true' },
@@ -2626,7 +2626,7 @@ await test('hedge policy: tiers filter excludes tier-2 from hedging', async () =
     extraEnv: {
       HEDGE_DELAY_MS: '100', FAILOVER_BUDGET_MS: '2000',
       MODELS_CONFIG: JSON.stringify({ 'general-air': { policy: 'hp' } }),
-      POLICIES_CONFIG: JSON.stringify({ 'hp': { max_attempts: 5, hedge: { tiers: ['tier1'] } } }),
+      POLICIES_CONFIG: JSON.stringify({ 'hp': { max_attempts: 5, hedge: { enabled: true, tiers: ['tier1'] } } }),
     },
   });
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
@@ -2662,6 +2662,94 @@ await test('hedge policy: enabled=false disables hedging entirely', async () => 
   // No twin was dispatched on attempt 1.
   assert.equal(getNodeState('hd-b').totalRequests, 1, 'hd-b was dispatched as attempt-2 primary, not as a hedge twin');
   assert.equal(upstreamCalls.length, 2, 'exactly 2 upstream calls (primary timeout + attempt-2 success)');
+});
+
+// ---- Negative hedge contracts --------------------------------------------------
+// These tests prove that hedging ONLY fires when hedge.enabled=true is explicit.
+
+await test('hedge negative: no POLICIES_CONFIG + HEDGE_DELAY_MS > 0 => hedges=0', async () => {
+  resetMock();
+  installMockFetch();
+  // Two nodes, both slow — if hedge were on, a twin would fire after the delay.
+  // makeEnv() sets no POLICIES_CONFIG, so the built-in default (hedge.enabled=false) applies.
+  const slow = async () => { await new Promise((r) => setTimeout(r, 400)); return jsonUpstream({}, 500); };
+  routeHandlers['ng-a.example.com'] = slow;
+  routeHandlers['ng-b.example.com'] = slow;
+  const env = makeEnv({
+    tier1: [basicNode('ng-a'), basicNode('ng-b')],
+    secrets: { 'ng-a': 'k', 'ng-b': 'k' },
+    extraEnv: { HEDGE_DELAY_MS: '50', FAILOVER_BUDGET_MS: '30000' },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 502);
+  const body = await res.json();
+  assert.equal(body.error.details.hedges, 0, 'HEDGE_DELAY_MS without explicit hedge.enabled must NOT launch a twin');
+});
+
+await test('hedge negative: hedge.enabled=false => hedges=0 even with two candidates', async () => {
+  resetMock();
+  installMockFetch();
+  routeHandlers['nf-a.example.com'] = async () => { await new Promise((r) => setTimeout(r, 300)); return jsonUpstream({}, 500); };
+  routeHandlers['nf-b.example.com'] = () => jsonUpstream(okCompletion());
+  const env = makeEnv({
+    tier1: [basicNode('nf-a'), basicNode('nf-b')],
+    secrets: { 'nf-a': 'k', 'nf-b': 'k' },
+    extraEnv: {
+      HEDGE_DELAY_MS: '50', FAILOVER_BUDGET_MS: '30000',
+      MODELS_CONFIG: JSON.stringify({ 'general-air': { policy: 'nf' } }),
+      POLICIES_CONFIG: JSON.stringify({ 'nf': { max_attempts: 5, hedge: { enabled: false } } }),
+    },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 200);
+  assert.equal(upstreamCalls.length, 2, 'primary times out, attempt-2 succeeds — but no hedge twin');
+  assert.equal(getNodeState('nf-b').totalRequests, 1, 'nf-b dispatched as attempt-2 primary, not hedge twin');
+});
+
+await test('hedge positive: hedge.enabled=true => twin fires normally', async () => {
+  resetMock();
+  installMockFetch();
+  routeHandlers['np-a.example.com'] = async () => { await new Promise((r) => setTimeout(r, 400)); return sseResponse([chunk('slow'), 'data: [DONE]']); };
+  routeHandlers['np-b.example.com'] = () => sseResponse([chunk('fast'), 'data: [DONE]']);
+  const env = makeEnvWithHedge({
+    tier1: [basicNode('np-a'), basicNode('np-b')],
+    secrets: { 'np-a': 'k', 'np-b': 'k' },
+    extraEnv: { HEDGE_DELAY_MS: '50', FAILOVER_BUDGET_MS: '30000' },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }), env, {});
+  assert.equal(res.status, 200);
+  assert.ok((await streamText(res)).includes('fast'));
+  assert.equal(upstreamCalls.length, 2, 'primary + hedge twin both dispatched');
+  const hosts = upstreamCalls.map((c) => c.host);
+  assert.ok(hosts.includes('np-b.example.com'), 'twin was dispatched');
+});
+
+await test('hedge negative: deadline gate must prove hedge is enabled (no false positive)', async () => {
+  resetMock();
+  installMockFetch();
+  // This is the exact scenario from the "exhausted deadline" test, but WITHOUT
+  // hedge.enabled. If the gate fires without checking enabled, the twin would
+  // be picked — a false positive. The primary succeeds, so no retry touches
+  // the twin, and hedges must remain 0.
+  routeHandlers['ng2-p.example.com'] = () => jsonUpstream(okCompletion());
+  routeHandlers['ng2-t.example.com'] = () => jsonUpstream(okCompletion());
+  const slowLimiter = {
+    limit: async () => { await new Promise((r) => setTimeout(r, 400)); return { success: true }; },
+  };
+  const env = makeEnv({
+    tier1: [
+      basicNode('ng2-p', { limits: { concurrency: 5, rpm: 100 } }),
+      basicNode('ng2-t', { limits: { concurrency: 5, rpm: 100 } }),
+    ],
+    secrets: { 'ng2-p': 'k', 'ng2-t': 'k' },
+    extraEnv: { HEDGE_DELAY_MS: '200', FAILOVER_BUDGET_MS: '30000', QUOTA_RATE_LIMITER: slowLimiter },
+  });
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 200, 'primary succeeds');
+  await res.text();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(upstreamCalls.map((c) => c.host), ['ng2-p.example.com'], 'twin must never be dispatched');
+  assert.equal(getNodeState('ng2-t').totalRequests, 0, 'twin untouched — no false positive from deadline gate');
 });
 
 await test('timeout kinds: no HTTP status -> headers_timeout (status=0)', async () => {
