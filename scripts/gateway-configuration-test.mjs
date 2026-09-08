@@ -430,7 +430,7 @@ test('POLICIES_CONFIG parses a valid hedge policy', () => {
   assert.deepEqual(policies.hp.hedge.tiers, ['tier1']);
 });
 
-test('POLICIES_CONFIG hedge null/absent returns null (legacy behavior)', () => {
+test('POLICIES_CONFIG hedge null/absent returns null (custom policy without hedge)', () => {
   const policies = loadPoliciesConfig(makeEnv({
     extraEnv: { POLICIES_CONFIG: JSON.stringify({ 'hp': { max_attempts: 5 } }) },
   }));

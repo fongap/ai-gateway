@@ -14,9 +14,10 @@
 //   long-reasoning - extended first-event: maxAttempts=3, hedge disabled, firstEventTimeoutMs=120000
 //
 // Hedging is controlled per policy: hedge.enabled must be true for hedging to
-// activate. default and stable enable Tier 1 hedge by default; fast and
-// long-reasoning disable hedge. Tier 2/3 never hedge. Operators can override
-// or disable via POLICIES_CONFIG.
+// activate. default and stable enable hedge for the tiers listed in
+// hedge.tiers (currently ['tier1']); fast and long-reasoning disable it.
+// Custom policies may specify any subset of tier1/tier2/tier3 via
+// hedge.tiers; tiers not listed never launch hedge twins.
 //
 // Like the node config, POLICIES_CONFIG is strict: malformed JSON, unknown
 // fields, invalid max_attempts, and invalid tier_attempts produce diagnostics
@@ -84,7 +85,9 @@ function analyzePolicies(env: Record<string, unknown>): { policies: Record<strin
   cachedEnv = env;
   const raw = readEnv(env, 'POLICIES_CONFIG');
   const errors: string[] = [];
-  // Start with built-ins; user config merges on top (override).
+  // Start with built-ins; user config merges on top (override) — partial override:
+  // explicitly declared fields override; absent fields inherit from the built-in
+  // (or null for custom names).
   const policies: Record<string, PolicyConfig> = { ...BUILTIN_POLICIES };
   if (raw) {
     let parsed: unknown;
@@ -111,29 +114,28 @@ function analyzePolicies(env: Record<string, unknown>): { policies: Record<strin
             errors.push(`POLICIES_CONFIG: "${name}" has unknown field "${field}" (allowed: ${[...ALLOWED_FIELDS].join(', ')})`);
           }
         }
-        const tierAttempts = parseTierAttempts(cfg.tier_attempts, name, errors);
-        const hedge = parseHedge(cfg.hedge, name, errors);
-        const firstEventTimeoutMs = parseFirstEventTimeoutMs(cfg.first_event_timeout_ms, name, errors);
-        const budgetSplit = parseBudgetSplit(cfg.budget_split, name, errors);
+        const key = name.trim();
+        const base = policies[key];
+        const tierAttempts = cfg.tier_attempts === undefined ? (base?.tierAttempts ?? null) : parseTierAttempts(cfg.tier_attempts, key, errors);
+        const hedge = cfg.hedge === undefined ? (base?.hedge ?? null) : parseHedge(cfg.hedge, key, errors);
+        const firstEventTimeoutMs = cfg.first_event_timeout_ms === undefined ? (base?.firstEventTimeoutMs ?? null) : parseFirstEventTimeoutMs(cfg.first_event_timeout_ms, key, errors);
+        const budgetSplit = cfg.budget_split === undefined ? (base?.budgetSplit ?? null) : parseBudgetSplit(cfg.budget_split, key, errors);
         let attempts: number;
         if (cfg.max_attempts !== undefined) {
-          // `typeof` leads the guard so the integer range checks run on a
-          // narrowed number — identical rejection behavior to the original
-          // Number.isInteger short-circuit.
           const rawMax = cfg.max_attempts;
           if (typeof rawMax !== 'number'
             || !Number.isInteger(rawMax)
             || rawMax < MIN_ATTEMPTS
             || rawMax > MAX_ATTEMPTS) {
-            errors.push(`POLICIES_CONFIG: "${name}": max_attempts must be an integer between ${MIN_ATTEMPTS} and ${MAX_ATTEMPTS}`);
-            attempts = BUILTIN_POLICIES.default.maxAttempts;
+            errors.push(`POLICIES_CONFIG: "${key}": max_attempts must be an integer between ${MIN_ATTEMPTS} and ${MAX_ATTEMPTS}`);
+            attempts = base?.maxAttempts ?? BUILTIN_POLICIES.default.maxAttempts;
           } else {
             attempts = rawMax;
           }
         } else {
-          attempts = BUILTIN_POLICIES.default.maxAttempts;
+          attempts = base?.maxAttempts ?? BUILTIN_POLICIES.default.maxAttempts;
         }
-        policies[name.trim()] = {
+        policies[key] = {
           maxAttempts: attempts,
           tierAttempts,
           hedge,
@@ -148,14 +150,14 @@ function analyzePolicies(env: Record<string, unknown>): { policies: Record<strin
 }
 
 // Parse an optional hedge policy: { enabled?, delay_ms?, tiers? }.
-//   enabled   — boolean (default true); false disables hedging for this policy.
-//   delay_ms  — integer >= 0; overrides HEDGE_DELAY_MS for this policy.
-//   tiers     — array of "tier1"/"tier2"/"tier3"; if present, only those
-//               tiers may launch hedge twins. Absent = all tiers.
-// When the field is absent entirely (user config omits hedge), null is returned
-// and the handler falls back to the legacy global behavior (hedge enabled
-// everywhere except tier3). Built-in policies always declare hedge explicitly.
-function parseHedge(value: unknown, policyName: string, errors: string[]): HedgePolicy {
+  //   enabled   — boolean (default true); false disables hedging for this policy.
+  //   delay_ms  — integer >= 0; overrides HEDGE_DELAY_MS for this policy.
+  //   tiers     — array of "tier1"/"tier2"/"tier3"; if present, only those
+  //               tiers may launch hedge twins. Absent = all tiers.
+  // When the field is absent entirely (user config omits hedge), null is returned.
+  // null means "no hedge for this policy". Built-in policies always declare hedge
+  // explicitly. Custom policies without an explicit hedge have no hedge.
+  function parseHedge(value: unknown, policyName: string, errors: string[]): HedgePolicy {
   if (value === undefined || value === null) return null;
   if (typeof value !== 'object' || Array.isArray(value)) {
     errors.push(`POLICIES_CONFIG: "${policyName}": hedge must be an object { enabled?, delay_ms?, tiers? }`);

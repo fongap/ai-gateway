@@ -49,8 +49,7 @@ const PROTOCOL_SURFACES = new Map<string, Set<string>>([
 // Single source of truth for supported cross-protocol conversions.
 // Key: client route (protocol:surface), Value: array of allowed fallback targets.
 // A conversion is listed here ONLY after the full Request + Response + Stream +
-// Error Converter has been implemented and tested. See R0 of the v1.3.0
-// development instructions.
+// Error Converter has been implemented and tested.
 export const SUPPORTED_CONVERSIONS: Readonly<Record<string, string[]>> = Object.freeze({
   'anthropic:messages': ['openai:chat_completions'],
   'openai:chat_completions': ['anthropic:messages'],

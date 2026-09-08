@@ -94,7 +94,7 @@ Anthropic 原生节点：
 | `STREAM_INCLUDE_USAGE` | auto | auto/always/never | 是否在流式请求中携带 `stream_options.include_usage` |
 | `STREAM_USAGE_INCLUDE_OFF_PROVIDERS` | *(empty)* | provider 列表 | 按 provider 排除 usage hint |
 | `PROJECT_REPOSITORY_URL` | — | https URL | Dashboard 显示 |
-| `PROTOCOL_FALLBACKS` | *内置默认（v1.3.0 双向 fallback）* | unset / `disable` / JSON object | 跨协议 fallback 链。v1.3.0 默认链 `{"anthropic:messages":["openai:chat_completions"], "openai:chat_completions":["anthropic:messages"], "openai:responses":["anthropic:messages"]}`；设 `disable` 关闭；显式 JSON（即使为空数组）覆盖默认。详细见 [protocol-model.md](../architecture/protocol-model.md#v130-协议转换-r0) |
+| `PROTOCOL_FALLBACKS` | *内置默认（v1.3.0 双向 fallback）* | unset / `disable` / JSON object | 跨协议 fallback 链。v1.3.0 默认链 `{"anthropic:messages":["openai:chat_completions"], "openai:chat_completions":["anthropic:messages"]}`；设 `disable` 关闭；显式 JSON（即使为空数组）覆盖默认。详细见 [protocol-model.md](../architecture/protocol-model.md) |
 
 运行时参数的唯一事实来源是 `src/config/runtime-vars.js`。
 

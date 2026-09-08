@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
 //
-// Gateway access-key authentication. v1.2.7 governance model.
+// Gateway access-key authentication.
 //
 // Authorization flow:
 //

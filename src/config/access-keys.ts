@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
 //
-// Key-scoped gateway access. v1.2.7 governance model.
+// Key-scoped gateway access.
 //
 // Five independent credential groups — AIR, PRO, MAX, ULTRA, AGENT — each
 // with its own secret and model allowlist:

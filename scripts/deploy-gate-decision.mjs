@@ -8,22 +8,21 @@
 // scenario directly instead of string-matching shell fragments.
 //
 // Rules, evaluated in order:
-//   R0  manual workflow_dispatch            -> deploy permitted, BUT it is
+//   Manual workflow_dispatch            -> deploy permitted, BUT it is
 //       never a bypass: the deploy workflow's `manual-validate` job runs
 //       the full validation suite (validate:deploy + typecheck + strict
 //       typecheck + bundle dry-run) before the deploy job may start. Only
 //       the manual path re-runs validation, because it is not a
 //       high-frequency operation.
-//   R1  workflow_run from a fork head repo  -> never deploy.
-//   R2  workflow_run whose triggering CI run was NOT started by a push
-//       (scheduled nightly CI, manual CI, PR) -> never deploy. The check
+//   workflow_run from a fork head repo   -> never deploy.
+//   CI run not triggered by a push       -> never deploy. The check
 //       is the explicit `workflow_run.event`, never commit-message,
 //       timestamp or branch heuristics. Nightly and manual CI runs are
 //       test-only.
-//   R3  CI conclusion != success            -> never deploy (Production Gate).
-//   R4  triggering commit changed ONLY *.md / docs/** -> skip deploy
+//   CI conclusion != success             -> never deploy (Production Gate).
+//   Triggering commit changed ONLY *.md / docs/** -> skip deploy
 //       (reproduces the previous paths-ignore policy).
-//   R5  otherwise (push to main, full CI success, real change) -> deploy.
+//   Otherwise (push to main, full CI success, real change) -> deploy.
 //
 // CLI contract (used by the gate job in deploy.yml): reads EVENT /
 // TRIGGER_EVENT / CI_CONCLUSION / HEAD_REPO / THIS_REPO / HEAD_SHA /
@@ -55,16 +54,16 @@ export function decideDeploy({
   thisRepo = '',
   changedFiles = null,
 }) {
-  // R0 — manual dispatch: allowed at the gate; the manual-validate job is
+  // Manual dispatch: allowed at the gate; the manual-validate job is
   // what keeps this from being a silent Production Gate bypass.
   if (event === 'workflow_dispatch') {
     return { deploy: true, reason: 'manual workflow_dispatch — full validation runs in the manual-validate job' };
   }
-  // R1 — fork head repositories never deploy.
+  // Fork head repositories never deploy.
   if (headRepo !== thisRepo) {
     return { deploy: false, reason: `head repository is a fork (${headRepo || 'unknown'}) — deploy blocked` };
   }
-  // R2 — only a CI run triggered by a push may auto-deploy. Scheduled
+  // Only a CI run triggered by a push may auto-deploy. Scheduled
   // nightly CI and manual CI runs are test-only.
   if (triggerEvent !== 'push') {
     return { deploy: false, reason: `CI run was triggered by '${triggerEvent || 'unknown'}', not a push — deploy blocked (nightly/manual CI is test-only)` };
