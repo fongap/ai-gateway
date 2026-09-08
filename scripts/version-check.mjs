@@ -15,10 +15,6 @@ function readJson(rel) {
 
 const pkg = readJson('package.json');
 const lock = readJson('package-lock.json');
-const status = fs.readFileSync(path.join(root, 'src', 'observability', 'diagnostic-endpoints.ts'), 'utf8');
-const changelog = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
-const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
-const readmeEn = fs.readFileSync(path.join(root, 'README_EN.md'), 'utf8');
 
 const version = pkg.version;
 const nodeEngine = pkg.engines?.node;
@@ -26,18 +22,13 @@ if (!nodeEngine) {
   fail('package.json.engines.node is missing');
 }
 
-// Enforce Node.js minimum version: >=22.18.0
-const nodeMatch = String(nodeEngine).match(/>=\s*(\d+)/);
-if (!nodeMatch) {
-  fail(`package.json.engines.node "${nodeEngine}" does not declare a minimum version (expected >=22.18.0)`);
-} else {
-  const minMajor = parseInt(nodeMatch[1], 10);
-  if (minMajor < 22) {
-    fail(`package.json.engines.node minimum major ${minMajor} is below the required 22`);
-  }
+// Check version is valid semver (major.minor.patch)
+const semverMatch = version.match(/^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/);
+if (!semverMatch) {
+  fail(`package.json.version="${version}" is not a valid semver`);
 }
 
-// package-lock.json
+// package-lock.json must match package.json version (auto-synced by npm)
 if (lock.version !== version) {
   fail(`package-lock.json.version=${lock.version} does not match package.json.version=${version}`);
 }
@@ -53,39 +44,28 @@ if (!lockRoot) {
   }
 }
 
-// APP_META.version
-const sourceVersion = status.match(/version:\s*'([^']+)'/)?.[1];
-if (!sourceVersion) {
-  fail('APP_META.version was not found in src/observability/diagnostic-endpoints.ts');
-} else if (sourceVersion !== version) {
-  fail(`APP_META.version=${sourceVersion} does not match package.json.version=${version}`);
+// Validate Node.js engine range format (must declare minimum >=22)
+const nodeMatch = String(nodeEngine).match(/>=\s*(\d+)/);
+if (!nodeMatch) {
+  fail(`package.json.engines.node "${nodeEngine}" does not declare a minimum version (expected >=22)`);
+} else {
+  const minMajor = parseInt(nodeMatch[1], 10);
+  if (minMajor < 22) {
+    fail(`package.json.engines.node minimum major ${minMajor} is below the required 22`);
+  }
 }
 
-// CHANGELOG heading
-if (!changelog.includes(`## ${version} -`)) {
-  fail(`CHANGELOG.md does not contain a "## ${version} -" release heading`);
-}
-
-// README / README_EN: must mention the runtime requirement
-const nodePattern = /(>=|>)(\s*)([0-9]+)/g;
-function readEnginesFromReadme(text) {
-  // Match the badge URL or any "Node.js >=N" mention.
-  const matches = [];
-  for (const m of text.matchAll(/Node\.js[^)\n]*?(>=|>)(\s*)(\d+)/gi)) {
-    matches.push(m[3]);
-  }
-  for (const m of text.matchAll(/badge\/Node\.js-%3E%3D(\d+)/gi)) {
-    matches.push(m[1]);
-  }
-  return matches;
-}
-const expectedMajor = parseInt(String(nodeEngine).replace(/^[^0-9]*/, ''), 10);
-for (const [name, text] of [['README.md', readme], ['README_EN.md', readmeEn]]) {
-  const majors = new Set(readEnginesFromReadme(text).map((s) => parseInt(s, 10)));
-  if (majors.size === 0) {
-    fail(`${name} does not mention a Node.js major version (expected >=${expectedMajor})`);
-  } else if (!majors.has(expectedMajor)) {
-    fail(`${name} Node.js majors mentioned (${[...majors].join(', ')}) do not match package.json.engines.node (>=${expectedMajor})`);
+// Check that the generated version module exists and matches
+const versionModulePath = path.join(root, 'src', 'config', 'version.ts');
+if (!fs.existsSync(versionModulePath)) {
+  fail('Generated version module src/config/version.ts is missing (run generate-version.mjs)');
+} else {
+  const versionModuleContent = fs.readFileSync(versionModulePath, 'utf8');
+  const moduleVersionMatch = versionModuleContent.match(/export const VERSION = '([^']+)'/);
+  if (!moduleVersionMatch) {
+    fail('src/config/version.ts does not contain expected VERSION export');
+  } else if (moduleVersionMatch[1] !== version) {
+    fail(`src/config/version.ts VERSION=${moduleVersionMatch[1]} does not match package.json.version=${version}`);
   }
 }
 

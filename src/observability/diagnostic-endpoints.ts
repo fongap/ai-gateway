@@ -17,11 +17,12 @@ import type { RegistryEntry } from '../config/registry.ts';
 import type { AuthResult } from '../types/request.ts';
 import type { RuntimeNode } from '../types/node.ts';
 import type { Surface } from '../types/protocol.ts';
+import { VERSION } from '../config/version.ts';
 
 export const APP_META = Object.freeze({
   name: 'ai-gateway',
   displayName: 'Smart AI Gateway',
-  version: '1.2.6',
+  version: VERSION,
 });
 
 // R2 (v1.3.0) — Production Identity. Build SHA is the deployment identity
