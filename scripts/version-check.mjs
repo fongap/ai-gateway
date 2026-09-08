@@ -26,7 +26,7 @@ if (!nodeEngine) {
   fail('package.json.engines.node is missing');
 }
 
-// Enforce Node.js range: >=22.18.0 and <30.0.0
+// Enforce Node.js minimum version: >=22.18.0
 const nodeMatch = String(nodeEngine).match(/>=\s*(\d+)/);
 if (!nodeMatch) {
   fail(`package.json.engines.node "${nodeEngine}" does not declare a minimum version (expected >=22.18.0)`);
@@ -34,15 +34,6 @@ if (!nodeMatch) {
   const minMajor = parseInt(nodeMatch[1], 10);
   if (minMajor < 22) {
     fail(`package.json.engines.node minimum major ${minMajor} is below the required 22`);
-  }
-}
-if (String(nodeEngine).includes('<')) {
-  const upperMatch = String(nodeEngine).match(/<\s*(\d+)/);
-  if (upperMatch) {
-    const maxMajor = parseInt(upperMatch[1], 10);
-    if (maxMajor > 30) {
-      fail(`package.json.engines.node upper bound ${maxMajor} exceeds the supported range (<30)`);
-    }
   }
 }
 

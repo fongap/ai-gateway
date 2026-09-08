@@ -75,6 +75,9 @@ export function decideDeploy({
   }
   // R4 — markdown/docs-only commits skip the deploy (legacy paths-ignore).
   if (changedFiles !== null) {
+    if (changedFiles.length === 0) {
+      return { deploy: false, reason: 'no deployable file changes — deploy skipped' };
+    }
     const deployable = changedFiles.filter((f) => !/\.md$/.test(f) && !/^docs\//.test(f));
     if (deployable.length === 0) {
       return { deploy: false, reason: 'triggering commit changed only markdown/docs paths — deploy skipped' };

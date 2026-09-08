@@ -73,7 +73,7 @@ Transport 层不调度节点；Scheduler 和 Reliability 层不解析协议事�
 | --- | --- | --- | --- |
 | OpenAI Chat → Anthropic | `openai-chat-request-to-anthropic.ts` | `anthropic-response-to-openai-chat.ts` | `anthropic-stream-to-openai-chat.ts` |
 | OpenAI Chat → Responses | (无 — n/a) | (无 — n/a) | (无 — n/a) |
-| OpenAI Responses → Anthropic | `responses-request-to-anthropic.ts` | `anthropic-response-to-responses.ts` | `anthropic-stream-to-responses.ts` |
+| OpenAI Responses → Anthropic | (native-only, no cross-protocol conversion) | (native-only, no cross-protocol conversion) | (native-only, no cross-protocol conversion) |
 | Anthropic → OpenAI Chat | (Anthropic 是 native 起点) | `anthropic-response-to-openai-chat.ts` | `anthropic-stream-to-openai-chat.ts` |
 
 每个转换器只支持**实际被使用的子集**(Codex 实际下发的字段)。不支持的字段(如 Responses 的 `reasoning` items, `image_generation_call`, `mcp_*` items 等)被**明确拒绝**(返回 `conversion_not_supported` 错误),不静默丢字段。
