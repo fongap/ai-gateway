@@ -3,9 +3,9 @@
 //
 // Config Layer: environment shards -> Runtime Node list.
 //
-//   TIER{1,2,3}_NODES_CONFIG_01..99   plain variables, JSON arrays of node
+//   TIER{1,2,3}_NODES_CONFIG_01..10   plain variables, JSON arrays of node
 //                                     configs WITHOUT any credential material.
-//   TIER{1,2,3}_NODES_SECRETS_01..99  secrets, JSON objects { nodeId: credential }.
+//   TIER{1,2,3}_NODES_SECRETS_01..10  secrets, JSON objects { nodeId: credential }.
 //                                     The tier prefix MUST match the matching
 //                                     config shard's tier — secrets are 1:1
 //                                     with the config they pair with, so
@@ -63,6 +63,10 @@ export const TIER_SHARD_PATTERN = /^TIER([123])_NODES_CONFIG_(\d{2})$/;
 // shard. A TIER1 secret under a TIER2 config is a config error, not a free
 // credential binding.
 export const SECRET_SHARD_PATTERN = /^TIER([123])_NODES_SECRETS_(\d{2})$/;
+// GitHub Actions injects node-config/secret shards through a fixed range
+// (01..10). Any shard index above 10 can never be delivered by the Deploy
+// workflow, so it is a configuration error rather than a silent no-op.
+export const MAX_SHARD_INDEX = 10;
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const FORBIDDEN_NODE_FIELDS = ['token', 'credential', 'api_key', 'apikey', 'authorization', 'password', 'secret'];
 // Fail-fast schema: any field outside this set is a typo/invalid and the node
@@ -559,10 +563,15 @@ export function collectShards(env: Record<string, unknown>, pattern: RegExp, loo
   for (const key of Object.keys(env || {})) {
     const match = pattern.exec(key);
     if (match) {
+      const index = Number(match[indexGroup]);
+      if (index < 1 || index > MAX_SHARD_INDEX) {
+        diagnostics.push(`${key}: shard index out of range (expected 01..${String(MAX_SHARD_INDEX).padStart(2, '0')}); ignored`);
+        continue;
+      }
       shards.push({
         key,
         tierNumber: pattern.source.includes('TIER') ? Number(match[1]) : 0,
-        index: Number(match[indexGroup]),
+        index,
       });
       continue;
     }

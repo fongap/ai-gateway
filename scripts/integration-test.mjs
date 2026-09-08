@@ -1734,13 +1734,13 @@ await test('/version is public and exposes only branding, no node/config topolog
   'public /version must not expose configuration/topology');
 });
 
-// R2 (v1.3.0) — Production Identity: /version must expose the deployment
+// Production Identity: /version must expose the deployment
 // identity as a `build` field derived from env.GITHUB_SHA. The contract is:
 //   * When GITHUB_SHA is a valid 7–40 hex string, /version.build echoes it.
 //   * When GITHUB_SHA is missing or malformed, /version.build is the literal
 //     string `unknown` (so local dev / pre-deploy probes never crash).
 //   * The build field is independent of the `version` field (semver).
-await test('/version exposes deployment identity as a `build` field (R2: Build SHA = Deployment identity)', async () => {
+await test('/version exposes deployment identity as a `build` field (Build SHA = Deployment identity)', async () => {
   resetMock();
   const buildSha = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0';
   const res = await worker.fetch(

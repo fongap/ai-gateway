@@ -10,7 +10,7 @@ Model Registry (`src/config/registry.ts`) 是逻辑模型的策略和能力（`c
 
 ## Node 与 Tier
 
-节点配置通过 `src/config/nodes.ts` 合并 `TIER{1,2,3}_NODES_CONFIG_01..99` Worker 文本变量与 `TIER{1,2,3}_NODES_SECRETS_01..99` Worker Secrets 生成 Runtime Node（tier-scoped secret 与 config shard 1:1 配对）：
+节点配置通过 `src/config/nodes.ts` 合并 `TIER{1,2,3}_NODES_CONFIG_01..10` Worker 文本变量与 `TIER{1,2,3}_NODES_SECRETS_01..10` Worker Secrets 生成 Runtime Node（tier-scoped secret 与 config shard 1:1 配对）：
 
 - Tier 仅从变量前缀派生；节点 JSON 不能声明它
 - Credential lookup 在此且仅在此发生；下游模块只看到 `runtimeNode.credential`
@@ -71,7 +71,7 @@ Tier 间 fallback 严格按优先级顺序。Budget 分配在当前可调度的 
 
 Tier 1 额外硬限制为最多 3 个 logical attempt，且在重试前检查共享 wall-clock deadline。
 
-### Adaptive Budget (R5 v1.3.0)
+### Adaptive Budget
 
 `POLICIES_CONFIG` 中可选用 `budget_split` 字段 (与 `tier_attempts` 正交):
 
@@ -79,7 +79,7 @@ Tier 1 额外硬限制为最多 3 个 logical attempt，且在重试前检查共
 - **`'weighted'` (opt-in)**: surplus 按每个 tier 的 live dispatchable 节点数比例分配。
 - **`'tier_attempts'` 仍然胜出**: 显式 override 不受 `budget_split` 影响。
 
-详细算法与示例见 [reliability-model.md → Adaptive Budget (R5)](./reliability-model.md#adaptive-budget-r5-v130)。
+详细算法与示例见 [reliability-model.md → Adaptive Budget](./reliability-model.md#adaptive-budget-r5-v130)。
 
 ## Failover Budget
 

@@ -18,7 +18,7 @@
 //
 // Requestability uses the real scheduler predicate the request handler relies
 // on (supportsRequest): a request for a model with no serving node is exactly
-// the 404 "No configured node provides model ..." denial path in handler.js.
+// the 404 "No configured node provides model ..." denial path in handler.ts.
 
 import assert from 'node:assert/strict';
 import { getPublicModelStatus } from '../src/runtime/model-status.ts';

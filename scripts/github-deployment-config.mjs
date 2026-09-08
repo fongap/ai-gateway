@@ -27,12 +27,14 @@ import { RUNTIME_VAR_NAMES } from '../src/config/runtime-vars.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const VAR_NAME = /^[A-Z][A-Z0-9_]{0,127}$/;
-const NODE_VAR = /^TIER[123]_NODES_CONFIG_\d{2}$/;
-const NODE_SECRET = /^TIER[123]_NODES_SECRETS_\d{2}$/;
+// Shard indices are restricted to 01..10 to match the GitHub Deploy fixed range
+// (see .github/workflows/deploy.yml). Anything above 10 is a config error.
+const NODE_VAR = /^TIER[123]_NODES_CONFIG_(0[1-9]|10)$/;
+const NODE_SECRET = /^TIER[123]_NODES_SECRETS_(0[1-9]|10)$/;
 const KEY_GROUPS = ['AIR', 'PRO', 'MAX', 'ULTRA', 'AGENT'];
 const GROUP_KEY_PATTERN = `GATEWAY_ACCESS_KEY_(?:${KEY_GROUPS.join('|')})`;
 const GROUP_MODELS_PATTERN = `GATEWAY_ACCESS_MODELS_(?:${KEY_GROUPS.join('|')})`;
-const SECRET_NAME = new RegExp(`^(?:${GROUP_KEY_PATTERN}|TIER[123]_NODES_SECRETS_\\d{2})$`);
+const SECRET_NAME = new RegExp(`^(?:${GROUP_KEY_PATTERN}|TIER[123]_NODES_SECRETS_(0[1-9]|10))$`);
 const MAX_VALUE_BYTES = 4500;
 
 // Individual Worker text variables the bridge recognizes from env (besides the
@@ -40,7 +42,7 @@ const MAX_VALUE_BYTES = 4500;
 // src/config/runtime-vars.ts so the deployment bridge, timeout loader, docs
 // and example configs can never drift.
 const RUNTIME_VAR_PATTERN = new RegExp(
-  '^(TIER[123]_NODES_CONFIG_\\d{2}|MODELS_CONFIG|POLICIES_CONFIG|' +
+  '^(TIER[123]_NODES_CONFIG_(0[1-9]|10)|MODELS_CONFIG|POLICIES_CONFIG|' +
   GROUP_MODELS_PATTERN + '|' +
   RUNTIME_VAR_NAMES.join('|') + ')$',
 );
@@ -84,13 +86,18 @@ export function normalizeRuntimeConfig(raw) {
     if (CREDENTIAL_NAMES.has(name) || NODE_SECRET.test(name)) {
       throw new Error(`vars.${name}: credentials belong in secrets, never vars`);
     }
+    // Shard index must be within 01..10 (GitHub Deploy fixed range).
+    const nodeVarMatch = /^TIER[123]_NODES_CONFIG_(\d{2})$/.exec(name);
+    if (nodeVarMatch && Number(nodeVarMatch[1]) > 10) {
+      throw new Error(`vars.${name}: shard index out of range (01..10); ignored`);
+    }
     const value = encodeValue(rawValue, `vars.${name}`);
     assertSize(name, value);
     vars[name] = value;
   }
   for (const [name, rawValue] of Object.entries(raw.secrets)) {
     if (!SECRET_NAME.test(name)) {
-      throw new Error(`secrets.${name}: only GATEWAY_ACCESS_KEY and TIER[123]_NODES_SECRETS_01..99 are supported`);
+      throw new Error(`secrets.${name}: only GATEWAY_ACCESS_KEY and TIER[123]_NODES_SECRETS_01..10 are supported`);
     }
     const value = encodeValue(rawValue, `secrets.${name}`);
     assertSize(name, value);
@@ -177,10 +184,10 @@ export function preflight(env) {
   const v = collectVarsFromEnv(env);
   const s = collectSecretsFromEnv(env);
   const tierShards = Object.keys(v.vars).filter((n) => NODE_VAR.test(n)).length;
-  const tier1Shards = Object.keys(v.vars).filter((n) => /^TIER1_NODES_CONFIG_\d{2}$/.test(n)).length;
+  const tier1Shards = Object.keys(v.vars).filter((n) => /^TIER1_NODES_CONFIG_(0[1-9]|10)$/.test(n)).length;
   const secretShards = Object.keys(s.secrets).filter((n) => NODE_SECRET.test(n)).length;
   // Cloudflare Workers imposes a platform limit on the total number of
-  // environment variables + bindings. The _01..99 shard namespace is a
+  // environment variables + bindings. The _01..10 shard namespace is a
   // parser convention, NOT a recommended deployment size. Warn early.
   const totalManaged = Object.keys(v.vars).length + Object.keys(s.secrets).length;
   const CF_VAR_WARNING_THRESHOLD = 80;
@@ -250,7 +257,7 @@ export function withStaleNodeSecretsRemoved(secrets, existingSecrets) {
   const out = { ...secrets };
   for (const entry of Array.isArray(existingSecrets) ? existingSecrets : []) {
     const name = typeof entry === 'string' ? entry : entry?.name;
-    if (typeof name === 'string' && NODE_SECRET.test(name) && !(name in out)) out[name] = null;
+    if (typeof name === 'string' && /^TIER[123]_NODES_SECRETS_(0[1-9]|10)$/.test(name) && !(name in out)) out[name] = null;
   }
   return out;
 }

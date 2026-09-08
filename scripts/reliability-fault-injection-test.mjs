@@ -160,7 +160,7 @@ await test('writeTier1Affinity on a throwing KV is silently swallowed (does not 
     },
   };
   // A successful call must not throw; the gateway path is the
-  // writeTier1Affinity(...) call inside attempt.js which is followed
+  // writeTier1Affinity(...) call inside attempt.ts which is followed
   // by no await on the result (it is fire-and-forget for performance).
   let threw = false;
   try {

@@ -6,7 +6,7 @@
 
 - **Cross-Protocol Fallback (v1.3.0)**: OpenAI Chat ↔ Anthropic Messages 双向 fallback（默认 ON，可 `disable` 关闭或显式 JSON 覆盖）。OpenAI Responses 为 Native Only。跨协议 fallback 与 native retry 共享 `max_attempts` / `FAILOVER_BUDGET_MS` budget，不获取新 attempt slot。错误 envelope 保证客户端始终收到自己协议形状的错误。
 - **Production Identity**: `/version` 新增 `build` 字段（commit SHA，7-40 hex），与 `version`（semver）分离。Deploy job 注入 `GITHUB_SHA`，bridge 白名单包含 `GITHUB_SHA`。
-- **Adaptive Budget (R5)**: `POLICIES_CONFIG.budget_split` 控制 per-tier attempt surplus 分配（`even` / `weighted`）。`tier_attempts` 显式 override 不受 `budget_split` 影响。
+- **Adaptive Budget**: `POLICIES_CONFIG.budget_split` 控制 per-tier attempt surplus 分配（`even` / `weighted`）。`tier_attempts` 显式 override 不受 `budget_split` 影响。
 - **协议矩阵测试** (`scripts/protocol-matrix-test.mjs`)、**转换测试** (`scripts/conversion-test.mjs`)、**架构契约测试** (`scripts/architecture-contract-test.mjs`)、**Deployment Workflow Contract Test** (`scripts/deployment-workflow-contract-test.mjs`)、**Reliability Core Contract** (`scripts/reliability-core-contract-test.mjs`)。
 - **FailureKind 词汇闭合到 16 值**: `RATE_LIMIT_GLOBAL` / `INVALID_BASE_URL` / `STREAM_INTERRUPTED` / `NON_JSON_BODY` / `CANCELLED_AFTER_PEER_COMMIT` / `UNKNOWN`。`KIND` 为 `export const`，全 codebase 单一事实源。
 - **`pickCandidate` 返回 `PickedCandidate`**（含 `raceLost` / `releaseToken`），与 `pickTier1Candidate` 一致，race-loss 可见。

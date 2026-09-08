@@ -68,11 +68,11 @@ export function decideDeploy({
   if (triggerEvent !== 'push') {
     return { deploy: false, reason: `CI run was triggered by '${triggerEvent || 'unknown'}', not a push — deploy blocked (nightly/manual CI is test-only)` };
   }
-  // R3 — Production Gate: full CI must have succeeded.
+  // Production Gate: full CI must have succeeded.
   if (ciConclusion !== 'success') {
     return { deploy: false, reason: `CI conclusion is '${ciConclusion || 'unknown'}' — deploy blocked (Production Gate)` };
   }
-  // R4 — markdown/docs-only commits skip the deploy (legacy paths-ignore).
+  // Markdown/docs-only commits skip the deploy (legacy paths-ignore).
   if (changedFiles !== null) {
     if (changedFiles.length === 0) {
       return { deploy: false, reason: 'no deployable file changes — deploy skipped' };
@@ -82,7 +82,7 @@ export function decideDeploy({
       return { deploy: false, reason: 'triggering commit changed only markdown/docs paths — deploy skipped' };
     }
   }
-  // R5 — push to main with full CI success and a deployable change.
+  // Push to main with full CI success and a deployable change.
   return { deploy: true, reason: 'push to main with full CI success — deploy allowed' };
 }
 

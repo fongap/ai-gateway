@@ -63,9 +63,9 @@ Deploy workflow（workflow_run: CI completed, branch main）:
 | `GATEWAY_PUBLIC_BASE_URL` | 是 | `https://` URL（无尾部 `/v1`） |
 | `TOKEN_STATS_D1_ID` | 可选 | D1 数据库 ID |
 | `TIER1_AFFINITY_KV_ID` | Tier 1 配置时必需 | KV namespace ID |
-| `TIER1_NODES_CONFIG_01..99` | 至少一个 tier variable | JSON 数组 |
-| `TIER2_NODES_CONFIG_01..99` | 可选 | 同上 |
-| `TIER3_NODES_CONFIG_01..99` | 可选 | 同上 |
+| `TIER1_NODES_CONFIG_01..10` | 至少一个 tier variable | JSON 数组 |
+| `TIER2_NODES_CONFIG_01..10` | 可选 | 同上 |
+| `TIER3_NODES_CONFIG_01..10` | 可选 | 同上 |
 | `MODELS_CONFIG` | 可选 | 模型注册表覆盖 |
 | `POLICIES_CONFIG` | 可选 | Attempt budgets |
 | `DEPLOY_ENABLED` | 仅 Fork | 设为 `true` 启用 |
@@ -76,7 +76,7 @@ Deploy workflow（workflow_run: CI completed, branch main）:
 |---|---|---|
 | `CLOUDFLARE_API_TOKEN` | 是 | Cloudflare 部署 token |
 | `GATEWAY_ACCESS_KEY` | 是 | 客户端访问密钥 |
-| `TIER{1,2,3}_NODES_SECRETS_01..99` | 至少一个 | `{ "node-id": "credential" }`（tier-scoped，与 config shard 一一对应） |
+| `TIER{1,2,3}_NODES_SECRETS_01..10` | 至少一个 | `{ "node-id": "credential" }`（tier-scoped，与 config shard 一一对应） |
 
 ## 节点管理
 
@@ -125,7 +125,7 @@ Deploy 工作流包含自动 Worker-code 回滚。如果 Worker 部署成功但 
 
 每次 Deploy 注入同一个 SHA 到三处：CI 验证的 commit、部署的 Worker code、`/version` 暴露的 `build` 字段。
 
-- **Release identity** = `APP_META.version`（semver，手动 bump，关联 `package.json` / `CHANGELOG.md`）
+- **Release identity** = `version` 字段（semver，来自 `package.json`，经 `scripts/generate-version.mjs` 生成 `src/config/version.ts`）
 - **Deployment identity** = `build` 字段（commit SHA，CI/Deploy 自动注入 `GITHUB_SHA`，不手工维护）
 - 部署 Bridge 通过 `EXTRA_VAR_ALLOW` 白名单透传 `GITHUB_SHA` 到 Worker vars map
 - `/version.build` 在缺值或非法值时回退到 `unknown`，本地 dev 与 pre-deploy probe 不会崩溃

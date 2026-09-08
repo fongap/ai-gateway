@@ -241,4 +241,33 @@ function envFixture() {
   assert.ok(!('GATEWAY_ACCESS_MODELS_MAX' in s.secrets), 'MODELS_MAX not in secrets map');
 }
 
+// ---- Node shard range 01..10 (matches GitHub Deploy fixed range) ----
+
+// Shard 10 is a valid config/secret shard; shard 11 is NOT collected.
+{
+  const env = envFixture();
+  env.TIER1_NODES_CONFIG_10 = env.TIER1_NODES_CONFIG_01;
+  env.TIER1_NODES_CONFIG_11 = JSON.stringify([{ id: 'node-11', base_url: 'https://provider.example.com/v1', models: { 'code-pro': 'up' } }]);
+  env.TIER1_NODES_SECRETS_10 = env.TIER1_NODES_SECRETS_01;
+  env.TIER1_NODES_SECRETS_11 = JSON.stringify({ 'node-11': 'upstream-key-11' });
+  const v = collectVarsFromEnv(env);
+  const s = collectSecretsFromEnv(env);
+  assert.ok('TIER1_NODES_CONFIG_10' in v.vars, 'TIER1_NODES_CONFIG_10 collected as a variable');
+  assert.ok(!('TIER1_NODES_CONFIG_11' in v.vars), 'TIER1_NODES_CONFIG_11 NOT collected (shard index > 10)');
+  assert.ok('TIER1_NODES_SECRETS_10' in s.secrets, 'TIER1_NODES_SECRETS_10 collected as a secret');
+  assert.ok(!('TIER1_NODES_SECRETS_11' in s.secrets), 'TIER1_NODES_SECRETS_11 NOT collected (shard index > 10)');
+}
+
+// normalizeRuntimeConfig rejects a shard index above the fixed 01..10 range.
+{
+  assert.throws(
+    () => normalizeRuntimeConfig({
+      vars: { ...fixture().vars, TIER1_NODES_CONFIG_11: JSON.stringify([{ id: 'node-11', base_url: 'https://provider.example.com/v1' }]) },
+      secrets: fixture().secrets,
+    }),
+    /TIER1_NODES_CONFIG_11|shard index out of range/i,
+    'TIER1_NODES_CONFIG_11 must be rejected as out of range',
+  );
+}
+
 console.log('github deployment config tests passed.');

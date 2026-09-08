@@ -71,7 +71,7 @@ export type LoopState = {
   logicalAttempts: number,
   dispatches: number,
   hedges: number,
-  // R3 (v1.3.0): the failure-kind histogram is now typed by FailureKind so
+  // the failure-kind histogram is typed by FailureKind so
   // the compiler rejects any new kind string that has not been declared in
   // src/reliability/classify.ts. Partial because kinds are accumulated
   // incrementally — an empty `{}` is a valid initial state.
@@ -179,7 +179,7 @@ export type AttemptOutcome = {
   rotate?: boolean,
   stop?: boolean,
   budgetCharged?: boolean,
-  // R3 (v1.3.0): kind is typed as FailureKind (the full taxonomy) so the
+  // kind is typed as FailureKind (the full taxonomy) so the
   // compiler catches any drift between the classifier in
   // src/reliability/classify.ts and the consumers in attempt/*.ts. The
   // previous `string` type allowed any literal to leak through.

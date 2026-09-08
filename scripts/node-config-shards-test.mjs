@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   buildPlan, assertNodesArray, assertSecretsObject,
   MANAGED_VAR_PATTERN, MANAGED_SECRET_PATTERN,
+  MAX_SHARD_NUMBER,
 } from './node-config-shards.mjs';
 
 const node = (id, extra = {}) => ({
@@ -114,6 +115,23 @@ test('patterns only match managed names', () => {
   assert.ok(MANAGED_SECRET_PATTERN.test('TIER1_NODES_SECRETS_03'));
   assert.ok(MANAGED_SECRET_PATTERN.test('GATEWAY_ACCESS_KEY'));
   assert.ok(!MANAGED_SECRET_PATTERN.test('MY_SECRET'));
+});
+
+test('shard limit is 10 (config) and 10 (secret), matching GitHub Deploy', () => {
+  assert.equal(MAX_SHARD_NUMBER, 10, 'MAX_SHARD_NUMBER must be 10');
+  // buildPlan with 300 nodes forces enough shards to exercise the 01..10 bound.
+  const big = buildPlan({
+    tiers: { 1: Array.from({ length: 300 }, (_, i) => node(`n${i}`)) },
+    secretsMap: Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`n${i}`, 'x'])),
+  });
+  for (const key of Object.keys(big.vars).concat(Object.keys(big.secrets))) {
+    const match = /(\d{2})$/.exec(key);
+    assert.ok(match, `${key} must end with a 2-digit index`);
+    const idx = Number(match[1]);
+    assert.ok(idx >= 1 && idx <= 10, `${key} shard index must be within 01..10 (got ${idx})`);
+  }
+  assert.ok(!Object.keys(big.vars).some((k) => /_11$/.test(k)), 'no config shard 11');
+  assert.ok(!Object.keys(big.secrets).some((k) => /_11$/.test(k)), 'no secret shard 11');
 });
 
 test('assertNodesArray rejects malformed entries', () => {

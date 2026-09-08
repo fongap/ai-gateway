@@ -29,11 +29,11 @@
 //                                valid operator choice that means "explicitly
 //                                turn off fallback for this route".
 //
-// Rationale for Default ON: the only supported conversion
-// (Anthropic Messages -> OpenAI Chat Completions) is the safe and widely-
-// expected fallback for Anthropic-only operators who also carry an OpenAI-
-// compatible pool. Operators who want the legacy behavior can opt out with
-// `PROTOCOL_FALLBACKS=disable`.
+// Rationale for Default ON: the only supported conversions
+// (Anthropic Messages <-> OpenAI Chat Completions, bidirectional) are the safe
+// and widely-expected fallback for operators who carry both an Anthropic pool
+// and an OpenAI-compatible pool. Operators who want the legacy Native-Only
+// behavior can opt out with `PROTOCOL_FALLBACKS=disable`.
 //
 // Only explicitly supported conversions are allowed. Unsupported conversions
 // produce blocking configuration errors (not warnings).

@@ -3,12 +3,12 @@
 // Shared node-configuration sharding and planning module.
 //
 // Plain variables (no credential material allowed):
-//   TIER1_NODES_CONFIG_01 .. _99   JSON arrays of node configs
-//   TIER2_NODES_CONFIG_01 .. _99
-//   TIER3_NODES_CONFIG_01 .. _99
+//   TIER1_NODES_CONFIG_01 .. _10   JSON arrays of node configs
+//   TIER2_NODES_CONFIG_01 .. _10
+//   TIER3_NODES_CONFIG_01 .. _10
 // Secrets:
 //   GATEWAY_ACCESS_KEY
-//   TIER{1,2,3}_NODES_SECRETS_01..99   JSON objects { nodeId: credential }
+//   TIER{1,2,3}_NODES_SECRETS_01..10   JSON objects { nodeId: credential }
 //
 // Cloudflare Workers variable/secret size limit is 5 KB per value; shards are
 // capped below that with margin. Shards always split on complete entry
@@ -16,10 +16,10 @@
 import fs from 'node:fs';
 
 export const SHARD_MAX_BYTES = 4500;
-export const MAX_SHARD_NUMBER = 99;
+export const MAX_SHARD_NUMBER = 10;
 
-export const MANAGED_VAR_PATTERN = /^TIER[123]_NODES_CONFIG_\d{2}$/;
-export const MANAGED_SECRET_PATTERN = /^(GATEWAY_ACCESS_KEY|TIER[123]_NODES_SECRETS_\d{2})$/;
+export const MANAGED_VAR_PATTERN = /^TIER[123]_NODES_CONFIG_(0[1-9]|10)$/;
+export const MANAGED_SECRET_PATTERN = /^(GATEWAY_ACCESS_KEY|TIER[123]_NODES_SECRETS_(0[1-9]|10))$/;
 
 const FORBIDDEN_NODE_FIELDS = ['token', 'credential', 'api_key', 'apikey', 'authorization', 'password', 'secret'];
 const ALLOWED_NODE_FIELDS = new Set(['id', 'provider', 'protocol', 'surfaces', 'base_url', 'priority', 'models', 'limits']);
@@ -312,7 +312,7 @@ export function buildPlan({ tiers, secretsMap, existingVarNames = [], existingSe
   const deleteVars = [...new Set(existingVarNames)].filter((name) => MANAGED_VAR_PATTERN.test(name) && !planned.has(name)).sort();
   const plannedS = new Set(plannedSecrets);
   const deleteSecrets = [...new Set(existingSecretNames)]
-    .filter((name) => /^TIER[123]_NODES_SECRETS_\d{2}$/.test(name) && !plannedS.has(name))
+    .filter((name) => /^TIER[123]_NODES_SECRETS_(0[1-9]|10)$/.test(name) && !plannedS.has(name))
     .sort();
 
   return { vars, secrets, plannedVars, plannedSecrets, deleteVars, deleteSecrets, tierSummary };

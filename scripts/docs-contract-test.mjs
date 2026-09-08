@@ -104,7 +104,7 @@ assert.ok(
 passed++;
 console.log('ok - CONFIGURATION.md does not present legacy blob as production path');
 
-// deploy.yml must inject every runtime tunable from runtime-vars.js.
+// deploy.yml must inject every runtime tunable from runtime-vars.ts.
 const deployYml = readDoc('.github/workflows/deploy.yml');
 const { RUNTIME_VAR_NAMES } = await import('../src/config/runtime-vars.ts');
 for (const name of RUNTIME_VAR_NAMES) {
@@ -116,7 +116,7 @@ for (const name of RUNTIME_VAR_NAMES) {
 passed++;
 console.log(`ok - deploy.yml injects all ${RUNTIME_VAR_NAMES.length} runtime variables`);
 
-  // .dev.vars.example comments must match runtime-vars.js defaults.
+  // .dev.vars.example comments must match runtime-vars.ts defaults.
   // This ensures the example config doesn't silently override defaults with stale values.
   const devVarsExample = readDoc('.dev.vars.example');
   const { RUNTIME_TUNABLES } = await import('../src/config/runtime-vars.ts');
@@ -134,10 +134,10 @@ console.log(`ok - deploy.yml injects all ${RUNTIME_VAR_NAMES.length} runtime var
       }
     }
     passed++;
-    console.log(`ok - .dev.vars.example default for ${name} matches runtime-vars.js`);
+    console.log(`ok - .dev.vars.example default for ${name} matches runtime-vars.ts`);
   }
 
-  // Architecture docs must not contradict runtime-vars.js defaults.
+  // Architecture docs must not contradict runtime-vars.ts defaults.
   // Specific drift-prone values: FAILOVER_BUDGET_MS, HEDGE_DELAY_MS,
   // UPSTREAM_HEADERS_TIMEOUT_MS, FIRST_EVENT_TIMEOUT_MS.
   const archDocDefaults = [
@@ -156,11 +156,11 @@ console.log(`ok - deploy.yml injects all ${RUNTIME_VAR_NAMES.length} runtime var
       assert.equal(
         seconds,
         expectedSeconds,
-        `${file}: ${varName} default is ${seconds}s in docs but runtime-vars.js says ${expectedSeconds}s (${def}ms)`,
+        `${file}: ${varName} default is ${seconds}s in docs but runtime-vars.ts says ${expectedSeconds}s (${def}ms)`,
       );
     }
     passed++;
-    console.log(`ok - ${file} default for ${varName} matches runtime-vars.js (${def}ms)`);
+      console.log(`ok - ${file} default for ${varName} matches runtime-vars.ts (${def}ms)`);
   }
 
   // routing-model.md must describe Tier 1 as Affinity → P2C, not LRU.
