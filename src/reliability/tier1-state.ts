@@ -18,6 +18,12 @@ export const TIER1_NEUTRAL_TTFT_MS = 800; // scheduling fallback, never stored a
 export const TIER1_AFFINITY_FACTOR = 0.85; // one factor: the registry has no logical model tiers
 export const TIER1_MAX_ATTEMPTS = 3;
 
+// TTFT scoring: bounded multiplicative demotion (not raw score base).
+export const TIER1_SCORE_BASE = 1000;
+export const TIER1_TTFT_WEIGHT = 0.25;
+export const TIER1_TTFT_FACTOR_MIN = 0.85; // fast nodes get at most 0.85x
+export const TIER1_TTFT_FACTOR_MAX = 1.50; // slow nodes get at most 1.50x
+
 export const TIER1_FAILURE_THRESHOLD = 3;
 export const TIER1_HALF_OPEN_SUCCESS_THRESHOLD = 2;
 export const TIER1_COOLDOWN_DEFAULT_MS = 30_000;
@@ -293,9 +299,59 @@ function explorationFactor(accountId: string, modelId: string): number {
     ? TIER1_EXPLORATION_FACTOR : 1;
 }
 
+// Candidate-pool TTFT baseline: median of all known ttftEwma values in the
+// eligible pool. Used to compute a relative ratio — never persisted.
+function tier1TtftBaseline(
+  modelId: string,
+  candidates: ReadonlyArray<RuntimeNode>,
+): number {
+  const known: number[] = [];
+  for (const candidate of candidates ?? []) {
+    const metric = getTier1ModelPerf(candidate.id, modelId);
+    if (
+      metric?.ttftEwma != null
+      && metric.sampleCount > 0
+      && Number.isFinite(metric.ttftEwma)
+    ) {
+      known.push(metric.ttftEwma);
+    }
+  }
+  return known.length ? median(known) : TIER1_NEUTRAL_TTFT_MS;
+}
+
+// TTFT factor: bounded multiplicative demotion. A node whose ttftEwma is at
+// the pool baseline scores 1.0; faster nodes get a bonus (down to
+// TIER1_TTFT_FACTOR_MIN = 0.85); slower nodes get a penalty (up to
+// TIER1_TTFT_FACTOR_MAX = 1.50). Nodes with no samples return 1.0 (no
+// demotion — they keep the exploration factor instead).
+function ttftFactor(
+  accountId: string,
+  modelId: string,
+  candidates: ReadonlyArray<RuntimeNode>,
+): number {
+  const metric = getTier1ModelPerf(accountId, modelId);
+  if (
+    !metric
+    || metric.ttftEwma == null
+    || metric.sampleCount === 0
+  ) {
+    return 1; // no demotion — explorationFactor handles unknown nodes
+  }
+  const baseline = tier1TtftBaseline(modelId, candidates);
+  const ratio = metric.ttftEwma / Math.max(1, baseline);
+  return Math.min(
+    TIER1_TTFT_FACTOR_MAX,
+    Math.max(
+      TIER1_TTFT_FACTOR_MIN,
+      1 + TIER1_TTFT_WEIGHT * (ratio - 1),
+    ),
+  );
+}
+
 export function calculateTier1Score(node: RuntimeNode, modelId: string, candidates: ReadonlyArray<RuntimeNode>, affinityFactor: number = 1, now: number = Date.now()): number {
   return Math.max(1,
-    effectiveTier1Ttft(node.id, modelId, candidates)
+    TIER1_SCORE_BASE
+    * ttftFactor(node.id, modelId, candidates)
     * loadFactor(node)
     * failureFactor(node.id, modelId)
     * quotaFactor(node.id, now)
