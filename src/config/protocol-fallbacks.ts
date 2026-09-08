@@ -54,7 +54,6 @@ const PROTOCOL_SURFACES = new Map<string, Set<string>>([
 export const SUPPORTED_CONVERSIONS: Readonly<Record<string, string[]>> = Object.freeze({
   'anthropic:messages': ['openai:chat_completions'],
   'openai:chat_completions': ['anthropic:messages'],
-  'openai:responses': ['anthropic:messages'],
 });
 
 // Built-in default chain. Applied when PROTOCOL_FALLBACKS is unset/empty.
@@ -63,7 +62,6 @@ export const SUPPORTED_CONVERSIONS: Readonly<Record<string, string[]>> = Object.
 export const DEFAULT_FALLBACK_CHAIN: Readonly<Record<string, string[]>> = Object.freeze({
   'anthropic:messages': ['openai:chat_completions'],
   'openai:chat_completions': ['anthropic:messages'],
-  'openai:responses': ['anthropic:messages'],
 });
 
 // Magic literal that turns the default off. Compared case-insensitively after

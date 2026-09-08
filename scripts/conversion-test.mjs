@@ -31,9 +31,6 @@ import {
 } from '../src/conversion/openai-chat-request-to-anthropic.ts';
 import { convertAnthropicResponseToOpenAIChat } from '../src/conversion/anthropic-response-to-openai-chat.ts';
 import { createOpenAIChatStreamFromAnthropic } from '../src/conversion/anthropic-stream-to-openai-chat.ts';
-import { convertResponsesRequestToAnthropic } from '../src/conversion/responses-request-to-anthropic.ts';
-import { convertAnthropicResponseToResponses } from '../src/conversion/anthropic-response-to-responses.ts';
-import { createResponsesStreamFromAnthropic } from '../src/conversion/anthropic-stream-to-responses.ts';
 import {
   loadProtocolFallbacks,
   getProtocolFallbacksDiagnostics,
@@ -860,257 +857,6 @@ await run('conversion: stream tool_calls roundtrip (split across chunks)', async
   assert.ok(i('message_delta') < i('message_stop'));
 });
 
-// =====================================================================
-//   OpenAI Responses REQUEST -> Anthropic Messages REQUEST
-//   (R0.6 — Codex path)
-// =====================================================================
-
-await run('conversion: Responses -> Anthropic request — input as string', () => {
-  const out = convertResponsesRequestToAnthropic({
-    model: 'code-max',
-    input: 'hi',
-  });
-  assert.equal(out.model, 'code-max');
-  assert.ok(out.max_tokens && out.max_tokens > 0, 'default max_tokens applied');
-  assert.deepEqual(out.messages, [{ role: 'user', content: 'hi' }]);
-  assert.equal(out.system, undefined);
-});
-
-await run('conversion: Responses -> Anthropic request — input as array of message items', () => {
-  const out = convertResponsesRequestToAnthropic({
-    model: 'code-max',
-    input: [
-      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] },
-    ],
-  });
-  assert.equal(out.messages[0].role, 'user');
-  // input_text is collapsed to a single string when only one part
-  assert.equal(out.messages[0].content, 'hi');
-});
-
-await run('conversion: Responses -> Anthropic request — instructions -> system', () => {
-  const out = convertResponsesRequestToAnthropic({
-    model: 'code-max',
-    instructions: 'be terse',
-    input: 'hi',
-  });
-  assert.equal(out.system, 'be terse');
-});
-
-await run('conversion: Responses -> Anthropic request — function_call + function_call_output -> tool_use + tool_result', () => {
-  const out = convertResponsesRequestToAnthropic({
-    model: 'code-max',
-    input: [
-      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'lookup sf' }] },
-      { type: 'function_call', call_id: 'call_0', name: 'lookup', arguments: '{"city":"sf"}' },
-      { type: 'function_call_output', call_id: 'call_0', output: 'sunny' },
-    ],
-  });
-  const asst = out.messages[1];
-  assert.equal(asst.role, 'assistant');
-  assert.ok(Array.isArray(asst.content));
-  const toolUse = asst.content.find((b) => b.type === 'tool_use');
-  assert.ok(toolUse);
-  assert.equal(toolUse.id, 'call_0');
-  assert.equal(toolUse.name, 'lookup');
-  assert.deepEqual(toolUse.input, { city: 'sf' });
-  // function_call_output items are merged into a single user message with
-  // tool_result blocks (same pattern as the Chat reverse direction).
-  const toolMsg = out.messages[2];
-  assert.equal(toolMsg.role, 'user');
-  assert.ok(Array.isArray(toolMsg.content));
-  const toolResult = toolMsg.content.find((b) => b.type === 'tool_result');
-  assert.ok(toolResult);
-  assert.equal(toolResult.tool_use_id, 'call_0');
-  assert.equal(toolResult.content, 'sunny');
-});
-
-await run('conversion: Responses -> Anthropic request — tools[].parameters -> input_schema', () => {
-  const out = convertResponsesRequestToAnthropic({
-    model: 'code-max',
-    tools: [{ type: 'function', name: 'lookup', parameters: { type: 'object', properties: { city: { type: 'string' } } } }],
-    input: 'hi',
-  });
-  assert.equal(out.tools[0].name, 'lookup');
-  assert.equal(out.tools[0].input_schema.type, 'object');
-  assert.ok(out.tools[0].input_schema.properties);
-});
-
-await run('conversion: Responses -> Anthropic request — tool_choice string', () => {
-  const mk = (tc) => convertResponsesRequestToAnthropic({
-    model: 'code-max', tool_choice: tc, input: 'hi',
-  });
-  assert.deepEqual(mk('auto').tool_choice, { type: 'auto' });
-  assert.deepEqual(mk('none').tool_choice, { type: 'none' });
-  assert.deepEqual(mk('required').tool_choice, { type: 'any' });
-});
-
-await run('conversion: Responses -> Anthropic request — tool_choice function shape', () => {
-  const out = convertResponsesRequestToAnthropic({
-    model: 'code-max',
-    tool_choice: { type: 'function', name: 'lookup' },
-    input: 'hi',
-  });
-  assert.deepEqual(out.tool_choice, { type: 'tool', name: 'lookup' });
-});
-
-await run('conversion: Responses -> Anthropic request — max_output_tokens passes through', () => {
-  const out = convertResponsesRequestToAnthropic({
-    model: 'code-max',
-    max_output_tokens: 256,
-    input: 'hi',
-  });
-  assert.equal(out.max_tokens, 256);
-});
-
-await run('conversion: Responses -> Anthropic request — reasoning item is rejected (no silent loss)', () => {
-  let caught;
-  try {
-    convertResponsesRequestToAnthropic({
-      model: 'code-max',
-      input: [{ type: 'reasoning', content: [{ type: 'reasoning_text', text: 'think' }] }],
-    });
-  } catch (e) { caught = e; }
-  assert.ok(caught && caught.code && caught.code.includes('conversion_not_supported'));
-});
-
-// ---- Anthropic response -> Responses object ----------------------------
-
-await run('conversion: Anthropic -> Responses response — text + end_turn', () => {
-  const out = convertAnthropicResponseToResponses({
-    id: 'msg_1', type: 'message', role: 'assistant', model: 'up-model',
-    content: [{ type: 'text', text: 'hello' }], stop_reason: 'end_turn', stop_sequence: null,
-    usage: { input_tokens: 3, output_tokens: 5 },
-  });
-  assert.equal(out.object, 'response');
-  assert.equal(out.status, 'completed');
-  assert.equal(out.model, 'up-model');
-  assert.equal(out.output.length, 1);
-  assert.equal(out.output[0].type, 'message');
-  assert.equal(out.output[0].status, 'completed');
-  assert.equal(out.output[0].content[0].text, 'hello');
-  assert.equal(out.output[0].content[0].type, 'output_text');
-  assert.deepEqual(out.usage, { input_tokens: 3, output_tokens: 5, total_tokens: 8 });
-});
-
-await run('conversion: Anthropic -> Responses response — tool_use becomes function_call item', () => {
-  const out = convertAnthropicResponseToResponses({
-    id: 'msg_1', type: 'message', role: 'assistant', model: 'up-model',
-    content: [
-      { type: 'text', text: 'on it' },
-      { type: 'tool_use', id: 'call_1', name: 'lookup', input: { city: 'sf' } },
-    ],
-    stop_reason: 'tool_use', stop_sequence: null,
-    usage: { input_tokens: 1, output_tokens: 1 },
-  });
-  assert.equal(out.output.length, 2);
-  assert.equal(out.output[0].type, 'message');
-  assert.equal(out.output[0].content[0].text, 'on it');
-  assert.equal(out.output[1].type, 'function_call');
-  assert.equal(out.output[1].call_id, 'call_1');
-  assert.equal(out.output[1].name, 'lookup');
-  assert.equal(out.output[1].arguments, JSON.stringify({ city: 'sf' }));
-  assert.equal(out.status, 'completed');
-});
-
-await run('conversion: Anthropic -> Responses response — stop_reason mapping', () => {
-  const mk = (sr) => convertAnthropicResponseToResponses({
-    id: 'm', type: 'message', role: 'assistant', model: 'm',
-    content: [{ type: 'text', text: 'x' }], stop_reason: sr, stop_sequence: null,
-  }).status;
-  assert.equal(mk('end_turn'), 'completed');
-  assert.equal(mk('tool_use'), 'completed');
-  assert.equal(mk('max_tokens'), 'incomplete');
-  assert.equal(mk('refusal'), 'failed');
-});
-
-await run('conversion: Anthropic -> Responses response — thinking block is rejected (no silent loss)', () => {
-  let caught;
-  try {
-    convertAnthropicResponseToResponses({
-      id: 'm', type: 'message', role: 'assistant', model: 'm',
-      content: [{ type: 'thinking', thinking: 'reason' }], stop_reason: 'end_turn', stop_sequence: null,
-    });
-  } catch (e) { caught = e; }
-  assert.ok(caught && caught.code && caught.code.includes('conversion_not_supported'));
-});
-
-// ---- Anthropic stream -> Responses stream -------------------------------
-
-await run('conversion: stream Anthropic -> Responses — text + end_turn, real-time', async () => {
-  const anthropicChunks = [
-    sseAnthropicEvent('message_start', {
-      type: 'message_start',
-      message: { id: 'r1', type: 'message', role: 'assistant', model: 'up-model', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 0 } },
-    }),
-    sseAnthropicEvent('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
-    sseAnthropicEvent('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'hi' } }),
-    sseAnthropicEvent('content_block_stop', { type: 'content_block_stop', index: 0 }),
-    sseAnthropicEvent('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { input_tokens: 1, output_tokens: 1 } }),
-    sseAnthropicEvent('message_stop', { type: 'message_stop' }),
-  ];
-  const stream = createResponsesStreamFromAnthropic(makeSseResponse(anthropicChunks), {
-    responseId: 'resp_test1', model: 'code-max',
-  });
-  const text = await readSseStream(stream);
-  // Required Responses lifecycle events must be present.
-  assert.match(text, /event: response\.created/);
-  assert.match(text, /event: response\.output_item\.added/);
-  assert.match(text, /event: response\.output_text\.delta/);
-  assert.match(text, /event: response\.output_text\.done/);
-  assert.match(text, /event: response\.output_item\.done/);
-  assert.match(text, /event: response\.completed/);
-  // The Anthropic lifecycle events must NOT leak through.
-  assert.doesNotMatch(text, /event: message_start/);
-  assert.doesNotMatch(text, /event: message_stop/);
-  assert.doesNotMatch(text, /text_delta/);
-  // The text content reaches the client.
-  assert.match(text, /"delta":"hi"/);
-});
-
-await run('conversion: stream Anthropic -> Responses — tool_use + function_call_arguments.delta', async () => {
-  const anthropicChunks = [
-    sseAnthropicEvent('message_start', {
-      type: 'message_start',
-      message: { id: 'r2', type: 'message', role: 'assistant', model: 'up-model', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 0 } },
-    }),
-    sseAnthropicEvent('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'call_99', name: 'lookup' } }),
-    sseAnthropicEvent('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"ci' } }),
-    sseAnthropicEvent('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: 'ty":"sf"}' } }),
-    sseAnthropicEvent('content_block_stop', { type: 'content_block_stop', index: 0 }),
-    sseAnthropicEvent('message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { input_tokens: 1, output_tokens: 1 } }),
-    sseAnthropicEvent('message_stop', { type: 'message_stop' }),
-  ];
-  const stream = createResponsesStreamFromAnthropic(makeSseResponse(anthropicChunks), {
-    responseId: 'resp_test2', model: 'code-max',
-  });
-  const text = await readSseStream(stream);
-  assert.match(text, /event: response\.output_item\.added/);
-  assert.match(text, /event: response\.function_call_arguments\.delta/);
-  assert.match(text, /event: response\.output_item\.done/);
-  assert.match(text, /event: response\.completed/);
-  // The function_call item has the right name + accumulated arguments.
-  assert.match(text, /"name":"lookup"/);
-  assert.match(text, /"arguments":"\{\\"ci/);
-});
-
-await run('conversion: stream Anthropic -> Responses — message_start only is NOT a commit', async () => {
-  // Lifecycle-only stream: no real output. The converter must not emit
-  // response.completed (or any commit event) so the upstream First Event
-  // Guard can rotate.
-  const anthropicChunks = [
-    sseAnthropicEvent('message_start', {
-      type: 'message_start',
-      message: { id: 'r3', type: 'message', role: 'assistant', model: 'up-model', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 0 } },
-    }),
-    sseAnthropicEvent('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
-  ];
-  const stream = createResponsesStreamFromAnthropic(makeSseResponse(anthropicChunks), {
-    responseId: 'resp_test3', model: 'code-max',
-  });
-  await assert.rejects(readSseStream(stream), /interrupted/);
-});
-
 // ---- protocol-fallbacks config -------------------------------------------
 
 await run('config: loadProtocolFallbacks returns the parsed object', () => {
@@ -1139,13 +885,11 @@ await run('config: default ON — unset env applies built-in default chain', () 
   // Unset PROTOCOL_FALLBACKS: built-in default chains are applied silently.
   // The defaults are the only safe cross-protocol fallbacks for the routes
   // that have a complete Request + Response + Stream + Error converter
-  // (Anthropic Messages <-> OpenAI Chat Completions, and OpenAI Responses
-  // -> Anthropic Messages, v1.3.0 R0).
+  // (Anthropic Messages <-> OpenAI Chat Completions).
   const cfg = loadProtocolFallbacks({});
   assert.deepEqual(cfg, {
     'anthropic:messages': ['openai:chat_completions'],
     'openai:chat_completions': ['anthropic:messages'],
-    'openai:responses': ['anthropic:messages'],
   });
   assert.deepEqual(getProtocolFallbacksDiagnostics({}), [], 'default chain has no diagnostics');
 });
@@ -1155,7 +899,6 @@ await run('config: default ON — empty string is treated as unset', () => {
   assert.deepEqual(cfg, {
     'anthropic:messages': ['openai:chat_completions'],
     'openai:chat_completions': ['anthropic:messages'],
-    'openai:responses': ['anthropic:messages'],
   });
 });
 
@@ -1651,7 +1394,7 @@ await run('handler: hedge never crosses protocol', async () => {
       EXPOSE_UPSTREAM_INFO: 'true',
       HEDGE_DELAY_MS: '50', // Fast hedge trigger
       MODELS_CONFIG: JSON.stringify({ 'claude-x': { policy: 'default' } }),
-      POLICIES_CONFIG: JSON.stringify({ default: { max_attempts: 2 } }),
+      POLICIES_CONFIG: JSON.stringify({ default: { max_attempts: 2, hedge: { enabled: true, tiers: ['tier1'] } } }),
     },
   });
   const res = await worker.fetch(messagesRequest({
@@ -2080,7 +1823,7 @@ const okResponsesObject = () => ({
   usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
 });
 
-await run('handler: OpenAI Responses client + only Anthropic upstream -> success (non-stream)', async () => {
+await run('handler: OpenAI Responses client + only Anthropic upstream (no fallback) -> 404', async () => {
   resetMock();
   routeHandlers['a1.example.com'] = () => jsonUpstream(okAnthropicMessage());
   const env = makeEnv({
@@ -2091,47 +1834,14 @@ await run('handler: OpenAI Responses client + only Anthropic upstream -> success
   const res = await worker.fetch(responsesApiRequest({
     model: 'code-max', input: 'hi',
   }), env, {});
-  assert.equal(res.status, 200);
-  const body = await res.json();
-  // The client is OpenAI Responses; it must see the Responses object shape.
-  assert.equal(body.object, 'response');
-  assert.equal(body.status, 'completed');
-  assert.equal(body.model, 'code-max');
-  assert.ok(Array.isArray(body.output));
-  assert.equal(body.output[0].type, 'message');
-  assert.equal(body.output[0].content[0].text, 'hello');
-  assert.equal(body.output[0].content[0].type, 'output_text');
-  assert.equal(res.headers.get('x-gateway-node'), 'a1');
-  // The wire call to the Anthropic upstream must carry the converted
-  // Anthropic body (input='hi' becomes a user message with text content).
-  const call = upstreamCalls[0];
-  assert.equal(new URL(call.url).pathname, '/v1/messages');
-  assert.equal(call.body.messages[0].role, 'user');
-  assert.equal(call.body.messages[0].content, 'hi');
-  assert.ok(call.body.max_tokens && call.body.max_tokens > 0,
-    'converter supplied a max_tokens default');
-  assert.equal(call.headers.get('x-api-key'), 'k');
-  assert.equal(call.headers.get('authorization'), null);
+  // Responses is native-only: no fallback from Responses -> Anthropic.
+  // Only an Anthropic node exists, so the gateway returns 404 (no compatible node).
+  assert.equal(res.status, 404, '404 from no compatible node');
 });
 
-await run('handler: OpenAI Responses client + only Anthropic upstream -> success (stream)', async () => {
+await run('handler: OpenAI Responses client + only Anthropic upstream (no fallback, stream) -> 404', async () => {
   resetMock();
-  const lines = [
-    'event: message_start\ndata: {"type":"message_start","message":{"id":"r1","type":"message","role":"assistant","model":"up-model","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}\n\n',
-    'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
-    'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}\n\n',
-    'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
-    'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":1,"output_tokens":1}}\n\n',
-    'event: message_stop\ndata: {"type":"message_stop"}\n\n',
-  ];
-  const encoder = new TextEncoder();
-  let i = 0;
-  routeHandlers['a1.example.com'] = () => new Response(new ReadableStream({
-    pull(controller) {
-      if (i >= lines.length) { controller.close(); return; }
-      controller.enqueue(encoder.encode(lines[i++]));
-    },
-  }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  routeHandlers['a1.example.com'] = () => jsonUpstream(okAnthropicMessage());
   const env = makeEnv({
     tier1: [anthropicResponsesNode('a1')],
     secrets: { a1: 'k' },
@@ -2140,25 +1850,11 @@ await run('handler: OpenAI Responses client + only Anthropic upstream -> success
   const res = await worker.fetch(responsesApiRequest({
     model: 'code-max', input: 'hi', stream: true,
   }), env, {});
-  assert.equal(res.status, 200);
-  assert.equal(res.headers.get('content-type'), 'text/event-stream');
-  const text = await res.text();
-  // Required Responses lifecycle events.
-  assert.match(text, /event: response\.created/);
-  assert.match(text, /event: response\.output_item\.added/);
-  assert.match(text, /event: response\.output_text\.delta/);
-  assert.match(text, /event: response\.output_text\.done/);
-  assert.match(text, /event: response\.output_item\.done/);
-  assert.match(text, /event: response\.completed/);
-  // Anthropic lifecycle events must NOT leak through.
-  assert.doesNotMatch(text, /event: message_start/);
-  assert.doesNotMatch(text, /event: message_stop/);
-  assert.doesNotMatch(text, /text_delta/);
-  // The text content reaches the client.
-  assert.match(text, /"delta":"hi"/);
+  // Responses is native-only: no fallback from Responses -> Anthropic.
+  assert.equal(res.status, 404, '404 from no compatible node');
 });
 
-await run('handler: OpenAI Responses client + Anthropic 529 -> Responses error envelope (R0.4)', async () => {
+await run('handler: OpenAI Responses client + Anthropic 529 (no fallback) -> 404', async () => {
   resetMock();
   // Only Anthropic upstream, which always 529s.
   routeHandlers['a1.example.com'] = () => jsonUpstream({ error: { message: 'overloaded' } }, 529);
@@ -2169,16 +1865,9 @@ await run('handler: OpenAI Responses client + Anthropic 529 -> Responses error e
   const res = await worker.fetch(responsesApiRequest({
     model: 'code-max', input: 'hi',
   }), env, {});
-  // No native OpenAI Responses node exists, and the only fallback is
-  // Anthropic (which 529s). The client must see a Responses-shaped error
-  // envelope, not the Anthropic /v1/messages error JSON.
-  assert.equal(res.status, 502, 'terminal 502 from exhausted pool');
-  const body = await res.json();
-  // OpenAI Responses error envelope shape: { error: { message, type, ... } }
-  assert.ok(body.error, 'Responses-shaped error envelope');
-  assert.equal(typeof body.error.message, 'string');
-  // Anthropic envelope must NOT leak.
-  assert.equal(body.type, undefined, 'Anthropic type field is not present');
+  // Responses is native-only: no fallback from Responses -> Anthropic.
+  // Only an Anthropic node exists, so the gateway returns 404 (no compatible node).
+  assert.equal(res.status, 404, '404 from no compatible node');
 });
 
 await run('handler: OpenAI Responses client + only OpenAI Responses upstream -> success (native path)', async () => {
@@ -2202,9 +1891,9 @@ await run('handler: OpenAI Responses client + only OpenAI Responses upstream -> 
   assert.equal(res.headers.get('x-gateway-node'), 'r1');
 });
 
-await run('handler: OpenAI Responses client + Anthropic upstream with tool_use', async () => {
+await run('handler: OpenAI Responses client + Anthropic upstream with tool_use (no fallback) -> 404', async () => {
   resetMock();
-  const anthropicToolUse = () => ({
+  routeHandlers['a1.example.com'] = () => jsonUpstream({
     id: 'msg_1', type: 'message', role: 'assistant', model: 'up-model',
     content: [
       { type: 'text', text: 'on it' },
@@ -2213,7 +1902,6 @@ await run('handler: OpenAI Responses client + Anthropic upstream with tool_use',
     stop_reason: 'tool_use', stop_sequence: null,
     usage: { input_tokens: 2, output_tokens: 3 },
   });
-  routeHandlers['a1.example.com'] = () => jsonUpstream(anthropicToolUse());
   const env = makeEnv({
     tier1: [anthropicResponsesNode('a1')],
     secrets: { a1: 'k' },
@@ -2224,15 +1912,8 @@ await run('handler: OpenAI Responses client + Anthropic upstream with tool_use',
       { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'lookup sf' }] },
     ],
   }), env, {});
-  assert.equal(res.status, 200);
-  const body = await res.json();
-  // The Responses object has both a message item and a function_call item.
-  assert.equal(body.output.length, 2);
-  assert.equal(body.output[0].type, 'message');
-  assert.equal(body.output[0].content[0].text, 'on it');
-  assert.equal(body.output[1].type, 'function_call');
-  assert.equal(body.output[1].call_id, 'call_42');
-  assert.equal(body.output[1].name, 'lookup');
+  // Responses is native-only: no fallback from Responses -> Anthropic.
+  assert.equal(res.status, 404, '404 from no compatible node');
 });
 
 // ---- Tear down / summary ---------------------------------------------------

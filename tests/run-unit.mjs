@@ -65,6 +65,7 @@ const UNIT_TESTS = [
   'scripts/architecture-contract-test.mjs',
   'scripts/reliability-core-contract-test.mjs',
   'scripts/deployment-workflow-contract-test.mjs',
+  'scripts/scheduler-racelost-test.mjs',
 ];
 
 let failed = 0;

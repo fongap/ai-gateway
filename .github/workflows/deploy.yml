@@ -39,10 +39,12 @@ name: Deploy
 # sources always win and the two are never merged.
 #
 # GitHub Actions cannot enumerate Secret values dynamically, so tier-scoped
-# credential shards are injected through a fixed range matching the node-config
-# shards:
+# credential shards AND node config shards are injected through a fixed range:
 #
-#   TIER1_NODES_SECRETS_01..10
+#   TIER1_NODES_CONFIG_01..10   (node config — Secrets for log masking)
+#   TIER2_NODES_CONFIG_01..10
+#   TIER3_NODES_CONFIG_01..10
+#   TIER1_NODES_SECRETS_01..10  (credential shards)
 #   TIER2_NODES_SECRETS_01..10
 #   TIER3_NODES_SECRETS_01..10
 #
@@ -218,36 +220,39 @@ jobs:
       ALLOW_INSECURE_HTTP_UPSTREAM: ${{ vars.ALLOW_INSECURE_HTTP_UPSTREAM }}
       ANTHROPIC_COUNT_TOKENS_MODE: ${{ vars.ANTHROPIC_COUNT_TOKENS_MODE }}
       PROTOCOL_FALLBACKS: ${{ vars.PROTOCOL_FALLBACKS }}
-      TIER1_NODES_CONFIG_01: ${{ vars.TIER1_NODES_CONFIG_01 }}
-      TIER1_NODES_CONFIG_02: ${{ vars.TIER1_NODES_CONFIG_02 }}
-      TIER1_NODES_CONFIG_03: ${{ vars.TIER1_NODES_CONFIG_03 }}
-      TIER1_NODES_CONFIG_04: ${{ vars.TIER1_NODES_CONFIG_04 }}
-      TIER1_NODES_CONFIG_05: ${{ vars.TIER1_NODES_CONFIG_05 }}
-      TIER1_NODES_CONFIG_06: ${{ vars.TIER1_NODES_CONFIG_06 }}
-      TIER1_NODES_CONFIG_07: ${{ vars.TIER1_NODES_CONFIG_07 }}
-      TIER1_NODES_CONFIG_08: ${{ vars.TIER1_NODES_CONFIG_08 }}
-      TIER1_NODES_CONFIG_09: ${{ vars.TIER1_NODES_CONFIG_09 }}
-      TIER1_NODES_CONFIG_10: ${{ vars.TIER1_NODES_CONFIG_10 }}
-      TIER2_NODES_CONFIG_01: ${{ vars.TIER2_NODES_CONFIG_01 }}
-      TIER2_NODES_CONFIG_02: ${{ vars.TIER2_NODES_CONFIG_02 }}
-      TIER2_NODES_CONFIG_03: ${{ vars.TIER2_NODES_CONFIG_03 }}
-      TIER2_NODES_CONFIG_04: ${{ vars.TIER2_NODES_CONFIG_04 }}
-      TIER2_NODES_CONFIG_05: ${{ vars.TIER2_NODES_CONFIG_05 }}
-      TIER2_NODES_CONFIG_06: ${{ vars.TIER2_NODES_CONFIG_06 }}
-      TIER2_NODES_CONFIG_07: ${{ vars.TIER2_NODES_CONFIG_07 }}
-      TIER2_NODES_CONFIG_08: ${{ vars.TIER2_NODES_CONFIG_08 }}
-      TIER2_NODES_CONFIG_09: ${{ vars.TIER2_NODES_CONFIG_09 }}
-      TIER2_NODES_CONFIG_10: ${{ vars.TIER2_NODES_CONFIG_10 }}
-      TIER3_NODES_CONFIG_01: ${{ vars.TIER3_NODES_CONFIG_01 }}
-      TIER3_NODES_CONFIG_02: ${{ vars.TIER3_NODES_CONFIG_02 }}
-      TIER3_NODES_CONFIG_03: ${{ vars.TIER3_NODES_CONFIG_03 }}
-      TIER3_NODES_CONFIG_04: ${{ vars.TIER3_NODES_CONFIG_04 }}
-      TIER3_NODES_CONFIG_05: ${{ vars.TIER3_NODES_CONFIG_05 }}
-      TIER3_NODES_CONFIG_06: ${{ vars.TIER3_NODES_CONFIG_06 }}
-      TIER3_NODES_CONFIG_07: ${{ vars.TIER3_NODES_CONFIG_07 }}
-      TIER3_NODES_CONFIG_08: ${{ vars.TIER3_NODES_CONFIG_08 }}
-      TIER3_NODES_CONFIG_09: ${{ vars.TIER3_NODES_CONFIG_09 }}
-      TIER3_NODES_CONFIG_10: ${{ vars.TIER3_NODES_CONFIG_10 }}
+      # Node config shards: stored as Secrets to prevent topology leakage
+      # in public Actions logs (provider, base_url, priority, models).
+      # Worker runtime treats them as plain text variables — no contract change.
+      TIER1_NODES_CONFIG_01: ${{ secrets.TIER1_NODES_CONFIG_01 }}
+      TIER1_NODES_CONFIG_02: ${{ secrets.TIER1_NODES_CONFIG_02 }}
+      TIER1_NODES_CONFIG_03: ${{ secrets.TIER1_NODES_CONFIG_03 }}
+      TIER1_NODES_CONFIG_04: ${{ secrets.TIER1_NODES_CONFIG_04 }}
+      TIER1_NODES_CONFIG_05: ${{ secrets.TIER1_NODES_CONFIG_05 }}
+      TIER1_NODES_CONFIG_06: ${{ secrets.TIER1_NODES_CONFIG_06 }}
+      TIER1_NODES_CONFIG_07: ${{ secrets.TIER1_NODES_CONFIG_07 }}
+      TIER1_NODES_CONFIG_08: ${{ secrets.TIER1_NODES_CONFIG_08 }}
+      TIER1_NODES_CONFIG_09: ${{ secrets.TIER1_NODES_CONFIG_09 }}
+      TIER1_NODES_CONFIG_10: ${{ secrets.TIER1_NODES_CONFIG_10 }}
+      TIER2_NODES_CONFIG_01: ${{ secrets.TIER2_NODES_CONFIG_01 }}
+      TIER2_NODES_CONFIG_02: ${{ secrets.TIER2_NODES_CONFIG_02 }}
+      TIER2_NODES_CONFIG_03: ${{ secrets.TIER2_NODES_CONFIG_03 }}
+      TIER2_NODES_CONFIG_04: ${{ secrets.TIER2_NODES_CONFIG_04 }}
+      TIER2_NODES_CONFIG_05: ${{ secrets.TIER2_NODES_CONFIG_05 }}
+      TIER2_NODES_CONFIG_06: ${{ secrets.TIER2_NODES_CONFIG_06 }}
+      TIER2_NODES_CONFIG_07: ${{ secrets.TIER2_NODES_CONFIG_07 }}
+      TIER2_NODES_CONFIG_08: ${{ secrets.TIER2_NODES_CONFIG_08 }}
+      TIER2_NODES_CONFIG_09: ${{ secrets.TIER2_NODES_CONFIG_09 }}
+      TIER2_NODES_CONFIG_10: ${{ secrets.TIER2_NODES_CONFIG_10 }}
+      TIER3_NODES_CONFIG_01: ${{ secrets.TIER3_NODES_CONFIG_01 }}
+      TIER3_NODES_CONFIG_02: ${{ secrets.TIER3_NODES_CONFIG_02 }}
+      TIER3_NODES_CONFIG_03: ${{ secrets.TIER3_NODES_CONFIG_03 }}
+      TIER3_NODES_CONFIG_04: ${{ secrets.TIER3_NODES_CONFIG_04 }}
+      TIER3_NODES_CONFIG_05: ${{ secrets.TIER3_NODES_CONFIG_05 }}
+      TIER3_NODES_CONFIG_06: ${{ secrets.TIER3_NODES_CONFIG_06 }}
+      TIER3_NODES_CONFIG_07: ${{ secrets.TIER3_NODES_CONFIG_07 }}
+      TIER3_NODES_CONFIG_08: ${{ secrets.TIER3_NODES_CONFIG_08 }}
+      TIER3_NODES_CONFIG_09: ${{ secrets.TIER3_NODES_CONFIG_09 }}
+      TIER3_NODES_CONFIG_10: ${{ secrets.TIER3_NODES_CONFIG_10 }}
       GATEWAY_CONFIG: ${{ vars.GATEWAY_CONFIG }}
       # --- GitHub Secrets (fixed range; unset => empty, skipped) ---
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

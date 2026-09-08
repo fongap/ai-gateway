@@ -7,6 +7,10 @@
 // twin selection through the same protocol/surface-gated selector as the
 // primary, the shared logical-attempt deadline, and the winner/loser
 // lifecycle including abort of the losing side.
+//
+// Hedging is EXPLICIT OPT-IN: hedge.enabled must be true for hedging to
+// activate. All built-in policies set enabled: false. Operators who want
+// hedging must explicitly enable it via POLICIES_CONFIG.
 
 import { pickCandidate } from '../../scheduler/scheduler.ts';
 import { pickTier1Candidate } from '../../scheduler/tier1-scheduler.ts';
@@ -38,24 +42,15 @@ const sleepMs = (ms: number): Promise<void> => new Promise((resolve) => setTimeo
 // overload caveat.
 export async function dispatchWithHedge(args: AttemptContext, tierNodes: ReadonlyArray<RuntimeNode>): Promise<AttemptOutcome> {
   // Resolve effective hedge config: policy.hedge (per-model) overrides
-  // the global env defaults. Tier 3 (paid) nodes NEVER hedge by default
-  // — two paid requests in parallel is rarely worth the cost. To hedge
-  // a paid tier, opt in via policy.hedge.tiers=['tier3'] or policy: 'stable'.
+  // the global env defaults. Hedging is EXPLICIT OPT-IN: hedge.enabled must
+  // be true for hedging to activate. All built-in policies set enabled: false.
+  // Operators who want hedging must explicitly enable it via POLICIES_CONFIG.
   const hedgePolicy = args.policy?.hedge ?? null;
+  if (!hedgePolicy || hedgePolicy.enabled !== true) return attemptNode(args);
   const tierKey: 'tier1' | 'tier2' | 'tier3' = `tier${args.tierNumber}`;
-  if (args.tierNumber === 3 && !(hedgePolicy && hedgePolicy.tiers && hedgePolicy.tiers.includes('tier3') && hedgePolicy.enabled !== false)) {
-    return attemptNode(args);
-  }
-  let hedgeDelayMs: number, maxHedges: number;
-  if (hedgePolicy) {
-    if (hedgePolicy.enabled === false) return attemptNode(args);
-    if (hedgePolicy.tiers && !hedgePolicy.tiers.includes(tierKey)) return attemptNode(args);
-    hedgeDelayMs = hedgePolicy.delayMs ?? args.limits.hedgeDelayMs;
-    maxHedges = args.limits.maxHedgesPerRequest ?? 1;
-  } else {
-    hedgeDelayMs = args.limits.hedgeDelayMs || 0;
-    maxHedges = args.limits.maxHedgesPerRequest ?? 1;
-  }
+  if (hedgePolicy.tiers && !hedgePolicy.tiers.includes(tierKey)) return attemptNode(args);
+  const hedgeDelayMs = hedgePolicy.delayMs ?? args.limits.hedgeDelayMs;
+  const maxHedges = args.limits.maxHedgesPerRequest ?? 1;
   if (hedgeDelayMs <= 0 || maxHedges <= 0) return attemptNode(args);
 
   // The primary holds its own args object so the twin can inherit the logical

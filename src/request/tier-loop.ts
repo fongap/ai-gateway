@@ -38,6 +38,7 @@ type PickForTierOpts = {
   now?: number,
   rng?: () => number,
   excludeId?: string | null,
+  raceLostIds?: Set<string> | null,
 };
 
 // Tier-aware picker. Tier 1 uses P2C + affinity + tier1-state eligibility;
@@ -47,7 +48,7 @@ type PickForTierOpts = {
 // reproducible in tests without adding a production env knob — when the seed
 // is absent (production), Math.random is used and behaviour stays random.
 export function pickForTier(tierNumber: Tier, tierNodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, opts: PickForTierOpts = {}): TierPickResult {
-  const { knownModels } = opts;
+  const { knownModels, raceLostIds } = opts;
   if (tierNumber !== 1) {
     // R4 (v1.3.0): pickCandidate now returns PickedCandidate | null,
     // matching pickTier1Candidate. The Tier 2/3 path no longer wraps a
@@ -55,7 +56,7 @@ export function pickForTier(tierNumber: Tier, tierNodes: ReadonlyArray<RuntimeNo
     // directly, so race-loss is visible to the caller (previously it was
     // indistinguishable from "no eligible candidate" and the tier loop
     // would skip to the next tier instead of retrying).
-    const r = pickCandidate(tierNodes, req, attempted, undefined, null, knownModels);
+    const r = pickCandidate(tierNodes, req, attempted, undefined, null, knownModels, raceLostIds ?? null);
     if (!r) return null;
     if (r.raceLost) return { raceLost: true };
     return { node: r.node };
