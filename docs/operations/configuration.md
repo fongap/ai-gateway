@@ -1,6 +1,6 @@
 # 配置参考
 
-> 当前 1.x 配置架构。生产环境通过 GitHub Repository Variables（非敏感 Worker 文本变量）和 Secrets（凭据）交付。旧版 blob（`GATEWAY_CONFIG` / `GATEWAY_SECRETS_CONFIG`）已废弃——见 [deployment.md](deployment.md) 迁移说明。
+> 当前 1.x 配置架构。生产环境通过 GitHub Repository Variables（非敏感 Worker 文本变量）和 Secrets（凭据）交付。节点配置（provider、base_url、models、priority）存储在 Variables 中；凭据（api_key、token）存储在 Secrets 中。
 
 ## 生产配置来源
 
