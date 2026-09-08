@@ -8,14 +8,14 @@
 // Tier order is fixed (tier-1 -> tier-2 -> tier-3, hard precedence).
 //
 // Built-in policies (always present, user config merges on top):
-//   default        - balanced: maxAttempts=5, hedge disabled (opt-in)
+//   default        - balanced: maxAttempts=5, hedge enabled for Tier 1 only
 //   fast           - speed-first: maxAttempts=1, hedge disabled
-//   stable         - reliability: maxAttempts=5, hedge disabled (opt-in)
+//   stable         - reliability: maxAttempts=5, hedge enabled for Tier 1 only
 //   long-reasoning - extended first-event: maxAttempts=3, hedge disabled, firstEventTimeoutMs=120000
 //
 // Hedging is explicit opt-in: hedge.enabled must be true for hedging to
-// activate. Built-in policies all set hedge.enabled=false. Operators who
-// want hedging must explicitly enable it via POLICIES_CONFIG.
+// activate. default and stable enable hedging for Tier 1 only; Tier 2/3
+// never hedge. Operators can override via POLICIES_CONFIG.
 //
 // Like the node config, POLICIES_CONFIG is strict: malformed JSON, unknown
 // fields, invalid max_attempts, and invalid tier_attempts produce diagnostics
@@ -35,12 +35,12 @@ type TierAttempts = { tier1?: number, tier2?: number, tier3?: number } | null;
 // Built-in policies — always present, user config merges on top.
 // These are the single source of truth; no runtime fallback needed.
 // All built-ins now explicitly declare hedge behavior (no undefined).
-// Hedging is disabled by default — operators must opt in via hedge.enabled: true.
+// default and stable enable hedging for Tier 1 only; fast and long-reasoning disable it.
 const BUILTIN_POLICIES: Record<string, PolicyConfig> = Object.freeze({
   default: {
     maxAttempts: 5,
     tierAttempts: null,
-    hedge: { enabled: false },
+    hedge: { enabled: true, tiers: ['tier1'] },
     firstEventTimeoutMs: null,
     budgetSplit: null,
   },
@@ -54,9 +54,9 @@ const BUILTIN_POLICIES: Record<string, PolicyConfig> = Object.freeze({
   stable: {
     maxAttempts: 5,
     tierAttempts: null,
-    hedge: { enabled: false },
+    hedge: { enabled: true, tiers: ['tier1'] },
     firstEventTimeoutMs: null,
-    budgetSplit: null,
+    budgetSplit: null,    
   },
   'long-reasoning': {
     maxAttempts: 3,
