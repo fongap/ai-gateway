@@ -10,9 +10,6 @@ function unsupportedBlock(type: unknown): never {
   throw new ConversionError(`conversion_not_supported: ${type} blocks not supported`);
 }
 
-// Anthropic-only request hints with no safe generic OpenAI Chat equivalent.
-// They are accepted only where explicitly validated below, then deliberately
-// dropped. Content-bearing fields are never included in this list.
 const SAFELY_IGNORABLE_FIELDS = ['cache_control'];
 const TOOL_HINT_FIELDS = [
   'cache_control',
@@ -22,6 +19,7 @@ const TOOL_HINT_FIELDS = [
   'input_examples',
   'eager_input_streaming',
 ];
+const EFFORT_VALUES = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 function systemToOpenAI(system: unknown): Record<string, unknown> | null {
   if (system === undefined || system === null) return null;
@@ -41,10 +39,6 @@ function systemToOpenAI(system: unknown): Record<string, unknown> | null {
 function midConversationSystemToOpenAI(system: unknown): Record<string, unknown> | null {
   const converted = systemToOpenAI(system);
   if (!converted) return null;
-  // Several OpenAI-compatible providers reject `role: system` after the first
-  // message. Mid-conversation system instructions therefore degrade to a user
-  // message at the same history position. This preserves instruction text and
-  // chronology while avoiding a provider-specific "system must be first" 400.
   return { role: 'user', content: converted.content };
 }
 
@@ -92,20 +86,12 @@ function convertAssistantContent(blocks: unknown[]): Record<string, unknown> {
       if (typeof block.text !== 'string') unsupportedBlock('non-text');
       text += block.text;
     } else if (block.type === 'tool_use') {
-      // `caller` / `toolset_name` describe Anthropic-side invocation metadata.
-      // The client tool call itself remains fully representable in OpenAI Chat.
       assertFields(block, ['type', 'id', 'name', 'input', 'caller', 'toolset_name', ...SAFELY_IGNORABLE_FIELDS], 'tool_use');
       if (typeof block.id !== 'string' || !block.id || typeof block.name !== 'string' || !block.name || !isRecord(block.input)) unsupportedBlock('invalid tool_use');
       toolCalls.push({ id: block.id, type: 'function', function: { name: block.name, arguments: JSON.stringify(block.input) } });
     } else if (block.type === 'thinking' || block.type === 'redacted_thinking') {
-      // Generic OpenAI Chat has no portable hidden-reasoning history field.
-      // Preserve the visible assistant text/tool calls and explicitly drop only
-      // Anthropic's opaque/private reasoning blocks.
       assertDroppableThinkingBlock(block);
     } else if (block.type === 'server_tool_use' || block.type === 'advisor_tool_result') {
-      // Claude Code can carry Anthropic's server-side advisor orchestration in
-      // history. Chat-only upstreams cannot execute/decrypt it, so the fallback
-      // drops the advisor-internal blocks while preserving the visible answer.
       assertDroppableAdvisorHistoryBlock(block);
     } else unsupportedBlock(block.type);
   }
@@ -186,21 +172,40 @@ function assertDroppableCacheControl(cacheControl: unknown): void {
   if (!isRecord(cacheControl)) unsupportedBlock('invalid cache_control');
 }
 
-function assertDroppableOutputConfig(outputConfig: unknown): void {
-  if (outputConfig === undefined || outputConfig === null) return;
-  if (!isRecord(outputConfig)) unsupportedBlock('invalid output_config');
-
-  // Claude Code uses `output_config.effort` to control reasoning depth. Generic
-  // OpenAI-compatible Chat providers have no portable equivalent, so a valid
-  // effort-only config is accepted and deliberately dropped on fallback.
-  // Structured output remains non-convertible because dropping a schema would
-  // change the requested response semantics.
-  assertFields(outputConfig, ['effort'], 'output_config');
-  if (outputConfig.effort === undefined || outputConfig.effort === null) return;
-  if (typeof outputConfig.effort !== 'string'
-    || !['low', 'medium', 'high', 'xhigh', 'max'].includes(outputConfig.effort)) {
-    unsupportedBlock('invalid output_config.effort');
+function assertEffort(effort: unknown, context: string): void {
+  if (effort === undefined || effort === null) return;
+  if (typeof effort !== 'string' || !EFFORT_VALUES.includes(effort)) {
+    unsupportedBlock(`invalid ${context}.effort`);
   }
+}
+
+function parseTopLevelOutputConfig(outputConfig: unknown): Record<string, unknown> | null {
+  if (outputConfig === undefined || outputConfig === null) return null;
+  if (!isRecord(outputConfig)) unsupportedBlock('invalid output_config');
+  assertFields(outputConfig, ['effort', 'format'], 'output_config');
+  assertEffort(outputConfig.effort, 'output_config');
+  if (outputConfig.format === undefined || outputConfig.format === null) return null;
+  if (!isRecord(outputConfig.format)) unsupportedBlock('invalid output_config.format');
+  assertFields(outputConfig.format, ['type', 'schema'], 'output_config.format');
+  if (outputConfig.format.type !== 'json_schema' || !isRecord(outputConfig.format.schema)) {
+    unsupportedBlock('invalid output_config.format');
+  }
+  return outputConfig.format.schema;
+}
+
+function assertSystemMessageOutputConfig(outputConfig: unknown): void {
+  if (outputConfig === undefined || outputConfig === null) return;
+  if (!isRecord(outputConfig)) unsupportedBlock('invalid message.output_config');
+  assertFields(outputConfig, ['effort'], 'message.output_config');
+  assertEffort(outputConfig.effort, 'message.output_config');
+}
+
+function structuredOutputInstruction(schema: Record<string, unknown>): string {
+  return [
+    'For the final assistant text response, return only valid JSON matching this JSON Schema.',
+    'Do not wrap the JSON in Markdown fences and do not add text outside the JSON value.',
+    JSON.stringify(schema),
+  ].join('\n');
 }
 
 function isAdvisorTool(tool: Record<string, unknown>): boolean {
@@ -218,14 +223,6 @@ function assertDroppableAdvisorTool(tool: Record<string, unknown>): void {
 }
 
 export function convertAnthropicToOpenAIRequest(body: Record<string, unknown>): Record<string, unknown> {
-  // This converter intentionally supports the Claude Code request-control
-  // envelope that can be safely degraded onto generic OpenAI Chat. Provider-
-  // specific control hints are validated then dropped. Visible text and client
-  // tool calls/results are preserved. Top-level system stays first; later
-  // system instructions are downgraded to user-role messages in place because
-  // generic providers do not consistently allow system messages mid-history.
-  // Semantic features with no safe degradation (for example structured output)
-  // remain hard conversion errors.
   assertFields(body, [
     'model', 'messages', 'system', 'max_tokens', 'temperature', 'top_p',
     'stream', 'stop_sequences', 'tools', 'tool_choice', 'metadata', 'thinking',
@@ -233,7 +230,7 @@ export function convertAnthropicToOpenAIRequest(body: Record<string, unknown>): 
   ], 'request');
   assertDroppableThinkingConfig(body.thinking);
   assertDroppableContextManagementConfig(body.context_management);
-  assertDroppableOutputConfig(body.output_config);
+  const structuredOutputSchema = parseTopLevelOutputConfig(body.output_config);
   assertDroppableCacheControl(body.cache_control);
   assertSampling(body);
   if (!Array.isArray(body.messages)) unsupportedBlock('invalid messages');
@@ -248,7 +245,15 @@ export function convertAnthropicToOpenAIRequest(body: Record<string, unknown>): 
 
   const messages: Record<string, unknown>[] = [];
   const systemMessage = systemToOpenAI(body.system);
-  if (systemMessage) messages.push(systemMessage);
+  const formatInstruction = structuredOutputSchema ? structuredOutputInstruction(structuredOutputSchema) : null;
+  if (systemMessage) {
+    if (formatInstruction) {
+      systemMessage.content = `${String(systemMessage.content || '')}\n\n${formatInstruction}`;
+    }
+    messages.push(systemMessage);
+  } else if (formatInstruction) {
+    messages.push({ role: 'system', content: formatInstruction });
+  }
 
   for (const msg of body.messages || []) {
     if (!isRecord(msg)) unsupportedBlock('invalid message');
@@ -280,10 +285,7 @@ export function convertAnthropicToOpenAIRequest(body: Record<string, unknown>): 
         messages.push({ role: 'user', content: converted });
       }
     } else if (msg.role === 'system') {
-      // Mid-conversation effort changes are Anthropic-only hints. The text is
-      // preserved at the same point but downgraded to user role for broad
-      // OpenAI-compatible provider support.
-      assertDroppableOutputConfig(msg.output_config);
+      assertSystemMessageOutputConfig(msg.output_config);
       const midConversationSystem = midConversationSystemToOpenAI(msg.content);
       if (midConversationSystem) messages.push(midConversationSystem);
     } else if (msg.role === 'tool') {
@@ -300,9 +302,6 @@ export function convertAnthropicToOpenAIRequest(body: Record<string, unknown>): 
     for (const rawTool of body.tools) {
       if (!isRecord(rawTool)) unsupportedBlock('invalid tool');
       if (isAdvisorTool(rawTool)) {
-        // `advisor_20260301` executes on Anthropic's server and has no generic
-        // Chat equivalent. Remove the server-only capability rather than reject
-        // the entire Claude Code request; client-executed tools remain intact.
         assertDroppableAdvisorTool(rawTool);
         droppedToolNames.add('advisor');
         continue;

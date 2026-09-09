@@ -4,6 +4,7 @@
 
 import assert from 'node:assert/strict';
 import worker from '../src/index.ts';
+import { convertAnthropicToOpenAIRequest } from '../src/conversion/anthropic-to-openai.ts';
 import { __resetAllStateForTests } from '../src/reliability/node-state.ts';
 import { __resetTier1StateForTests } from '../src/reliability/tier1-state.ts';
 import { __resetTier1AffinityForTests } from '../src/scheduler/tier1-affinity.ts';
@@ -14,6 +15,30 @@ const PRIVATE_TEXT = 'PRIVATE_PROMPT_DO_NOT_LOG';
 __resetAllStateForTests();
 __resetTier1StateForTests();
 __resetTier1AffinityForTests();
+
+const structuredSchema = {
+  type: 'object',
+  properties: {
+    answer: { type: 'string' },
+    confidence: { type: 'number' },
+  },
+  required: ['answer'],
+  additionalProperties: false,
+};
+const structured = convertAnthropicToOpenAIRequest({
+  model: 'code-max',
+  max_tokens: 1024,
+  output_config: {
+    effort: 'high',
+    format: { type: 'json_schema', schema: structuredSchema },
+  },
+  messages: [{ role: 'user', content: 'answer the question' }],
+});
+assert.equal(structured.messages[0].role, 'system');
+assert.match(structured.messages[0].content, /final assistant text response/);
+assert.ok(structured.messages[0].content.includes(JSON.stringify(structuredSchema)));
+assert.deepEqual(structured.messages[1], { role: 'user', content: 'answer the question' });
+assert.equal(Object.hasOwn(structured, 'output_config'), false);
 
 let upstreamCalls = 0;
 const originalFetch = globalThis.fetch;

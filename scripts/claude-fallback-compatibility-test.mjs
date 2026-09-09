@@ -130,17 +130,38 @@ for (const key of ['thinking', 'context_management', 'output_config', 'cache_con
 assert.equal(converted.tools.some((tool) => tool.function?.name === 'advisor'), false,
   'Anthropic server-side advisor must not be exposed as a fake client function');
 
+const structuredSchema = {
+  type: 'object',
+  properties: { answer: { type: 'string' } },
+  required: ['answer'],
+  additionalProperties: false,
+};
+const structured = convertAnthropicToOpenAIRequest({
+  model: 'Code-Max',
+  max_tokens: 1024,
+  output_config: {
+    effort: 'high',
+    format: { type: 'json_schema', schema: structuredSchema },
+  },
+  messages: [{ role: 'user', content: 'hello' }],
+});
+assert.equal(structured.messages[0].role, 'system');
+assert.match(structured.messages[0].content, /return only valid JSON/i);
+assert.ok(structured.messages[0].content.includes(JSON.stringify(structuredSchema)));
+assert.deepEqual(structured.messages[1], { role: 'user', content: 'hello' });
+assert.equal(Object.hasOwn(structured, 'output_config'), false);
+
 assert.throws(
   () => convertAnthropicToOpenAIRequest({
     model: 'Code-Max',
     max_tokens: 1024,
     output_config: {
-      format: { type: 'json_schema', schema: { type: 'object' } },
+      format: { type: 'json_schema', schema: 'invalid' },
     },
     messages: [{ role: 'user', content: 'hello' }],
   }),
-  (error) => error instanceof ConversionError && /output_config/.test(error.message),
-  'structured output must remain non-convertible rather than being silently dropped',
+  (error) => error instanceof ConversionError && /invalid output_config\.format/.test(error.message),
+  'invalid structured output schema must remain a conversion error',
 );
 
 assert.throws(
