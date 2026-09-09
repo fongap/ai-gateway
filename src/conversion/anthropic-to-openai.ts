@@ -121,23 +121,43 @@ function assertDroppableContextManagementConfig(contextManagement: unknown): voi
   if (!isRecord(contextManagement)) unsupportedBlock('invalid context_management');
 }
 
+function assertDroppableOutputConfig(outputConfig: unknown): void {
+  if (outputConfig === undefined || outputConfig === null) return;
+  if (!isRecord(outputConfig)) unsupportedBlock('invalid output_config');
+
+  // Claude Code uses `output_config.effort` to control reasoning depth. Generic
+  // OpenAI-compatible Chat providers have no portable equivalent, so a valid
+  // effort-only config is accepted and deliberately dropped on fallback.
+  // `output_config.format` is intentionally NOT accepted here: dropping a JSON
+  // schema would change the requested output semantics rather than merely lose
+  // a provider-specific hint.
+  assertFields(outputConfig, ['effort'], 'output_config');
+  if (outputConfig.effort === undefined || outputConfig.effort === null) return;
+  if (typeof outputConfig.effort !== 'string'
+    || !['low', 'medium', 'high', 'xhigh', 'max'].includes(outputConfig.effort)) {
+    unsupportedBlock('invalid output_config.effort');
+  }
+}
+
 export function convertAnthropicToOpenAIRequest(body: Record<string, unknown>): Record<string, unknown> {
   // `metadata` is an Anthropic attribution field with no safe generic OpenAI
   // equivalent — different OpenAI-compatible providers disagree on `user`,
   // `metadata`, `safety_identifier`. It never changes generated content, so it
   // is accepted here and deliberately NOT forwarded to the OpenAI upstream.
   //
-  // Top-level `thinking` and `context_management` are request-control settings
-  // with real Anthropic semantics, but generic OpenAI-compatible Chat providers
-  // have no portable equivalents. For this cross-protocol fallback we accept
-  // structurally valid objects and deliberately DROP them so Claude Code can
-  // still use Chat-only nodes. The message history supplied by the client is
-  // preserved; the fallback does not emulate Anthropic server-side context
-  // edits or compaction. Thinking CONTENT blocks remain non-convertible because
-  // silently deleting message history would lose conversation semantics.
-  assertFields(body, ['model', 'messages', 'system', 'max_tokens', 'temperature', 'top_p', 'stream', 'stop_sequences', 'tools', 'tool_choice', 'metadata', 'thinking', 'context_management'], 'request');
+  // Top-level `thinking`, `context_management`, and effort-only `output_config`
+  // are request-control settings with real Anthropic semantics, but generic
+  // OpenAI-compatible Chat providers have no portable equivalents. For this
+  // cross-protocol fallback we accept the narrowly validated forms and
+  // deliberately DROP them so Claude Code can still use Chat-only nodes. The
+  // message history supplied by the client is preserved; the fallback does not
+  // emulate Anthropic server-side context edits, compaction, or structured
+  // output. Thinking CONTENT blocks remain non-convertible because silently
+  // deleting message history would lose conversation semantics.
+  assertFields(body, ['model', 'messages', 'system', 'max_tokens', 'temperature', 'top_p', 'stream', 'stop_sequences', 'tools', 'tool_choice', 'metadata', 'thinking', 'context_management', 'output_config'], 'request');
   assertDroppableThinkingConfig(body.thinking);
   assertDroppableContextManagementConfig(body.context_management);
+  assertDroppableOutputConfig(body.output_config);
   assertSampling(body);
   if (!Array.isArray(body.messages)) unsupportedBlock('invalid messages');
   const out: Record<string, unknown> = {};
