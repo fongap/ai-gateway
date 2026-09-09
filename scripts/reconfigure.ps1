@@ -58,6 +58,22 @@ try {
 
   $plan = Get-Content $planFile -Raw -Encoding UTF8 | ConvertFrom-Json
 
+  Write-Host '==> Gateway Access Groups'
+  Write-Host 'Leave a Group unchanged unless you explicitly choose to configure or rotate it.'
+  $accessKeys = [ordered]@{}
+  $accessModels = [ordered]@{}
+  foreach ($group in @('AIR', 'PRO', 'MAX', 'ULTRA', 'AGENT')) {
+    if (-not (Confirm-Yes (Read-Host "Configure/rotate $group? [y/N]"))) { continue }
+    $key = Read-SecretText "new GATEWAY_ACCESS_KEY_$group"
+    if ([string]::IsNullOrEmpty($key)) { throw "GATEWAY_ACCESS_KEY_$group must not be empty when configuring this Group." }
+    $models = (Read-Host "GATEWAY_ACCESS_MODELS_$group (CSV, required)").Trim()
+    if ([string]::IsNullOrWhiteSpace($models)) {
+      throw "GATEWAY_ACCESS_MODELS_$group is required when GATEWAY_ACCESS_KEY_$group is set."
+    }
+    $accessKeys[$group] = $key
+    $accessModels[$group] = $models
+  }
+
   $userConfig = if (Test-Path $userConfigPath) {
     Get-Content $userConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
   } else {
@@ -71,17 +87,23 @@ try {
       [ordered]@{ binding = 'TIER1_AFFINITY'; id = $affinityKvId }
     ) -Force
   }
+  $previousVars = [ordered]@{}
+  if ($userConfig.vars) {
+    foreach ($prop in $userConfig.vars.PSObject.Properties) { $previousVars[$prop.Name] = $prop.Value }
+  }
   $varsMap = [ordered]@{}
   foreach ($prop in $plan.vars.PSObject.Properties) { $varsMap[$prop.Name] = $prop.Value }
+  foreach ($name in $previousVars.Keys) {
+    if ($name -like 'GATEWAY_ACCESS_MODELS_*') { $varsMap[$name] = $previousVars[$name] }
+  }
+  foreach ($group in $accessModels.Keys) { $varsMap["GATEWAY_ACCESS_MODELS_$group"] = $accessModels[$group] }
   $userConfig | Add-Member -NotePropertyName vars -NotePropertyValue $varsMap -Force
   [IO.File]::WriteAllText($userConfigPath, ($userConfig | ConvertTo-Json -Depth 30) + "`n", [Text.UTF8Encoding]::new($false))
 
   $bulkPath = Join-Path ([IO.Path]::GetTempPath()) ("gateway-secrets-" + [guid]::NewGuid().ToString('N') + '.json')
   $tmpFiles += $bulkPath
   $bulk = [ordered]@{}
-  if (Confirm-Yes (Read-Host 'Rotate GATEWAY_ACCESS_KEY? [y/N]')) {
-    $bulk['GATEWAY_ACCESS_KEY'] = Read-SecretText 'new GATEWAY_ACCESS_KEY'
-  }
+  foreach ($group in $accessKeys.Keys) { $bulk["GATEWAY_ACCESS_KEY_$group"] = $accessKeys[$group] }
   foreach ($prop in $plan.secrets.PSObject.Properties) { $bulk[$prop.Name] = $prop.Value }
   [IO.File]::WriteAllText($bulkPath, ($bulk | ConvertTo-Json -Depth 30), [Text.UTF8Encoding]::new($false))
 
