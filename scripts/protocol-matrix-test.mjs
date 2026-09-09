@@ -60,7 +60,8 @@ function resetMock() {
 
 function makeEnv({ tier1, tier2, secrets, extraEnv } = {}) {
   return {
-    GATEWAY_ACCESS_KEY: ACCESS_KEY,
+    GATEWAY_ACCESS_KEY_AIR: ACCESS_KEY,
+    GATEWAY_ACCESS_MODELS_AIR: '*',
     TIER1_SCHEDULER_SEED: 'protocol-matrix-test',
     ...(tier1 ? { TIER1_NODES_CONFIG_01: JSON.stringify(tier1) } : {}),
     ...(tier2 ? { TIER2_NODES_CONFIG_01: JSON.stringify(tier2) } : {}),
@@ -69,7 +70,6 @@ function makeEnv({ tier1, tier2, secrets, extraEnv } = {}) {
   };
 }
 
-// Helper: create env with hedging explicitly enabled for the default policy.
 function makeEnvWithHedge({ tier1, tier2, secrets, extraEnv, hedgeConfig } = {}) {
   const hedge = hedgeConfig ?? { enabled: true, tiers: ['tier1', 'tier2'] };
   return makeEnv({
@@ -113,8 +113,6 @@ const messagesRequest = (body) => new Request('https://gateway.example.com/v1/me
 const jsonUpstream = (data, status = 200, headers = {}) =>
   new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json', ...headers } });
 
-// A mock upstream that never answers on its own but honors the dispatch
-// AbortController — like a real fetch hanging until the gateway aborts it.
 const hangUntilAbort = () => async (req, url, init) => new Promise((_, reject) => {
   if (init?.signal?.aborted) { reject(new Error('aborted')); return; }
   init?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
@@ -132,7 +130,6 @@ function sseResponse(lines, headers = {}) {
 }
 const ev = (name, data) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
 
-// OpenAI chat wire shapes.
 const chatChunk = (content) => `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content }, finish_reason: null }] })}\n\n`;
 const chatFinish = 'data: ' + JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }) + '\n\n';
 const chatDone = 'data: [DONE]\n\n';
@@ -140,7 +137,6 @@ const okCompletion = () => ({
   choices: [{ index: 0, message: { role: 'assistant', content: 'hello' }, finish_reason: 'stop' }],
   usage: { prompt_tokens: 1, completion_tokens: 1 },
 });
-// Anthropic wire shapes.
 const okMessage = () => ({
   type: 'message', role: 'assistant', model: 'up-model',
   content: [{ type: 'text', text: 'hello' }], stop_reason: 'end_turn', stop_sequence: null,
@@ -154,7 +150,6 @@ const anthropicLifecycle = (text) => [
   ev('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { input_tokens: 1, output_tokens: 1 } }),
   ev('message_stop', { type: 'message_stop' }),
 ];
-// Responses wire shapes.
 const okResponsesObject = () => ({
   id: 'resp_1', object: 'response', created_at: 1, status: 'completed', model: 'up-model',
   output: [{ id: 'msg_1', type: 'message', status: 'completed', role: 'assistant', content: [{ type: 'output_text', text: 'hello', annotations: [] }] }],
@@ -172,8 +167,6 @@ const responsesLifecycle = (text) => {
 };
 
 installMockFetch();
-
-// ---- OpenAI Chat matrix ------------------------------------------------------
 
 await test('OpenAI Chat client -> OpenAI chat node -> native success', async () => {
   resetMock();
@@ -199,7 +192,6 @@ await test('OpenAI Chat: node A fails -> node B (same protocol+surface) fails ov
 
 await test('OpenAI Chat: hedge twin wins, primary is neutral-cancelled', async () => {
   resetMock();
-  // Primary hangs forever; the twin answers fast.
   routeHandlers['oc-hang.example.com'] = hangUntilAbort();
   routeHandlers['oc-twin.example.com'] = () => jsonUpstream(okCompletion());
   const env = makeEnv({
@@ -208,11 +200,7 @@ await test('OpenAI Chat: hedge twin wins, primary is neutral-cancelled', async (
     extraEnv: {
       HEDGE_DELAY_MS: '120',
       FAILOVER_BUDGET_MS: '30000',
-      // The built-in 'default' policy disables hedge; override it for this
-      // test so hedge is enabled on tier1 (same as the pre-tightening default).
-      POLICIES_CONFIG: JSON.stringify({
-        default: { max_attempts: 5, hedge: { enabled: true, tiers: ['tier1'] } },
-      }),
+      POLICIES_CONFIG: JSON.stringify({ default: { max_attempts: 5, hedge: { enabled: true, tiers: ['tier1'] } } }),
       MODELS_CONFIG: JSON.stringify({ max: { policy: 'default' } }),
     },
   });
@@ -224,8 +212,6 @@ await test('OpenAI Chat: hedge twin wins, primary is neutral-cancelled', async (
   assert.equal(getNodeState('oc-twin').totalSuccesses, 1, 'the twin wins and records success');
 });
 
-// ---- OpenAI Responses native -------------------------------------------------
-
 await test('OpenAI Responses client -> responses-capable node -> native /v1/responses', async () => {
   resetMock();
   routeHandlers['orn.example.com'] = () => jsonUpstream(okResponsesObject());
@@ -235,23 +221,19 @@ await test('OpenAI Responses client -> responses-capable node -> native /v1/resp
   const body = await res.json();
   assert.equal(body.object, 'response');
   assert.equal(body.model, 'max');
-  assert.equal(upstreamCalls[0].path, '/v1/responses', 'the upstream path is the NATIVE responses endpoint');
+  assert.equal(upstreamCalls[0].path, '/v1/responses');
   assert.equal(upstreamCalls[0].body.model, 'up-model');
-  assert.equal(upstreamCalls[0].body.input, 'hi', 'the Responses body is forwarded verbatim');
+  assert.equal(upstreamCalls[0].body.input, 'hi');
 });
 
 await test('OpenAI Responses client is NEVER routed to a chat-only node', async () => {
   resetMock();
   routeHandlers['chatonly.example.com'] = () => jsonUpstream(okCompletion());
   routeHandlers['resp.example.com'] = () => sseResponse(responsesLifecycle('native'));
-  const env = makeEnv({
-    tier1: [openaiChatNode('chatonly'), openaiResponsesNode('resp')],
-    secrets: { chatonly: 'k', resp: 'k' },
-  });
+  const env = makeEnv({ tier1: [openaiChatNode('chatonly'), openaiResponsesNode('resp')], secrets: { chatonly: 'k', resp: 'k' } });
   const res = await worker.fetch(responsesRequest({ stream: true }), env, {});
   assert.equal(res.status, 200);
-  assert.deepEqual(upstreamCalls.map((c) => c.host), ['resp.example.com'],
-    'a chat_completions-only node must never receive a /v1/responses request');
+  assert.deepEqual(upstreamCalls.map((c) => c.host), ['resp.example.com']);
   const text = await res.text();
   assert.match(text, /response\.completed/);
 });
@@ -260,17 +242,11 @@ await test('OpenAI Chat client is NEVER routed to a responses-only node', async 
   resetMock();
   routeHandlers['resp2.example.com'] = () => jsonUpstream(okResponsesObject());
   routeHandlers['chat2.example.com'] = () => jsonUpstream(okCompletion());
-  const env = makeEnv({
-    tier1: [openaiResponsesNode('resp2'), openaiChatNode('chat2')],
-    secrets: { resp2: 'k', chat2: 'k' },
-  });
+  const env = makeEnv({ tier1: [openaiResponsesNode('resp2'), openaiChatNode('chat2')], secrets: { resp2: 'k', chat2: 'k' } });
   const res = await worker.fetch(chatRequest({}), env, {});
   assert.equal(res.status, 200);
-  assert.deepEqual(upstreamCalls.map((c) => c.host), ['chat2.example.com'],
-    'a responses-only node must never receive a /v1/chat/completions request');
+  assert.deepEqual(upstreamCalls.map((c) => c.host), ['chat2.example.com']);
 });
-
-// ---- Anthropic native --------------------------------------------------------
 
 await test('Anthropic client -> anthropic node -> native /v1/messages with x-api-key', async () => {
   resetMock();
@@ -282,8 +258,8 @@ await test('Anthropic client -> anthropic node -> native /v1/messages with x-api
   assert.equal(body.type, 'message');
   assert.equal(body.model, 'max');
   assert.equal(upstreamCalls[0].path, '/v1/messages');
-  assert.equal(upstreamCalls[0].headers.get('x-api-key'), 'k', 'anthropic nodes authenticate via x-api-key');
-  assert.equal(upstreamCalls[0].headers.get('authorization'), null, 'no Bearer header ever reaches an anthropic node');
+  assert.equal(upstreamCalls[0].headers.get('x-api-key'), 'k');
+  assert.equal(upstreamCalls[0].headers.get('authorization'), null);
   assert.ok(upstreamCalls[0].headers.get('anthropic-version'));
   assert.equal(upstreamCalls[0].body.model, 'up-model');
 });
@@ -301,15 +277,7 @@ await test('Anthropic streaming passes the native lifecycle through', async () =
   assert.equal(getNodeState('ans').totalSuccesses, 1);
 });
 
-// ---- Cross-protocol isolation (HARD boundary) --------------------------------
-
 await test('OpenAI Chat fails on all openai nodes: the healthy anthropic node is NEVER contacted (PROTOCOL_FALLBACKS=disable)', async () => {
-  // v1.3.0 extended the default-ON chain to include
-  // openai:chat_completions -> anthropic:messages. This test pins the
-  // Native-Only opt-out (PROTOCOL_FALLBACKS=disable): even with a healthy
-  // anthropic node present, the request must NOT silently cross the protocol
-  // boundary. The default-ON path is covered by the conversion-test handler
-  // tests (cross-protocol acceptance).
   resetMock();
   routeHandlers['xa.example.com'] = () => jsonUpstream({}, 500);
   routeHandlers['xb.example.com'] = () => jsonUpstream({}, 500);
@@ -320,20 +288,14 @@ await test('OpenAI Chat fails on all openai nodes: the healthy anthropic node is
     extraEnv: { PROTOCOL_FALLBACKS: 'disable' },
   });
   const res = await worker.fetch(chatRequest({}), env, {});
-  assert.equal(res.status, 502, 'all openai nodes failed -> terminal 502');
-  assert.deepEqual(upstreamCalls.map((c) => c.host), ['xa.example.com', 'xb.example.com'],
-    'with PROTOCOL_FALLBACKS=disable, failover must stay inside the openai protocol; the anthropic node must never be contacted');
+  assert.equal(res.status, 502);
+  assert.deepEqual(upstreamCalls.map((c) => c.host), ['xa.example.com', 'xb.example.com']);
 });
 
 await test('Anthropic fails on the anthropic node: native failover stays inside Anthropic, default-ON fallback is opt-out here', async () => {
   resetMock();
   routeHandlers['an5xx.example.com'] = () => jsonUpstream({ type: 'error', error: { type: 'api_error', message: 'boom' } }, 500);
   routeHandlers['healthy-oc.example.com'] = () => jsonUpstream(okCompletion());
-  // PROTOCOL_FALLBACKS=disable pins the legacy Native-Only behavior for this
-  // contract: even with a healthy openai node present, the request must NOT
-  // silently cross the protocol boundary. The Default-ON path is covered by
-  // Contract 03 in architecture-contract-test.mjs; this test pins the
-  // negative case (no implicit conversion when the operator opts out).
   const env = makeEnv({
     tier1: [anthropicNode('an5xx'), openaiChatNode('healthy-oc')],
     secrets: { an5xx: 'k', 'healthy-oc': 'k' },
@@ -341,10 +303,9 @@ await test('Anthropic fails on the anthropic node: native failover stays inside 
   });
   const res = await worker.fetch(messagesRequest({}), env, {});
   assert.equal(res.status, 502);
-  assert.deepEqual(upstreamCalls.map((c) => c.host), ['an5xx.example.com'],
-    'failover must stay inside the anthropic protocol; cross-protocol fallback is opt-in via disable');
+  assert.deepEqual(upstreamCalls.map((c) => c.host), ['an5xx.example.com']);
   const body = await res.json();
-  assert.equal(body.type, 'error', 'the client still receives an Anthropic-shaped error');
+  assert.equal(body.type, 'error');
 });
 
 await test('in-tier failover: openai chat node A -> openai chat node B -> openai responses-only node is excluded', async () => {
@@ -352,23 +313,14 @@ await test('in-tier failover: openai chat node A -> openai chat node B -> openai
   routeHandlers['fa.example.com'] = () => jsonUpstream({}, 503);
   routeHandlers['fb.example.com'] = () => jsonUpstream(okCompletion());
   routeHandlers['fresp.example.com'] = () => jsonUpstream(okResponsesObject());
-  const env = makeEnv({
-    tier1: [openaiChatNode('fa'), openaiChatNode('fb'), openaiResponsesNode('fresp')],
-    secrets: { fa: 'k', fb: 'k', fresp: 'k' },
-  });
+  const env = makeEnv({ tier1: [openaiChatNode('fa'), openaiChatNode('fb'), openaiResponsesNode('fresp')], secrets: { fa: 'k', fb: 'k', fresp: 'k' } });
   const res = await worker.fetch(chatRequest({}), env, {});
   assert.equal(res.status, 200);
-  assert.deepEqual(upstreamCalls.map((c) => c.host), ['fa.example.com', 'fb.example.com'],
-    'same-protocol same-surface failover works; the responses-only node stays excluded');
+  assert.deepEqual(upstreamCalls.map((c) => c.host), ['fa.example.com', 'fb.example.com']);
 });
-
-// ---- Hedge protocol/surface isolation ----------------------------------------
 
 await test('hedge twin is same-protocol same-surface: no eligible twin -> no hedge', async () => {
   resetMock();
-  // The only other candidate is an anthropic node; the primary hangs. No twin
-  // may be launched against a different protocol — the request waits on the
-  // primary (and eventually hits the failover budget).
   routeHandlers['hp.example.com'] = hangUntilAbort();
   routeHandlers['h-an.example.com'] = () => jsonUpstream(okMessage());
   const env = makeEnvWithHedge({
@@ -377,9 +329,8 @@ await test('hedge twin is same-protocol same-surface: no eligible twin -> no hed
     extraEnv: { HEDGE_DELAY_MS: '120', FAILOVER_BUDGET_MS: '1500', UPSTREAM_HEADERS_TIMEOUT_MS: '2000' },
   });
   const res = await worker.fetch(chatRequest({}), env, {});
-  assert.equal(res.status, 504, 'budget exhausted without an eligible twin');
-  assert.deepEqual(upstreamCalls.map((c) => c.host), ['hp.example.com'],
-    'only the primary was contacted; the anthropic node was never used as a twin');
+  assert.equal(res.status, 504);
+  assert.deepEqual(upstreamCalls.map((c) => c.host), ['hp.example.com']);
 });
 
 await test('hedge twin picks the same-surface node: responses-only nodes are excluded', async () => {
@@ -394,61 +345,38 @@ await test('hedge twin picks the same-surface node: responses-only nodes are exc
   });
   const res = await worker.fetch(chatRequest({}), env, {});
   assert.equal(res.status, 200);
-  assert.deepEqual(upstreamCalls.map((c) => c.host), ['hp2.example.com', 'h-twin.example.com'],
-    'the twin must be the chat_completions node, never the responses-only node');
+  assert.deepEqual(upstreamCalls.map((c) => c.host), ['hp2.example.com', 'h-twin.example.com']);
   assert.equal(getNodeState('h-twin').totalSuccesses, 1);
 });
-
-// ---- Legacy config migration (end to end) ------------------------------------
 
 await test('legacy node config (no protocol/surfaces) still serves chat with deprecated defaults', async () => {
   resetMock();
   routeHandlers['legacy.example.com'] = () => jsonUpstream(okCompletion());
   const legacyNode = { id: 'legacy-01', provider: 'nvidia', base_url: 'https://legacy.example.com/v1', priority: 10, models: { max: 'up-model' } };
   const env = makeEnv({ tier1: [legacyNode], secrets: { 'legacy-01': 'k' } });
-  // The deprecation diagnostics must be visible via /health without making
-  // the config invalid.
-  const health = await worker.fetch(new Request('https://gateway.example.com/health', {
-    headers: { authorization: `Bearer ${ACCESS_KEY}` },
-  }), env, {});
-  assert.equal(health.status, 200, 'legacy config must NOT invalidate the gateway');
+  const health = await worker.fetch(new Request('https://gateway.example.com/health', { headers: { authorization: `Bearer ${ACCESS_KEY}` } }), env, {});
+  assert.equal(health.status, 200);
   const healthBody = await health.json();
   assert.equal(healthBody.status, 'ready');
-  assert.ok(healthBody.diagnostics.some((d) => d.includes('legacy-01') && d.includes('protocol is implicit')),
-    `expected the protocol deprecation diagnostic, got ${JSON.stringify(healthBody.diagnostics)}`);
-  assert.ok(healthBody.diagnostics.some((d) => d.includes('legacy-01') && d.includes('surfaces is implicit')),
-    `expected the surfaces deprecation diagnostic, got ${JSON.stringify(healthBody.diagnostics)}`);
-  // ...and the node must actually serve OpenAI Chat traffic.
+  assert.ok(healthBody.diagnostics.some((d) => d.includes('legacy-01') && d.includes('protocol is implicit')));
+  assert.ok(healthBody.diagnostics.some((d) => d.includes('legacy-01') && d.includes('surfaces is implicit')));
   const res = await worker.fetch(chatRequest({}), env, {});
   assert.equal(res.status, 200);
   assert.equal(upstreamCalls[0].path, '/v1/chat/completions');
-  assert.deepEqual(healthBody.nodes_protocol, undefined, 'no topology leak beyond the documented fields');
+  assert.deepEqual(healthBody.nodes_protocol, undefined);
 });
 
 await test('legacy anthropic-labeled node defaults to openai protocol (explicit migration path exists)', async () => {
   resetMock();
-  // A pre-protocol node labeled "anthropic" still maps to the openai chat
-  // transport (that is what the gateway actually did before the protocol
-  // field existed). Native anthropic service requires the explicit upgrade.
   routeHandlers['old-an.example.com'] = () => jsonUpstream(okCompletion());
   const legacyNode = { id: 'old-an', provider: 'anthropic', base_url: 'https://old-an.example.com/v1', models: { max: 'up-model' } };
-  // PROTOCOL_FALLBACKS=disable pins the Native-Only contract: this test is
-  // about legacy nodes' *native* reach, not the cross-protocol fallback path.
-  // The Default-ON path is covered separately.
-  const env = makeEnv({
-    tier1: [legacyNode],
-    secrets: { 'old-an': 'k' },
-    extraEnv: { PROTOCOL_FALLBACKS: 'disable' },
-  });
+  const env = makeEnv({ tier1: [legacyNode], secrets: { 'old-an': 'k' }, extraEnv: { PROTOCOL_FALLBACKS: 'disable' } });
   const res = await worker.fetch(chatRequest({}), env, {});
   assert.equal(res.status, 200);
   assert.equal(upstreamCalls[0].path, '/v1/chat/completions');
-  // A /v1/messages request can NOT be served by this legacy node — the
-  // operator must explicitly declare protocol=anthropic to unlock it.
   resetMock();
   const messagesRes = await worker.fetch(messagesRequest({}), env, {});
-  assert.equal(messagesRes.status, 404,
-    'implicit-default openai nodes must not silently serve the anthropic surface');
+  assert.equal(messagesRes.status, 404);
 });
 
 await test('explicit protocol=anthropic node unlocks the native messages surface', async () => {
