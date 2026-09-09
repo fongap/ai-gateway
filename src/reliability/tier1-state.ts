@@ -64,6 +64,8 @@ export type Tier1ModelRuntime = {
   sampleCount: number,
   lastObservedAt: number,
   scopeAmbiguous429: boolean,
+  rateLimitRecoveryPending: boolean,
+  rateLimitRecoveryUntil: number,
 };
 
 export type Tier1QuotaState = 'normal' | 'near_limit' | 'exhausted_until';
@@ -75,6 +77,8 @@ export type Tier1AccountRuntime = {
   accountCooldownUntil: number,
   accountCooldownReason: string | null,
   consecutiveAccountFailures: number,
+  rateLimitRecoveryPending: boolean,
+  rateLimitRecoveryUntil: number,
   quotaState: Tier1QuotaState,
   quotaResetAt: number,
   models: Map<string, Tier1ModelRuntime>,
@@ -133,6 +137,8 @@ function newModelRuntime(): Tier1ModelRuntime {
     sampleCount: 0,
     lastObservedAt: 0,
     scopeAmbiguous429: false,
+    rateLimitRecoveryPending: false,
+    rateLimitRecoveryUntil: 0,
   };
 }
 
@@ -144,6 +150,8 @@ function newAccountRuntime(accountId: string): Tier1AccountRuntime {
     accountCooldownUntil: 0,
     accountCooldownReason: null,
     consecutiveAccountFailures: 0,
+    rateLimitRecoveryPending: false,
+    rateLimitRecoveryUntil: 0,
     quotaState: 'normal',
     quotaResetAt: 0,
     models: new Map(),
@@ -225,24 +233,32 @@ export function rollbackTier1Rpm(accountId: string, now: number = Date.now()): v
   bucket.updatedAt = now;
 }
 
-function deferTier1RpmAfterRateLimit(accountId: string, resumeAt: number): void {
-  const bucket = rpmBuckets.get(accountId);
-  if (!bucket || !Number.isFinite(bucket.rpm) || bucket.rpm <= 0) return;
-  const intervalMs = 60_000 / bucket.rpm;
-  // Resume with exactly one token at cooldown expiry, then refill normally.
-  bucket.tokens = 0;
-  bucket.updatedAt = Math.max(bucket.updatedAt, resumeAt - intervalMs);
-}
-
 export function claimTier1Slot(node: RuntimeNode, now: number = Date.now(), modelId: string | null = null): boolean {
   const account = getTier1Account(node.id);
-  if (account.accountDisabled || account.accountCooldownUntil > now) return false;
+  if (account.accountDisabled || account.accountCooldownUntil > now || account.rateLimitRecoveryUntil > now) return false;
   const model = modelId ? account.models.get(modelId) : null;
+  if ((model?.rateLimitRecoveryUntil ?? 0) > now) return false;
   if (model?.failureState === FAILURE_STATE.HALF_OPEN && account.inFlight > 0) return false;
   if (account.inFlight >= node.limits.concurrency) return false;
-  if (node.limits.rpm && node.limits.rpmMode !== 'soft'
-    && !noteTier1Rpm(node.id, node.limits.rpm, now)) return false;
+
+  const rpm = node.limits.rpm ?? 0;
+  const hardRpm = rpm > 0 && node.limits.rpmMode !== 'soft';
+  if (hardRpm && !noteTier1Rpm(node.id, rpm, now)) return false;
+
   account.inFlight++;
+  // A 429 recovery is scoped exactly like the cooldown that caused it. The
+  // first admitted request after cooldown starts a one-interval recovery gate;
+  // model-scoped 429 never blocks sibling models, while account-scoped 429
+  // intentionally gates the whole account. The shared RPM bucket itself is
+  // never pushed into the future, so unrelated model traffic keeps flowing.
+  if (account.rateLimitRecoveryPending) {
+    account.rateLimitRecoveryPending = false;
+    account.rateLimitRecoveryUntil = hardRpm ? now + (60_000 / rpm) : 0;
+  }
+  if (model?.rateLimitRecoveryPending) {
+    model.rateLimitRecoveryPending = false;
+    model.rateLimitRecoveryUntil = hardRpm ? now + (60_000 / rpm) : 0;
+  }
   return true;
 }
 
@@ -272,9 +288,10 @@ export function isTier1Eligible(node: RuntimeNode, req: RoutableRequest, now: nu
   if (!servesModel(node, req.model, knownModels)) return false;
   const account = accounts.get(node.id);
   if (!account) return true;
-  if (account.accountDisabled || account.accountCooldownUntil > now) return false;
-  if (modelBlocked(account.models.get(req.model), now)) return false;
-  if (account.models.get(req.model)?.failureState === FAILURE_STATE.HALF_OPEN && account.inFlight > 0) return false;
+  if (account.accountDisabled || account.accountCooldownUntil > now || account.rateLimitRecoveryUntil > now) return false;
+  const model = account.models.get(req.model);
+  if (modelBlocked(model, now) || (model?.rateLimitRecoveryUntil ?? 0) > now) return false;
+  if (model?.failureState === FAILURE_STATE.HALF_OPEN && account.inFlight > 0) return false;
   if (account.inFlight >= node.limits.concurrency) return false;
   if (node.limits.rpm && node.limits.rpmMode !== 'soft'
     && tier1RpmWaitMs(node.id, node.limits.rpm, now) > 0) return false;
@@ -525,7 +542,10 @@ export function applyTier1Outcome(accountId: string, modelId: string, outcome: T
     account.consecutiveAccountFailures++;
     account.accountCooldownUntil = Math.max(account.accountCooldownUntil, now + (outcome.cooldownMs || TIER1_COOLDOWN_DEFAULT_MS));
     account.accountCooldownReason = outcome.reason;
-    if (outcome.backoff === 'rate_limit') deferTier1RpmAfterRateLimit(accountId, account.accountCooldownUntil);
+    if (outcome.backoff === 'rate_limit') {
+      account.rateLimitRecoveryPending = true;
+      account.rateLimitRecoveryUntil = 0;
+    }
     return;
   }
 
@@ -542,7 +562,10 @@ export function applyTier1Outcome(accountId: string, modelId: string, outcome: T
     const cooldownMs = modelCooldownMs(model, outcome);
     model.cooldownUntil = now + cooldownMs;
     model.cooldownReason = outcome.reason;
-    if (rateLimited) deferTier1RpmAfterRateLimit(accountId, model.cooldownUntil);
+    if (rateLimited) {
+      model.rateLimitRecoveryPending = true;
+      model.rateLimitRecoveryUntil = 0;
+    }
     if (halfOpenFailure || thresholdReached) {
       model.failureState = FAILURE_STATE.COOLDOWN;
       model.halfOpenSuccesses = 0;
@@ -575,9 +598,11 @@ export function tier1BlockingWaitMs(node: RuntimeNode, modelId: string, now: num
   const account = accounts.get(node.id);
   if (!account || account.accountDisabled) return Infinity;
   if (account.accountCooldownUntil > now) return account.accountCooldownUntil - now;
+  if (account.rateLimitRecoveryUntil > now) return account.rateLimitRecoveryUntil - now;
   const model = account.models.get(modelId);
   if (model?.disabled) return Infinity;
   if (model && model.cooldownUntil > now) return model.cooldownUntil - now;
+  if (model && model.rateLimitRecoveryUntil > now) return model.rateLimitRecoveryUntil - now;
   if (model?.failureState === FAILURE_STATE.HALF_OPEN && account.inFlight > 0) return 1_000;
   if (node.limits.rpm && node.limits.rpmMode !== 'soft') {
     const rpmWait = tier1RpmWaitMs(node.id, node.limits.rpm, now);
@@ -593,8 +618,10 @@ export function tier1HasDeferredCapacity(nodes: ReadonlyArray<RuntimeNode>, req:
     if (node.protocol !== req.protocol || !node.surfaces?.includes(req.surface) || !servesModel(node, req.model, knownModels)) continue;
     const account = accounts.get(node.id);
     if (!account || account.accountDisabled || account.accountCooldownUntil > now) continue;
+    if (account.rateLimitRecoveryUntil > now) return true;
     const model = account.models.get(req.model);
     if (modelBlocked(model, now)) continue;
+    if ((model?.rateLimitRecoveryUntil ?? 0) > now) return true;
     if (model?.failureState === FAILURE_STATE.HALF_OPEN && account.inFlight > 0) return true;
     if (account.inFlight >= node.limits.concurrency) return true;
     if (node.limits.rpm && node.limits.rpmMode !== 'soft'

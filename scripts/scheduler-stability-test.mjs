@@ -136,18 +136,37 @@ await test('RPM: rollback restores a pre-dispatch token', () => {
   assert.equal(claimTier1Slot(b, now, 'm1'), true, 'rollback must restore the consumed admission token');
 });
 
-await test('RPM: 429 cooldown resumes with one token, not a fresh burst', () => {
-  const b = node('b', { concurrency: 10, rpm: 40 });
+await test('RPM: model-scoped 429 recovery suppresses same-model burst without blocking siblings', () => {
+  const b = node('b', { concurrency: 10, rpm: 40, models: { m1: 'up-1', m2: 'up-2' } });
   const now = 1_000_000;
   assert.equal(claimTier1Slot(b, now, 'm1'), true);
   getTier1Account('b').inFlight--;
   const outcome = classifyTier1Failure({ kind: 'rate_limit' }, { retryAfterMs: 10_000 });
   applyTier1Outcome('b', 'm1', outcome, now);
   assert.equal(isTier1Eligible(b, REQ, now + 9_999), false, 'Retry-After cooldown remains authoritative');
-  assert.equal(isTier1Eligible(b, REQ, now + 10_000), true, 'one request may resume at cooldown expiry');
+  assert.equal(isTier1Eligible(b, { ...REQ, model: 'm2' }, now + 1), true, 'model-scoped 429 must not block sibling models');
+  assert.equal(claimTier1Slot(b, now + 1, 'm2'), true, 'sibling model may keep using remaining account RPM capacity');
+  getTier1Account('b').inFlight--;
+  assert.equal(isTier1Eligible(b, REQ, now + 10_000), true, 'one m1 request may resume at cooldown expiry');
   assert.equal(claimTier1Slot(b, now + 10_000, 'm1'), true);
   getTier1Account('b').inFlight--;
-  assert.equal(claimTier1Slot(b, now + 10_000, 'm1'), false, 'post-429 resume must not burst immediately');
+  assert.equal(claimTier1Slot(b, now + 10_000, 'm1'), false, 'same model must not burst immediately after 429 recovery');
+  assert.equal(isTier1Eligible(b, { ...REQ, model: 'm2' }, now + 10_000), true, 'recovery gate remains model-local');
+  assert.equal(claimTier1Slot(b, now + 11_500, 'm1'), true, 'same model resumes after one RPM interval');
+});
+
+await test('RPM: explicit account-scoped 429 recovery gates the whole account for one interval', () => {
+  const b = node('b', { concurrency: 10, rpm: 40, models: { m1: 'up-1', m2: 'up-2' } });
+  const now = 2_000_000;
+  assert.equal(claimTier1Slot(b, now, 'm1'), true);
+  getTier1Account('b').inFlight--;
+  const outcome = classifyTier1Failure({ kind: 'rate_limit', rateLimitScope: 'account' }, { retryAfterMs: 10_000 });
+  applyTier1Outcome('b', 'm1', outcome, now);
+  assert.equal(isTier1Eligible(b, REQ, now + 10_000), true);
+  assert.equal(claimTier1Slot(b, now + 10_000, 'm1'), true);
+  getTier1Account('b').inFlight--;
+  assert.equal(isTier1Eligible(b, { ...REQ, model: 'm2' }, now + 10_000), false, 'account-scoped recovery gates sibling models');
+  assert.equal(isTier1Eligible(b, { ...REQ, model: 'm2' }, now + 11_500), true, 'account gate expires after one RPM interval');
 });
 
 await test('Eligibility: cooldown filtered (no force-call on cooling account)', () => {
