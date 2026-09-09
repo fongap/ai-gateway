@@ -247,7 +247,18 @@ jobs:
 
       - name: Verify deployed gateway
         id: health-check
-        run: node scripts/github-deployment-config.mjs health-check --from-env --expected-build "$DEPLOYED_SHA"
+        run: |
+          for attempt in 1 2 3; do
+            if node scripts/github-deployment-config.mjs health-check --from-env --expected-build "$DEPLOYED_SHA"; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "::notice::Post-deploy health check attempt ${attempt}/3 failed; retrying in 5s."
+              sleep 5
+            fi
+          done
+          echo "::error::Post-deploy health check failed after 3 attempts."
+          exit 1
 
       - name: Rollback to previous Worker version
         id: rollback
