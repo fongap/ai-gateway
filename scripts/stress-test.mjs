@@ -80,7 +80,8 @@ function makeEnv({ tier1, tier2, tier3, secrets, extraEnv } = {}) {
   const tier2Secrets = tierSecrets(tier2);
   const tier3Secrets = tierSecrets(tier3);
   return {
-    GATEWAY_ACCESS_KEY: ACCESS_KEY,
+    GATEWAY_ACCESS_KEY_AIR: ACCESS_KEY,
+    GATEWAY_ACCESS_MODELS_AIR: '*',
     // Deterministic P2C sampling in tests (fixed seed); production never sets it.
     TIER1_SCHEDULER_SEED: 'stress-test',
     ...(tier1 ? { TIER1_NODES_CONFIG_01: JSON.stringify(tier1) } : {}),

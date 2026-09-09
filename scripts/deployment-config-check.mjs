@@ -168,10 +168,12 @@ for (const file of srcFiles) {
   assert.doesNotMatch(source, legacyPattern, `${file} contains legacy architecture references`);
   assert.doesNotMatch(source, standaloneAccessKeyPattern, `${file} contains the removed standalone gateway access-key variable`);
 }
-assert.doesNotMatch(
-  read('scripts/integration-test.mjs'),
-  standaloneAccessKeyPattern,
-  'scripts/integration-test.mjs must not use the removed standalone gateway access-key fixture',
-);
+for (const file of ['scripts/integration-test.mjs', 'scripts/stress-test.mjs']) {
+  assert.doesNotMatch(
+    read(file),
+    standaloneAccessKeyPattern,
+    `${file} must not use the removed standalone gateway access-key fixture`,
+  );
+}
 
 console.log('Deployment configuration check passed.');
