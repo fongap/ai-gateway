@@ -1,0 +1,45 @@
+name: Refine Tier1 429 Scope
+
+on:
+  push:
+    branches:
+      - reliability/tier1-smooth-admission
+
+permissions:
+  contents: write
+
+jobs:
+  refine:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: reliability/tier1-smooth-admission
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Apply scoped 429 refinement
+        run: python3 scripts/refine-tier1-429-scope.py
+
+      - name: Install
+        run: npm ci
+
+      - name: Validate full deploy gate
+        run: npm run validate:deploy
+
+      - name: Commit validated refinement
+        shell: bash
+        run: |
+          rm .github/workflows/refine-tier1-429-scope.yml
+          rm scripts/refine-tier1-429-scope.py
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: keep Tier1 429 recovery scope-local'
+          git push origin HEAD:reliability/tier1-smooth-admission
