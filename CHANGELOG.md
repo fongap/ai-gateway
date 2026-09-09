@@ -1,4 +1,12 @@
-﻿# Changelog
+# Changelog
+
+## 1.3.1 - 2026-09-09
+
+### Changed
+
+- **Tier 1 Smooth RPM Admission**: hard `limits.rpm` 从 fixed-minute bucket 改为 isolate-local Token Bucket，连续按 `rpm / 60s` 补充，burst capacity 最多 2 个 token；消除分钟边界双倍突刺。`rpmMode=soft`、Tier 2/3、分布式 Rate Limiting binding 均不变。
+- **429 Resume Shaping**: 保留现有 `Retry-After`、model-scoped exponential backoff、jitter 与 rotate；429 cooldown 到期时仅恢复 1 个 Tier 1 admission token，避免恢复瞬间再次 burst → 429。
+- **Scope**: 不改 scheduler 主逻辑、tier-loop、request pipeline、protocol、transport、D1、deploy workflow、Access Key 或 Tier 2/3。
 
 ## 1.3.0 - 2026-09-09
 
