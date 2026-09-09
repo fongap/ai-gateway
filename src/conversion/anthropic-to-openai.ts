@@ -38,6 +38,16 @@ function systemToOpenAI(system: unknown): Record<string, unknown> | null {
   return { role: 'system', content: parts.join('\n') };
 }
 
+function midConversationSystemToOpenAI(system: unknown): Record<string, unknown> | null {
+  const converted = systemToOpenAI(system);
+  if (!converted) return null;
+  // Several OpenAI-compatible providers reject `role: system` after the first
+  // message. Mid-conversation system instructions therefore degrade to a user
+  // message at the same history position. This preserves instruction text and
+  // chronology while avoiding a provider-specific "system must be first" 400.
+  return { role: 'user', content: converted.content };
+}
+
 function assertDroppableThinkingBlock(block: Record<string, unknown>): void {
   if (block.type === 'thinking') {
     assertFields(block, ['type', 'thinking', 'signature'], 'thinking');
@@ -210,8 +220,10 @@ function assertDroppableAdvisorTool(tool: Record<string, unknown>): void {
 export function convertAnthropicToOpenAIRequest(body: Record<string, unknown>): Record<string, unknown> {
   // This converter intentionally supports the Claude Code request-control
   // envelope that can be safely degraded onto generic OpenAI Chat. Provider-
-  // specific control hints are validated then dropped. Visible text, client
-  // tool calls/results, system instructions, and message ordering are kept.
+  // specific control hints are validated then dropped. Visible text and client
+  // tool calls/results are preserved. Top-level system stays first; later
+  // system instructions are downgraded to user-role messages in place because
+  // generic providers do not consistently allow system messages mid-history.
   // Semantic features with no safe degradation (for example structured output)
   // remain hard conversion errors.
   assertFields(body, [
@@ -268,10 +280,11 @@ export function convertAnthropicToOpenAIRequest(body: Record<string, unknown>): 
         messages.push({ role: 'user', content: converted });
       }
     } else if (msg.role === 'system') {
-      // Mid-conversation effort changes are Anthropic-only hints; the system
-      // instruction itself is representable and stays exactly at this point.
+      // Mid-conversation effort changes are Anthropic-only hints. The text is
+      // preserved at the same point but downgraded to user role for broad
+      // OpenAI-compatible provider support.
       assertDroppableOutputConfig(msg.output_config);
-      const midConversationSystem = systemToOpenAI(msg.content);
+      const midConversationSystem = midConversationSystemToOpenAI(msg.content);
       if (midConversationSystem) messages.push(midConversationSystem);
     } else if (msg.role === 'tool') {
       messages.push({ role: 'tool', tool_call_id: msg.tool_use_id, content: extractToolResultText(msg.content) });

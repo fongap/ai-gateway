@@ -17,6 +17,7 @@ const converted = convertAnthropicToOpenAIRequest({
   model: 'Code-Max',
   max_tokens: 4096,
   stream: true,
+  system: [{ type: 'text', text: 'Initial instructions.', cache_control: { type: 'ephemeral' } }],
   thinking: { type: 'enabled', budget_tokens: 2048 },
   context_management: { edits: [] },
   output_config: { effort: 'high' },
@@ -94,8 +95,9 @@ assert.equal(converted.model, 'Code-Max');
 assert.equal(converted.max_tokens, 4096);
 assert.equal(converted.stream, true);
 assert.deepEqual(converted.messages, [
+  { role: 'system', content: 'Initial instructions.' },
   { role: 'user', content: 'before' },
-  { role: 'system', content: 'Use the updated instructions.' },
+  { role: 'user', content: 'Use the updated instructions.' },
   {
     role: 'assistant',
     content: 'I will read the file. ',
@@ -107,6 +109,8 @@ assert.deepEqual(converted.messages, [
   },
   { role: 'tool', tool_call_id: 'toolu_1', content: 'file contents' },
 ]);
+assert.equal(converted.messages.slice(1).some((message) => message.role === 'system'), false,
+  'generic Chat fallback must never emit a mid-conversation system role');
 assert.deepEqual(converted.tools, [{
   type: 'function',
   function: {
