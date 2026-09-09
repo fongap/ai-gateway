@@ -31,13 +31,11 @@ export const TIER1_TIMEOUT_BASE_MS = 5_000;
 export const TIER1_TIMEOUT_MAX_MS = 120_000;
 export const TIER1_5XX_BASE_MS = 1_000;
 export const TIER1_5XX_MAX_MS = 300_000;
-// Auth (401/403) and model_missing (404 heuristic) are NOT permanent
-// disables anymore. They get a long cooldown (default 1h) so the same
-// isolate can recover on its own if the key is rotated, the model is
-// re-added upstream, or the heuristic was a false positive. To force a
-// permanent block, set this to 0.
+// Auth failures are account/key scoped and intentionally recover after a long
+// cooldown rather than permanently disabling the account. model_missing is a
+// separate short-lived upstream-model mapping signal.
 export const TIER1_AUTH_DISABLED_COOLDOWN_MS = 3_600_000;
-export const TIER1_MODEL_MISSING_DISABLED_COOLDOWN_MS = 3_600_000;
+export const TIER1_MODEL_MISSING_COOLDOWN_MS = 5_000;
 export const TIER1_429_BASE_MS = 30_000;
 export const TIER1_429_MAX_MS = 1_800_000;
 
@@ -82,6 +80,7 @@ export type Tier1AccountRuntime = {
   quotaState: Tier1QuotaState,
   quotaResetAt: number,
   models: Map<string, Tier1ModelRuntime>,
+  modelMissingCooldowns: Map<string, number>,
 };
 
 export type Tier1ReleaseToken = { accountId: string, released: boolean };
@@ -155,6 +154,7 @@ function newAccountRuntime(accountId: string): Tier1AccountRuntime {
     quotaState: 'normal',
     quotaResetAt: 0,
     models: new Map(),
+    modelMissingCooldowns: new Map(),
   };
 }
 
@@ -233,9 +233,19 @@ export function rollbackTier1Rpm(accountId: string, now: number = Date.now()): v
   bucket.updatedAt = now;
 }
 
+function upstreamModelId(node: RuntimeNode, logicalModel: string): string {
+  return node.models[logicalModel] || logicalModel;
+}
+
+function modelMissingCooldownRemainingMs(account: Tier1AccountRuntime, node: RuntimeNode, logicalModel: string, now: number): number {
+  const until = account.modelMissingCooldowns.get(upstreamModelId(node, logicalModel)) ?? 0;
+  return until > now ? until - now : 0;
+}
+
 export function claimTier1Slot(node: RuntimeNode, now: number = Date.now(), modelId: string | null = null): boolean {
   const account = getTier1Account(node.id);
   if (account.accountDisabled || account.accountCooldownUntil > now || account.rateLimitRecoveryUntil > now) return false;
+  if (modelId && modelMissingCooldownRemainingMs(account, node, modelId, now) > 0) return false;
   const model = modelId ? account.models.get(modelId) : null;
   if ((model?.rateLimitRecoveryUntil ?? 0) > now) return false;
   if (model?.failureState === FAILURE_STATE.HALF_OPEN && account.inFlight > 0) return false;
@@ -289,6 +299,7 @@ export function isTier1Eligible(node: RuntimeNode, req: RoutableRequest, now: nu
   const account = accounts.get(node.id);
   if (!account) return true;
   if (account.accountDisabled || account.accountCooldownUntil > now || account.rateLimitRecoveryUntil > now) return false;
+  if (modelMissingCooldownRemainingMs(account, node, req.model, now) > 0) return false;
   const model = account.models.get(req.model);
   if (modelBlocked(model, now) || (model?.rateLimitRecoveryUntil ?? 0) > now) return false;
   if (model?.failureState === FAILURE_STATE.HALF_OPEN && account.inFlight > 0) return false;
@@ -451,7 +462,9 @@ export function classifyTier1Failure(classification: Tier1FailureInput, opts: { 
   const { retryAfterMs } = opts;
   const kind = classification?.kind;
   if (kind === 'auth') return { scope: 'account', action: 'disable', reason: kind };
-  if (kind === 'model_missing') return { scope: 'model', action: 'disable', reason: kind };
+  if (kind === 'model_missing') {
+    return { scope: 'model', action: 'cooldown', counted: false, cooldownMs: classification?.cooldownMs || TIER1_MODEL_MISSING_COOLDOWN_MS, reason: kind };
+  }
   if (kind === 'endpoint_not_found') {
     return { scope: 'account', action: 'cooldown', counted: false, cooldownMs: classification?.cooldownMs || 5_000, reason: kind };
   }
@@ -499,19 +512,24 @@ function modelCooldownMs(model: Tier1ModelRuntime, outcome: Tier1Outcome): numbe
   return jitter(exponential(TIER1_COOLDOWN_DEFAULT_MS, TIER1_COOLDOWN_MAX_MS, model.consecutiveFailures));
 }
 
-export function applyTier1Outcome(accountId: string, modelId: string, outcome: Tier1Outcome | null | undefined, now: number = Date.now()): void {
+export function applyTier1Outcome(accountId: string, modelId: string, outcome: Tier1Outcome | null | undefined, now: number = Date.now(), upstreamModel: string | null = null): void {
   if (!outcome || outcome.action === 'neutral' || outcome.scope === 'none') return;
   const account = getTier1Account(accountId);
+  if (outcome.reason === 'model_missing' && outcome.scope === 'model') {
+    const target = upstreamModel || modelId;
+    for (const [id, until] of account.modelMissingCooldowns) {
+      if (until <= now) account.modelMissingCooldowns.delete(id);
+    }
+    const ms = outcome.cooldownMs || TIER1_MODEL_MISSING_COOLDOWN_MS;
+    if (ms > 0) {
+      account.modelMissingCooldowns.set(target, Math.max(account.modelMissingCooldowns.get(target) ?? 0, now + ms));
+    }
+    return;
+  }
   if (outcome.action === 'disable') {
-    // 'disable' (auth / model_missing) is no longer permanent. We apply a
-    // long cooldown so the node self-recovers when the key is rotated, the
-    // model is re-added, or the 404 heuristic was a false positive. To
-    // opt out, set TIER1_AUTH_DISABLED_COOLDOWN_MS=0 and
-    // TIER1_MODEL_MISSING_DISABLED_COOLDOWN_MS=0 to restore the old
-    // "disabled until isolate restart" behavior.
-    const ms = outcome.reason === 'auth' ? TIER1_AUTH_DISABLED_COOLDOWN_MS
-      : outcome.reason === 'model_missing' ? TIER1_MODEL_MISSING_DISABLED_COOLDOWN_MS
-      : 0;
+    // Auth disable is recoverable: apply a long account cooldown so key
+    // rotation can heal the same isolate without requiring a restart.
+    const ms = outcome.reason === 'auth' ? TIER1_AUTH_DISABLED_COOLDOWN_MS : 0;
     if (ms > 0) {
       if (outcome.scope === 'account') {
         account.accountDisabled = false;
@@ -601,8 +619,12 @@ export function tier1BlockingWaitMs(node: RuntimeNode, modelId: string, now: num
   if (account.rateLimitRecoveryUntil > now) return account.rateLimitRecoveryUntil - now;
   const model = account.models.get(modelId);
   if (model?.disabled) return Infinity;
-  if (model && model.cooldownUntil > now) return model.cooldownUntil - now;
-  if (model && model.rateLimitRecoveryUntil > now) return model.rateLimitRecoveryUntil - now;
+  const scopedWait = Math.max(
+    model && model.cooldownUntil > now ? model.cooldownUntil - now : 0,
+    model && model.rateLimitRecoveryUntil > now ? model.rateLimitRecoveryUntil - now : 0,
+    modelMissingCooldownRemainingMs(account, node, modelId, now),
+  );
+  if (scopedWait > 0) return scopedWait;
   if (model?.failureState === FAILURE_STATE.HALF_OPEN && account.inFlight > 0) return 1_000;
   if (node.limits.rpm && node.limits.rpmMode !== 'soft') {
     const rpmWait = tier1RpmWaitMs(node.id, node.limits.rpm, now);
@@ -619,6 +641,7 @@ export function tier1HasDeferredCapacity(nodes: ReadonlyArray<RuntimeNode>, req:
     const account = accounts.get(node.id);
     if (!account || account.accountDisabled || account.accountCooldownUntil > now) continue;
     if (account.rateLimitRecoveryUntil > now) return true;
+    if (modelMissingCooldownRemainingMs(account, node, req.model, now) > 0) continue;
     const model = account.models.get(req.model);
     if (modelBlocked(model, now)) continue;
     if ((model?.rateLimitRecoveryUntil ?? 0) > now) return true;
