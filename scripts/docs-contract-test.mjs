@@ -58,6 +58,7 @@ const PROTOCOL_FACT_FILES = [
   'README.md',
   'README_EN.md',
   'docs/architecture/protocol-model.md',
+  'docs/architecture/routing-model.md',
   'docs/operations/configuration.md',
   '.dev.vars.example',
   'config/worker-vars.example.json',
@@ -115,16 +116,32 @@ const SHARD_FACT_FILES = [
   'README.md',
   'README_EN.md',
   'SECURITY.md',
+  'docs/architecture/routing-model.md',
   'docs/operations/configuration.md',
   'docs/operations/deployment.md',
   '.dev.vars.example',
 ];
 for (const file of SHARD_FACT_FILES) {
   const text = readDoc(file);
-  assert.doesNotMatch(text, /paired\s*1:1|paired\s+one-to-one|matching\s+(?:config\s+)?shard|matching\s+suffix|一一对应/i, `${file}: must not require Config/Secret shard suffix pairing`);
+  assert.doesNotMatch(text, /paired\s*1:1|paired\s+one-to-one|matching\s+(?:config\s+)?shard|matching\s+suffix|一一对应|1:1\s*配对/i, `${file}: must not require Config/Secret shard suffix pairing`);
   passed++;
   console.log(`ok - ${file} does not require Config/Secret suffix pairing`);
 }
+
+// Tier 1 has no independent hard attempt cap in v1.3.0.
+const routingText = readDoc('docs/architecture/routing-model.md');
+assert.doesNotMatch(
+  routingText,
+  /Tier\s*1[^\n]{0,100}(?:最多|maximum|max(?:imum)?)[^\n]{0,30}\b3\b[^\n]{0,30}(?:logical\s+)?attempt/i,
+  'routing-model.md must not reintroduce a Tier 1 three-attempt cap',
+);
+assert.match(
+  routingText,
+  /Tier 1 没有独立 attempt 上限/,
+  'routing-model.md must state that Tier 1 has no independent attempt cap',
+);
+passed++;
+console.log('ok - routing-model.md matches the unified Tier attempt budget');
 
 for (const file of DOCS) {
   const text = readDoc(file);
@@ -207,7 +224,6 @@ for (const { file, varName, def } of archDocDefaults) {
 }
 
 // routing-model.md must describe Tier 1 as Affinity → P2C, not LRU.
-const routingText = readDoc('docs/architecture/routing-model.md');
 assert.ok(
   /Tier 1[\s\S]{0,200}Affinity[\s\S]{0,200}P2C/.test(routingText),
   'routing-model.md must describe Tier 1 as Eligibility → Affinity → P2C (not LRU rotation)',
