@@ -4,7 +4,7 @@
 
 将多个 AI API、Key 和模型聚合为一个统一端点，自动处理限流、故障切换和协议兼容。
 
-当前版本：**1.3.0**
+当前版本：**1.3.1**
 
 ![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)
 ![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22-43853d?logo=node.js&logoColor=white)
