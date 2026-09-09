@@ -2,14 +2,14 @@
 
 ## 原生协议转发
 
-网关原生支持恰好两种协议族——OpenAI 和 Anthropic。采用 Native First 策略：OpenAI Chat Completions 与 Anthropic Messages 都先走同 protocol、同 surface 的原生路径；原生池耗尽后，默认允许 OpenAI Chat Completions ↔ Anthropic Messages 双向跨协议 fallback。OpenAI Responses 为 Native Only，不参与跨协议 fallback。`PROTOCOL_FALLBACKS` 未配置或为空时启用默认链 `{"anthropic:messages":["openai:chat_completions"], "openai:chat_completions":["anthropic:messages"]}`；设 `disable` 关闭；显式 JSON 覆盖默认。
+网关原生支持恰好两种协议族——OpenAI 和 Anthropic。采用 Native First 策略：OpenAI Chat Completions 与 Anthropic Messages 都先走同 protocol、同 surface 的原生路径；原生池耗尽后默认允许 OpenAI Chat Completions ↔ Anthropic Messages 双向跨协议 fallback。OpenAI Responses 为 Native Only，不参与跨协议 fallback。`PROTOCOL_FALLBACKS` 未配置或为空时使用默认链 `{"anthropic:messages":["openai:chat_completions"], "openai:chat_completions":["anthropic:messages"]}`；设 `disable` 关闭；显式 JSON 覆盖默认。
 
 ```text
-Client /v1/chat/completions → OpenAI transport    → upstream /v1/chat/completions
+Client /v1/chat/completions → OpenAI transport    → upstream /v1/chat_completions
 Client /v1/responses        → OpenAI transport    → upstream /v1/responses
 Client /v1/messages         → Anthropic transport → upstream /v1/messages
 ↘ (native pool exhausted, fallback enabled)
-                                   → OpenAI transport → upstream /v1/chat/completions
+                                   → OpenAI transport → upstream /v1/chat_completions
 Client /v1/chat/completions ↘ (native OpenAI pool exhausted, fallback enabled)
                             → Anthropic transport → upstream /v1/messages
 ```
@@ -24,7 +24,7 @@ Client /v1/chat/completions ↘ (native OpenAI pool exhausted, fallback enabled)
 | OpenAI Responses | n/a (无 Responses → Chat 转换) | Native | n/a (Native Only) |
 | Anthropic Messages | ✅ v1.3.0 默认 ON（双向） | n/a (无 Messages → Responses 转换) | Native |
 
-跨协议 fallback 默认启用；要恢复 Native-Only 行为，设 `PROTOCOL_FALLBACKS=disable`；要换映射或单独关掉某条路由，传显式 JSON（例如 `{"anthropic:messages":[]}` 把这一条显式关掉）。所有跨协议 fallback 共享同一个 `max_attempts` / `FAILOVER_BUDGET_MS` budget，**不获取新的尝试配额**。
+跨协议 fallback 默认启用；要恢复 Native-Only 行为，设 `PROTOCOL_FALLBACKS=disable`；要换映射或单独关掉某条路由，传显式 JSON（例如 `{"anthropic:messages":[]}` 把这一条显式关掉）。所有跨协议 fallback 共享同一个 `max_attempts` / `FAILOVER_BUDGET_MS` budget,**不获取新的尝试配额**。
 
 ## Transport 层
 
@@ -38,7 +38,7 @@ Transport 层不调度节点；Scheduler 和 Reliability 层不解析协议事�
 
 ## OpenAI Chat (`/v1/chat/completions`)
 
-标准 OpenAI Chat Completions 协议。请求转发到上游 `/v1/chat/completions`，响应按 OpenAI SSE 或 JSON 格式返回。
+标准 OpenAI Chat Completions 协议。请求转发到上游 `/v1/chat_completions`，响应按 OpenAI SSE 或 JSON 格式返回。
 
 - 首事件提交判定：非空 content、reasoning 或 tool-call 输出
 - 流式 wire format 兼容差异由 `src/config/provider-quirks.ts` 处理（如 `stream_options.include_usage`）
@@ -65,7 +65,7 @@ Transport 层不调度节点；Scheduler 和 Reliability 层不解析协议事�
 
 ## v1.3.0 协议转换
 
-跨协议 fallback 由 `src/conversion/` 中的独立转换器实现。每个方向是独立文件，不依赖其他方向的代码：
+跨协议 fallback 由 `src/conversion/` 中的独立转换器实现。每个方向是独立文件,**不依赖**其他方向的代码:
 
 | 方向 | Request | Response | Stream |
 | --- | --- | --- | --- |
@@ -74,9 +74,9 @@ Transport 层不调度节点；Scheduler 和 Reliability 层不解析协议事�
 | OpenAI Responses (native-only) | (native-only, no cross-protocol conversion) | (native-only, no cross-protocol conversion) | (native-only, no cross-protocol conversion) |
 | Anthropic → OpenAI Chat | (Anthropic 是 native 起点) | `anthropic-response-to-openai-chat.ts` | `anthropic-stream-to-openai-chat.ts` |
 
-每个转换器只支持**实际被使用的子集**（Codex 实际下发的字段）。不支持的字段（如 Responses 的 `reasoning` items, `image_generation_call`, `mcp_*` items 等）被**明确拒绝**（返回 `conversion_not_supported` 错误），不静默丢字段。
+每个转换器只支持**实际被使用的子集**(Codex 实际下发的字段)。不支持的字段(如 Responses 的 `reasoning` items, `image_generation_call`, `mcp_*` items 等)被**明确拒绝**(返回 `conversion_not_supported` 错误),不静默丢字段。
 
-**错误 envelope 跨协议契约**：跨协议 fallback 后，客户端始终收到**自己协议形状**的错误 envelope。例如：
+**错误 envelope 跨协议契约**: 跨协议 fallback 后,客户端始终收到**自己协议形状**的错误 envelope。例如:
 - OpenAI Chat 客户端 fallback 到 Anthropic upstream 失败 → 收到 `{ error: { message, type, ... } }` (OpenAI Chat 形状)
 - Anthropic 客户端 fallback 到 OpenAI upstream 失败 → 收到 `{ type: 'error', error: { ... } }` (Anthropic 形状)
 - 上游的内部错误 envelope **从不泄漏**到客户端。
