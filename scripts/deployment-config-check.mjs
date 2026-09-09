@@ -139,6 +139,17 @@ assert.ok(Object.keys(accessExample).some((name) => /^GATEWAY_ACCESS_KEY_(AIR|PR
 assert.ok(Object.keys(accessExample).some((name) => /^GATEWAY_ACCESS_MODELS_(AIR|PRO|MAX|ULTRA|AGENT)$/.test(name)), 'access-key example must contain Group Models');
 assert.ok(!('GATEWAY_ACCESS_KEY' in accessExample), 'access-key example must not recommend the legacy single key');
 
+const gatewaySecretsExample = JSON.parse(fs.readFileSync(path.join(configDir, 'gateway-secrets.example.json'), 'utf8'));
+const workerVarsExample = JSON.parse(fs.readFileSync(path.join(configDir, 'worker-vars.example.json'), 'utf8'));
+for (const group of accessGroups) {
+  if (`GATEWAY_ACCESS_KEY_${group}` in gatewaySecretsExample) {
+    assert.ok(
+      `GATEWAY_ACCESS_MODELS_${group}` in workerVarsExample,
+      `gateway-secrets.example.json Group ${group} must have matching Models in worker-vars.example.json`,
+    );
+  }
+}
+
 // Source tree must not contain legacy concepts.
 const srcFiles = [];
 function walk(dir) {
