@@ -116,21 +116,28 @@ function assertDroppableThinkingConfig(thinking: unknown): void {
   if (!isRecord(thinking)) unsupportedBlock('invalid thinking');
 }
 
+function assertDroppableContextManagementConfig(contextManagement: unknown): void {
+  if (contextManagement === undefined || contextManagement === null) return;
+  if (!isRecord(contextManagement)) unsupportedBlock('invalid context_management');
+}
+
 export function convertAnthropicToOpenAIRequest(body: Record<string, unknown>): Record<string, unknown> {
   // `metadata` is an Anthropic attribution field with no safe generic OpenAI
   // equivalent — different OpenAI-compatible providers disagree on `user`,
   // `metadata`, `safety_identifier`. It never changes generated content, so it
   // is accepted here and deliberately NOT forwarded to the OpenAI upstream.
   //
-  // Top-level `thinking` is different: it is a request-control setting with
-  // real semantics, but generic OpenAI-compatible Chat providers do not share
-  // one portable reasoning-control field. For this cross-protocol fallback we
-  // therefore accept a structurally valid object and deliberately DROP it so
-  // Claude Code can still use Chat-only nodes. Thinking CONTENT blocks remain
-  // non-convertible in convertAssistantContent/convertUserContent because
+  // Top-level `thinking` and `context_management` are request-control settings
+  // with real Anthropic semantics, but generic OpenAI-compatible Chat providers
+  // have no portable equivalents. For this cross-protocol fallback we accept
+  // structurally valid objects and deliberately DROP them so Claude Code can
+  // still use Chat-only nodes. The message history supplied by the client is
+  // preserved; the fallback does not emulate Anthropic server-side context
+  // edits or compaction. Thinking CONTENT blocks remain non-convertible because
   // silently deleting message history would lose conversation semantics.
-  assertFields(body, ['model', 'messages', 'system', 'max_tokens', 'temperature', 'top_p', 'stream', 'stop_sequences', 'tools', 'tool_choice', 'metadata', 'thinking'], 'request');
+  assertFields(body, ['model', 'messages', 'system', 'max_tokens', 'temperature', 'top_p', 'stream', 'stop_sequences', 'tools', 'tool_choice', 'metadata', 'thinking', 'context_management'], 'request');
   assertDroppableThinkingConfig(body.thinking);
+  assertDroppableContextManagementConfig(body.context_management);
   assertSampling(body);
   if (!Array.isArray(body.messages)) unsupportedBlock('invalid messages');
   const out: Record<string, unknown> = {};
