@@ -2,13 +2,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
 //
-// Regression contract for Claude Code -> Anthropic Messages -> OpenAI Chat.
-// Top-level `thinking`, `context_management`, and effort-only `output_config`
-// are request-control settings. Generic OpenAI-compatible Chat providers have
-// no portable equivalents, so the fallback accepts the narrowly validated
-// forms and deliberately drops them. Anthropic thinking CONTENT blocks and
-// structured output formats remain non-convertible because dropping them would
-// lose request or conversation semantics.
+// Regression contract for the Claude Code -> Anthropic Messages -> OpenAI Chat
+// fallback. The representative envelope covers the request-control and history
+// shapes currently emitted by Claude Code that can be safely degraded onto a
+// generic Chat-only upstream.
 
 import assert from 'node:assert/strict';
 import {
@@ -18,72 +15,140 @@ import {
 
 const converted = convertAnthropicToOpenAIRequest({
   model: 'Code-Max',
-  max_tokens: 1024,
-  thinking: { type: 'enabled', budget_tokens: 512 },
+  max_tokens: 4096,
+  stream: true,
+  thinking: { type: 'enabled', budget_tokens: 2048 },
   context_management: { edits: [] },
   output_config: { effort: 'high' },
-  messages: [{ role: 'user', content: 'Reply exactly OK' }],
+  cache_control: { type: 'ephemeral', scope: 'session' },
+  tools: [
+    {
+      name: 'Read',
+      description: 'Read a file',
+      input_schema: {
+        type: 'object',
+        properties: { path: { type: 'string' } },
+        required: ['path'],
+      },
+      cache_control: { type: 'ephemeral' },
+      allowed_callers: ['direct'],
+      defer_loading: false,
+      strict: true,
+      input_examples: [{ path: 'README.md' }],
+      eager_input_streaming: false,
+    },
+    {
+      type: 'advisor_20260301',
+      name: 'advisor',
+      model: 'claude-opus-5',
+      max_uses: 2,
+      max_tokens: 2048,
+      caching: { type: 'ephemeral', ttl: '5m' },
+    },
+  ],
+  tool_choice: { type: 'auto', disable_parallel_tool_use: false },
+  messages: [
+    { role: 'user', content: 'before' },
+    {
+      role: 'system',
+      content: [{ type: 'text', text: 'Use the updated instructions.', cache_control: { type: 'ephemeral' } }],
+      output_config: { effort: 'medium' },
+    },
+    {
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'private reasoning', signature: 'sig_1' },
+        { type: 'redacted_thinking', data: 'opaque' },
+        { type: 'server_tool_use', id: 'srvtoolu_1', name: 'advisor', input: {} },
+        {
+          type: 'advisor_tool_result',
+          tool_use_id: 'srvtoolu_1',
+          content: { type: 'advisor_redacted_result', encrypted_content: 'ciphertext' },
+        },
+        { type: 'text', text: 'I will read the file. ' },
+        {
+          type: 'tool_use',
+          id: 'toolu_1',
+          name: 'Read',
+          input: { path: 'README.md' },
+          caller: { type: 'direct' },
+          toolset_name: 'claude_code',
+        },
+      ],
+    },
+    {
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: 'toolu_1',
+          content: 'file contents',
+          is_error: false,
+        },
+      ],
+    },
+  ],
 });
 
 assert.equal(converted.model, 'Code-Max');
-assert.equal(converted.max_tokens, 1024);
+assert.equal(converted.max_tokens, 4096);
+assert.equal(converted.stream, true);
 assert.deepEqual(converted.messages, [
-  { role: 'user', content: 'Reply exactly OK' },
+  { role: 'user', content: 'before' },
+  { role: 'system', content: 'Use the updated instructions.' },
+  {
+    role: 'assistant',
+    content: 'I will read the file. ',
+    tool_calls: [{
+      id: 'toolu_1',
+      type: 'function',
+      function: { name: 'Read', arguments: '{"path":"README.md"}' },
+    }],
+  },
+  { role: 'tool', tool_call_id: 'toolu_1', content: 'file contents' },
 ]);
-assert.equal(Object.hasOwn(converted, 'thinking'), false,
-  'top-level thinking must not leak to a generic OpenAI Chat upstream');
-assert.equal(Object.hasOwn(converted, 'context_management'), false,
-  'context_management must not leak to a generic OpenAI Chat upstream');
-assert.equal(Object.hasOwn(converted, 'output_config'), false,
-  'effort-only output_config must not leak to a generic OpenAI Chat upstream');
-
-assert.throws(
-  () => convertAnthropicToOpenAIRequest({
-    model: 'Code-Max',
-    max_tokens: 1024,
-    context_management: 'invalid',
-    messages: [{ role: 'user', content: 'hello' }],
-  }),
-  (error) => error instanceof ConversionError && /invalid context_management/.test(error.message),
-  'non-object context_management must remain non-convertible',
-);
-
-assert.throws(
-  () => convertAnthropicToOpenAIRequest({
-    model: 'Code-Max',
-    max_tokens: 1024,
-    output_config: 'invalid',
-    messages: [{ role: 'user', content: 'hello' }],
-  }),
-  (error) => error instanceof ConversionError && /invalid output_config/.test(error.message),
-  'non-object output_config must remain non-convertible',
-);
-
-assert.throws(
-  () => convertAnthropicToOpenAIRequest({
-    model: 'Code-Max',
-    max_tokens: 1024,
-    output_config: { effort: 'turbo' },
-    messages: [{ role: 'user', content: 'hello' }],
-  }),
-  (error) => error instanceof ConversionError && /invalid output_config\.effort/.test(error.message),
-  'unknown effort values must remain non-convertible',
-);
+assert.deepEqual(converted.tools, [{
+  type: 'function',
+  function: {
+    name: 'Read',
+    description: 'Read a file',
+    parameters: {
+      type: 'object',
+      properties: { path: { type: 'string' } },
+      required: ['path'],
+    },
+  },
+}]);
+assert.equal(converted.tool_choice, 'auto');
+for (const key of ['thinking', 'context_management', 'output_config', 'cache_control']) {
+  assert.equal(Object.hasOwn(converted, key), false, `${key} must not leak to generic OpenAI Chat`);
+}
+assert.equal(converted.tools.some((tool) => tool.function?.name === 'advisor'), false,
+  'Anthropic server-side advisor must not be exposed as a fake client function');
 
 assert.throws(
   () => convertAnthropicToOpenAIRequest({
     model: 'Code-Max',
     max_tokens: 1024,
     output_config: {
-      format: {
-        type: 'json_schema',
-        schema: { type: 'object' },
-      },
+      format: { type: 'json_schema', schema: { type: 'object' } },
     },
     messages: [{ role: 'user', content: 'hello' }],
   }),
   (error) => error instanceof ConversionError && /output_config/.test(error.message),
-  'structured output format must not be silently dropped on generic Chat fallback',
+  'structured output must remain non-convertible rather than being silently dropped',
+);
+
+assert.throws(
+  () => convertAnthropicToOpenAIRequest({
+    model: 'Code-Max',
+    max_tokens: 1024,
+    tools: [{ type: 'advisor_20260301', name: 'advisor', model: 'claude-opus-5' }],
+    tool_choice: { type: 'tool', name: 'advisor' },
+    messages: [{ role: 'user', content: 'hello' }],
+  }),
+  (error) => error instanceof ConversionError && /tool_choice references Anthropic-only server tool advisor/.test(error.message),
+  'forced advisor use cannot be silently degraded',
 );
 
 assert.throws(
@@ -92,14 +157,11 @@ assert.throws(
     max_tokens: 1024,
     messages: [{
       role: 'assistant',
-      content: [
-        { type: 'thinking', thinking: 'reasoning history' },
-        { type: 'text', text: 'answer' },
-      ],
+      content: [{ type: 'server_tool_use', id: 'srvtoolu_2', name: 'web_search', input: {} }],
     }],
   }),
-  (error) => error instanceof ConversionError && /thinking blocks not supported/.test(error.message),
-  'thinking content blocks must remain non-convertible instead of being silently dropped',
+  (error) => error instanceof ConversionError && /server_tool_use/.test(error.message),
+  'unhandled Anthropic server tools must still fail closed',
 );
 
-console.log('anthropic thinking/context-management/output-config fallback test passed');
+console.log('anthropic Claude Code beta wire compatibility test passed');
