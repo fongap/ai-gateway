@@ -1,121 +1,103 @@
-<div align="center">
-
 # ai-gateway
 
-**many APIs · many keys · many models · one stable endpoint**
+**Many APIs · many keys · many models · one endpoint**
 
-Aggregate upstream APIs and keys — free or paid, prone to rate limits and outages — into one stable, self-healing AI endpoint.
+Aggregate multiple AI APIs, keys, and models behind one endpoint with rate-limit handling, failover, and protocol fallback.
 
 ![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)
-![Node](https://img.shields.io/badge/Node.js-%3E%3D22-43853d?logo=node.js&logoColor=white)
-![License](https://img.shields.io/badge/license-MIT-2ea44f)
+![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22-43853d?logo=node.js&logoColor=white)
+![MIT](https://img.shields.io/badge/license-MIT-2ea44f)
 
-[Local setup](#local-setup) · [Auto deploy](#auto-deploy) · [Config](#config) · [Endpoints](#endpoints) · [Security](#security)
-
-</div>
-
----
-
-## At a glance
+[Quick Start](#quick-start) · [Configuration](#configuration) · [API](#api) · [Docs](#docs) · [中文](README.md)
 
 ```mermaid
 flowchart TB
-    A[request] --> B[auth / route]
-    B --> C[Model Registry]
-    C --> D{resource tier}
-    D -- Tier 1 --> E[Eligibility + Affinity + P2C]
-    D -- Tier 2 / 3 --> F[existing stable scheduler]
-    E --> G[real request + passive TTFT]
-    F --> G
-    G --> H{result}
-    H -- success --> I[respond]
-    H -- 429 / 5xx --> D
-    H -- exhausted --> J[502 / 503 / 504]
+    A[Request] --> B[Auth / Routing]
+    B --> C[Native First]
+    C --> D[Tier 1 → Tier 2 → Tier 3]
+    D --> E["Protocol Fallback<br/>Chat ↔ Messages<br/>Responses: Native Only"]
+    E --> F[Response]
 ```
 
-## Core
+## Capabilities
 
-| Tier 1 adaptation | 429 isolation | Passive recovery | Tier fallback |
-|---|---|---|---|
-| affinity + P2C | Retry-After cooldown | real-request HALF_OPEN | hard-precedence tiers |
+| Capability | Description |
+| --- | --- |
+| Multi-protocol | OpenAI Chat / Responses, Anthropic Messages |
+| Multi-node | Multiple APIs, keys, and models behind one endpoint |
+| Tier routing | Tier 1 → Tier 2 → Tier 3 |
+| Failover | Switches nodes on 429, 5xx, and timeouts |
+| Protocol fallback | Chat ↔ Messages; Responses stays native |
+| Session affinity | Tier 1 supports cross-isolate session binding |
 
-- Multi-protocol: OpenAI Chat / Responses, Anthropic Messages / count_tokens
-- Native protocol forwarding: Chat → upstream `/v1/chat/completions`, Responses → upstream `/v1/responses`, Messages → upstream `/v1/messages`; nodes declare `protocol` + `surfaces` explicitly
-- Native First + v1.3.0 cross-protocol fallback: client requests are forwarded to a same-protocol, same-surface native upstream first; when the native pool is exhausted, the default enables cross-protocol fallback (OpenAI Chat↔Anthropic Messages bidirectional; Responses is Native Only). When `PROTOCOL_FALLBACKS` is unset or empty, the built-in bidirectional chain is used; set `disable` to opt out; an explicit JSON value overrides. Cross-protocol fallback shares the same `max_attempts` / `FAILOVER_BUDGET_MS` budget as native retry — fallback does not earn a new attempt slot.
-- `limits.rpm` defaults hard and is enforced best-effort within one Worker isolate
-- One whole-request failover budget shared by Tier 1, Tier 2, and Tier 3
-- Tier 1 learns per-`(account, model)` TTFT only from meaningful output in real requests. It uses no active probes, health score, LRU, or static-priority ordering. It does not promise the globally fastest account on every request; it targets stability, low cost, fast avoidance, natural balance, and session continuity.
-- Tier 1 session affinity is stored in Cloudflare KV so it works across isolates. Short-lived TTFT, in-flight, cooldown, and half-open state remains isolate-local best-effort state.
-- Tier 2 and Tier 3 keep the existing stable fallback and circuit behavior.
-
-## Local setup
-
-Create a Cloudflare KV namespace for Tier 1 affinity, then run the installer and provide its 32-character namespace ID when prompted:
+## Quick Start
 
 ```bash
-git clone https://github.com/fongap/ai-gateway.git && cd ai-gateway
+git clone https://github.com/fongap/ai-gateway.git
+cd ai-gateway
 npm ci
-sh scripts/install.sh     # Windows: powershell scripts/install.ps1
+sh scripts/install.sh
 ```
 
-## Auto deploy
+Windows:
 
-Production stores fork-specific non-sensitive Worker configuration in GitHub repository Variables and credentials in GitHub repository Secrets. Set the required `TIER1_AFFINITY_KV_ID` Variable, then push `main`:
-
-```bash
-git push origin main
+```powershell
+powershell scripts/install.ps1
 ```
 
-The workflow runs the full validation suite (Production Gate), then validates configuration, synchronizes Worker variables and Secrets, applies D1 migrations BEFORE deploying the Worker, and runs live health checks. See **[docs/operations/deployment.md](docs/operations/deployment.md)**.
+For production deployment, see [docs/operations/deployment.md](docs/operations/deployment.md).
 
-## Config
-
-Node definitions are Worker text variables; upstream credentials and the gateway access key are Worker Secrets:
+## Configuration
 
 ```json
-{ "id": "free-01", "provider": "example", "priority": 10,
+{
+  "id": "node-01",
+  "provider": "example",
+  "protocol": "openai",
+  "surfaces": ["chat_completions"],
   "base_url": "https://api.example.com/v1",
-  "models": { "general-air": "upstream-model" },
-  "limits": { "concurrency": 3, "rpm": 40 } }
+  "priority": 10,
+  "models": {
+    "code": "upstream-model"
+  },
+  "limits": {
+    "concurrency": 3,
+    "rpm": 40
+  }
+}
 ```
 
-| Configuration item | Purpose |
-|---|---|
-| `TIER{1,2,3}_NODES_CONFIG_01..` | node pools per tier |
-| `TIER{1,2,3}_NODES_SECRETS_01..` | Node credentials (tier-scoped; `01..10` are shards only, and same-tier node IDs may bind across suffixes) |
-| `GATEWAY_ACCESS_KEY` | gateway access key |
-| `TIER1_AFFINITY` | required Cloudflare KV binding for hashed session key → Tier 1 account |
+| Configuration | Purpose |
+| --- | --- |
+| `TIER*_NODES_CONFIG_*` | Node configuration |
+| `TIER*_NODES_SECRETS_*` | Node credentials |
+| `GATEWAY_ACCESS_KEY_*` | Gateway access keys |
+| `MODELS_CONFIG` | Model configuration |
+| `POLICIES_CONFIG` | Routing policies |
 
-A credential's Tier must match the node's Tier; shard suffixes do not require a 1:1 pairing.
+A Secret must belong to the same Tier as its node and bind by node id; 01..10 are shard numbers only.
 
-`priority` remains part of the shared node schema for Tier 2/3 compatibility, but Tier 1 P2C ignores it.
+## API
 
-> Full fields, runtime behavior, Model Registry, and deployment examples → **[docs/operations/configuration.md](docs/operations/configuration.md)**.
-
-## Endpoints
-
-| Method | Path | Meaning |
-|---|---|---|
+| Method | Path | Protocol / Purpose |
+| --- | --- | --- |
 | POST | `/v1/chat/completions` | OpenAI Chat |
 | POST | `/v1/responses` | OpenAI Responses |
-| POST | `/v1/messages` · `/count_tokens` | Anthropic Messages |
-| GET | `/` · `/version` | entry page · version (v1.3.0: `version` = release identity, `build` = deployment identity) |
-| GET | `/health` `/metrics` `/v1/models` | diagnostics (authenticated) |
+| POST | `/v1/messages` | Anthropic Messages |
+| POST | `/v1/messages/count_tokens` | Anthropic Token Count |
+| GET | `/v1/models` | Model list |
+| GET | `/health` | Health check |
 
-Clients may send `x-session-id` (8–128 characters) to enable Tier 1 session affinity. The raw value is SHA-256 hashed before it becomes a KV key and is never logged.
+## Docs
 
-## Security
+| Topic | Document |
+| --- | --- |
+| Architecture | [Architecture overview](docs/architecture/overview.md) |
+| Configuration | [Configuration](docs/operations/configuration.md) |
+| Deployment | [Deployment](docs/operations/deployment.md) |
+| Reliability | [Reliability model](docs/architecture/reliability-model.md) |
+| Security | [Quality and security](docs/governance/quality-policy.md) |
 
-- Bearer / `x-api-key`, timing-safe; header allowlist; HTTPS enforced
-- Credentials never leak; CORS is off by default
-- Topology is hidden by default; session IDs are not written into KV keys or logs
+## License
 
----
-
-<div align="center">
-
-**ai-gateway** · many keys · many models · one stable endpoint · [MIT](LICENSE)
-
-[Architecture](docs/architecture/overview.md) · [Configuration](docs/operations/configuration.md) · [Deployment](docs/operations/deployment.md)
-
-</div>
+MIT License. See [LICENSE](LICENSE).
