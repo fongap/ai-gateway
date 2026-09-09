@@ -71,6 +71,14 @@ function reqFor(url, init) {
 function resetMock() { upstreamCalls.length = 0; routeHandlers = {}; }
 
 function makeEnv({ tier1, tier2, tier3, secrets, extraEnv } = {}) {
+  const tierSecrets = (nodes = []) => Object.fromEntries(
+    nodes
+      .map((node) => [node.id, secrets?.[node.id]])
+      .filter(([, credential]) => credential !== undefined),
+  );
+  const tier1Secrets = tierSecrets(tier1);
+  const tier2Secrets = tierSecrets(tier2);
+  const tier3Secrets = tierSecrets(tier3);
   return {
     GATEWAY_ACCESS_KEY: ACCESS_KEY,
     // Deterministic P2C sampling in tests (fixed seed); production never sets it.
@@ -78,7 +86,9 @@ function makeEnv({ tier1, tier2, tier3, secrets, extraEnv } = {}) {
     ...(tier1 ? { TIER1_NODES_CONFIG_01: JSON.stringify(tier1) } : {}),
     ...(tier2 ? { TIER2_NODES_CONFIG_01: JSON.stringify(tier2) } : {}),
     ...(tier3 ? { TIER3_NODES_CONFIG_01: JSON.stringify(tier3) } : {}),
-    ...(secrets ? { TIER1_NODES_SECRETS_01: JSON.stringify(secrets) } : {}),
+    ...(Object.keys(tier1Secrets).length ? { TIER1_NODES_SECRETS_01: JSON.stringify(tier1Secrets) } : {}),
+    ...(Object.keys(tier2Secrets).length ? { TIER2_NODES_SECRETS_01: JSON.stringify(tier2Secrets) } : {}),
+    ...(Object.keys(tier3Secrets).length ? { TIER3_NODES_SECRETS_01: JSON.stringify(tier3Secrets) } : {}),
     ...extraEnv,
   };
 }
@@ -146,7 +156,7 @@ await test('S2 hard RPM burst: never exceeds the cap, excess yields 503', async 
 });
 
 // ---- S3: tier fallback drains tier-1 before tier-2 -------------------------
-await test('S3 tier fallback: drains tier-1, then tier-2 serves', async () => {
+await test('S3 tier fallback: drains tier-1 budget, then tier-2 serves', async () => {
   resetMock();
   for (const id of ['t1a', 't1b', 't1c', 't1d']) routeHandlers[`${id}.example.com`] = () => jsonUpstream({}, 503);
   routeHandlers['t2a.example.com'] = () => jsonUpstream(okCompletion);
@@ -158,10 +168,10 @@ await test('S3 tier fallback: drains tier-1, then tier-2 serves', async () => {
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.equal(res.status, 200);
   const hosts = upstreamCalls.map((c) => c.host);
-  assert.equal(hosts.length, 4, 'Tier 1 hard cap of three is followed by Tier 2');
-  assert.ok(hosts.slice(0, 3).every((host) => /^t1[abcd]\.example\.com$/.test(host)));
-  assert.equal(new Set(hosts.slice(0, 3)).size, 3);
-  assert.equal(hosts[3], 't2a.example.com');
+  assert.equal(hosts.length, 5, 'default max_attempts=5 gives Tier 1 four attempts before Tier 2');
+  assert.ok(hosts.slice(0, 4).every((host) => /^t1[abcd]\.example\.com$/.test(host)));
+  assert.equal(new Set(hosts.slice(0, 4)).size, 4);
+  assert.equal(hosts[4], 't2a.example.com');
   assertNoLeaks(['t1a', 't1b', 't1c', 't1d', 't2a']);
 });
 
@@ -363,10 +373,8 @@ await test('S10 model isolation: a failure-cooldown account leaves siblings serv
 });
 
 // ---- S11: per-tier attempt budget keeps Tier 2 reachable when Tier 1 is wide ----
-// A Tier 1 of many failing free keys must NOT eat the whole attempt budget:
-// the per-tier attempt budget (computeTierCaps) distributes max_attempts so
-// every dispatchable tier gets at least one attempt. With maxAttempts=5 and
-// Tier 2 dispatchable, Tier 1 is capped and Tier 2 is reached.
+// With max_attempts=5 and Tier 2 dispatchable, the default budget reserves one
+// attempt for Tier 2 and assigns the other four to higher-precedence Tier 1.
 await test('S11 fallback reserve: a wide failing Tier 1 cannot starve Tier 2', async () => {
   resetMock();
   for (const id of ['fb1', 'fb2', 'fb3', 'fb4', 'fb5', 'fb6']) {
@@ -383,7 +391,7 @@ await test('S11 fallback reserve: a wide failing Tier 1 cannot starve Tier 2', a
   const tier1Calls = upstreamCalls.filter((c) => c.host.endsWith('.example.com') && c.host.startsWith('fb')).length;
   const tier2Calls = upstreamCalls.filter((c) => c.host === 'paid.example.com').length;
   assert.equal(tier2Calls, 1, 'paid Tier 2 node must be contacted exactly once');
-  assert.equal(tier1Calls, 3, 'Tier 1 uses its dedicated hard cap before fallback');
+  assert.equal(tier1Calls, 4, 'default per-tier budget gives Tier 1 four attempts');
   assertNoLeaks(['fb1', 'fb2', 'fb3', 'fb4', 'fb5', 'fb6', 'paid']);
 });
 
@@ -436,9 +444,8 @@ await test('S13 per-tier default: each schedulable tier gets a share, middle tie
 });
 
 // ---- S14: availability-aware budget — an unusable lower tier gets no budget ----
-// Tier 2's only node is cooling (cooldown/circuit), so it is NOT a schedulable
-// candidate. Budget is not reserved for it, while Tier 1 still retains its
-// independent hard cap of three attempts.
+// Tier 2's only node is cooling, so it is not dispatchable and receives no
+// budget. With only Tier 1 dispatchable, the shared max_attempts=5 is the cap.
 await test('S14 availability-aware: a cooling Tier 2 node does not consume Tier 1 budget', async () => {
   resetMock();
   for (const id of ['a1', 'a2', 'a3', 'a4', 'a5', 'a6']) {
@@ -450,18 +457,18 @@ await test('S14 availability-aware: a cooling Tier 2 node does not consume Tier 
     tier2: [basicNode('cool2', { limits: { concurrency: 20 } })],
     secrets: { a1: 'k', a2: 'k', a3: 'k', a4: 'k', a5: 'k', a6: 'k', cool2: 'k' },
   });
-  // Warm-up: 3 Tier-1 attempts (Tier 1 hard cap), then the
-  // only Tier-2 node answers 429 and cools (retry-after 120s).
+  // Warm-up: four Tier-1 attempts from the default per-tier budget, then the
+  // only Tier-2 node answers 429 and cools.
   await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.ok(getNodeState('cool2').cooldownUntil > Date.now(), 'cool2 must be cooling after the warm-up');
-  // Second request: cool2 is cooling -> tier-2 is NOT schedulable -> Tier 1 gets
-  // its own cap of 3, never reserving an attempt for an unusable tier.
+  // Second request: Tier 2 is not dispatchable, so Tier 1 may use the shared
+  // max_attempts budget without any separate Tier-1 ceiling.
   const callsBefore = upstreamCalls.length;
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   const newCalls = upstreamCalls.slice(callsBefore);
   assert.equal(res.status, 502, 'Tier 1 exhausts the whole budget and no usable fallback exists');
-  assert.equal(newCalls.filter((c) => c.host.startsWith('a')).length, 3,
-    'Tier 1 retains its three-attempt cap when the only Tier-2 candidate is cooling');
+  assert.equal(newCalls.filter((c) => c.host.startsWith('a')).length, 5,
+    'Tier 1 may use all five shared attempts when it is the only dispatchable tier');
   assert.equal(newCalls.filter((c) => c.host === 'cool2.example.com').length, 0,
     'a cooling Tier-2 node is never re-contacted');
   assertNoLeaks(['a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'cool2']);
