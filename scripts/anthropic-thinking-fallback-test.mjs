@@ -8,7 +8,8 @@
 // no portable equivalents, so the fallback accepts the narrowly validated
 // forms and deliberately drops them. Anthropic thinking CONTENT blocks and
 // structured output formats remain non-convertible because dropping them would
-// lose request or conversation semantics.
+// lose request or conversation semantics. Mid-conversation system messages are
+// preserved as OpenAI Chat system messages in their original history position.
 
 import assert from 'node:assert/strict';
 import {
@@ -36,6 +37,25 @@ assert.equal(Object.hasOwn(converted, 'context_management'), false,
   'context_management must not leak to a generic OpenAI Chat upstream');
 assert.equal(Object.hasOwn(converted, 'output_config'), false,
   'effort-only output_config must not leak to a generic OpenAI Chat upstream');
+
+const midConversationSystem = convertAnthropicToOpenAIRequest({
+  model: 'Code-Max',
+  max_tokens: 1024,
+  messages: [
+    { role: 'user', content: 'before' },
+    {
+      role: 'system',
+      content: [{ type: 'text', text: 'Use the updated instructions.', cache_control: { type: 'ephemeral' } }],
+    },
+    { role: 'user', content: 'after' },
+  ],
+});
+
+assert.deepEqual(midConversationSystem.messages, [
+  { role: 'user', content: 'before' },
+  { role: 'system', content: 'Use the updated instructions.' },
+  { role: 'user', content: 'after' },
+], 'mid-conversation system messages must preserve content and history position');
 
 assert.throws(
   () => convertAnthropicToOpenAIRequest({
@@ -102,4 +122,4 @@ assert.throws(
   'thinking content blocks must remain non-convertible instead of being silently dropped',
 );
 
-console.log('anthropic thinking/context-management/output-config fallback test passed');
+console.log('anthropic Claude Code fallback compatibility test passed');
