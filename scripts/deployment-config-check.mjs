@@ -168,7 +168,12 @@ for (const file of srcFiles) {
   assert.doesNotMatch(source, legacyPattern, `${file} contains legacy architecture references`);
   assert.doesNotMatch(source, standaloneAccessKeyPattern, `${file} contains the removed standalone gateway access-key variable`);
 }
-for (const file of ['scripts/integration-test.mjs', 'scripts/stress-test.mjs']) {
+for (const file of [
+  'scripts/integration-test.mjs',
+  'scripts/stress-test.mjs',
+  'scripts/codex-contract-test.mjs',
+  'scripts/claude-contract-test.mjs',
+]) {
   assert.doesNotMatch(
     read(file),
     standaloneAccessKeyPattern,
