@@ -25,7 +25,9 @@ jobs:
           cache: npm
 
       - name: Apply bounded v1.3.1 reliability patch
-        run: python3 scripts/apply-tier1-smooth-admission.py
+        run: |
+          python3 scripts/apply-tier1-smooth-admission.py
+          python3 scripts/patch-tier1-test-fixture.py
 
       - name: Install
         run: npm ci
@@ -38,6 +40,7 @@ jobs:
         run: |
           rm .github/workflows/apply-tier1-smooth-admission.yml
           rm scripts/apply-tier1-smooth-admission.py
+          rm scripts/patch-tier1-test-fixture.py
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
