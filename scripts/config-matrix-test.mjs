@@ -26,6 +26,9 @@ import { renderModels } from '../src/dashboard/model-status-view.ts';
 import { supportsRequest } from '../src/scheduler/scheduler.ts';
 import { __resetTier1StateForTests, recordTier1Ttft } from '../src/reliability/tier1-state.ts';
 import { __resetAllStateForTests } from '../src/reliability/node-state.ts';
+import { loadGatewayConfig } from '../src/config/nodes.ts';
+import { getPoliciesConfigDiagnostics } from '../src/config/policies.ts';
+import { computeTierCaps } from '../src/request/tier-loop.ts';
 
 let passed = 0;
 function test(name, fn) {
@@ -54,6 +57,27 @@ const node = (id, models) => ({
   surfaces: ['chat_completions'],
   base_url: `https://${id}.example.com/v1`,
   models,
+  limits: { concurrency: 1 },
+});
+const configNode = (id) => ({
+  id,
+  provider: 'mock',
+  protocol: 'openai',
+  surfaces: ['chat_completions'],
+  base_url: `https://${id}.example.com/v1`,
+  models: { 'Code-Max': 'up-model' },
+  limits: { concurrency: 1 },
+});
+const budgetNode = (id, tier) => ({
+  id,
+  tier,
+  provider: 'mock',
+  protocol: 'openai',
+  surfaces: ['chat_completions'],
+  baseUrl: `https://${id}.example.com/v1`,
+  credential: 'k',
+  priority: 10,
+  models: { 'Code-Max': 'up-model' },
   limits: { concurrency: 1 },
 });
 const now = () => 1_700_000_000_000;
@@ -146,6 +170,98 @@ test('MODELS_CONFIG never widens: a model in MODELS_CONFIG but no node mapping i
   }), new Set(), now());
   assert.ok(!ids(result).includes('registry-only'),
     'MODELS_CONFIG cannot surface a model that no node maps to');
+});
+
+// --- Secret tier isolation --------------------------------------------------
+
+test('secret tier: same tier may bind across different shard suffixes', () => {
+  const cfg = loadGatewayConfig({
+    GATEWAY_ACCESS_KEY: 'k',
+    TIER1_NODES_CONFIG_01: JSON.stringify([configNode('same-tier')]),
+    TIER1_NODES_SECRETS_09: JSON.stringify({ 'same-tier': 'secret' }),
+  });
+  assert.equal(cfg.status, 'ready');
+  assert.equal(cfg.ready, true);
+  assert.equal(cfg.nodes[0].credential, 'secret');
+});
+
+test('secret tier: TIER2 node cannot consume a TIER1 credential', () => {
+  const cfg = loadGatewayConfig({
+    GATEWAY_ACCESS_KEY: 'k',
+    TIER2_NODES_CONFIG_01: JSON.stringify([configNode('tier2-cross')]),
+    TIER1_NODES_SECRETS_01: JSON.stringify({ 'tier2-cross': 'secret' }),
+  });
+  assert.equal(cfg.status, 'invalid');
+  assert.equal(cfg.ready, false);
+  const diag = cfg.diagnostics.find((d) => d.includes('tier2-cross')) || '';
+  assert.match(diag, /TIER2/);
+  assert.match(diag, /TIER1/);
+});
+
+test('secret tier: TIER3 node cannot consume a TIER2 credential', () => {
+  const cfg = loadGatewayConfig({
+    GATEWAY_ACCESS_KEY: 'k',
+    TIER3_NODES_CONFIG_01: JSON.stringify([configNode('tier3-cross')]),
+    TIER2_NODES_SECRETS_07: JSON.stringify({ 'tier3-cross': 'secret' }),
+  });
+  assert.equal(cfg.status, 'invalid');
+  assert.equal(cfg.ready, false);
+  const diag = cfg.diagnostics.find((d) => d.includes('tier3-cross')) || '';
+  assert.match(diag, /TIER3/);
+  assert.match(diag, /TIER2/);
+});
+
+// --- Explicit tier_attempts contract ---------------------------------------
+
+test('weighted tier_attempts: explicit Tier2=3 stays 3 when it is the only dispatchable tier', () => {
+  const tiers = { 1: [], 2: [budgetNode('only-t2', 'tier-2')], 3: [] };
+  const policy = {
+    maxAttempts: 6,
+    tierAttempts: { tier2: 3 },
+    hedge: null,
+    firstEventTimeoutMs: null,
+    budgetSplit: 'weighted',
+  };
+  const caps = computeTierCaps(tiers, reqFor('Code-Max'), new Set(), policy, new Set());
+  assert.equal(caps[2], 3, 'weighted reconciliation must not inflate explicit Tier2 from 3 to 6');
+});
+
+test('POLICIES_CONFIG rejects explicit tier_attempts total above max_attempts', () => {
+  const extra = {
+    POLICIES_CONFIG: JSON.stringify({
+      over: { max_attempts: 6, tier_attempts: { tier2: 4, tier3: 4 }, budget_split: 'weighted' },
+    }),
+  };
+  const diags = getPoliciesConfigDiagnostics(extra);
+  assert.ok(diags.some((d) => d.includes('tier_attempts total exceeds max_attempts')),
+    `expected tier_attempts total diagnostic, got ${diags}`);
+
+  const cfg = loadGatewayConfig({
+    GATEWAY_ACCESS_KEY: 'k',
+    TIER2_NODES_CONFIG_01: JSON.stringify([configNode('over-budget')]),
+    TIER2_NODES_SECRETS_01: JSON.stringify({ 'over-budget': 'secret' }),
+    ...extra,
+  });
+  assert.equal(cfg.status, 'invalid');
+  assert.equal(cfg.ready, false);
+});
+
+test('weighted tier_attempts: unset Tier3 receives only the remaining budget', () => {
+  const tiers = {
+    1: [],
+    2: [budgetNode('split-t2', 'tier-2')],
+    3: [budgetNode('split-t3', 'tier-3')],
+  };
+  const policy = {
+    maxAttempts: 6,
+    tierAttempts: { tier2: 3 },
+    hedge: null,
+    firstEventTimeoutMs: null,
+    budgetSplit: 'weighted',
+  };
+  const caps = computeTierCaps(tiers, reqFor('Code-Max'), new Set(), policy, new Set());
+  assert.equal(caps[2], 3, 'explicit Tier2 cap remains locked');
+  assert.equal(caps[3], 3, 'unset Tier3 receives the remaining 3 attempts');
 });
 
 console.log(`\nconfig-matrix tests: ${passed} passed.`);
