@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MIT
 //
-// GATEWAY_ACCESS_KEY_<GROUP> unit tests: five independent groups (AIR/PRO/MAX/ULTRA/AGENT),
-// fail-closed CSV allowlists, legacy GATEWAY_ACCESS_KEY fallback, and no secret leakage.
+// GATEWAY_ACCESS_KEY_<GROUP> unit tests: five independent groups
+// (AIR/PRO/MAX/ULTRA/AGENT), fail-closed CSV allowlists, and no secret leakage.
 
 import assert from 'node:assert/strict';
 import { loadAccessKeysConfig, keyAllowsModel, __resetAccessKeysCacheForTests, collectConfiguredModels, collectKnownModels } from '../src/config/access-keys.ts';
@@ -42,14 +42,12 @@ const mkReq = (key) => new Request('https://gateway.example.com/v1/chat/completi
   body: '{}',
 });
 
-// --- 1. Legacy fallback: no GATEWAY_ACCESS_KEY_<GROUP>, uses GATEWAY_ACCESS_KEY ---
-await testAsync('legacy fallback: no GATEWAY_ACCESS_KEY_<GROUP> -> GATEWAY_ACCESS_KEY grants all', async () => {
-  const env = { ...ENV_MODELS, GATEWAY_ACCESS_KEY: 'legacy-secret' };
-  const result = await authorize(mkReq('legacy-secret'), env);
-  assert.equal(result.authorized, true);
-  assert.equal(result.mode, 'legacy');
-  assert.equal(result.allowAll, true);
-  assert.equal(result.group, 'LEGACY');
+// --- 1. No configured group -> fail closed ---
+await testAsync('no configured access group -> not authorized', async () => {
+  const result = await authorize(mkReq('unused-secret'), { ...ENV_MODELS });
+  assert.equal(result.authorized, false);
+  assert.equal(result.mode, 'none');
+  assert.equal(loadAccessKeysConfig({ ...ENV_MODELS }).keys.length, 0);
 });
 
 // --- 2. Grouped key: explicit CSV allowlist ---
@@ -105,11 +103,11 @@ await testAsync('wrong credential -> not authorized', async () => {
   };
   const result = await authorize(mkReq('wrong'), env);
   assert.equal(result.authorized, false);
-  assert.equal(result.mode, 'grouped'); // grouped mode but key not matched
+  assert.equal(result.mode, 'grouped');
 });
 
-// --- 6. Rotation: multiple groups coexist independently ---
-await testAsync('rotation: multiple groups coexist and each resolves independently', async () => {
+// --- 6. Multiple groups coexist independently ---
+await testAsync('multiple groups coexist and each resolves independently', async () => {
   const env = {
     ...ENV_MODELS,
     GATEWAY_ACCESS_KEY_AGENT: 'agent-secret',
@@ -149,24 +147,7 @@ test('diagnostics: allowlist referencing unknown model emits warning', () => {
   assert.ok(diagnostics.some((d) => d.includes('ghost') && d.includes('not in the Known Model Catalog')), `unexpected diagnostics: ${diagnostics}`);
 });
 
-// --- 9. Legacy disabled when any new group configured ---
-await testAsync('legacy disabled: GATEWAY_ACCESS_KEY ignored when any GATEWAY_ACCESS_KEY_<GROUP> set', async () => {
-  const env = {
-    ...ENV_MODELS,
-    GATEWAY_ACCESS_KEY: 'legacy-secret', // should be ignored
-    GATEWAY_ACCESS_KEY_PRO: 'prod-secret',
-    GATEWAY_ACCESS_MODELS_PRO: 'code-pro',
-  };
-  // Legacy key should NOT work
-  const legacyResult = await authorize(mkReq('legacy-secret'), env);
-  assert.equal(legacyResult.authorized, false);
-  // New group key should work
-  const prodResult = await authorize(mkReq('prod-secret'), env);
-  assert.equal(prodResult.authorized, true);
-  assert.equal(prodResult.group, 'PRO');
-});
-
-// --- 10. x-api-key header works ---
+// --- 9. x-api-key header works ---
 await testAsync('x-api-key header is also accepted', async () => {
   const env = {
     ...ENV_MODELS,
@@ -183,7 +164,7 @@ await testAsync('x-api-key header is also accepted', async () => {
   assert.equal(result.group, 'AIR');
 });
 
-// --- 11. All five groups independent ---
+// --- 10. All five groups independent ---
 await testAsync('all five groups independent: each has own secret and allowlist', async () => {
   const env = {
     ...ENV_MODELS,
@@ -216,7 +197,7 @@ await testAsync('all five groups independent: each has own secret and allowlist'
   assert.ok(agent.allowlist.has('code-pro'));
 });
 
-// --- 12. Empty CSV string -> fail closed ---
+// --- 11. Empty CSV string -> fail closed ---
 await testAsync('fail closed: empty GATEWAY_ACCESS_MODELS_<GROUP> -> empty allowlist', async () => {
   const env = {
     ...ENV_MODELS,
@@ -229,7 +210,7 @@ await testAsync('fail closed: empty GATEWAY_ACCESS_MODELS_<GROUP> -> empty allow
   assert.equal(result.allowlist.size, 0);
 });
 
-// --- 13. Closed catalog: wildcard node serves only known models ---
+// --- 12. Closed catalog: wildcard node serves only known models ---
 test('closed catalog: collectKnownModels includes node mappings + MODELS_CONFIG', () => {
   const env = {
     MODELS_CONFIG: JSON.stringify({
@@ -256,7 +237,7 @@ test('closed catalog: wildcard node does not serve unknown model string', () => 
   assert.ok(!known.has('made-up-model'));
 });
 
-// --- 14. Key-scoped /v1/models filtering ---
+// --- 13. Key-scoped /v1/models filtering ---
 test('key-scoped models: allowAll key sees all configured models', () => {
   const nodes = [{ id: 'n1', models: { Air: 'a', 'Code-Max': 'c', Omni: 'o', OCR: 'r' } }];
   const configured = collectConfiguredModels(nodes);

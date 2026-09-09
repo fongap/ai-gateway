@@ -14,10 +14,6 @@ GATEWAY_ACCESS_MODELS_AIR="general-air"
 # GATEWAY_ACCESS_MODELS_ULTRA="general-ultra"
 # GATEWAY_ACCESS_KEY_AGENT="replace-with-a-long-random-agent-key"
 # GATEWAY_ACCESS_MODELS_AGENT="agent"
-# Legacy compatibility only: GATEWAY_ACCESS_KEY is honored only when none of
-# GATEWAY_ACCESS_KEY_AIR/PRO/MAX/ULTRA/AGENT is configured. Do not use it for
-# new deployments.
-# GATEWAY_ACCESS_KEY="replace-with-a-legacy-key"
 
 # ============ Node configs: plain variables, NO credentials allowed ============
 # Tier comes from the variable prefix. Shard values are JSON arrays; each shard

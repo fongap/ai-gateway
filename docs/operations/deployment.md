@@ -79,7 +79,7 @@ Deploy workflow（workflow_run: CI completed, branch main）:
 | `GATEWAY_ACCESS_KEY_{AIR,PRO,MAX,ULTRA,AGENT}` | 至少一个 Group | 客户端访问密钥；五组彼此独立 |
 | `TIER{1,2,3}_NODES_SECRETS_01..10` | 至少一个 | `{ "node-id": "credential" }`；Tier 必须与节点一致，按 node id 绑定；`01..10` 仅为分片编号，suffix 不要求与 Config shard 对应 |
 
-当前 GitHub production bridge 只交付五组 Group Key。Runtime 中的 legacy `GATEWAY_ACCESS_KEY` 仅用于旧部署兼容：只有未配置任何 Group Key 时才生效，不作为新部署方案。
+Production bridge 与 Runtime 均只接受五组 Group Key；未配置任何 Group Key 时部署 preflight / Runtime 均按 fail-closed 处理。
 
 ## 节点管理
 

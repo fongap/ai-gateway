@@ -18,7 +18,7 @@ GitHub Deployment Variables 持有非敏感配置；GitHub Secrets 持有凭据�
 
 ## Gateway Access Groups
 
-当前 Runtime 使用五个独立 Access Group：`AIR`、`PRO`、`MAX`、`ULTRA`、`AGENT`。每组由以下两项组成：
+当前 Runtime 只使用五个独立 Access Group：`AIR`、`PRO`、`MAX`、`ULTRA`、`AGENT`。每组由以下两项组成：
 
 ```text
 GATEWAY_ACCESS_KEY_<GROUP>
@@ -27,22 +27,18 @@ GATEWAY_ACCESS_MODELS_<GROUP>
 
 规则以 `src/config/access-keys.ts` 为唯一事实来源：
 
-- 新部署至少配置一个 `GATEWAY_ACCESS_KEY_<GROUP>`；
+- 至少配置一个 `GATEWAY_ACCESS_KEY_<GROUP>`；
 - 每个 Group 独立，无继承、无隐式默认；
 - Key 已配置但对应 Models 缺失或为空时，该 Key 获得 **0 个模型**（fail-closed）；
-- Models 是 CSV allowlist；运行时也支持显式 `*`，但安装脚本不会自动生成 `*`，也不会默认授予全部模型；
-- 只要配置了任意新式 Group Key，legacy `GATEWAY_ACCESS_KEY` 就完全不参与鉴权。
-
-### Legacy 兼容
-
-`GATEWAY_ACCESS_KEY` 仅保留兼容路径：**只有未配置任何** `GATEWAY_ACCESS_KEY_AIR/PRO/MAX/ULTRA/AGENT` 时才生效。它不是当前生产默认，也不是新部署必需项或推荐方案。
+- Models 是 CSV allowlist；运行时支持显式 `*`，但安装脚本不会自动生成 `*`，也不会默认授予全部模型；
+- 未配置任何分组 Key 时，网关保持 `unconfigured` / fail-closed，不接受客户端鉴权。
 
 ## Worker Secrets
 
 | 配置项 | 必需 | 内容 |
 |---|---|---|
 | `GATEWAY_ACCESS_KEY_{AIR,PRO,MAX,ULTRA,AGENT}` | 至少一个 Group | 客户端访问网关的分组密钥；对应 `GATEWAY_ACCESS_MODELS_<GROUP>` 存放于 Variables |
-| `TIER{1,2,3}_NODES_SECRETS_01..10` | 至少一个 | JSON 对象 `{ "node-id": "credential" }`，按 entry 边界分片。Secret 的 Tier 前缀必须与节点所属 `TIER{1,2,3}_NODES_CONFIG_*` 一致；suffix 仅用于分片，不要求与 config shard 1:1 对应 |
+| `TIER{1,2,3}_NODES_SECRETS_01..10` | 至少一个 | JSON 对象 `{ "node-id": "credential" }`，按 entry 边界分片。Secret 的 Tier 前缀必须与节点所属 `TIER{1,2,3}_NODES_CONFIG_*` 一致；suffix 仅用于分片，与 Config shard suffix 独立 |
 
 节点按 `id` 在同 Tier 的 credential 中绑定。Secret Tier 与节点 Tier 不一致属于配置错误，启动校验会拒绝服务；缺少 credential 的节点被排除调度；没有节点的 credential 在 `/health` 诊断中报告。
 
@@ -223,7 +219,7 @@ Token 计数仅使用上游报告的 usage，缺失时从不估算。
 
 | 状态 | 条件 |
 |---|---|
-| `unconfigured` | 未配置任何可用 Gateway Access Key，或任何 `TIER*_NODES_CONFIG_*` 缺失 |
+| `unconfigured` | 未配置任何可用 Gateway Access Group Key，或任何 `TIER*_NODES_CONFIG_*` 缺失 |
 | `invalid` | 配置存在但零可用节点，或结构冲突 |
 | `degraded` | 部分节点不可用，至少一个可用 |
 | `ready` | 所有声明节点可用 |

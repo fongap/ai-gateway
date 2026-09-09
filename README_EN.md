@@ -73,12 +73,12 @@ For production deployment, see [docs/operations/deployment.md](docs/operations/d
 | --- | --- |
 | `TIER*_NODES_CONFIG_*` | Node configuration |
 | `TIER*_NODES_SECRETS_*` | Node credentials |
-| `GATEWAY_ACCESS_KEY_{AIR,PRO,MAX,ULTRA,AGENT}` | Five gateway access-key groups; configure at least one for a new deployment |
+| `GATEWAY_ACCESS_KEY_{AIR,PRO,MAX,ULTRA,AGENT}` | Five gateway access-key groups; configure at least one |
 | `GATEWAY_ACCESS_MODELS_{AIR,PRO,MAX,ULTRA,AGENT}` | Model allowlist for the corresponding group |
 | `MODELS_CONFIG` | Model configuration |
 | `POLICIES_CONFIG` | Routing policies |
 
-Each Access Group is independent. When a group Key is configured, explicitly configure its Models as well; a missing or empty Models value grants that Key zero model access. The legacy `GATEWAY_ACCESS_KEY` remains only for compatibility: it is honored only when none of the five group Keys is configured and is not the recommended path for new deployments.
+Each Access Group is independent. When a group Key is configured, explicitly configure its Models as well; a missing or empty Models value grants that Key zero model access. With no grouped Key configured, the gateway fails closed and accepts no client credential.
 
 A Secret must belong to the same Tier as its node and bind by node id; `01..10` are shard numbers only, and Config/Secret shard suffixes do not need to match.
 
