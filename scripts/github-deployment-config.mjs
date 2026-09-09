@@ -97,7 +97,7 @@ export function normalizeRuntimeConfig(raw) {
   }
   for (const [name, rawValue] of Object.entries(raw.secrets)) {
     if (!SECRET_NAME.test(name)) {
-      throw new Error(`secrets.${name}: only GATEWAY_ACCESS_KEY and TIER[123]_NODES_SECRETS_01..10 are supported`);
+      throw new Error(`secrets.${name}: only GATEWAY_ACCESS_KEY_<GROUP> and TIER[123]_NODES_SECRETS_01..10 are supported`);
     }
     const value = encodeValue(rawValue, `secrets.${name}`);
     assertSize(name, value);
@@ -398,7 +398,7 @@ async function main() {
     const s = collectSecretsFromEnv(process.env);
     const tierShards = Object.keys(v.vars).filter((n) => NODE_VAR.test(n)).length;
     const secretShards = Object.keys(s.secrets).filter((n) => NODE_SECRET.test(n)).length;
-    console.log(`Preflight passed: ${tierShards} node-config shard(s), ${secretShards} credential shard(s), ${Object.keys(v.vars).length + Object.keys(s.secrets).length} total binding(s), GATEWAY_ACCESS_KEY present.`);
+    console.log(`Preflight passed: ${tierShards} node-config shard(s), ${secretShards} credential shard(s), ${Object.keys(v.vars).length + Object.keys(s.secrets).length} total binding(s), Gateway Access Group Key present.`);
     return;
   }
   if (command === 'prepare') {
