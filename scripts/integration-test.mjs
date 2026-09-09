@@ -589,7 +589,7 @@ await test('429 isolates the node; same-tier B serves; tier-2 untouched', async 
   assert.deepEqual(upstreamCalls.map((c) => c.host), ['r-a.example.com', 'r-b.example.com']);
 });
 
-await test('404 model_missing disables only the (account, model) pair', async () => {
+await test('404 model_missing cools only the resolved upstream model', async () => {
   resetMock();
   routeHandlers['mm1.example.com'] = async (req) => {
     const body = JSON.parse(await req.text());
@@ -604,8 +604,8 @@ await test('404 model_missing disables only the (account, model) pair', async ()
   assert.equal(r1.status, 502);
   assert.equal(getTier1Account('mm1').accountDisabled, false);
   assert.equal(getTier1Model('mm1', 'code-pro').disabled, false);
-  assert.equal(getTier1Model('mm1', 'code-pro').failureState, 'cooldown');
-  assert.ok(getTier1Model('mm1', 'code-pro').cooldownUntil > Date.now());
+  assert.equal(getTier1Model('mm1', 'code-pro').failureState, 'normal');
+  assert.equal(getTier1Model('mm1', 'code-pro').cooldownUntil, 0);
   const r2 = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.equal(r2.status, 200);
   assert.equal(upstreamCalls[upstreamCalls.length - 1].host, 'mm1.example.com');
