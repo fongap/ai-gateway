@@ -11,24 +11,24 @@ p = Path('src/reliability/tier1-state.ts')
 s = p.read_text()
 
 s = replace_once(s,
-"""  lastObservedAt: number;
-  scopeAmbiguous429: boolean;
+"""  lastObservedAt: number,
+  scopeAmbiguous429: boolean,
 };""",
-"""  lastObservedAt: number;
-  scopeAmbiguous429: boolean;
-  rateLimitRecoveryPending: boolean;
-  rateLimitRecoveryUntil: number;
+"""  lastObservedAt: number,
+  scopeAmbiguous429: boolean,
+  rateLimitRecoveryPending: boolean,
+  rateLimitRecoveryUntil: number,
 };""", 'model recovery fields')
 
 s = replace_once(s,
-"""  accountCooldownReason: string | null;
-  consecutiveAccountFailures: number;
-  quotaState: Tier1QuotaState;""",
-"""  accountCooldownReason: string | null;
-  consecutiveAccountFailures: number;
-  rateLimitRecoveryPending: boolean;
-  rateLimitRecoveryUntil: number;
-  quotaState: Tier1QuotaState;""", 'account recovery fields')
+"""  accountCooldownReason: string | null,
+  consecutiveAccountFailures: number,
+  quotaState: Tier1QuotaState,""",
+"""  accountCooldownReason: string | null,
+  consecutiveAccountFailures: number,
+  rateLimitRecoveryPending: boolean,
+  rateLimitRecoveryUntil: number,
+  quotaState: Tier1QuotaState,""", 'account recovery fields')
 
 s = replace_once(s,
 """    lastObservedAt: 0,
@@ -75,12 +75,13 @@ export function claimTier1Slot(node: RuntimeNode, now: number = Date.now(), mode
   const account = getTier1Account(node.id);
   if (account.accountDisabled || account.accountCooldownUntil > now || account.rateLimitRecoveryUntil > now) return false;
   const model = modelId ? account.models.get(modelId) : null;
-  if (model?.rateLimitRecoveryUntil && model.rateLimitRecoveryUntil > now) return false;
+  if ((model?.rateLimitRecoveryUntil ?? 0) > now) return false;
   if (model?.failureState === FAILURE_STATE.HALF_OPEN && account.inFlight > 0) return false;
   if (account.inFlight >= node.limits.concurrency) return false;
 
-  const hardRpm = Boolean(node.limits.rpm && node.limits.rpmMode !== 'soft');
-  if (hardRpm && !noteTier1Rpm(node.id, node.limits.rpm, now)) return false;
+  const rpm = node.limits.rpm ?? 0;
+  const hardRpm = rpm > 0 && node.limits.rpmMode !== 'soft';
+  if (hardRpm && !noteTier1Rpm(node.id, rpm, now)) return false;
 
   account.inFlight++;
   // A 429 recovery is scoped exactly like the cooldown that caused it. The
@@ -90,11 +91,11 @@ export function claimTier1Slot(node: RuntimeNode, now: number = Date.now(), mode
   // never pushed into the future, so unrelated model traffic keeps flowing.
   if (account.rateLimitRecoveryPending) {
     account.rateLimitRecoveryPending = false;
-    account.rateLimitRecoveryUntil = hardRpm ? now + (60_000 / node.limits.rpm) : 0;
+    account.rateLimitRecoveryUntil = hardRpm ? now + (60_000 / rpm) : 0;
   }
   if (model?.rateLimitRecoveryPending) {
     model.rateLimitRecoveryPending = false;
-    model.rateLimitRecoveryUntil = hardRpm ? now + (60_000 / node.limits.rpm) : 0;
+    model.rateLimitRecoveryUntil = hardRpm ? now + (60_000 / rpm) : 0;
   }
   return true;
 }""", 'scoped claim recovery')
