@@ -246,22 +246,24 @@ test('POLICIES_CONFIG rejects explicit tier_attempts total above max_attempts', 
   assert.equal(cfg.ready, false);
 });
 
-test('weighted tier_attempts: unset Tier3 receives only the remaining budget', () => {
+test('tier_attempts: unset Tier3 receives only the remaining budget', () => {
   const tiers = {
     1: [],
     2: [budgetNode('split-t2', 'tier-2')],
     3: [budgetNode('split-t3', 'tier-3')],
   };
-  const policy = {
+  const basePolicy = {
     maxAttempts: 6,
     tierAttempts: { tier2: 3 },
     hedge: null,
     firstEventTimeoutMs: null,
-    budgetSplit: 'weighted',
   };
-  const caps = computeTierCaps(tiers, reqFor('Code-Max'), new Set(), policy, new Set());
-  assert.equal(caps[2], 3, 'explicit Tier2 cap remains locked');
-  assert.equal(caps[3], 3, 'unset Tier3 receives the remaining 3 attempts');
+  const weightedCaps = computeTierCaps(tiers, reqFor('Code-Max'), new Set(), { ...basePolicy, budgetSplit: 'weighted' }, new Set());
+  const evenCaps = computeTierCaps(tiers, reqFor('Code-Max'), new Set(), { ...basePolicy, budgetSplit: 'even' }, new Set());
+  assert.equal(weightedCaps[2], 3, 'weighted keeps explicit Tier2 fixed');
+  assert.equal(weightedCaps[3], 3, 'weighted gives remaining 3 attempts to unset Tier3');
+  assert.equal(evenCaps[2], 3, 'even keeps explicit Tier2 fixed');
+  assert.equal(evenCaps[3], 3, 'even gives remaining 3 attempts to unset Tier3');
 });
 
 test('Tier1 has no independent attempt cap beyond max_attempts and tier_attempts', () => {
