@@ -33,6 +33,7 @@ import {
   isTier1Eligible, claimTier1Slot, releaseTier1Slot, makeTier1ReleaseToken,
   getTier1Account, getTier1Model, recordTier1Ttft, recordTier1Success, applyTier1Outcome,
   classifyTier1Failure, calculateTier1Score, snapshotTier1Runtime, recordTier1QuotaSignal,
+  tier1BlockingWaitMs, rollbackTier1Rpm,
   TIER1_FAILURE_STATES,
 } from '../src/reliability/tier1-state.ts';
 import {
@@ -64,7 +65,7 @@ async function test(name, fn) {
   }
 }
 
-function node(id, { concurrency = 2, rpm = 100, models = { m1: 'up-x' } } = {}) {
+function node(id, { concurrency = 2, rpm = 0, models = { m1: 'up-x' } } = {}) {
   return {
     id,
     tier: 'tier-1',
@@ -109,6 +110,63 @@ await test('Eligibility: hard concurrency and RPM cap are filtered', () => {
   // The release token made above is fresh; release the claimed slot manually.
   // (claimTier1Slot incremented inFlight; release via the account path.)
   getTier1Account('b').inFlight = Math.max(0, getTier1Account('b').inFlight - 1);
+});
+
+
+await test('RPM: smooth admission removes fixed-minute boundary reset', () => {
+  const b = node('b', { concurrency: 10, rpm: 40 });
+  const t0 = 59_999;
+  assert.equal(claimTier1Slot(b, t0, 'm1'), true);
+  getTier1Account('b').inFlight--;
+  assert.equal(claimTier1Slot(b, t0, 'm1'), true, 'one small burst token is allowed');
+  getTier1Account('b').inFlight--;
+  assert.equal(claimTier1Slot(b, t0, 'm1'), false, 'burst capacity exhausted');
+  assert.equal(claimTier1Slot(b, 60_001, 'm1'), false, 'calendar minute boundary must not reset admission');
+  assert.equal(tier1BlockingWaitMs(b, 'm1', t0), 1_500, '40 RPM refills one token every 1.5s');
+  assert.equal(claimTier1Slot(b, t0 + 1_500, 'm1'), true, 'continuous refill admits after one interval');
+});
+
+await test('RPM: rollback restores a pre-dispatch token', () => {
+  const b = node('b', { concurrency: 10, rpm: 1 });
+  const now = 100_000;
+  assert.equal(claimTier1Slot(b, now, 'm1'), true);
+  getTier1Account('b').inFlight--;
+  assert.equal(claimTier1Slot(b, now, 'm1'), false);
+  rollbackTier1Rpm('b', now);
+  assert.equal(claimTier1Slot(b, now, 'm1'), true, 'rollback must restore the consumed admission token');
+});
+
+await test('RPM: model-scoped 429 recovery suppresses same-model burst without blocking siblings', () => {
+  const b = node('b', { concurrency: 10, rpm: 40, models: { m1: 'up-1', m2: 'up-2' } });
+  const now = 1_000_000;
+  assert.equal(claimTier1Slot(b, now, 'm1'), true);
+  getTier1Account('b').inFlight--;
+  const outcome = classifyTier1Failure({ kind: 'rate_limit' }, { retryAfterMs: 10_000 });
+  applyTier1Outcome('b', 'm1', outcome, now);
+  assert.equal(isTier1Eligible(b, REQ, now + 9_999), false, 'Retry-After cooldown remains authoritative');
+  assert.equal(isTier1Eligible(b, { ...REQ, model: 'm2' }, now + 1), true, 'model-scoped 429 must not block sibling models');
+  assert.equal(claimTier1Slot(b, now + 1, 'm2'), true, 'sibling model may keep using remaining account RPM capacity');
+  getTier1Account('b').inFlight--;
+  assert.equal(isTier1Eligible(b, REQ, now + 10_000), true, 'one m1 request may resume at cooldown expiry');
+  assert.equal(claimTier1Slot(b, now + 10_000, 'm1'), true);
+  getTier1Account('b').inFlight--;
+  assert.equal(claimTier1Slot(b, now + 10_000, 'm1'), false, 'same model must not burst immediately after 429 recovery');
+  assert.equal(isTier1Eligible(b, { ...REQ, model: 'm2' }, now + 10_000), true, 'recovery gate remains model-local');
+  assert.equal(claimTier1Slot(b, now + 11_500, 'm1'), true, 'same model resumes after one RPM interval');
+});
+
+await test('RPM: explicit account-scoped 429 recovery gates the whole account for one interval', () => {
+  const b = node('b', { concurrency: 10, rpm: 40, models: { m1: 'up-1', m2: 'up-2' } });
+  const now = 2_000_000;
+  assert.equal(claimTier1Slot(b, now, 'm1'), true);
+  getTier1Account('b').inFlight--;
+  const outcome = classifyTier1Failure({ kind: 'rate_limit', rateLimitScope: 'account' }, { retryAfterMs: 10_000 });
+  applyTier1Outcome('b', 'm1', outcome, now);
+  assert.equal(isTier1Eligible(b, REQ, now + 10_000), true);
+  assert.equal(claimTier1Slot(b, now + 10_000, 'm1'), true);
+  getTier1Account('b').inFlight--;
+  assert.equal(isTier1Eligible(b, { ...REQ, model: 'm2' }, now + 10_000), false, 'account-scoped recovery gates sibling models');
+  assert.equal(isTier1Eligible(b, { ...REQ, model: 'm2' }, now + 11_500), true, 'account gate expires after one RPM interval');
 });
 
 await test('Eligibility: cooldown filtered (no force-call on cooling account)', () => {
@@ -498,11 +556,12 @@ await test('Affinity escape: evaluation window permits a clearly better P2C winn
 
 await test('15-account simulation: P2C disperses, avoids cooldowns, explores UNKNOWN, and escapes degradation', () => {
   const nodes = Array.from({ length: 15 }, (_, i) => node(`pool-${String(i).padStart(2, '0')}`, { concurrency: 20, rpm: 10_000 }));
+  const simulationStart = Date.now();
   const rateLimit = classifyTier1Failure({ kind: 'rate_limit' }, { retryAfterMs: 60_000 });
-  for (const n of nodes.slice(0, 3)) applyTier1Outcome(n.id, 'm1', rateLimit);
+  for (const n of nodes.slice(0, 3)) applyTier1Outcome(n.id, 'm1', rateLimit, simulationStart);
   const timeout = classifyTier1Failure({ kind: 'first_event_timeout' });
   for (const n of nodes.slice(3, 5)) {
-    for (let i = 0; i < 3; i++) applyTier1Outcome(n.id, 'm1', timeout);
+    for (let i = 0; i < 3; i++) applyTier1Outcome(n.id, 'm1', timeout, simulationStart);
   }
   for (const n of nodes.slice(5, 8)) recordTier1Ttft(n.id, 'm1', 4000);
   for (const n of nodes.slice(8, 12)) recordTier1Ttft(n.id, 'm1', 200);
@@ -517,7 +576,7 @@ await test('15-account simulation: P2C disperses, avoids cooldowns, explores UNK
   };
   const counts = Object.fromEntries(nodes.map((n) => [n.id, 0]));
   for (let i = 0; i < 600; i++) {
-    const pick = pickTier1Candidate(nodes, REQ, new Set(), { rng });
+    const pick = pickTier1Candidate(nodes, REQ, new Set(), { rng, now: simulationStart + i * 10 });
     assert.ok(pick?.node);
     counts[pick.node.id]++;
     if (pick.node.id >= 'pool-12' && getTier1Model(pick.node.id, 'm1').sampleCount === 0) {
@@ -538,6 +597,7 @@ await test('15-account simulation: P2C disperses, avoids cooldowns, explores UNK
   for (let i = 0; i < 20; i++) {
     const pick = pickTier1Candidate([affinity, peer], REQ, new Set(), {
       affinityAccountId: affinity.id, evaluateAffinity: false, rng,
+      now: simulationStart + 6_000 + i * 10,
     });
     if (pick.node.id === affinity.id) stableHits++;
     releaseTier1Slot(pick.node.id, pick.releaseToken);
@@ -546,6 +606,7 @@ await test('15-account simulation: P2C disperses, avoids cooldowns, explores UNK
   for (let i = 0; i < 8; i++) recordTier1Ttft(affinity.id, 'm1', 4000);
   const escaped = pickTier1Candidate([affinity, peer], REQ, new Set(), {
     affinityAccountId: affinity.id, evaluateAffinity: true, rng,
+    now: simulationStart + 6_200,
   });
   assert.equal(escaped.node.id, peer.id);
   assert.equal(escaped.escapedFromAffinity, true);

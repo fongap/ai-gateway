@@ -6,6 +6,12 @@ Tier 1 使用 `tier1-state.ts`；Tier 2/3 使用 `node-state.ts`。两个状态�
 
 ## Tier 1 可靠性
 
+### Smooth RPM Admission
+
+Tier 1 的 hard `limits.rpm` 使用 isolate-local Token Bucket 平滑准入，不再使用日历分钟 fixed bucket。补充速率为 `rpm / 60s`，burst capacity 最多 2 个 token（即最多允许 1 个额外瞬时请求）；低于 2 RPM 时 capacity 自动降为 1。`rpmMode=soft` 行为不变，也不新增配置项。
+
+429 仍沿用既有 `Retry-After` / model-scoped exponential backoff / rotate 语义。新增的唯一联动是 scoped recovery gate：cooldown 后首个真实准入成功后，同 scope 在 1 个 RPM interval 内不再立即二次准入；model-scoped 429 不影响 sibling models，显式 account-scoped 429 才作用于整个 account。共享 Token Bucket 不被推入未来。
+
 ### Account Scope
 
 包含 in-flight count、account disable/cooldown 和显式 quota 状态。
