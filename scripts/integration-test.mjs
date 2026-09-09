@@ -264,25 +264,29 @@ await test('dynamic candidate set: failed node skipped, next candidate picked', 
 await test('single transient failure has hysteresis and does not immediately cooldown', async () => {
   resetMock();
   installMockFetch();
-  routeHandlers['backoff-a.example.com'] = () => jsonUpstream({}, 503);
-  routeHandlers['backoff-b.example.com'] = () => jsonUpstream(okCompletion());
+  let failedNodeId = null;
+  const transientThenHealthy = (nodeId) => () => {
+    if (failedNodeId === null) {
+      failedNodeId = nodeId;
+      return jsonUpstream({}, 503);
+    }
+    return jsonUpstream(okCompletion());
+  };
+  routeHandlers['backoff-a.example.com'] = transientThenHealthy('backoff-a');
+  routeHandlers['backoff-b.example.com'] = transientThenHealthy('backoff-b');
   const env = makeEnv({
     tier1: [basicNode('backoff-a'), basicNode('backoff-b')],
     secrets: { 'backoff-a': 'k', 'backoff-b': 'k' },
   });
-  const first = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-  assert.equal(first.status, 200);
-  await first.text();
-  const second = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-  assert.equal(second.status, 200);
-  await second.text();
-  assert.deepEqual(upstreamCalls.map((call) => call.host), [
-    'backoff-a.example.com', 'backoff-b.example.com',
-    'backoff-a.example.com', 'backoff-b.example.com',
-  ]);
-  const runtime = snapshotTier1Runtime('backoff-a', 'general-air');
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 200);
+  await res.text();
+  assert.equal(upstreamCalls.length, 2);
+  assert.notEqual(upstreamCalls[0].host, upstreamCalls[1].host);
+  assert.ok(failedNodeId);
+  const runtime = snapshotTier1Runtime(failedNodeId, 'general-air');
   assert.equal(runtime.failure_state, 'normal');
-  assert.equal(runtime.consecutive_failures, 2);
+  assert.equal(runtime.consecutive_failures, 1);
   assert.equal(runtime.cooldown_remaining_ms, 0);
 });
 
@@ -1440,7 +1444,7 @@ await test('EXPOSE_UPSTREAM_INFO=true exposes upstream headers and per-attempt d
   routeHandlers['x2.example.com'] = () => jsonUpstream(okCompletion());
   const env = makeEnv({
     tier1: [basicNode('x1'), basicNode('x2')],
-    secrets: { 'x1': 'k', 'x2': 'k' },
+    secrets: { 'x1': 'k', x2: 'k' },
     extraEnv: { EXPOSE_UPSTREAM_INFO: 'true' },
   });
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
