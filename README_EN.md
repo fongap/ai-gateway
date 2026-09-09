@@ -41,7 +41,7 @@ flowchart TB
 
 - Multi-protocol: OpenAI Chat / Responses, Anthropic Messages / count_tokens
 - Native protocol forwarding: Chat → upstream `/v1/chat/completions`, Responses → upstream `/v1/responses`, Messages → upstream `/v1/messages`; nodes declare `protocol` + `surfaces` explicitly
-- Native First + v1.3.0 cross-protocol fallback: client requests are forwarded to a same-protocol, same-surface native upstream first; when the native pool is exhausted, the default enables cross-protocol fallback (OpenAI Chat↔Anthropic Messages bidirectional; Responses is Native Only). `PROTOCOL_FALLBACKS` defaults to the bidirectional chain; set `disable` to opt out; an explicit JSON value overrides. Cross-protocol fallback shares the same `max_attempts` / `FAILOVER_BUDGET_MS` budget as native retry — fallback does not earn a new attempt slot.
+- Native First + v1.3.0 cross-protocol fallback: client requests are forwarded to a same-protocol, same-surface native upstream first; when the native pool is exhausted, the default enables cross-protocol fallback (OpenAI Chat↔Anthropic Messages bidirectional; Responses is Native Only). When `PROTOCOL_FALLBACKS` is unset or empty, the built-in bidirectional chain is used; set `disable` to opt out; an explicit JSON value overrides. Cross-protocol fallback shares the same `max_attempts` / `FAILOVER_BUDGET_MS` budget as native retry — fallback does not earn a new attempt slot.
 - `limits.rpm` defaults hard and is enforced best-effort within one Worker isolate
 - One whole-request failover budget shared by Tier 1, Tier 2, and Tier 3
 - Tier 1 learns per-`(account, model)` TTFT only from meaningful output in real requests. It uses no active probes, health score, LRU, or static-priority ordering. It does not promise the globally fastest account on every request; it targets stability, low cost, fast avoidance, natural balance, and session continuity.
@@ -82,9 +82,11 @@ Node definitions are Worker text variables; upstream credentials and the gateway
 | Configuration item | Purpose |
 |---|---|
 | `TIER{1,2,3}_NODES_CONFIG_01..` | node pools per tier |
-| `TIER{1,2,3}_NODES_SECRETS_01..` | Node credentials (tier-scoped, 1:1 with config shard) |
+| `TIER{1,2,3}_NODES_SECRETS_01..` | Node credentials (tier-scoped; `01..10` are shards only, and same-tier node IDs may bind across suffixes) |
 | `GATEWAY_ACCESS_KEY` | gateway access key |
 | `TIER1_AFFINITY` | required Cloudflare KV binding for hashed session key → Tier 1 account |
+
+A credential's Tier must match the node's Tier; shard suffixes do not require a 1:1 pairing.
 
 `priority` remains part of the shared node schema for Tier 2/3 compatibility, but Tier 1 P2C ignores it.
 
