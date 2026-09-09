@@ -66,9 +66,14 @@ function convertUserContent(blocks: unknown): string | Record<string, unknown> |
       : ['type', 'text', ...SAFELY_IGNORABLE_FIELDS], 'user content');
     if (block.type === 'text') parts.push({ type: 'text', text: block.text || '' });
     else if (block.type === 'tool_result') {
-      if (block.is_error === true) unsupportedBlock('tool_result.is_error');
       if (typeof block.tool_use_id !== 'string' || !block.tool_use_id) unsupportedBlock('invalid tool_result');
+      if (block.is_error !== undefined && typeof block.is_error !== 'boolean') unsupportedBlock('invalid tool_result.is_error');
       const text = extractToolResultText(block.content);
+      // Anthropic's `is_error` marks the tool result as failed. Generic OpenAI
+      // Chat tool messages have no portable equivalent flag, so preserve the
+      // exact tool result content + tool_call_id and deliberately drop only
+      // the boolean marker. This keeps Claude Code tool failures routable
+      // without inventing provider-specific fields or altering the error text.
       parts.push({ role: 'tool', tool_call_id: block.tool_use_id, content: text });
     } else {
       unsupportedBlock(block.type);
