@@ -1830,7 +1830,7 @@ await run('handler: OpenAI Responses client + only Anthropic upstream (no fallba
   const env = makeEnv({
     tier1: [anthropicResponsesNode('a1')],
     secrets: { a1: 'k' },
-    extraEnv: { EXPOSE_UPSTREAM_INFO: 'true' },
+    extraEnv: { EXPOSE_UPSTREAM_INFO: 'true', GATEWAY_ACCESS_MODELS_AIR: 'code-max' },
   });
   const res = await worker.fetch(responsesApiRequest({
     model: 'code-max', input: 'hi',
@@ -1846,7 +1846,7 @@ await run('handler: OpenAI Responses client + only Anthropic upstream (no fallba
   const env = makeEnv({
     tier1: [anthropicResponsesNode('a1')],
     secrets: { a1: 'k' },
-    extraEnv: { EXPOSE_UPSTREAM_INFO: 'true' },
+    extraEnv: { EXPOSE_UPSTREAM_INFO: 'true', GATEWAY_ACCESS_MODELS_AIR: 'code-max' },
   });
   const res = await worker.fetch(responsesApiRequest({
     model: 'code-max', input: 'hi', stream: true,
@@ -1862,6 +1862,7 @@ await run('handler: OpenAI Responses client + Anthropic 529 (no fallback) -> 404
   const env = makeEnv({
     tier1: [anthropicResponsesNode('a1')],
     secrets: { a1: 'k' },
+    extraEnv: { GATEWAY_ACCESS_MODELS_AIR: 'code-max' },
   });
   const res = await worker.fetch(responsesApiRequest({
     model: 'code-max', input: 'hi',
@@ -1879,7 +1880,7 @@ await run('handler: OpenAI Responses client + only OpenAI Responses upstream -> 
   const env = makeEnv({
     tier1: [openaiResponsesNodeOnly('r1')],
     secrets: { r1: 'k' },
-    extraEnv: { EXPOSE_UPSTREAM_INFO: 'true' },
+    extraEnv: { EXPOSE_UPSTREAM_INFO: 'true', GATEWAY_ACCESS_MODELS_AIR: 'code-max' },
   });
   const res = await worker.fetch(responsesApiRequest({
     model: 'code-max', input: 'hi',
@@ -1906,6 +1907,7 @@ await run('handler: OpenAI Responses client + Anthropic upstream with tool_use (
   const env = makeEnv({
     tier1: [anthropicResponsesNode('a1')],
     secrets: { a1: 'k' },
+    extraEnv: { GATEWAY_ACCESS_MODELS_AIR: 'code-max' },
   });
   const res = await worker.fetch(responsesApiRequest({
     model: 'code-max',
