@@ -9,7 +9,7 @@
 | `TIER{1,2,3}_NODES_CONFIG_01..10` | 各层节点池 | JSON 数组 |
 | `MODELS_CONFIG` | 模型注册表覆盖 | JSON 对象 |
 | `POLICIES_CONFIG` | Attempt budgets 和 tier 策略 | JSON 对象 |
-| `TIER{1,2,3}_NODES_SECRETS_01..10` | 节点凭据（tier-scoped，与 config shard 一一对应） | `{ "node-id": "credential" }` |
+| `TIER{1,2,3}_NODES_SECRETS_01..10` | 节点凭据（tier-scoped；`01..10` 仅为分片，同 Tier 可跨 suffix 按节点 ID 绑定） | `{ "node-id": "credential" }` |
 | `GATEWAY_ACCESS_KEY` | 网关访问密钥 | Bearer token |
 | 运行时参数 | 超时、冷却等 | 见下方表格 |
 
@@ -20,9 +20,9 @@ GitHub Deployment Variables 持有非敏感配置；GitHub Secrets 持有凭据�
 | 配置项 | 必需 | 内容 |
 |---|---|---|
 | `GATEWAY_ACCESS_KEY` | 是 | 客户端访问网关的密钥 |
-| `TIER{1,2,3}_NODES_SECRETS_01..10` | 至少一个 | JSON 对象 `{ "node-id": "credential" }`，按 entry 边界分片。Secret 的 tier 前缀必须与所配对的 `TIER{1,2,3}_NODES_CONFIG_*` 一致——把 TIER1 凭据放 TIER2 Secret 是配置错误，operator 会在启动时看到诊断信息 |
+| `TIER{1,2,3}_NODES_SECRETS_01..10` | 至少一个 | JSON 对象 `{ "node-id": "credential" }`，按 entry 边界分片。Secret 的 Tier 前缀必须与节点所属 `TIER{1,2,3}_NODES_CONFIG_*` 一致；suffix 仅用于分片，不要求与 config shard 1:1 对应 |
 
-节点按 `id` 查找 credential。缺少 credential 的节点被排除调度；没有节点的 credential 在 `/health` 诊断中报告。
+节点按 `id` 在同 Tier 的 credential 中绑定。Secret Tier 与节点 Tier 不一致属于配置错误，启动校验会拒绝服务；缺少 credential 的节点被排除调度；没有节点的 credential 在 `/health` 诊断中报告。
 
 ## 节点配置
 
@@ -58,7 +58,7 @@ Anthropic 原生节点：
 ### 加载时规则
 
 - `id` 匹配 `^[a-z0-9][a-z0-9-]{0,63}$`；重复 id 使整个配置 `invalid`
-- Credential 字段（`token`、`api_key`、`apikey`、`authorization`、`password`、`secret`、`credential`）被**拒绝**——凭据属于 `NODE_SECRETS_*`
+- Credential 字段（`token`、`api_key`、`apikey`、`authorization`、`password`、`secret`、`credential`）被**拒绝**——凭据属于 `TIER{1,2,3}_NODES_SECRETS_*`
 - `tier` 字段被拒绝；tier 来自变量前缀
 - `base_url` 必须是绝对 URL；`https://` 除非 `ALLOW_INSECURE_HTTP_UPSTREAM=true`
 - `priority`：数字，默认 `100`。Tier 2/3 使用；Tier 1 P2C 忽略
@@ -94,7 +94,7 @@ Anthropic 原生节点：
 | `STREAM_INCLUDE_USAGE` | auto | auto/always/never | 是否在流式请求中携带 `stream_options.include_usage` |
 | `STREAM_USAGE_INCLUDE_OFF_PROVIDERS` | *(empty)* | provider 列表 | 按 provider 排除 usage hint |
 | `PROJECT_REPOSITORY_URL` | — | https URL | Dashboard 显示 |
-| `PROTOCOL_FALLBACKS` | *内置默认（v1.3.0 双向 fallback）* | unset / `disable` / JSON object | 跨协议 fallback 链。v1.3.0 默认链 `{"anthropic:messages":["openai:chat_completions"], "openai:chat_completions":["anthropic:messages"]}`；设 `disable` 关闭；显式 JSON（即使为空数组）覆盖默认。详细见 [protocol-model.md](../architecture/protocol-model.md) |
+| `PROTOCOL_FALLBACKS` | *内置默认（v1.3.0 双向 fallback）* | unset / `disable` / JSON object | 跨协议 fallback 链。未配置或为空时使用 `{"anthropic:messages":["openai:chat_completions"], "openai:chat_completions":["anthropic:messages"]}`；设 `disable` 关闭；显式 JSON（即使为空数组）覆盖默认。OpenAI Responses 始终 Native Only。详细见 [protocol-model.md](../architecture/protocol-model.md) |
 
 运行时参数的唯一事实来源是 `src/config/runtime-vars.ts`。
 
@@ -156,7 +156,7 @@ Token 计数仅使用上游报告的 usage，缺失时从不估算。
 | 字段 | 类型 | 默认 | 说明 |
 |---|---|---|---|
 | `max_attempts` | int 1-8 | 5 | 整请求 logical attempt 上限（跨 tier 共享） |
-| `tier_attempts` | object \| null | `null` | 显式 per-tier budget: `{"tier1": N, "tier2": N, "tier3": N}`。`0` 禁用该 tier。设置后 `budget_split` 不影响该 tier |
+| `tier_attempts` | object \| null | `null` | 显式 per-tier budget: `{"tier1": N, "tier2": N, "tier3": N}`。`0` 禁用该 tier。显式值优先级最高，不会被 `budget_split` 修改；显式值总和不得超过 `max_attempts`，否则配置 `invalid` |
 | `hedge.enabled` | bool | true | 是否启用 reactive hedge。`false` 完全禁用 |
 | `hedge.delay_ms` | int ≥ 0 | (env HEDGE_DELAY_MS) | Hedge twin 启动延迟 |
 | `hedge.tiers` | array \| null | null | 仅这些 tier 允许 hedge twin；null = 全部 |
@@ -166,7 +166,7 @@ Token 计数仅使用上游报告的 usage，缺失时从不估算。
 ### `budget_split` 详解
 
 - **`'even'` (默认)**: 第一个 dispatchable tier 获得全部 surplus。最大化免费资源利用。
-- **`'weighted'`**: surplus 按每个 tier 的 **live dispatchable 节点数** 比例分配。容量大的低 tier 获得更多 attempts。
+- **`'weighted'`**: 先锁定所有显式 `tier_attempts`，再计算 `remaining = max_attempts - sum(explicit tier_attempts)`；`remaining` 只按每个未显式配置且当前 dispatchable 的 tier 的 live 节点数比例分配。显式 cap 不参与补差或 remainder reconciliation。
 
 **示例** (`max_attempts=6`, Tier 2=1 节点, Tier 3=4 节点, Tier 1 不可达):
 
@@ -175,6 +175,13 @@ Token 计数仅使用上游报告的 usage，缺失时从不估算。
 // → Tier 2: 5, Tier 3: 1
 { "spread":   { "max_attempts": 6, "budget_split": "weighted" } }
 // → Tier 2: 1, Tier 3: 5
+```
+
+显式覆盖示例：
+
+```json
+{ "spread": { "max_attempts": 6, "tier_attempts": { "tier2": 3 }, "budget_split": "weighted" } }
+// → Tier 2 始终为 3；剩余 3 只分配给未显式配置且可调度的 Tier
 ```
 
 详细算法与示例见 [reliability-model.md → Adaptive Budget](../architecture/reliability-model.md#adaptive-budget-r5-v130)。

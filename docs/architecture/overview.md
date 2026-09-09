@@ -6,7 +6,7 @@
 
 ## 概览
 
-网关原生支持两种协议族——OpenAI 和 Anthropic。任何提供 OpenAI-compatible 或 Anthropic-compatible API 的服务均可作为节点接入。网关采用 Native First 策略：OpenAI Chat / Responses 只走原生路径；Anthropic Messages 优先原生，原生池耗尽后默认转换到 OpenAI Chat（`PROTOCOL_FALLBACKS` 默认启用 `{"anthropic:messages":["openai:chat_completions"], "openai:chat_completions":["anthropic:messages"]}` 双向转换；设 `disable` 关闭；显式 JSON 覆盖）。
+网关原生支持两种协议族——OpenAI 和 Anthropic。网关采用 Native First 策略：OpenAI Chat Completions 与 Anthropic Messages 都优先走同 protocol、同 surface 的原生上游；原生池耗尽后，默认允许 OpenAI Chat Completions ↔ Anthropic Messages 双向跨协议 fallback。OpenAI Responses 始终为 Native Only，不做跨协议转换。`PROTOCOL_FALLBACKS` 未配置或为空时使用内置默认链 `{"anthropic:messages":["openai:chat_completions"],"openai:chat_completions":["anthropic:messages"]}`；设 `disable` 关闭；显式 JSON 覆盖默认。
 
 ```text
 Client (OpenAI / Anthropic SDK)
@@ -39,7 +39,8 @@ Reliability (src/reliability)             →  whether a node is currently usabl
 ## 不变量
 
 - 原生协议转发：Chat → 上游 `/v1/chat/completions`，Responses → 上游 `/v1/responses`，Messages → 上游 `/v1/messages`
-- Native First：OpenAI Chat / Responses 只走原生路径；Anthropic Messages 优先原生，原生池耗尽后默认转换到 OpenAI Chat（`PROTOCOL_FALLBACKS` 默认启用双向转换，显式 JSON 覆盖）
+- Native First：OpenAI Chat Completions 与 Anthropic Messages 都优先原生；原生池耗尽后默认允许双向跨协议 fallback；OpenAI Responses 保持 Native Only
+- `PROTOCOL_FALLBACKS` 未配置或为空时使用内置双向默认链；`disable` 关闭；显式 JSON 覆盖默认
 - `limits.rpm` 默认 hard，单 Worker isolate 内不主动越配额
 - 整请求 failover budget，超时即停
 - 所有短期运行时状态（Tier 1 TTFT/inFlight/cooldown，Tier 2/3 health/circuit/concurrency/RPM）均为 isolate-local best-effort，随 isolate 重启丢失
@@ -103,4 +104,12 @@ Public Model Status (跨 isolate 投影)
 | `/v1/responses` | OpenAI Responses | 上游 `/v1/responses` |
 | `/v1/messages` | Anthropic Messages | 上游 `/v1/messages` |
 
-每个客户端 surface 映射到 (protocol, surface) 对，转发到同一对的原生上游 endpoint。跨协议 fallback 默认启用：`PROTOCOL_FALLBACKS` 未设置时使用内置默认链 `{"anthropic:messages":["openai:chat_completions"]}`（当前唯一支持的转换）。设 `PROTOCOL_FALLBACKS=disable` 关闭；显式 JSON 值即使为空数组也覆盖默认。
+跨协议 fallback 契约：
+
+| 请求协议 | Native | Fallback |
+|---|---|---|
+| OpenAI Chat Completions | 支持 | 可转 Anthropic Messages |
+| Anthropic Messages | 支持 | 可转 OpenAI Chat Completions |
+| OpenAI Responses | 支持 | 不做跨协议转换 |
+
+每个客户端 surface 首先映射到同一 `(protocol, surface)` 的原生上游 endpoint。`PROTOCOL_FALLBACKS` 未配置或为空时使用内置默认链 `{"anthropic:messages":["openai:chat_completions"],"openai:chat_completions":["anthropic:messages"]}`；设 `PROTOCOL_FALLBACKS=disable` 关闭；显式 JSON 值覆盖默认。OpenAI Responses 始终保持 Native Only。

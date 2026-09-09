@@ -9,10 +9,8 @@
 // through to cross-protocol fallback or the exhausted handler.
 //
 // This module owns the pure helpers that compute per-tier budget and
-// dispatchable-count. The actual dispatchAttempt / attemptNode / handleSuccess
-// closures stay in handler.ts; they capture the per-request logger and
-// reliability API. Relocation of the attempt body into attempt.ts is
-// planned as a separate behavior-preserving refactor.
+// dispatchable-count. The actual request orchestration stays in handler.ts;
+// upstream attempt execution lives in attempt.ts.
 
 import { TIER_ORDER } from './router.ts';
 import { pickCandidate, tierHasDispatchableNode, countDispatchableNodes } from '../scheduler/scheduler.ts';
@@ -115,7 +113,9 @@ export function makeTier1Rng(env: Record<string, unknown>): () => number {
 //         significantly more capacity gets more attempts than a higher tier
 //         with fewer candidates.
 //     `tier_attempts` (when explicitly set) always wins for the tier it
-//     names; `budget_split` is only consulted for tiers without an override.
+//     names. In weighted mode explicit caps are locked first; only the budget
+//     remaining after all explicit caps is distributed to unset dispatchable
+//     tiers. Unused explicit budget is never reassigned to another tier.
 //   * `policy.tierAttempts` (POLICIES_CONFIG tier_attempts) overrides a tier's
 //     budget explicitly (0 disables it).
 // Budget is a per-tier UPPER bound; the shared state.maxAttempts still caps the
@@ -131,8 +131,7 @@ export function computeTierCaps(tiers: Record<number, RuntimeNode[]>, reqDescrip
   if (dispatchable.length === 0) return caps;
   const max = policy.maxAttempts;
   // when budget_split === 'weighted', count live dispatchable nodes per
-  // tier and distribute the surplus proportionally. A lower tier with
-  // significantly more capacity gets a larger share.
+  // tier and distribute the remaining non-explicit budget proportionally.
   const liveCount = (tierNumber: number): number => {
     return tierNumber === 1
       ? tier1CountDispatchableNodes(tiers[tierNumber], reqDescriptor, attempted, now, knownModels)
@@ -140,36 +139,53 @@ export function computeTierCaps(tiers: Record<number, RuntimeNode[]>, reqDescrip
   };
   const useWeighted = policy.budgetSplit === 'weighted';
   if (useWeighted) {
-    // Per-tier surplus by node-count weight. Each tier first gets 1 attempt
-    // (its baseline share), and any extra surplus is distributed by weight.
-    // `tier_attempts` overrides win as before. After per-tier computation,
-    // the last dispatchable tier absorbs the rounding remainder so the
-    // totals are stable AND within max.
-    const totalLive = dispatchable.reduce((s, t) => s + liveCount(t), 0);
-    if (totalLive === 0) return caps;
-    const surplus = Math.max(0, max - dispatchable.length);
-    const tierShare = (tierNumber: number): number => {
-      const w = liveCount(tierNumber) / totalLive;
-      return 1 + Math.floor(surplus * w);
-    };
-    dispatchable.forEach((t, i) => {
+    // Explicit tier_attempts are immutable inputs. Their configured total is
+    // reserved before live weighted allocation, including an explicit tier
+    // that is currently not dispatchable; weighted allocation may only spend
+    // the remaining budget on unset dispatchable tiers.
+    const explicitTotal = TIER_ORDER.reduce((sum, t) =>
+      sum + (policy.tierAttempts?.[`tier${t}`] ?? 0), 0);
+    const adjustable = dispatchable.filter((t) =>
+      policy.tierAttempts?.[`tier${t}`] === undefined);
+
+    for (const t of dispatchable) {
       const override = policy.tierAttempts?.[`tier${t}`];
-      if (override !== undefined) caps[t] = override;
-      else caps[t] = tierShare(t);
+      if (override === undefined) continue;
+      caps[t] = override;
+      if (t === 1) caps[t] = Math.min(caps[t], TIER1_MAX_ATTEMPTS);
+    }
+
+    if (adjustable.length === 0) return caps;
+    const remaining = Math.max(0, max - explicitTotal);
+    if (remaining === 0) return caps;
+
+    const totalLive = adjustable.reduce((sum, t) => sum + liveCount(t), 0);
+    if (totalLive === 0) return caps;
+
+    // Preserve the existing weighted algorithm for the adjustable tiers:
+    // give each one a 1-attempt baseline when budget permits, then distribute
+    // the remaining surplus by live-node weight. If fewer slots remain than
+    // adjustable tiers, strict tier order receives those baseline slots.
+    const baselineCount = Math.min(remaining, adjustable.length);
+    for (let i = 0; i < baselineCount; i++) caps[adjustable[i]] = 1;
+    if (remaining <= baselineCount) return caps;
+
+    const surplus = remaining - baselineCount;
+    adjustable.forEach((t, i) => {
+      const baseline = i < baselineCount ? 1 : 0;
+      const weightShare = Math.floor(surplus * (liveCount(t) / totalLive));
+      caps[t] = baseline + weightShare;
       if (t === 1) caps[t] = Math.min(caps[t], TIER1_MAX_ATTEMPTS);
     });
-    // Reconcile to exactly max_attempts. Any over- or under-allocation from
-    // floor rounding or override choices is absorbed by the last tier.
-    const last = dispatchable[dispatchable.length - 1];
-    const usedSoFar = dispatchable.reduce((s, t) => s + caps[t], 0);
-    if (usedSoFar > max) {
-      // Over-budget: trim the last tier. (Over-budget happens when an
-      // override sum exceeds max; this is the operator's call to make but
-      // we MUST respect max.)
-      caps[last] = Math.max(1, caps[last] - (usedSoFar - max));
-    } else {
-      const remaining = max - usedSoFar;
-      if (remaining > 0) caps[last] = caps[last] + remaining;
+
+    // Floor rounding remainder belongs only to an adjustable tier; explicit
+    // tier_attempts are never changed to reconcile totals.
+    const usedAdjustable = adjustable.reduce((sum, t) => sum + caps[t], 0);
+    const remainder = remaining - usedAdjustable;
+    if (remainder > 0) {
+      const lastAdjustable = adjustable[adjustable.length - 1];
+      caps[lastAdjustable] += remainder;
+      if (lastAdjustable === 1) caps[lastAdjustable] = Math.min(caps[lastAdjustable], TIER1_MAX_ATTEMPTS);
     }
     return caps;
   }

@@ -37,9 +37,8 @@ name: Deploy
 #   TIER2_NODES_SECRETS_01..10
 #   TIER3_NODES_SECRETS_01..10
 #
-# Unset entries arrive as empty strings and are skipped.
-# Each secret shard corresponds to the node-config shard with the same tier and
-# suffix.
+# Unset entries arrive as empty strings and are skipped. Config and credential
+# suffixes are independent shards; only the Tier prefix must match at runtime.
 #
 # Main repository: Deploy always runs (a missing required config FAILS here,
 # it is never skipped). Forks: opt in with DEPLOY_ENABLED=true.

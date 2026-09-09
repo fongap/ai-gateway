@@ -271,7 +271,8 @@ export function buildPlan({ tiers, secretsMap, existingVarNames = [], existingSe
   }
 
   if (secretsMap && Object.keys(secretsMap).length > 0) {
-    // Shard secrets per-tier to match the node-config shard structure.
+    // Shard secrets independently within each tier; suffixes are partitioning
+    // only and do not form a runtime 1:1 pairing with config shard suffixes.
     for (const tierNumber of [1, 2, 3]) {
       const nodes = tiers[tierNumber];
       if (!nodes || nodes.length === 0) continue;

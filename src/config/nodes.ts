@@ -6,10 +6,9 @@
 //   TIER{1,2,3}_NODES_CONFIG_01..10   plain variables, JSON arrays of node
 //                                     configs WITHOUT any credential material.
 //   TIER{1,2,3}_NODES_SECRETS_01..10  secrets, JSON objects { nodeId: credential }.
-//                                     The tier prefix MUST match the matching
-//                                     config shard's tier — secrets are 1:1
-//                                     with the config they pair with, so
-//                                     operator error is surfaced at boot.
+//                                     The tier prefix scopes each credential.
+//                                     Shard suffixes are independent: a node
+//                                     may use any secret shard in the same tier.
 //
 // Node JSON schema:
 //   {
@@ -59,9 +58,9 @@ import type { RuntimeNode, NodeTier } from '../types/node.ts';
 import type { Protocol, Surface } from '../types/protocol.ts';
 
 export const TIER_SHARD_PATTERN = /^TIER([123])_NODES_CONFIG_(\d{2})$/;
-// Secrets are tier-scoped and pair 1:1 with the matching TIER*_NODES_CONFIG_*
-// shard. A TIER1 secret under a TIER2 config is a config error, not a free
-// credential binding.
+// Secrets are tier-scoped. A node may bind a credential from any secret shard
+// in the same tier; shard suffixes are only partitioning and do not form a
+// runtime 1:1 pairing contract.
 export const SECRET_SHARD_PATTERN = /^TIER([123])_NODES_SECRETS_(\d{2})$/;
 // GitHub Actions injects node-config/secret shards through a fixed range
 // (01..10). Any shard index above 10 can never be delivered by the Deploy
@@ -209,10 +208,9 @@ function buildConfig(env: Record<string, unknown>): GatewayConfig {
     };
   }
 
-  // Merge credential maps from tier-scoped secret shards. Each shard is bound
-  // to the tier in its variable name (TIER1_NODES_SECRETS_* -> tier-1), and
-  // nodeIds from one tier MUST NOT collide with nodeIds from another tier —
-  // every node is uniquely identified by id regardless of tier.
+  // Merge credential maps from tier-scoped secret shards. Each shard keeps its
+  // tier metadata (TIER1_NODES_SECRETS_* -> tier-1). Node IDs stay globally
+  // unique, while the shard suffix remains only a partitioning mechanism.
   const credentials = new Map<string, string>();
   const credentialTiers = new Map<string, string>();
   let conflict = false;
@@ -256,6 +254,16 @@ function buildConfig(env: Record<string, unknown>): GatewayConfig {
       continue;
     }
     for (const rawNode of parsed) {
+      const rawId = rawNode && typeof rawNode === 'object' && !Array.isArray(rawNode)
+        && typeof (rawNode as Record<string, unknown>).id === 'string'
+        ? ((rawNode as Record<string, unknown>).id as string).trim()
+        : '';
+      const secretTier = ID_PATTERN.test(rawId) ? credentialTiers.get(rawId) : undefined;
+      if (secretTier && secretTier !== tier) {
+        diagnostics.push(`Node "${rawId}" belongs to TIER${shard.tierNumber} but its credential is defined under TIER${secretTier.slice(5)}.`);
+        conflict = true;
+        continue;
+      }
       const node = buildRuntimeNode(rawNode, tier, credentials, allowInsecure, shard.key, diagnostics);
       if (!node) continue;
       if (seenIds.has(node.id)) {
@@ -555,9 +563,9 @@ function normalizeModels(models: unknown, nodeId: string, diagnostics: string[])
 }
 
 // Collect shard variable names that match `pattern`. `indexGroup` is the
-// 1-based capture group holding the numeric shard index (tier pattern has the
-// index in group 2, secret pattern in group 1). Using the wrong group silently
-// yields NaN and breaks ordering, so it is passed explicitly per pattern.
+// 1-based capture group holding the numeric shard index. Both current shard
+// patterns keep tier in group 1 and the shard suffix in group 2; the argument
+// remains explicit so future patterns cannot silently break ordering.
 export function collectShards(env: Record<string, unknown>, pattern: RegExp, loosePrefix: string, expectedExample: string, indexGroup: number, diagnostics: string[]): Array<{ key: string, index: number, tierNumber: number }> {
   const shards: Array<{ key: string, index: number, tierNumber: number }> = [];
   for (const key of Object.keys(env || {})) {

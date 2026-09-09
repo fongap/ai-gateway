@@ -2,7 +2,7 @@
 
 ## 原生协议转发
 
-网关原生支持恰好两种协议族——OpenAI 和 Anthropic。采用 Native First 策略：OpenAI Chat / Responses 只走原生路径；Anthropic Messages 优先原生，原生池耗尽后默认会尝试转换到 OpenAI Chat Completions（通过 `PROTOCOL_FALLBACKS` 启用默认链 `{"anthropic:messages":["openai:chat_completions"], "openai:chat_completions":["anthropic:messages"]}`，双向转换）。OpenAI Responses 为 Native Only，不参与跨协议 fallback。
+网关原生支持恰好两种协议族——OpenAI 和 Anthropic。采用 Native First 策略：OpenAI Chat Completions 与 Anthropic Messages 都先走同 protocol、同 surface 的原生路径；原生池耗尽后默认允许 OpenAI Chat Completions ↔ Anthropic Messages 双向跨协议 fallback。OpenAI Responses 为 Native Only，不参与跨协议 fallback。`PROTOCOL_FALLBACKS` 未配置或为空时使用默认链 `{"anthropic:messages":["openai:chat_completions"], "openai:chat_completions":["anthropic:messages"]}`；设 `disable` 关闭；显式 JSON 覆盖默认。
 
 ```text
 Client /v1/chat/completions → OpenAI transport    → upstream /v1/chat_completions
@@ -102,6 +102,6 @@ Transport 层不调度节点；Scheduler 和 Reliability 层不解析协议事�
 | Protocol | 请求校验、错误构建、CORS |
 | Stream | First-Event Guard、SSE 扫描、流追踪 |
 | Reliability | 错误分类、节点状态、熔断 |
-| Conversion (v1.3.0) | 跨协议请求/响应/流 转换,单向 |
+| Conversion (v1.3.0) | 仅 OpenAI Chat Completions ↔ Anthropic Messages 双向跨协议转换；Responses 不转换 |
 
 Provider quirks (`src/config/provider-quirks.ts`) 仅记录 wire-format 兼容差异（如 `stream_options.include_usage` 是否可添加），不决定协议/路径/transport。
