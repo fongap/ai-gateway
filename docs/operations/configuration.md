@@ -1,6 +1,6 @@
 # 配置参考
 
-> 当前 1.x 配置架构。生产环境通过 GitHub Repository Variables（非敏感 Worker 文本变量）和 Secrets（凭据）交付。节点配置（provider、base_url、models、priority）存储在 Variables 中；凭据（api_key、token）存储在 Secrets 中。
+> 当前 1.3.0 配置架构。生产环境通过 GitHub Repository Variables（非敏感 Worker 文本变量）和 Secrets（凭据）交付。节点配置（provider、base_url、models、priority）存储在 Variables 中；凭据（api_key、token）存储在 Secrets 中。
 
 ## 生产配置来源
 
@@ -9,17 +9,39 @@
 | `TIER{1,2,3}_NODES_CONFIG_01..10` | 各层节点池 | JSON 数组 |
 | `MODELS_CONFIG` | 模型注册表覆盖 | JSON 对象 |
 | `POLICIES_CONFIG` | Attempt budgets 和 tier 策略 | JSON 对象 |
+| `GATEWAY_ACCESS_MODELS_{AIR,PRO,MAX,ULTRA,AGENT}` | 对应 Access Group 的模型 allowlist | `general-air,code-pro` |
 | `TIER{1,2,3}_NODES_SECRETS_01..10` | 节点凭据（tier-scoped；`01..10` 仅为分片，同 Tier 可跨 suffix 按节点 ID 绑定） | `{ "node-id": "credential" }` |
-| `GATEWAY_ACCESS_KEY` | 网关访问密钥 | Bearer token |
+| `GATEWAY_ACCESS_KEY_{AIR,PRO,MAX,ULTRA,AGENT}` | 五组网关访问密钥 | Bearer token |
 | 运行时参数 | 超时、冷却等 | 见下方表格 |
 
 GitHub Deployment Variables 持有非敏感配置；GitHub Secrets 持有凭据。Cloudflare Dashboard 不是日常配置界面。
+
+## Gateway Access Groups
+
+当前 Runtime 使用五个独立 Access Group：`AIR`、`PRO`、`MAX`、`ULTRA`、`AGENT`。每组由以下两项组成：
+
+```text
+GATEWAY_ACCESS_KEY_<GROUP>
+GATEWAY_ACCESS_MODELS_<GROUP>
+```
+
+规则以 `src/config/access-keys.ts` 为唯一事实来源：
+
+- 新部署至少配置一个 `GATEWAY_ACCESS_KEY_<GROUP>`；
+- 每个 Group 独立，无继承、无隐式默认；
+- Key 已配置但对应 Models 缺失或为空时，该 Key 获得 **0 个模型**（fail-closed）；
+- Models 是 CSV allowlist；运行时也支持显式 `*`，但安装脚本不会自动生成 `*`，也不会默认授予全部模型；
+- 只要配置了任意新式 Group Key，legacy `GATEWAY_ACCESS_KEY` 就完全不参与鉴权。
+
+### Legacy 兼容
+
+`GATEWAY_ACCESS_KEY` 仅保留兼容路径：**只有未配置任何** `GATEWAY_ACCESS_KEY_AIR/PRO/MAX/ULTRA/AGENT` 时才生效。它不是当前生产默认，也不是新部署必需项或推荐方案。
 
 ## Worker Secrets
 
 | 配置项 | 必需 | 内容 |
 |---|---|---|
-| `GATEWAY_ACCESS_KEY` | 是 | 客户端访问网关的密钥 |
+| `GATEWAY_ACCESS_KEY_{AIR,PRO,MAX,ULTRA,AGENT}` | 至少一个 Group | 客户端访问网关的分组密钥；对应 `GATEWAY_ACCESS_MODELS_<GROUP>` 存放于 Variables |
 | `TIER{1,2,3}_NODES_SECRETS_01..10` | 至少一个 | JSON 对象 `{ "node-id": "credential" }`，按 entry 边界分片。Secret 的 Tier 前缀必须与节点所属 `TIER{1,2,3}_NODES_CONFIG_*` 一致；suffix 仅用于分片，不要求与 config shard 1:1 对应 |
 
 节点按 `id` 在同 Tier 的 credential 中绑定。Secret Tier 与节点 Tier 不一致属于配置错误，启动校验会拒绝服务；缺少 credential 的节点被排除调度；没有节点的 credential 在 `/health` 诊断中报告。
@@ -201,7 +223,7 @@ Token 计数仅使用上游报告的 usage，缺失时从不估算。
 
 | 状态 | 条件 |
 |---|---|
-| `unconfigured` | `GATEWAY_ACCESS_KEY` 或任何 `TIER*_NODES_CONFIG_*` 缺失 |
+| `unconfigured` | 未配置任何可用 Gateway Access Key，或任何 `TIER*_NODES_CONFIG_*` 缺失 |
 | `invalid` | 配置存在但零可用节点，或结构冲突 |
 | `degraded` | 部分节点不可用，至少一个可用 |
 | `ready` | 所有声明节点可用 |
