@@ -8,7 +8,7 @@ ai-gateway 通过 GitHub Actions 部署。推送到 `main` 自动触发部署;�
 
 1. 在 GitHub 仓库中，打开 **Settings → Secrets and variables → Actions**
 2. 创建 Cloudflare KV namespace 用于 Tier 1 session affinity，复制其 32 字符 namespace ID
-3. 创建 §2 和 §3 中列出的 Variables 和 Secrets，包括 `TIER1_AFFINITY_KV_ID`
+3. 创建 §2 和 §3 中列出的 Variables 和 Secrets，包括 `TIER1_AFFINITY_KV_ID`；至少配置一组 `GATEWAY_ACCESS_KEY_<GROUP>` 与对应 `GATEWAY_ACCESS_MODELS_<GROUP>`
 4. 推送到 `main`（或从 Actions 标签运行 Deploy 工作流）
 
 部署工作流先运行 **preflight** 检查。任何必需 Variable 或 Secret 缺失时，工作流**失败**并报告确切缺失项。
@@ -51,7 +51,7 @@ Deploy workflow（workflow_run: CI completed, branch main）:
 
 部署是原子的：代码和 Secret 在同一次 `wrangler deploy --secrets-file` 操作中更新，确保它们属于同一 Worker version。
 
-**D1 迁移在 Worker 部署之前运行**。迁移文件按顺序应用（0001–0007），新增表 `token_usage_totals`、`token_usage_daily`、`token_usage_weekly`，`token_usage_hourly` 现为 7 天保留，冗余主键索引已移除。本地部署路径自动执行远端 D1 migrations（当 `TOKEN_STATS_DB` binding 存在时）。迁移失败阻断部署。
+**D1 迁移在 Worker 部署之前运行**。迁移文件按顺序应用（0001–0008），新增表 `token_usage_totals`、`token_usage_daily`、`token_usage_weekly`，`token_usage_hourly` 现为 7 天保留，冗余主键索引已移除，并记录 cache-token usage。本地部署路径自动执行远端 D1 migrations（当 `TOKEN_STATS_DB` binding 存在时）。迁移失败阻断部署。
 
 部署顺序由 `scripts/deployment-workflow-contract-test.mjs`（unit 套件内）固化为契约测试，防止再次漂移。
 
@@ -66,6 +66,7 @@ Deploy workflow（workflow_run: CI completed, branch main）:
 | `TIER1_NODES_CONFIG_01..10` | 至少一个 tier variable | JSON 数组 |
 | `TIER2_NODES_CONFIG_01..10` | 可选 | 同上 |
 | `TIER3_NODES_CONFIG_01..10` | 可选 | 同上 |
+| `GATEWAY_ACCESS_MODELS_{AIR,PRO,MAX,ULTRA,AGENT}` | 对应 Group Key 已配置时必填 | CSV 模型 allowlist；缺失或空值为 fail-closed，获得 0 个模型 |
 | `MODELS_CONFIG` | 可选 | 模型注册表覆盖 |
 | `POLICIES_CONFIG` | 可选 | Attempt budgets |
 | `DEPLOY_ENABLED` | 仅 Fork | 设为 `true` 启用 |
@@ -75,28 +76,30 @@ Deploy workflow（workflow_run: CI completed, branch main）:
 | Secret | 必需 | 说明 |
 |---|---|---|
 | `CLOUDFLARE_API_TOKEN` | 是 | Cloudflare 部署 token |
-| `GATEWAY_ACCESS_KEY` | 是 | 客户端访问密钥 |
-| `TIER{1,2,3}_NODES_SECRETS_01..10` | 至少一个 | `{ "node-id": "credential" }`（tier-scoped，与 config shard 一一对应） |
+| `GATEWAY_ACCESS_KEY_{AIR,PRO,MAX,ULTRA,AGENT}` | 至少一个 Group | 客户端访问密钥；五组彼此独立 |
+| `TIER{1,2,3}_NODES_SECRETS_01..10` | 至少一个 | `{ "node-id": "credential" }`；Tier 必须与节点一致，按 node id 绑定；`01..10` 仅为分片编号，suffix 不要求与 Config shard 对应 |
+
+当前 GitHub production bridge 只交付五组 Group Key。Runtime 中的 legacy `GATEWAY_ACCESS_KEY` 仅用于旧部署兼容：只有未配置任何 Group Key 时才生效，不作为新部署方案。
 
 ## 节点管理
 
 ### 添加新节点
 
-1. 编辑匹配的 `TIER*_NODES_CONFIG_XX` Variable——追加新节点对象
-2. 将 credential 添加到匹配的 `TIER*_NODES_SECRETS_XX` Secret（tier 必须与 config shard 一致）
+1. 编辑目标 Tier 的任一 `TIER*_NODES_CONFIG_XX` Variable——追加新节点对象
+2. 将 credential 添加到**同一 Tier** 的任一 `TIER*_NODES_SECRETS_XX` Secret；运行时按 node id 绑定，Secret shard suffix 不需要与 Config shard suffix 相同
 3. 推送到 `main`
 
 ### 编辑节点
 
-修改匹配的 `TIER*_NODES_CONFIG_XX` Variable。URL/模型映射、priority/limits 等。
+修改包含该节点的 `TIER*_NODES_CONFIG_XX` Variable。URL/模型映射、priority/limits 等。
 
 ### 轮换 API Key
 
-编辑包含该节点的 `TIER*_NODES_SECRETS_XX` Secret，更新 credential。
+编辑同一 Tier 中包含该节点 id 的 `TIER*_NODES_SECRETS_XX` Secret，更新 credential。
 
 ### 轮换 Gateway Access Key
 
-编辑 `GATEWAY_ACCESS_KEY` Secret。
+编辑目标 Group 的 `GATEWAY_ACCESS_KEY_AIR`、`GATEWAY_ACCESS_KEY_PRO`、`GATEWAY_ACCESS_KEY_MAX`、`GATEWAY_ACCESS_KEY_ULTRA` 或 `GATEWAY_ACCESS_KEY_AGENT` Secret；模型权限由对应 `GATEWAY_ACCESS_MODELS_<GROUP>` Variable 控制。
 
 ## 配置检查
 
