@@ -49,6 +49,7 @@ const UNIT_TESTS = [
   'scripts/ttft-query-contract-test.mjs',
   'scripts/reliability-performance-test.mjs',
   'scripts/conversion-test.mjs',
+  'scripts/anthropic-thinking-fallback-test.mjs',
   'scripts/conversion-boundary-test.mjs',
   'scripts/deployment-identity-test.mjs',
   'scripts/config-matrix-test.mjs',
