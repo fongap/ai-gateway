@@ -1,0 +1,322 @@
+name: Apply Tier1 Smooth Admission Patch
+
+on:
+  push:
+    branches:
+      - reliability/tier1-smooth-admission
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: reliability/tier1-smooth-admission
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Apply bounded v1.3.1 reliability patch
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(text, old, new, label):
+              if old not in text:
+                  raise SystemExit(f'patch anchor missing: {label}')
+              return text.replace(old, new, 1)
+
+          p = Path('src/reliability/tier1-state.ts')
+          s = p.read_text()
+
+          s = replace_once(s,
+          "const accounts = new Map<string, Tier1AccountRuntime>();\nconst rpmBuckets = new Map<string, { minute: number, count: number }>();",
+          """const accounts = new Map<string, Tier1AccountRuntime>();
+
+type Tier1RpmBucket = {
+  tokens: number,
+  updatedAt: number,
+  rpm: number,
+};
+
+// Tier 1 hard-RPM admission is intentionally isolate-local. A capacity of at
+// most two tokens permits one small burst while continuous refill removes the
+// fixed-minute boundary spike. No new configuration surface is introduced:
+// node.limits.rpm remains the single rate input.
+const TIER1_RPM_BURST_TOKENS = 2;
+const rpmBuckets = new Map<string, Tier1RpmBucket>();""", 'rpm bucket type')
+
+          old = """function minuteOf(now: number): number { return Math.floor(now / 60_000); }
+
+function noteTier1Rpm(accountId: string, now: number): void {
+  const minute = minuteOf(now);
+  const bucket = rpmBuckets.get(accountId);
+  if (!bucket || bucket.minute !== minute) rpmBuckets.set(accountId, { minute, count: 1 });
+  else bucket.count++;
+}
+
+export function tier1RpmUsage(accountId: string, now: number = Date.now()): number {
+  const bucket = rpmBuckets.get(accountId);
+  return bucket?.minute === minuteOf(now) ? bucket.count : 0;
+}
+
+export function rollbackTier1Rpm(accountId: string, now: number = Date.now()): void {
+  const bucket = rpmBuckets.get(accountId);
+  if (bucket?.minute === minuteOf(now)) bucket.count = Math.max(0, bucket.count - 1);
+}
+"""
+          new = """function tier1RpmCapacity(rpm: number): number {
+  return Math.max(1, Math.min(TIER1_RPM_BURST_TOKENS, Math.floor(rpm)));
+}
+
+function refilledTier1RpmTokens(bucket: Tier1RpmBucket, now: number): number {
+  const capacity = tier1RpmCapacity(bucket.rpm);
+  const elapsed = Math.max(0, now - bucket.updatedAt);
+  return Math.min(capacity, bucket.tokens + elapsed * (bucket.rpm / 60_000));
+}
+
+export function tier1RpmWaitMs(accountId: string, rpm: number, now: number = Date.now()): number {
+  if (!Number.isFinite(rpm) || rpm <= 0) return 0;
+  const bucket = rpmBuckets.get(accountId);
+  if (!bucket || bucket.rpm !== rpm) return 0;
+  const tokens = refilledTier1RpmTokens(bucket, now);
+  if (tokens >= 1) return 0;
+  return Math.max(1, Math.ceil((1 - tokens) * (60_000 / rpm)));
+}
+
+function noteTier1Rpm(accountId: string, rpm: number, now: number): boolean {
+  if (!Number.isFinite(rpm) || rpm <= 0) return true;
+  const capacity = tier1RpmCapacity(rpm);
+  const previous = rpmBuckets.get(accountId);
+  const tokens = !previous || previous.rpm !== rpm
+    ? capacity
+    : refilledTier1RpmTokens(previous, now);
+  if (tokens < 1) return false;
+  rpmBuckets.set(accountId, { tokens: Math.max(0, tokens - 1), updatedAt: now, rpm });
+  return true;
+}
+
+// Compatibility diagnostic: this is the current token deficit in the smooth
+// admission bucket, not a fixed-calendar-minute request counter.
+export function tier1RpmUsage(accountId: string, now: number = Date.now()): number {
+  const bucket = rpmBuckets.get(accountId);
+  if (!bucket) return 0;
+  return Math.max(0, tier1RpmCapacity(bucket.rpm) - refilledTier1RpmTokens(bucket, now));
+}
+
+export function rollbackTier1Rpm(accountId: string, now: number = Date.now()): void {
+  const bucket = rpmBuckets.get(accountId);
+  if (!bucket) return;
+  const capacity = tier1RpmCapacity(bucket.rpm);
+  const tokens = refilledTier1RpmTokens(bucket, now);
+  bucket.tokens = Math.min(capacity, tokens + 1);
+  bucket.updatedAt = now;
+}
+
+function deferTier1RpmAfterRateLimit(accountId: string, resumeAt: number): void {
+  const bucket = rpmBuckets.get(accountId);
+  if (!bucket || !Number.isFinite(bucket.rpm) || bucket.rpm <= 0) return;
+  const intervalMs = 60_000 / bucket.rpm;
+  // Resume with exactly one token at cooldown expiry, then refill normally.
+  // This prevents an immediate post-429 burst without adding latency once the
+  // provider has actually allowed one request through again.
+  bucket.tokens = 0;
+  bucket.updatedAt = Math.max(bucket.updatedAt, resumeAt - intervalMs);
+}
+"""
+          s = replace_once(s, old, new, 'fixed minute bucket')
+
+          s = replace_once(s,
+          """  if (account.inFlight >= node.limits.concurrency) return false;
+  if (node.limits.rpm && node.limits.rpmMode !== 'soft'
+    && tier1RpmUsage(node.id, now) >= node.limits.rpm) return false;
+  account.inFlight++;
+  noteTier1Rpm(node.id, now);
+  return true;""",
+          """  if (account.inFlight >= node.limits.concurrency) return false;
+  if (node.limits.rpm && node.limits.rpmMode !== 'soft'
+    && !noteTier1Rpm(node.id, node.limits.rpm, now)) return false;
+  account.inFlight++;
+  return true;""", 'claim smooth admission')
+
+          s = replace_once(s,
+          """  if (node.limits.rpm && node.limits.rpmMode !== 'soft'
+    && tier1RpmUsage(node.id, now) >= node.limits.rpm) return false;""",
+          """  if (node.limits.rpm && node.limits.rpmMode !== 'soft'
+    && tier1RpmWaitMs(node.id, node.limits.rpm, now) > 0) return false;""", 'eligibility smooth admission')
+
+          s = replace_once(s,
+          """  if (outcome.scope === 'account') {
+    account.consecutiveAccountFailures++;
+    account.accountCooldownUntil = Math.max(account.accountCooldownUntil, now + (outcome.cooldownMs || TIER1_COOLDOWN_DEFAULT_MS));
+    account.accountCooldownReason = outcome.reason;
+    return;
+  }""",
+          """  if (outcome.scope === 'account') {
+    account.consecutiveAccountFailures++;
+    account.accountCooldownUntil = Math.max(account.accountCooldownUntil, now + (outcome.cooldownMs || TIER1_COOLDOWN_DEFAULT_MS));
+    account.accountCooldownReason = outcome.reason;
+    if (outcome.backoff === 'rate_limit') deferTier1RpmAfterRateLimit(accountId, account.accountCooldownUntil);
+    return;
+  }""", 'account 429 admission alignment')
+
+          s = replace_once(s,
+          """  if (halfOpenFailure || thresholdReached || rateLimited || (outcome.cooldownMs ?? 0) > 0) {
+    model.cooldownUntil = now + modelCooldownMs(model, outcome);
+    model.cooldownReason = outcome.reason;
+    if (halfOpenFailure || thresholdReached) {""",
+          """  if (halfOpenFailure || thresholdReached || rateLimited || (outcome.cooldownMs ?? 0) > 0) {
+    const cooldownMs = modelCooldownMs(model, outcome);
+    model.cooldownUntil = now + cooldownMs;
+    model.cooldownReason = outcome.reason;
+    if (rateLimited) deferTier1RpmAfterRateLimit(accountId, model.cooldownUntil);
+    if (halfOpenFailure || thresholdReached) {""", 'model 429 admission alignment')
+
+          s = replace_once(s,
+          """  if (node.limits.rpm && node.limits.rpmMode !== 'soft'
+    && tier1RpmUsage(node.id, now) >= node.limits.rpm) return Math.max(1, 60_000 - (now % 60_000));""",
+          """  if (node.limits.rpm && node.limits.rpmMode !== 'soft') {
+    const rpmWait = tier1RpmWaitMs(node.id, node.limits.rpm, now);
+    if (rpmWait > 0) return rpmWait;
+  }""", 'blocking smooth wait')
+
+          s = replace_once(s,
+          """    if (node.limits.rpm && node.limits.rpmMode !== 'soft'
+      && tier1RpmUsage(node.id, now) >= node.limits.rpm) return true;""",
+          """    if (node.limits.rpm && node.limits.rpmMode !== 'soft'
+      && tier1RpmWaitMs(node.id, node.limits.rpm, now) > 0) return true;""", 'deferred smooth wait')
+
+          p.write_text(s)
+
+          p = Path('scripts/scheduler-stability-test.mjs')
+          s = p.read_text()
+          s = replace_once(s,
+          """  classifyTier1Failure, calculateTier1Score, snapshotTier1Runtime, recordTier1QuotaSignal,
+  TIER1_FAILURE_STATES,""",
+          """  classifyTier1Failure, calculateTier1Score, snapshotTier1Runtime, recordTier1QuotaSignal,
+  tier1BlockingWaitMs, rollbackTier1Rpm,
+  TIER1_FAILURE_STATES,""", 'test imports')
+
+          anchor = """await test('Eligibility: cooldown filtered (no force-call on cooling account)', () => {"""
+          tests = r"""
+await test('RPM: smooth admission removes fixed-minute boundary reset', () => {
+  const b = node('b', { concurrency: 10, rpm: 40 });
+  const t0 = 59_999;
+  assert.equal(claimTier1Slot(b, t0, 'm1'), true);
+  getTier1Account('b').inFlight--;
+  assert.equal(claimTier1Slot(b, t0, 'm1'), true, 'one small burst token is allowed');
+  getTier1Account('b').inFlight--;
+  assert.equal(claimTier1Slot(b, t0, 'm1'), false, 'burst capacity exhausted');
+  assert.equal(claimTier1Slot(b, 60_001, 'm1'), false, 'calendar minute boundary must not reset admission');
+  assert.equal(tier1BlockingWaitMs(b, 'm1', t0), 1_500, '40 RPM refills one token every 1.5s');
+  assert.equal(claimTier1Slot(b, t0 + 1_500, 'm1'), true, 'continuous refill admits after one interval');
+});
+
+await test('RPM: rollback restores a pre-dispatch token', () => {
+  const b = node('b', { concurrency: 10, rpm: 1 });
+  const now = 100_000;
+  assert.equal(claimTier1Slot(b, now, 'm1'), true);
+  getTier1Account('b').inFlight--;
+  assert.equal(claimTier1Slot(b, now, 'm1'), false);
+  rollbackTier1Rpm('b', now);
+  assert.equal(claimTier1Slot(b, now, 'm1'), true, 'rollback must restore the consumed admission token');
+});
+
+await test('RPM: 429 cooldown resumes with one token, not a fresh burst', () => {
+  const b = node('b', { concurrency: 10, rpm: 40 });
+  const now = 1_000_000;
+  assert.equal(claimTier1Slot(b, now, 'm1'), true);
+  getTier1Account('b').inFlight--;
+  const outcome = classifyTier1Failure({ kind: 'rate_limit' }, { retryAfterMs: 10_000 });
+  applyTier1Outcome('b', 'm1', outcome, now);
+  assert.equal(isTier1Eligible(b, REQ, now + 9_999), false, 'Retry-After cooldown remains authoritative');
+  assert.equal(isTier1Eligible(b, REQ, now + 10_000), true, 'one request may resume at cooldown expiry');
+  assert.equal(claimTier1Slot(b, now + 10_000, 'm1'), true);
+  getTier1Account('b').inFlight--;
+  assert.equal(claimTier1Slot(b, now + 10_000, 'm1'), false, 'post-429 resume must not burst immediately');
+});
+
+"""
+          if anchor not in s:
+              raise SystemExit('patch anchor missing: scheduler RPM tests')
+          s = s.replace(anchor, tests + anchor, 1)
+          p.write_text(s)
+
+          p = Path('docs/architecture/reliability-model.md')
+          s = p.read_text()
+          marker = "## Tier 1 可靠性\n\n"
+          addition = """## Tier 1 可靠性
+
+### Smooth RPM Admission
+
+Tier 1 的 hard `limits.rpm` 使用 isolate-local Token Bucket 平滑准入，不再使用日历分钟 fixed bucket。补充速率为 `rpm / 60s`，burst capacity 最多 2 个 token（即最多允许 1 个额外瞬时请求）；低于 2 RPM 时 capacity 自动降为 1。`rpmMode=soft` 行为不变，也不新增配置项。
+
+429 仍沿用既有 `Retry-After` / model-scoped exponential backoff / rotate 语义。新增的唯一联动是：429 cooldown 到期时 admission bucket 只恢复 1 个 token，之后继续按 `limits.rpm` 平滑补充，避免 cooldown 结束瞬间再次 burst → 429。
+
+"""
+          if marker not in s:
+              raise SystemExit('patch anchor missing: reliability docs')
+          s = s.replace(marker, addition, 1)
+          p.write_text(s)
+
+          p = Path('package.json')
+          s = p.read_text()
+          s = replace_once(s, '"version": "1.3.0"', '"version": "1.3.1"', 'package version')
+          p.write_text(s)
+
+          p = Path('package-lock.json')
+          s = p.read_text()
+          if s.count('"version": "1.3.0"') < 2:
+              raise SystemExit('patch anchor missing: lock versions')
+          s = s.replace('"version": "1.3.0"', '"version": "1.3.1"', 2)
+          p.write_text(s)
+
+          p = Path('src/config/version.ts')
+          s = p.read_text()
+          s = replace_once(s, "export const VERSION = '1.3.0';", "export const VERSION = '1.3.1';", 'generated version')
+          p.write_text(s)
+
+          p = Path('CHANGELOG.md')
+          s = p.read_text(encoding='utf-8-sig')
+          marker = '# Changelog\n\n'
+          section = """# Changelog
+
+## 1.3.1 - 2026-09-09
+
+### Changed
+
+- **Tier 1 Smooth RPM Admission**: hard `limits.rpm` 从 fixed-minute bucket 改为 isolate-local Token Bucket，连续按 `rpm / 60s` 补充，burst capacity 最多 2 个 token；消除分钟边界双倍突刺。`rpmMode=soft`、Tier 2/3、分布式 Rate Limiting binding 均不变。
+- **429 Resume Shaping**: 保留现有 `Retry-After`、model-scoped exponential backoff、jitter 与 rotate；429 cooldown 到期时仅恢复 1 个 Tier 1 admission token，避免恢复瞬间再次 burst → 429。
+- **Scope**: 不改 scheduler 主逻辑、tier-loop、request pipeline、protocol、transport、D1、deploy workflow、Access Key 或 Tier 2/3。
+
+"""
+          if marker not in s:
+              raise SystemExit('patch anchor missing: changelog')
+          s = s.replace(marker, section, 1)
+          p.write_text(s, encoding='utf-8')
+          PY
+
+      - name: Install
+        run: npm ci
+
+      - name: Validate full deploy gate
+        run: npm run validate:deploy
+
+      - name: Commit validated patch
+        shell: bash
+        run: |
+          rm .github/workflows/apply-tier1-smooth-admission.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: smooth Tier1 RPM admission and 429 recovery'
+          git push origin HEAD:reliability/tier1-smooth-admission
