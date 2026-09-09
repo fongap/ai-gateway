@@ -73,8 +73,8 @@ For production deployment, see [docs/operations/deployment.md](docs/operations/d
 | --- | --- |
 | `TIER*_NODES_CONFIG_*` | Node configuration |
 | `TIER*_NODES_SECRETS_*` | Node credentials |
-| `GATEWAY_ACCESS_KEY_{AIR,PRO,MAX,ULTRA,AGENT}` | Five gateway access-key groups; configure at least one for a new deployment |
-| `GATEWAY_ACCESS_MODELS_{AIR,PRO,MAX,ULTRA,AGENT}` | Model allowlist for the corresponding group |
+| `GATEWAY_ACCESS_KEY_AIR` / `PRO` / `MAX` / `ULTRA` / `AGENT` | Five gateway access-key groups; configure at least one for a new deployment |
+| `GATEWAY_ACCESS_MODELS_AIR` / `PRO` / `MAX` / `ULTRA` / `AGENT` | Model allowlist for the corresponding group |
 | `MODELS_CONFIG` | Model configuration |
 | `POLICIES_CONFIG` | Routing policies |
 
