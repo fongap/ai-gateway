@@ -36,15 +36,17 @@
 //     it is the TARGET protocol that is incompatible). The conversion happens
 //     before any upstream dispatch, so it never touches logicalAttempts,
 //     dispatches, hedges, activeRequests, node RPM, node failure, cooldown,
-//     or circuit breaker state. The current fallback target is SKIPPED and
-//     the next one is tried.
-//   * If the fallback chain is exhausted, the request falls through
-//     to the standard exhausted handler (a 502/503 gateway failure, never a
-//     client 400).
+//     or circuit breaker state. The target is skipped and a safe diagnostic is
+//     emitted with only request identity, route, target protocol/surface and
+//     the converter's reason string — never request content or credentials.
+//   * If every recognized fallback target is rejected by conversion before any
+//     upstream dispatch, return a dedicated 502 instead of misreporting the
+//     condition as node cooldown/circuit exhaustion.
 
 import { convertAnthropicToOpenAIRequest, ConversionError } from '../conversion/anthropic-to-openai.ts';
 import { convertOpenAIChatRequestToAnthropic } from '../conversion/openai-chat-request-to-anthropic.ts';
-import { buildBudgetExhaustedResponse } from './errors.ts';
+import { getLogger } from '../observability/logger.ts';
+import { buildBudgetExhaustedResponse, gatewayError } from './errors.ts';
 import { computeTierCaps } from './tier-loop.ts';
 import type { LoopContext, ConversionContext } from '../types/request.ts';
 import type { RoutableRequest } from '../types/scheduler.ts';
@@ -71,6 +73,10 @@ export async function runFallbackChain({ loopCtx, route, requestedModel, runTier
     feasibility,
   } = loopCtx;
   const fallbacks = feasibility?.fallbacks ?? [];
+  const logger = getLogger(env);
+  let conversionErrorCount = 0;
+  let convertedTargetCount = 0;
+
   for (const fb of fallbacks) {
     if (state.logicalAttempts >= policy.maxAttempts) break;
     const remainingBudgetMs = failoverBudgetMs - (Date.now() - requestStartMs);
@@ -89,17 +95,25 @@ export async function runFallbackChain({ loopCtx, route, requestedModel, runTier
       }
     } catch (e) {
       if (e instanceof ConversionError) {
-        // This fallback target cannot express the request (e.g. an Anthropic
-        // `thinking` block with no OpenAI equivalent). The client request is
-        // legal — the TARGET is incompatible — so this is NOT a client 400.
-        // Conversion happens before dispatch, so no reliability counter has
-        // been touched. Skip this target and try the next fallback in the
-        // chain. If every target is exhausted, runFallbackChain returns null
-        // and the standard exhausted handler produces the gateway failure.
+        conversionErrorCount++;
+        const reason = String(e.message || e.code || 'conversion_not_supported').slice(0, 300);
+        logger.error(JSON.stringify({
+          event: 'fallback_conversion_skipped',
+          request_id: requestId,
+          route,
+          fallback_protocol: fb.protocol,
+          fallback_surface: fb.surface,
+          reason,
+        }));
+        // This fallback target cannot express the request. The client request
+        // is legal; the target protocol is incompatible. Conversion happens
+        // before dispatch, so no reliability state is touched.
         continue;
       }
       throw e;
     }
+
+    convertedTargetCount++;
     const fbTierCaps = computeTierCaps(tiers, fbReqDescriptor, state.attempted, policy, knownModels);
     const conversionContext: ConversionContext = {
       convertedBody,
@@ -110,5 +124,24 @@ export async function runFallbackChain({ loopCtx, route, requestedModel, runTier
     const fbResult = await runTierLoop(loopCtx, fbReqDescriptor, conversionContext, fbTierCaps);
     if (fbResult) return fbResult;
   }
+
+  if (conversionErrorCount > 0 && convertedTargetCount === 0 && state.dispatches === 0) {
+    return gatewayError(
+      request,
+      env,
+      route,
+      502,
+      'Configured protocol fallback cannot represent this request.',
+      requestId,
+      {
+        requested_model: requestedModel,
+        attempts: state.logicalAttempts,
+        dispatches: state.dispatches,
+        hedges: state.hedges,
+        failure_kind: 'conversion_not_supported',
+      },
+    );
+  }
+
   return null;
 }
