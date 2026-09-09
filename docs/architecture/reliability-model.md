@@ -21,7 +21,7 @@ Tier 1 的 hard `limits.rpm` 使用 isolate-local Token Bucket 平滑准入，�
 包含 disable/cooldown、`normal → cooldown → half_open → disabled` 恢复、consecutive failures/outliers/rate limits 和被动 TTFT。
 
 - 401/403 禁用 account
-- `model_not_found` 仅禁用该 account/model pair
+- `model_missing` 不进入逻辑 Model Scope；它使用独立的 `(account, upstream model id)` 5s cooldown。逻辑别名重映射到新的 upstream model 后，不继承旧 upstream model 的 404 状态
 - 模糊 429 默认 model scope，记录 `scope_ambiguous_429`
 - `Retry-After` 被尊重；缺失 header 使用 model-scoped exponential backoff
 - 普通 timeout/5xx 失败使用三重失败滞后
@@ -52,7 +52,7 @@ Error classification (`src/reliability/classify.ts`) 是**单一事实源**—�
 | `rate_limit_global` | 预派发被分布式 rate limiter 拒绝 | rotate | 0 | 否 |
 | `auth` | 401/403 | rotate | AUTH_FAIL_COOLDOWN_MS | 否 |
 | `client` | 400/413/415/422 + 其他 4xx | stop | 0 | 否 |
-| `model_missing` | 404 + body 是模型形状 | rotate | 5s (model-scoped) | 否 |
+| `model_missing` | 404 + body 是模型形状 | rotate | 5s (`account + upstream model` scoped) | 否 |
 | `endpoint_not_found` | 404 + body 不是模型形状 | rotate | 5s | 否 |
 | `server` | 5xx / 408/425/409 | rotate | 0 | **是** |
 | `network` | 非 headers-timeout 的网络错 | rotate | 0 | **是** |
@@ -65,7 +65,7 @@ Error classification (`src/reliability/classify.ts`) 是**单一事实源**—�
 | `cancelled_after_peer_commit` | Hedge loser 被 peer commit 取消 | neutral | 0 | 否 |
 | `unknown` | Hedge catch-all | rotate | 0 | 否 |
 
-Tier 1 (`classifyTier1Failure` in `tier1-state.ts`) 将这些 kind 映射到 (account, model) 状态机的具体动作(scope = account / model, action = disable / cooldown, backoff = rate_limit / server / timeout)。
+Tier 1 (`classifyTier1Failure` in `tier1-state.ts`) 将这些 kind 映射到具体状态动作（scope = account / model / upstream_model，action = disable / cooldown，backoff = rate_limit / server / timeout）。其中 `upstream_model` 仅用于 `model_missing`，key 为当前节点解析出的 provider-facing model id；调度性能状态仍使用逻辑 model。
 
 相关 helper：
 - `classifyPreDispatchRateLimit()` — 预派发被分布式 rate limiter 拒绝

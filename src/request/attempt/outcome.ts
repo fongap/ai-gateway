@@ -16,6 +16,7 @@ import {
   applyTier1Outcome, classifyTier1Failure,
   rollbackTier1Rpm,
 } from '../../reliability/tier1-state.ts';
+import { KIND } from '../../reliability/classify.ts';
 import type { FailureClassification, FailureKind } from '../../reliability/classify.ts';
 import { trimDiagnostic } from '../../protocol/http.ts';
 import { upstreamModelOf } from '../response-helpers.ts';
@@ -77,16 +78,19 @@ export function recordOutcome(state: LoopState, node: RuntimeNode, classificatio
   const headersMs = c?.headersMs ?? (latencyMs >= 0 ? latencyMs : undefined);
 
   if (node.tier === 'tier-1') {
-    // Tier 1 owns its own per-(account,model) failure state machine. The
-    // shared classify outcome is mapped to a Tier 1 scope/cooldown; 429
-    // defaults to MODEL scope with a scope_ambiguous diagnostic flag when no
-    // provider-specific rule disambiguated it.
+    // Tier 1 owns its own failure state machine. Logical-model performance,
+    // timeout/5xx state and 429 state remain keyed by the requested model.
+    // model_missing is different: the provider rejected the resolved upstream
+    // model id, so its short cooldown is keyed by (account, upstream model).
     releaseTier1Slot(node.id, c.tier1ReleaseToken);
     if (classification.action === 'neutral') {
       bumpNodeCounters(node.id, { requests: 1 });
     } else {
       const t1Class = classifyTier1Failure(classification, { retryAfterMs: classification.retryAfterMs || 0 });
-      applyTier1Outcome(node.id, state.requestedModel, t1Class);
+      const tier1ModelKey = classification.kind === KIND.MODEL_MISSING
+        ? upstreamModelOf(node, state.requestedModel)
+        : state.requestedModel;
+      applyTier1Outcome(node.id, tier1ModelKey, t1Class);
       bumpNodeCounters(node.id, { requests: 1, failures: 1 });
     }
   } else if (classification.modelScoped) {
