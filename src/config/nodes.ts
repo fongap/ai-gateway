@@ -6,9 +6,9 @@
 //   TIER{1,2,3}_NODES_CONFIG_01..10   plain variables, JSON arrays of node
 //                                     configs WITHOUT any credential material.
 //   TIER{1,2,3}_NODES_SECRETS_01..10  secrets, JSON objects { nodeId: credential }.
-//                                     The tier prefix scopes each credential.
-//                                     Shard suffixes are independent: a node
-//                                     may use any secret shard in the same tier.
+//                                     Credentials must match the node Tier by
+//                                     prefix and match exactly one node id.
+//                                     Shard suffixes are partitioning only.
 //
 // Node JSON schema:
 //   {
@@ -22,18 +22,15 @@
 //     "limits": { "concurrency": 1 }
 //   }
 //
-// protocol decides: request format, upstream endpoint, auth header, protocol
-// headers, stream wire format. surfaces decides which client surfaces can be
-// routed to this node (openai: chat_completions|responses; anthropic: messages).
+// protocol decides request format, upstream endpoint, auth header, protocol
+// headers, and stream wire format. surfaces decides which client surfaces can
+// be routed to this node (openai: chat_completions|responses; anthropic: messages).
 // provider is metadata only (dashboard / metrics / diagnostics / quirks) and
 // never influences transport.
 //
-// Migration (deprecated, diagnostic-only, NOT fatal): a node without
-// `protocol` defaults to "openai" and a node without `surfaces` defaults to
-// ["chat_completions"] (openai) / ["messages"] (anthropic), because every
-// pre-protocol node talked the OpenAI Chat wire format. Each implicit default
-// emits a deprecation diagnostic so operators can make it explicit; the node
-// still builds and the gateway is not marked invalid for it.
+// Missing `protocol` or `surfaces` is accepted with deprecated defaults and a
+// diagnostic so existing configuration remains serviceable while operators
+// make those fields explicit.
 //
 // Tier is derived ONLY from the variable prefix. The node JSON must not carry
 // a tier field; a tier field is rejected as invalid configuration.
@@ -58,9 +55,8 @@ import type { RuntimeNode, NodeTier } from '../types/node.ts';
 import type { Protocol, Surface } from '../types/protocol.ts';
 
 export const TIER_SHARD_PATTERN = /^TIER([123])_NODES_CONFIG_(\d{2})$/;
-// Secrets are tier-scoped. A node may bind a credential from any secret shard
-// in the same tier; shard suffixes are only partitioning and do not form a
-// runtime 1:1 pairing contract.
+// Credentials are tier-scoped and keyed by node id. Any secret shard in the
+// same tier may provide the credential; config and secret suffixes do not pair.
 export const SECRET_SHARD_PATTERN = /^TIER([123])_NODES_SECRETS_(\d{2})$/;
 // GitHub Actions injects node-config/secret shards through a fixed range
 // (01..10). Any shard index above 10 can never be delivered by the Deploy
@@ -72,13 +68,11 @@ const FORBIDDEN_NODE_FIELDS = ['token', 'credential', 'api_key', 'apikey', 'auth
 // is rejected instead of being silently accepted (or emptied into a wildcard).
 const ALLOWED_NODE_FIELDS = new Set(['id', 'provider', 'protocol', 'surfaces', 'base_url', 'priority', 'models', 'limits']);
 const ALLOWED_LIMITS_FIELDS = new Set(['concurrency', 'rpm', 'rpm_mode']);
-// "hard" is kept as an alias for "local_hard" for backward compatibility.
-// Both mean the same thing: isolate-local best-effort cap, NOT a global quota.
-// Use a distributed quota binding (future `quota_mode: distributed`) if you
-// need a real account-wide cap across isolates.
+// "hard" and "local_hard" are accepted aliases for the same isolate-local
+// best-effort cap; neither represents a global account-wide quota.
 const RPM_MODES = new Set(['soft', 'hard', 'local_hard']);
 // protocol -> which client surfaces the node can expose, and the implicit
-// legacy default used when `surfaces` is omitted.
+// deprecated default used when `surfaces` is omitted.
 const PROTOCOL_SURFACES = new Map<string, Set<string>>([
   ['openai', new Set(['chat_completions', 'responses'])],
   ['anthropic', new Set(['messages'])],
@@ -411,8 +405,8 @@ function buildRuntimeNode(rawNode: unknown, tier: NodeTier, credentials: Map<str
   };
 }
 
-// protocol: openai | anthropic. Missing = legacy implicit "openai" (deprecated,
-// diagnostic-only) because every pre-protocol node talked the OpenAI Chat wire.
+// protocol: openai | anthropic. Missing values use the deprecated implicit
+// "openai" default and emit a diagnostic.
 function parseProtocol(raw: unknown, nodeId: string, diagnostics: string[]): Protocol | null {
   if (raw === undefined || raw === null) {
     diagnostics.push(`node "${nodeId}": protocol is implicit and defaults to "openai"; please configure it explicitly`);
@@ -426,13 +420,10 @@ function parseProtocol(raw: unknown, nodeId: string, diagnostics: string[]): Pro
   return value as Protocol;
 }
 
-// surfaces: which endpoints this node really serves. Missing = legacy implicit
-// default for the resolved protocol (deprecated, diagnostic-only). Explicit
-// surfaces are strictly validated against the protocol.
+// surfaces: which endpoints this node really serves. Missing values use the
+// deprecated default for the resolved protocol and emit a diagnostic.
 function parseSurfaces(raw: unknown, protocol: Protocol, nodeId: string, diagnostics: string[]): Surface[] | null {
   if (raw === undefined || raw === null) {
-    // protocol is a closed union and DEFAULT_SURFACES carries an entry for
-    // each of its members.
     const def = DEFAULT_SURFACES.get(protocol) as string[];
     diagnostics.push(`node "${nodeId}": surfaces is implicit and defaults to [${def.map((s) => `"${s}"`).join(', ')}]; please configure it explicitly`);
     return def.slice() as Surface[];
@@ -464,9 +455,8 @@ function parsePriority(raw: unknown, nodeId: string, diagnostics: string[]): num
   return Math.trunc(n);
 }
 
-// Runtime note: concurrency is optional in the parsed result (absent field ->
-// default applied by the caller via `?? 2`), so the type reflects the real
-// runtime instead of the original JSDoc's required `concurrency: number`.
+// concurrency is optional in the parsed result; the caller applies the default
+// with `?? 2` when constructing the Runtime Node.
 function parseLimits(raw: unknown, nodeId: string, diagnostics: string[]): { concurrency?: number, rpm?: number, rpmMode?: 'soft' | 'hard' } | null {
   const out: { concurrency?: number, rpm?: number, rpmMode?: 'soft' | 'hard' } = {};
   if (raw === undefined || raw === null) return out;
@@ -500,11 +490,8 @@ function parseLimits(raw: unknown, nodeId: string, diagnostics: string[]): { con
       return null;
     }
     out.rpm = r;
-    // An explicitly configured RPM is treated as a real upstream/account quota:
-    // default to hard (local_hard in user-facing config semantics; never exceed
-    // it in this isolate). Opt back into the old best-effort behavior with
-    // "rpm_mode": "soft". The user-facing config key accepts both "hard" and
-    // "local_hard" — both normalize to the internal 'hard' value.
+    // Configured RPM defaults to hard isolate-local enforcement; `soft` is the
+    // explicit best-effort mode. `hard` and `local_hard` normalize identically.
     out.rpmMode = 'hard';
   }
   if ('rpm_mode' in rec) {
@@ -513,7 +500,6 @@ function parseLimits(raw: unknown, nodeId: string, diagnostics: string[]): { con
       diagnostics.push(`node "${nodeId}": limits.rpm_mode must be "soft", "hard", or "local_hard"`);
       return null;
     }
-    // Normalize "hard" and "local_hard" to the same internal value.
     out.rpmMode = mode === 'soft' ? 'soft' : 'hard';
   }
   return out;
@@ -562,10 +548,8 @@ function normalizeModels(models: unknown, nodeId: string, diagnostics: string[])
   return out;
 }
 
-// Collect shard variable names that match `pattern`. `indexGroup` is the
-// 1-based capture group holding the numeric shard index. Both current shard
-// patterns keep tier in group 1 and the shard suffix in group 2; the argument
-// remains explicit so future patterns cannot silently break ordering.
+// `indexGroup` selects the capture group that contains the numeric shard
+// suffix; both current shard patterns keep that suffix in group 2.
 export function collectShards(env: Record<string, unknown>, pattern: RegExp, loosePrefix: string, expectedExample: string, indexGroup: number, diagnostics: string[]): Array<{ key: string, index: number, tierNumber: number }> {
   const shards: Array<{ key: string, index: number, tierNumber: number }> = [];
   for (const key of Object.keys(env || {})) {
