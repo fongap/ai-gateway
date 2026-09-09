@@ -1,47 +1,10 @@
 name: Deploy
 
-# Push-to-main auto deploy. Fork-specific GitHub Variables plus GitHub Secrets
-# are the deployment source; the Cloudflare Dashboard is never a second
-# configuration source.
-#
-# Production gate: this workflow is triggered by `workflow_run` when the CI
-# workflow completes on main. CI success means BOTH of its jobs passed —
-# validate-merge (syntax + config + unit + typecheck + security + docs +
-# bundle dry-run) AND validate-deploy (unit + scheduler stability +
-# integration + stress + Codex/Claude contract + security + docs). Worker
-# Deploy therefore never executes before full validation succeeds, and the
-# full suite is executed exactly once per push (Merge Gate != Production
-# Gate; no duplicated validation).
-#
-# Pipeline: preflight → validate configuration → D1 migrations (if configured)
-# → atomic Worker deploy (code + secrets in a single
-# `wrangler deploy --secrets-file` operation) → authenticated health checks
-# → rollback on post-deploy failure. D1 migrations always run BEFORE the new
-# Worker is deployed: a migration failure aborts the deploy instead of leaving
-# new code running against an old schema.
-#
-# Configuration is read from INDIVIDUAL GitHub Variables (node config shards,
-# models, policies, runtime tunables) and Secrets (credentials). Node config
-# shards carry provider/base_url/models/priority — NOT secrets. Credential
-# shards carry api_key/token — NOT node structure.
-#
-# Node config shards are GitHub Variables (no credential material).
-# Credential shards are GitHub Secrets (api_key / token / credential).
+# Production deployment is driven by successful CI on main. D1 migrations run
+# before Worker deploy so new code never starts against an older schema.
 # GitHub Actions cannot enumerate Secret values dynamically, so tier-scoped
-# credential shards are injected through a fixed range:
-#
-#   TIER1_NODES_CONFIG_01..10   (node config — Variables, no credential material)
-#   TIER2_NODES_CONFIG_01..10
-#   TIER3_NODES_CONFIG_01..10
-#   TIER1_NODES_SECRETS_01..10  (credential shards — Secrets)
-#   TIER2_NODES_SECRETS_01..10
-#   TIER3_NODES_SECRETS_01..10
-#
-# Unset entries arrive as empty strings and are skipped. Config and credential
-# suffixes are independent shards; only the Tier prefix must match at runtime.
-#
-# Main repository: Deploy always runs (a missing required config FAILS here,
-# it is never skipped). Forks: opt in with DEPLOY_ENABLED=true.
+# credential shards are explicitly injected through the fixed 01..10 range.
+# Config and credential suffixes are independent; runtime binding is Tier + node id.
 
 on:
   workflow_run:
@@ -58,16 +21,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Gate — decides whether a deploy may happen at all. The decision logic
-  # lives in scripts/deploy-gate-decision.mjs (unit-tested by
-  # deployment-workflow-contract-test.mjs):
-  #   * manual workflow_dispatch            -> deploy (full validation is
-  #     mandatory in the manual-validate job — never a silent bypass)
-  #   * workflow_run from a fork head repo  -> never deploy
-  #   * CI run not triggered by a push (nightly / manual CI) -> never deploy
-  #   * CI workflow conclusion != success   -> never deploy (Production Gate)
-  #   * triggering commit touched ONLY
-  #     **.md / docs/** (old paths-ignore) -> skip deploy
+  # The gate validates the workflow_run source/conclusion before any deploy is
+  # allowed, preventing fork heads and non-push CI runs from reaching production.
   gate:
     if: github.repository == 'fongap/ai-gateway' || vars.DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
@@ -93,13 +48,8 @@ jobs:
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: node scripts/deploy-gate-decision.mjs
 
-  # Manual path — full validation INSIDE the deploy workflow. A manual
-  # workflow_dispatch must never silently bypass the Production Gate
-  # ("Worker Deploy never executes before full validation succeeds").
-  # This job runs the complete CI-equivalent suite; the deploy job
-  # below starts only after it succeeds. The automatic main-push path
-  # skips this job and reuses the already-completed CI run
-  # (validation once per push).
+  # Manual deploys run the full validation suite here because they do not have
+  # a completed main-push CI run to reuse.
   manual-validate:
     needs: gate
     if: needs.gate.outputs.deploy == 'true' && github.event_name == 'workflow_dispatch'
@@ -135,20 +85,16 @@ jobs:
 
   deploy:
     needs: [gate, manual-validate]
-    # `always()` is REQUIRED here: when a needed job is skipped (the
-    # automatic path skips manual-validate), GitHub skips dependent jobs
-    # unless the if expression carries a status-check function that lifts
-    # the skip. Safety comes from the explicit guards, not from the
-    # default: gate must have decided deploy=true, and on the manual path
-    # manual-validate must have SUCCEEDED (a cancelled or failed
-    # validation is neither success nor skipped, so it still blocks).
+    # `always()` is required because automatic workflow_run deploys skip
+    # manual-validate; without a status-check function GitHub would also skip
+    # this dependent job. The explicit guards still require gate approval and,
+    # on manual dispatch, successful validation.
     if: always() && needs.gate.outputs.deploy == 'true' && (needs.manual-validate.result == 'success' || needs.manual-validate.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
       DEPLOYED_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
       GITHUB_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
-      # --- Non-sensitive GitHub Variables (fixed range; unset => empty) ---
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       TOKEN_STATS_D1_ID: ${{ vars.TOKEN_STATS_D1_ID }}
       TIER1_AFFINITY_KV_ID: ${{ vars.TIER1_AFFINITY_KV_ID }}
@@ -174,9 +120,6 @@ jobs:
       ALLOW_INSECURE_HTTP_UPSTREAM: ${{ vars.ALLOW_INSECURE_HTTP_UPSTREAM }}
       ANTHROPIC_COUNT_TOKENS_MODE: ${{ vars.ANTHROPIC_COUNT_TOKENS_MODE }}
       PROTOCOL_FALLBACKS: ${{ vars.PROTOCOL_FALLBACKS }}
-      # Node config shards: plain Worker text variables (no credential material).
-      # Provider, base_url, priority, and models are NOT secrets — they are
-      # runtime configuration that the Worker reads as plain text variables.
       TIER1_NODES_CONFIG_01: ${{ vars.TIER1_NODES_CONFIG_01 }}
       TIER1_NODES_CONFIG_02: ${{ vars.TIER1_NODES_CONFIG_02 }}
       TIER1_NODES_CONFIG_03: ${{ vars.TIER1_NODES_CONFIG_03 }}
@@ -207,7 +150,6 @@ jobs:
       TIER3_NODES_CONFIG_08: ${{ vars.TIER3_NODES_CONFIG_08 }}
       TIER3_NODES_CONFIG_09: ${{ vars.TIER3_NODES_CONFIG_09 }}
       TIER3_NODES_CONFIG_10: ${{ vars.TIER3_NODES_CONFIG_10 }}
-      # --- GitHub Secrets (fixed range; unset => empty, skipped) ---
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       GATEWAY_ACCESS_KEY_AIR: ${{ secrets.GATEWAY_ACCESS_KEY_AIR }}
       GATEWAY_ACCESS_MODELS_AIR: ${{ vars.GATEWAY_ACCESS_MODELS_AIR }}
@@ -295,8 +237,6 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: npx --yes wrangler@4.114.0 deploy --secrets-file "$RUNNER_TEMP/gateway-secrets.json" -c "$RUNNER_TEMP/wrangler.github.json"
-
-
 
       - name: Verify deployed gateway
         id: health-check

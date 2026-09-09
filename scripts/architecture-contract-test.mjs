@@ -57,13 +57,23 @@ function resetMock() {
 }
 
 function makeEnv({ tier1, tier2, tier3, secrets, extraEnv } = {}) {
+  const tierSecrets = (nodes = []) => Object.fromEntries(
+    nodes
+      .map((node) => [node.id, secrets?.[node.id]])
+      .filter(([, credential]) => credential !== undefined),
+  );
+  const tier1Secrets = tierSecrets(tier1);
+  const tier2Secrets = tierSecrets(tier2);
+  const tier3Secrets = tierSecrets(tier3);
   return {
     GATEWAY_ACCESS_KEY: ACCESS_KEY,
     TIER1_SCHEDULER_SEED: 'arch-contract-test',
     ...(tier1 ? { TIER1_NODES_CONFIG_01: JSON.stringify(tier1) } : {}),
     ...(tier2 ? { TIER2_NODES_CONFIG_01: JSON.stringify(tier2) } : {}),
     ...(tier3 ? { TIER3_NODES_CONFIG_01: JSON.stringify(tier3) } : {}),
-    ...(secrets ? { TIER1_NODES_SECRETS_01: JSON.stringify(secrets) } : {}),
+    ...(Object.keys(tier1Secrets).length ? { TIER1_NODES_SECRETS_01: JSON.stringify(tier1Secrets) } : {}),
+    ...(Object.keys(tier2Secrets).length ? { TIER2_NODES_SECRETS_01: JSON.stringify(tier2Secrets) } : {}),
+    ...(Object.keys(tier3Secrets).length ? { TIER3_NODES_SECRETS_01: JSON.stringify(tier3Secrets) } : {}),
     ...extraEnv,
   };
 }
@@ -168,9 +178,9 @@ await test('Contract 03: Default ON — Anthropic request with only OpenAI nodes
 });
 
 // =========================================================================
-// Contract 03b — PROTOCOL_FALLBACKS=disable restores legacy Native-Only
+// Contract 03b — PROTOCOL_FALLBACKS=disable
 // =========================================================================
-await test('Contract 03b: PROTOCOL_FALLBACKS=disable -> 404 (legacy Native-Only)', async () => {
+await test('Contract 03b: PROTOCOL_FALLBACKS=disable -> 404', async () => {
   resetMock();
   routeHandlers['o1.example.com'] = () => jsonUpstream(okCompletion());
   const env = makeEnv({
@@ -428,56 +438,28 @@ await test('Contract 14: D1 failure does not block routing', async () => {
 
 // Contract 15 — Unified Scheduler Return Type
 // =========================================================================
-// pickCandidate (Tier 2/3) and pickTier1Candidate (Tier 1) both return PickedCandidate | null. The Tier 2/3 path previously returned
-// RuntimeNode | null, so a slot-race loss was indistinguishable from "no
-// eligible candidate" — the tier loop would move to the next tier instead
-// of retrying. Now both pickers return { node } | { raceLost: true } | null.
-// This contract pins the unified contract: race-loss on Tier 2/3 is visible
-// to the caller, and the return type is PickedCandidate (not RuntimeNode).
+// Both picker paths expose PickedCandidate | null. The result is either
+// { node }, { raceLost: true }, or null, so slot races remain distinct from
+// the absence of an eligible candidate.
 await test('Contract 15: Tier 2/3 race-loss returns { raceLost: true }, not null (unified return)', async () => {
   resetMock();
-  // Two nodes with concurrency=1 each. We'll saturate one node's slot
-  // between eligibility check and acquireSlot by having a concurrent
-  // in-flight request, then verify the second pickCandidate call on the
-  // SAME tier returns { raceLost: true } instead of null.
-  //
-  // Setup: two Tier 2 nodes serving the same model. Both are eligible.
-  // We manually acquire the slot of the first one, then call pickCandidate
-  // again — it should pick the second node (not race-loss).
-  //
-  // For race-loss: we need the only eligible node's slot to be already
-  // taken. With one node at concurrency=1 and the slot already acquired,
-  // pickCandidate should return null (no eligible candidate because
-  // concurrency is full), not { raceLost: true }. Race-loss is specifically
-  // the case where a node was selected as best but acquireSlot failed
-  // because another request took the last slot between the eligibility
-  // check and the claim. This is hard to reproduce deterministically in a
-  // unit test without mocking acquireSlot. Instead we verify the TYPE
-  // contract: pickCandidate returns an object with either `node` or
-  // `raceLost`, never a bare RuntimeNode.
   const { pickCandidate } = await import('../src/scheduler/scheduler.ts');
-  const { __resetAllStateForTests: reset, acquireSlot } = await import('../src/reliability/node-state.ts');
+  const { __resetAllStateForTests: reset } = await import('../src/reliability/node-state.ts');
   reset();
   const nodes = [
     { id: 't2a', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], models: { 'Code-Max': 'up' }, priority: 10, limits: { concurrency: 1, rpm: 0, rpmMode: 'hard' } },
     { id: 't2b', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], models: { 'Code-Max': 'up' }, priority: 10, limits: { concurrency: 1, rpm: 0, rpmMode: 'hard' } },
   ];
   const req = { model: 'Code-Max', protocol: 'openai', surface: 'chat_completions' };
-  // First pick: should succeed and return { node }
   const r1 = pickCandidate(nodes, req, new Set());
   assert.ok(r1, 'first pick should succeed');
   assert.ok(r1.node, 'first pick should return { node: RuntimeNode }');
   assert.ok(!r1.raceLost, 'first pick should not have raceLost');
   assert.ok(!r1.releaseToken, 'Tier 2/3 pick should not have a releaseToken (Tier 1 only)');
-  // Second pick (first node is in `attempted`): should still succeed with the other node
   const r2 = pickCandidate(nodes, req, new Set([r1.node.id]));
   assert.ok(r2 && r2.node, 'second pick should succeed with the other node');
-  // Third pick (both nodes in `attempted`): should return null (no eligible)
   const r3 = pickCandidate(nodes, req, new Set([r1.node.id, r2.node.id]));
   assert.equal(r3, null, 'third pick with all attempted should return null');
-  // Verify the returned shape matches PickedCandidate, not RuntimeNode:
-  // PickedCandidate has optional `raceLost`, `releaseToken`, etc. A bare
-  // RuntimeNode would NOT have these fields.
   assert.ok('raceLost' in r1 || r1.raceLost === undefined, 'PickedCandidate has raceLost field (undefined when not race-lost)');
   assert.ok('releaseToken' in r1 || r1.releaseToken === undefined, 'PickedCandidate has releaseToken field (undefined for Tier 2/3)');
   reset();
@@ -485,20 +467,9 @@ await test('Contract 15: Tier 2/3 race-loss returns { raceLost: true }, not null
 
 // Contract 16 — Adaptive Budget
 // =========================================================================
-// when `policy.budgetSplit === 'weighted'`, the per-tier
-// attempt surplus is distributed proportionally to each tier's live
-// dispatchable node count. A tier with more live nodes gets more attempts.
-// When `budgetSplit === 'even'` (default) or unset, behavior is unchanged:
-// the first dispatchable tier receives the entire surplus.
-//
-// This contract pins both halves of the contract:
-//   1. The default "even" behavior is preserved (no regression).
-//   2. The opt-in "weighted" behavior distributes the surplus by weight.
-//
-// Tier 1 requires isTier1Eligible setup (account registration, etc.) —
-// we exercise the weighted split on Tier 2/3 only, which share the
-// non-Tier-1 picker. Tier 1's TIER1_MAX_ATTEMPTS cap is independently
-// covered by S12 in stress-test.mjs.
+// `weighted` distributes non-explicit budget by live dispatchable node count.
+// `even` keeps the default Tier precedence and gives the first dispatchable
+// tier the computed surplus. Explicit tier_attempts stays fixed in either mode.
 await test('Contract 16: weighted budget split distributes surplus by live node count', async () => {
   resetMock();
   const { computeTierCaps } = await import('../src/request/tier-loop.ts');
@@ -519,32 +490,20 @@ await test('Contract 16: weighted budget split distributes surplus by live node 
     ],
   };
   const req = { model: 'Code-Max', protocol: 'openai', surface: 'chat_completions' };
-  // Default (even): first dispatchable tier (Tier 2) gets the entire surplus.
-  // max_attempts=6, dispatchable=2 (Tier 2 + Tier 3), so surplus=4.
-  // Even split: Tier 2=5, Tier 3=1.
   const evenPolicy = { maxAttempts: 6, tierAttempts: null, hedge: null, firstEventTimeoutMs: null, budgetSplit: null };
   const evenCaps = computeTierCaps(tiers, req, new Set(), evenPolicy, new Set());
   assert.equal(evenCaps[1], 0, 'Tier 1 has no nodes, gets 0');
   assert.equal(evenCaps[2], 5, 'default "even" budget: Tier 2 gets the entire surplus (1 baseline + 4 surplus)');
   assert.equal(evenCaps[3], 1, 'default "even" budget: Tier 3 gets only its baseline 1 attempt');
-  // Weighted: Tier 2 has 1 node (weight 1/5), Tier 3 has 4 nodes (weight 4/5).
-  // max_attempts=6, dispatchable=2, baseline 1 each, surplus=4.
-  // Tier 2: 1 + floor(4 * 1/5) = 1 + 0 = 1
-  // Tier 3: 1 + floor(4 * 4/5) = 1 + 3 = 4
-  // Last tier absorbs the rounding remainder (1) so total = max_attempts = 6.
   const weightedPolicy = { maxAttempts: 6, tierAttempts: null, hedge: null, firstEventTimeoutMs: null, budgetSplit: 'weighted' };
   const weightedCaps = computeTierCaps(tiers, req, new Set(), weightedPolicy, new Set());
   assert.equal(weightedCaps[2] + weightedCaps[3], 6, 'weighted split must distribute exactly max_attempts across dispatchable tiers');
   assert.ok(weightedCaps[3] > weightedCaps[2], 'weighted split gives the larger tier (more nodes) more attempts');
   assert.ok(weightedCaps[2] >= 1, 'every dispatchable tier gets at least 1 attempt (baseline share)');
-  // Explicit tier_attempts still wins over weighted split (override contract).
   const overridePolicy = { maxAttempts: 6, tierAttempts: { tier2: 3 }, hedge: null, firstEventTimeoutMs: null, budgetSplit: 'weighted' };
   const overrideCaps = computeTierCaps(tiers, req, new Set(), overridePolicy, new Set());
   assert.equal(overrideCaps[2], 3, 'tier_attempts override wins over weighted split');
-  // tier2=3 is override, tier3 absorbs the rest: 6-3=3.
-  assert.equal(overrideCaps[3], 3, 'non-overridden tier absorbs the remaining budget');
-  // Single dispatchable tier: weighted and even must both give that tier
-  // the full max_attempts (no surplus, no share to distribute).
+  assert.equal(overrideCaps[3], 3, 'non-overridden tier receives the remaining budget');
   const singleTierTiers = { 1: [], 2: tiers[2], 3: [] };
   const singleEvenCaps = computeTierCaps(singleTierTiers, req, new Set(), evenPolicy, new Set());
   const singleWeightedCaps = computeTierCaps(singleTierTiers, req, new Set(), weightedPolicy, new Set());
