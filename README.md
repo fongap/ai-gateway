@@ -73,8 +73,8 @@ powershell scripts/install.ps1
 | --- | --- |
 | `TIER*_NODES_CONFIG_*` | 节点配置 |
 | `TIER*_NODES_SECRETS_*` | 节点凭据 |
-| `GATEWAY_ACCESS_KEY_{AIR,PRO,MAX,ULTRA,AGENT}` | 五组网关访问 Key；新部署至少配置一组 |
-| `GATEWAY_ACCESS_MODELS_{AIR,PRO,MAX,ULTRA,AGENT}` | 对应 Group 的模型 allowlist |
+| `GATEWAY_ACCESS_KEY_AIR` / `PRO` / `MAX` / `ULTRA` / `AGENT` | 五组网关访问 Key；新部署至少配置一组 |
+| `GATEWAY_ACCESS_MODELS_AIR` / `PRO` / `MAX` / `ULTRA` / `AGENT` | 对应 Group 的模型 allowlist |
 | `MODELS_CONFIG` | 模型配置 |
 | `POLICIES_CONFIG` | 调度策略 |
 
