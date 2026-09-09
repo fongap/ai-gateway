@@ -41,21 +41,12 @@ export async function handleRequest(request: Request, env: Record<string, unknow
     logger.info('request authorized', { key_group: pre.authResult.group, request_id: pre.requestId });
   }
 
-  // Preflight validated auth, body, model authz, config readiness, and the
-  // (model, protocol, surface) candidate existence check. Unpack the
-  // carried request context; aliasing is just to keep the inner naming
-  // identical to the pre-refactor handler.
   const {
-    request: req, env: envFromPre, ctx: ctxFromPre,
     requestId, requestStartMs,
     route, requestedModel, clientWantsStream, fakeStream, bodyJson,
-    limits, exposeUpstreamInfo, authResult, requestDescriptor: reqDescriptor,
+    limits, exposeUpstreamInfo, requestDescriptor: reqDescriptor,
     config, tiers, policy, failoverBudgetMs, knownModels, feasibility,
   } = pre;
-  void authResult;
-  // The request / env / ctx carried by preflight are the same as our
-  // parameters; keep the inner code referring to the originals.
-  void req; void envFromPre; void ctxFromPre;
 
   // Three SEPARATE counters, never one overloaded total:
   //   logicalAttempts — max_attempts budget; a primary + its optional hedge
