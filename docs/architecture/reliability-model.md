@@ -129,20 +129,20 @@ Concurrency slots 在 `acquireSlot` 中声明（与 eligibility checks 原子操
 
 `POLICIES_CONFIG` 中的 `budget_split` 控制没有显式 `tier_attempts` 的可调度 Tier 如何获得 attempt budget：
 
-- **`'even'`（默认）**：保持 Tier 优先级；第一个 dispatchable Tier 获得当前默认规则计算出的 surplus。
-- **`'weighted'`**：先锁定显式 `tier_attempts`，再将剩余预算按未显式配置且 dispatchable 的 Tier 的 live 节点数比例分配。
+- **`'even'`（默认）**：保持 Tier 优先级。没有显式 cap 时沿用默认 surplus 分配；存在显式 cap 时，只在未显式且 dispatchable 的 Tier 中分配 `remaining`，surplus 给第一个可调 Tier。
+- **`'weighted'`**：先锁定显式 `tier_attempts`，再将 `remaining` 按未显式配置且 dispatchable 的 Tier 的 live 节点数比例分配。
 - **未设置 (`null`)**：等同于 `'even'`。
 
 显式 `tier_attempts` 是固定 cap，不会被 `even`、`weighted`、rounding 或 remainder 修改。显式值总和超过 `max_attempts` 时配置直接 `invalid`。Tier 1 不存在独立 attempt 上限；Tier 1、Tier 2、Tier 3 都由 `max_attempts`、`tier_attempts`、实时可调度性和整请求 failover budget 共同约束。
 
-**weighted 算法** (`computeTierCaps` in `src/request/tier-loop.ts`):
+**预算算法** (`computeTierCaps` in `src/request/tier-loop.ts`):
 1. 计算当前 `dispatchable` Tier。
 2. 锁定所有显式 `tier_attempts`，计算 `explicitTotal`。
 3. 配置解析保证 `explicitTotal <= max_attempts`。
 4. 计算 `remaining = max_attempts - explicitTotal`。
 5. `remaining` 只分配给未显式设置且当前 dispatchable 的 Tier。
-6. 可调 Tier 在预算允许时先获得 1 次 baseline，再按 `liveCount(tier) / totalLive` 分配 surplus。
-7. `Math.floor` 产生的 remainder 只能补给未显式配置的 Tier；显式 cap 不参与补差。
+6. `even` 保持 Tier 优先级；`weighted` 按 `liveCount(tier) / totalLive` 分配可调预算。
+7. weighted 的 `Math.floor` remainder 只能补给未显式配置的 Tier；显式 cap 不参与补差。
 8. `max_attempts` 始终是整请求 logical attempt 的总硬上限。
 
 **示例**:
@@ -152,6 +152,7 @@ max_attempts=6, Tier 1 不可达, Tier 2 有 1 节点, Tier 3 有 4 节点:
   "weighted": Tier 2=1, Tier 3=5
 
 max_attempts=6, tier_attempts.tier2=3, Tier 3 未显式配置且可调度:
+  "even":     Tier 2=3, Tier 3=3
   "weighted": Tier 2=3, Tier 3=3
 ```
 
