@@ -24,8 +24,8 @@ function snippetPane({ id, active, code }: { id: string, active: boolean, code: 
 
 export function quickStartSection(apiBase: string): string {
   const origin = new URL(apiBase).origin;
-  const openai = `OPENAI_BASE_URL=${apiBase}\nOPENAI_API_KEY=$GATEWAY_ACCESS_KEY`;
-  const anthropic = `ANTHROPIC_BASE_URL=${origin}\nANTHROPIC_AUTH_TOKEN=$GATEWAY_ACCESS_KEY`;
+  const openai = `OPENAI_BASE_URL=${apiBase}\nOPENAI_API_KEY=$GATEWAY_ACCESS_KEY_AIR`;
+  const anthropic = `ANTHROPIC_BASE_URL=${origin}\nANTHROPIC_AUTH_TOKEN=$GATEWAY_ACCESS_KEY_AIR`;
   const tabs = [
     { id: 'openai', label: 'OpenAI 协议' },
     { id: 'anthropic', label: 'Anthropic 协议' },

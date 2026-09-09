@@ -49,6 +49,8 @@ for (const file of ['scripts/reconfigure.sh', 'scripts/reconfigure.ps1']) {
 
 // Access entry points must use the same five Group Keys + Models as runtime.
 const accessGroups = ['AIR', 'PRO', 'MAX', 'ULTRA', 'AGENT'];
+const standaloneAccessKeyName = 'GATEWAY_ACCESS_' + 'KEY';
+const standaloneAccessKeyPattern = new RegExp(`${standaloneAccessKeyName}(?!_)`);
 for (const file of ['scripts/install.sh', 'scripts/install.ps1', 'scripts/reconfigure.sh', 'scripts/reconfigure.ps1']) {
   const source = read(file);
   for (const group of accessGroups) {
@@ -56,7 +58,7 @@ for (const file of ['scripts/install.sh', 'scripts/install.ps1', 'scripts/reconf
   }
   assert.match(source, /GATEWAY_ACCESS_KEY_/, `${file} must configure Group Keys`);
   assert.match(source, /GATEWAY_ACCESS_MODELS_/, `${file} must configure Group Models`);
-  assert.doesNotMatch(source, /GATEWAY_ACCESS_KEY(?!_)/, `${file} must not create or rotate the legacy single access key`);
+  assert.doesNotMatch(source, standaloneAccessKeyPattern, `${file} must not create or rotate the legacy single access key`);
 }
 for (const file of ['scripts/install.sh', 'scripts/install.ps1']) {
   const source = read(file);
@@ -137,7 +139,7 @@ JSON.parse(fs.readFileSync(path.join(configDir, 'policies.example.json'), 'utf8'
 const accessExample = JSON.parse(fs.readFileSync(path.join(configDir, 'access-keys.example.json'), 'utf8'));
 assert.ok(Object.keys(accessExample).some((name) => /^GATEWAY_ACCESS_KEY_(AIR|PRO|MAX|ULTRA|AGENT)$/.test(name)), 'access-key example must contain a current Group Key');
 assert.ok(Object.keys(accessExample).some((name) => /^GATEWAY_ACCESS_MODELS_(AIR|PRO|MAX|ULTRA|AGENT)$/.test(name)), 'access-key example must contain Group Models');
-assert.ok(!('GATEWAY_ACCESS_KEY' in accessExample), 'access-key example must not recommend the legacy single key');
+assert.ok(!(standaloneAccessKeyName in accessExample), 'access-key example must not recommend the legacy single key');
 
 const gatewaySecretsExample = JSON.parse(fs.readFileSync(path.join(configDir, 'gateway-secrets.example.json'), 'utf8'));
 const workerVarsExample = JSON.parse(fs.readFileSync(path.join(configDir, 'worker-vars.example.json'), 'utf8'));
@@ -164,6 +166,12 @@ const legacyPattern = /(token@|free-pool|paid-tier|"plus"|TIER\d_NODES_CONFIG as
 for (const file of srcFiles) {
   const source = fs.readFileSync(file, 'utf8');
   assert.doesNotMatch(source, legacyPattern, `${file} contains legacy architecture references`);
+  assert.doesNotMatch(source, standaloneAccessKeyPattern, `${file} contains the removed standalone gateway access-key variable`);
 }
+assert.doesNotMatch(
+  read('scripts/integration-test.mjs'),
+  standaloneAccessKeyPattern,
+  'scripts/integration-test.mjs must not use the removed standalone gateway access-key fixture',
+);
 
 console.log('Deployment configuration check passed.');

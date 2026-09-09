@@ -75,7 +75,8 @@ function makeEnv({ tier1, tier2, tier3, secrets, extraEnv } = {}) {
   const tier2Secrets = tierSecrets(tier2);
   const tier3Secrets = tierSecrets(tier3);
   return {
-    GATEWAY_ACCESS_KEY: ACCESS_KEY,
+    GATEWAY_ACCESS_KEY_AIR: ACCESS_KEY,
+    GATEWAY_ACCESS_MODELS_AIR: '*',
     TIER1_SCHEDULER_SEED: 'integration-test',
     ...(tier1 ? { TIER1_NODES_CONFIG_01: JSON.stringify(tier1) } : {}),
     ...(tier2 ? { TIER2_NODES_CONFIG_01: JSON.stringify(tier2) } : {}),
@@ -1152,7 +1153,8 @@ await test('client abort mid-stream counts started but neither completed nor int
 await test('public home is served but never leaks internal diagnostics when degraded', async () => {
   resetMock();
   const env = {
-    GATEWAY_ACCESS_KEY: ACCESS_KEY,
+    GATEWAY_ACCESS_KEY_AIR: ACCESS_KEY,
+    GATEWAY_ACCESS_MODELS_AIR: '*',
     TIER1_NODES_CONFIG_01: JSON.stringify([
       basicNode('good-1'),
       basicNode('good-2'),
@@ -1310,7 +1312,7 @@ await test('upstream receives only the allowlisted Authorization header', async 
 
 await test('unconfigured gateway reports invalid/unconfigured states', async () => {
   resetMock();
-  const res = await worker.fetch(chatRequest({ model: 'm', messages: [] }), { GATEWAY_ACCESS_KEY: ACCESS_KEY }, {});
+  const res = await worker.fetch(chatRequest({ model: 'm', messages: [] }), { GATEWAY_ACCESS_KEY_AIR: ACCESS_KEY, GATEWAY_ACCESS_MODELS_AIR: '*' }, {});
   assert.equal(res.status, 404);
   const body = await res.json();
   assert.match(body.error.message, /Model not found/);
@@ -1320,7 +1322,8 @@ await test('unconfigured gateway reports invalid/unconfigured states', async () 
 await test('public home renders when secrets are missing and leaks no internals', async () => {
   resetMock();
   const env = {
-    GATEWAY_ACCESS_KEY: ACCESS_KEY,
+    GATEWAY_ACCESS_KEY_AIR: ACCESS_KEY,
+    GATEWAY_ACCESS_MODELS_AIR: '*',
     TIER1_NODES_CONFIG_01: JSON.stringify([basicNode('half')]),
   };
   const res = await worker.fetch(new Request('https://gateway.example.com/', { headers: { accept: 'text/html' } }), env, {});
@@ -1336,7 +1339,8 @@ await test('public home renders when secrets are missing and leaks no internals'
 await test('public home renders on malformed config without leaking diagnostics', async () => {
   resetMock();
   const env = {
-    GATEWAY_ACCESS_KEY: ACCESS_KEY,
+    GATEWAY_ACCESS_KEY_AIR: ACCESS_KEY,
+    GATEWAY_ACCESS_MODELS_AIR: '*',
     TIER1_NODES_CONFIG_01: '{not-json',
     TIER1_NODES_SECRETS_01: '{"half":"k"}',
   };
@@ -1511,7 +1515,7 @@ await test('/health returns 503 for unconfigured/invalid config, 200 for degrade
   resetMock();
   const unconfigured = await worker.fetch(new Request('https://gateway.example.com/health', {
     headers: { authorization: `Bearer ${ACCESS_KEY}` },
-  }), { GATEWAY_ACCESS_KEY: ACCESS_KEY }, {});
+  }), { GATEWAY_ACCESS_KEY_AIR: ACCESS_KEY, GATEWAY_ACCESS_MODELS_AIR: '*' }, {});
   assert.equal(unconfigured.status, 503);
   const ready = await worker.fetch(new Request('https://gateway.example.com/health', {
     headers: { authorization: `Bearer ${ACCESS_KEY}` },
