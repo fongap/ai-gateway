@@ -1,14 +1,6 @@
 {
-  "keys": [
-    {
-      "key_id": "prod",
-      "secret": "sk-prod-abcdef123456",
-      "models": ["code-pro", "general-air"]
-    },
-    {
-      "key_id": "admin",
-      "secret": "sk-admin-zzzz",
-      "models": ["*"]
-    }
-  ]
+  "GATEWAY_ACCESS_KEY_AIR": "replace-with-a-long-random-air-key",
+  "GATEWAY_ACCESS_MODELS_AIR": "general-air",
+  "GATEWAY_ACCESS_KEY_PRO": "replace-with-a-long-random-pro-key",
+  "GATEWAY_ACCESS_MODELS_PRO": "code-pro"
 }

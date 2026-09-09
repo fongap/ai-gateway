@@ -1,4 +1,4 @@
-﻿{
+{
   "TIER1_NODES_CONFIG_01": [
     {
       "id": "primary-01",
@@ -13,6 +13,7 @@
       "limits": { "concurrency": 2, "rpm": 30, "rpm_mode": "hard" }
     }
   ],
+  "GATEWAY_ACCESS_MODELS_PRO": "code-pro",
   "MODELS_CONFIG": {
     "code-pro": {
       "policy": "default",
@@ -20,7 +21,9 @@
     }
   },
   "POLICIES_CONFIG": { "default": { "max_attempts": 5 } },
-  "PROTOCOL_FALLBACKS": { "anthropic:messages": ["openai:chat_completions"] },
+  "PROTOCOL_FALLBACKS": {
+    "anthropic:messages": ["openai:chat_completions"],
+    "openai:chat_completions": ["anthropic:messages"]
+  },
   "PROJECT_REPOSITORY_URL": "https://github.com/your-org/ai-gateway"
 }
-

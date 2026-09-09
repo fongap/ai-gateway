@@ -2,7 +2,7 @@
 
 ## 调度器概述
 
-调度器 (`src/scheduler/scheduler.ts`) 实现 protocol + surface + model 三重过滤（`supportsRequest`）。协议、surface、model 和 tier 始终是硬性门控。OpenAI 请求永远不会到达 Anthropic 节点，Tier 2/3 永远不会进入 Tier 1 调度器。
+调度器 (`src/scheduler/scheduler.ts`) 实现 protocol + surface + model 三重过滤（`supportsRequest`）。对每一次实际调度，protocol、surface、model 和 tier 始终是硬性门控；原生请求只进入同 protocol/surface 的节点池。OpenAI Chat Completions ↔ Anthropic Messages 的跨协议 fallback 会先转换为目标协议请求，再进入目标协议节点池；OpenAI Responses 保持 Native Only。Tier 2/3 永远不会进入 Tier 1 调度器。
 
 ## Model Registry
 
@@ -10,7 +10,7 @@ Model Registry (`src/config/registry.ts`) 是逻辑模型的策略和能力（`c
 
 ## Node 与 Tier
 
-节点配置通过 `src/config/nodes.ts` 合并 `TIER{1,2,3}_NODES_CONFIG_01..10` Worker 文本变量与 `TIER{1,2,3}_NODES_SECRETS_01..10` Worker Secrets 生成 Runtime Node（tier-scoped secret 与 config shard 1:1 配对）：
+节点配置通过 `src/config/nodes.ts` 合并 `TIER{1,2,3}_NODES_CONFIG_01..10` Worker 文本变量与 `TIER{1,2,3}_NODES_SECRETS_01..10` Worker Secrets 生成 Runtime Node。Credential 按 **Tier + node id** 绑定；`01..10` 只是各自的分片编号，Config shard 与 Secret shard suffix 无需对应：
 
 - Tier 仅从变量前缀派生；节点 JSON 不能声明它
 - Credential lookup 在此且仅在此发生；下游模块只看到 `runtimeNode.credential`
@@ -55,7 +55,7 @@ Tier 2 和 Tier 3 继续使用旧版动态候选选择器和 `node-state.ts`：p
 
 ## Eligible Candidate
 
-候选节点需满足：支持请求的 protocol + surface + model，不在 cooldown 中，有可用 concurrency 和 RPM 容量，circuit 未 OPEN。
+候选节点需满足：支持当前实际调度请求的 protocol + surface + model，不在 cooldown 中，有可用 concurrency 和 RPM 容量，circuit 未 OPEN。
 
 ## Node Rotation
 
@@ -69,7 +69,7 @@ Tier 间 fallback 严格按优先级顺序。Budget 分配在当前可调度的 
 
 每个请求有 per-tier attempt budget。默认 `max_attempts` 拆分为：每个实际持有 schedulable candidate 的 tier 至少获得一次 attempt，剩余分配给最高 tier。`POLICIES_CONFIG` 的 `tier_attempts`（`{"tier1": N, "tier2": N, "tier3": N}`，`0` 禁用 tier）可覆盖。
 
-Tier 1 额外硬限制为最多 3 个 logical attempt，且在重试前检查共享 wall-clock deadline。
+Tier 1 没有独立 attempt 上限；Tier 1、Tier 2、Tier 3 都由 `max_attempts`、`tier_attempts`、实时可调度性和共享 wall-clock failover budget 共同约束。
 
 ### Adaptive Budget
 

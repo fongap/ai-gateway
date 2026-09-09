@@ -4,6 +4,8 @@
 
 将多个 AI API、Key 和模型聚合为一个统一端点，自动处理限流、故障切换和协议兼容。
 
+当前版本：**1.3.0**
+
 ![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)
 ![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22-43853d?logo=node.js&logoColor=white)
 ![MIT](https://img.shields.io/badge/license-MIT-2ea44f)
@@ -71,11 +73,14 @@ powershell scripts/install.ps1
 | --- | --- |
 | `TIER*_NODES_CONFIG_*` | 节点配置 |
 | `TIER*_NODES_SECRETS_*` | 节点凭据 |
-| `GATEWAY_ACCESS_KEY_*` | 网关访问 Key |
+| `GATEWAY_ACCESS_KEY_{AIR,PRO,MAX,ULTRA,AGENT}` | 五组网关访问 Key；新部署至少配置一组 |
+| `GATEWAY_ACCESS_MODELS_{AIR,PRO,MAX,ULTRA,AGENT}` | 对应 Group 的模型 allowlist |
 | `MODELS_CONFIG` | 模型配置 |
 | `POLICIES_CONFIG` | 调度策略 |
 
-Secret 必须与节点属于同一 Tier，并通过 node id 绑定；01..10 仅为分片编号。
+每个 Access Group 独立。配置某组 Key 时应同时明确配置该组 Models；Models 缺失或为空时该 Key 不获得任何模型权限。旧的 `GATEWAY_ACCESS_KEY` 仅保留兼容路径：只有完全未配置上述五组 Key 时才会生效，不作为新部署方案。
+
+Secret 必须与节点属于同一 Tier，并通过 node id 绑定；`01..10` 仅为分片编号，Config shard 与 Secret shard 的 suffix 不要求一致。
 
 ## API
 

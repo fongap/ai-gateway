@@ -1,5 +1,5 @@
 #!/bin/sh
-# ai-gateway first-time install & deploy (new configuration schema).
+# ai-gateway first-time install & deploy (current configuration schema).
 set -e
 cd "$(dirname "$0")/.."
 
@@ -55,38 +55,78 @@ node scripts/plan-node-configuration.mjs $PLAN_ARGS
 
 echo "==> Sharding config into variables + secrets"
 TMP_PLAN="$(mktemp)"
+TMP_ACCESS="$(mktemp)"
+TMP_BULK="$(mktemp)"
+trap 'rm -f "$TMP_PLAN" "$TMP_ACCESS" "$TMP_BULK"' EXIT INT TERM
 SHARD_ARGS="plan --secrets $SECRETS_FILE --out $TMP_PLAN"
 [ -n "${TIER1:-}" ] && SHARD_ARGS="$SHARD_ARGS --tier1 $TIER1"
 [ -n "${TIER2:-}" ] && SHARD_ARGS="$SHARD_ARGS --tier2 $TIER2"
 [ -n "${TIER3:-}" ] && SHARD_ARGS="$SHARD_ARGS --tier3 $TIER3"
 # shellcheck disable=SC2086
 node scripts/plan-node-configuration.mjs $SHARD_ARGS
+printf '{}\n' > "$TMP_ACCESS"
+
+echo "==> Gateway Access Groups"
+echo "Configure at least one of AIR / PRO / MAX / ULTRA / AGENT. Empty Key skips that Group."
+ACCESS_GROUP_COUNT=0
+VERIFY_KEY=""
+for GROUP in AIR PRO MAX ULTRA AGENT; do
+  printf "GATEWAY_ACCESS_KEY_%s (empty to skip): " "$GROUP"
+  stty -echo 2>/dev/null || true
+  read -r GROUP_KEY
+  stty echo 2>/dev/null || true
+  echo ""
+  [ -n "$GROUP_KEY" ] || continue
+
+  printf "GATEWAY_ACCESS_MODELS_%s (CSV, required): " "$GROUP"
+  read -r GROUP_MODELS
+  if [ -z "$(printf '%s' "$GROUP_MODELS" | tr -d '[:space:]')" ]; then
+    echo "GATEWAY_ACCESS_MODELS_$GROUP is required when GATEWAY_ACCESS_KEY_$GROUP is set." >&2
+    exit 1
+  fi
+
+  GROUP_NAME="$GROUP" GROUP_KEY_VALUE="$GROUP_KEY" GROUP_MODELS_VALUE="$GROUP_MODELS" node -e '
+const fs = require("fs");
+const file = process.argv[1];
+const value = JSON.parse(fs.readFileSync(file, "utf8"));
+const group = process.env.GROUP_NAME;
+value[`GATEWAY_ACCESS_KEY_${group}`] = process.env.GROUP_KEY_VALUE;
+value[`GATEWAY_ACCESS_MODELS_${group}`] = process.env.GROUP_MODELS_VALUE;
+fs.writeFileSync(file, JSON.stringify(value));
+' "$TMP_ACCESS"
+
+  ACCESS_GROUP_COUNT=$((ACCESS_GROUP_COUNT + 1))
+  [ -n "$VERIFY_KEY" ] || VERIFY_KEY="$GROUP_KEY"
+done
+
+if [ "$ACCESS_GROUP_COUNT" -eq 0 ]; then
+  echo "At least one Gateway Access Group Key must be configured (AIR, PRO, MAX, ULTRA, or AGENT)." >&2
+  exit 1
+fi
 
 AFFINITY_KV_ID="$AFFINITY_KV_ID" node -e '
 const fs = require("fs");
 const base = JSON.parse(fs.readFileSync("wrangler.jsonc", "utf8"));
 const plan = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-base.vars = plan.vars;
+const access = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+base.vars = { ...plan.vars };
+for (const [name, value] of Object.entries(access)) {
+  if (name.startsWith("GATEWAY_ACCESS_MODELS_")) base.vars[name] = value;
+}
 base.kv_namespaces = [{ binding: "TIER1_AFFINITY", id: process.env.AFFINITY_KV_ID }];
 fs.writeFileSync("wrangler.user.jsonc", JSON.stringify(base, null, 2) + "\n");
-' "$TMP_PLAN"
+' "$TMP_PLAN" "$TMP_ACCESS"
 
-printf "GATEWAY_ACCESS_KEY: "
-stty -echo 2>/dev/null || true
-read -r ACCESS_KEY
-stty echo 2>/dev/null || true
-echo ""
-TMP_BULK="$(mktemp)"
-
-# Ensure temp secret files are cleaned up on exit, error, or interrupt
-trap 'rm -f "$TMP_PLAN" "$TMP_BULK"' EXIT INT TERM
-
-GW_KEY="$ACCESS_KEY" node -e '
+node -e '
 const fs = require("fs");
 const plan = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-const bulk = { GATEWAY_ACCESS_KEY: process.env.GW_KEY, ...plan.secrets };
-fs.writeFileSync(process.argv[2], JSON.stringify(bulk));
-' "$TMP_PLAN" "$TMP_BULK"
+const access = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const bulk = { ...plan.secrets };
+for (const [name, value] of Object.entries(access)) {
+  if (name.startsWith("GATEWAY_ACCESS_KEY_")) bulk[name] = value;
+}
+fs.writeFileSync(process.argv[3], JSON.stringify(bulk));
+' "$TMP_PLAN" "$TMP_ACCESS" "$TMP_BULK"
 
 # Single deploy with secrets file — avoids code/secret two-phase deploy
 npx --yes wrangler@4.114.0 deploy -c wrangler.user.jsonc --keep-vars --secrets-file "$TMP_BULK"
@@ -94,10 +134,9 @@ npx --yes wrangler@4.114.0 deploy -c wrangler.user.jsonc --keep-vars --secrets-f
 read -r -p "Gateway URL after deploy (empty to skip verification): " URL
 if [ -n "$URL" ]; then
   case "$URL" in https://*) ;; *) echo "gateway URL must be https://" >&2; exit 1;; esac
-  printf "GATEWAY_ACCESS_KEY again: "; stty -echo 2>/dev/null || true; read -r ACCESS; stty echo 2>/dev/null || true; echo ""
   curl -fsS "$URL/version" >/dev/null
-  curl -fsS "$URL/health" -H "Authorization: Bearer $ACCESS" >/dev/null
-  curl -fsS "$URL/v1/models" -H "Authorization: Bearer $ACCESS" >/dev/null
+  curl -fsS "$URL/health" -H "Authorization: Bearer $VERIFY_KEY" >/dev/null
+  curl -fsS "$URL/v1/models" -H "Authorization: Bearer $VERIFY_KEY" >/dev/null
   echo "Deploy and online verification passed."
 else
   echo "Deploy finished; online verification skipped."
