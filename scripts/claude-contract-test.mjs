@@ -59,7 +59,8 @@ function resetMock() {
 
 function makeEnv({ tier1, tier2, secrets, extraEnv } = {}) {
   return {
-    GATEWAY_ACCESS_KEY: ACCESS_KEY,
+    GATEWAY_ACCESS_KEY_AIR: ACCESS_KEY,
+    GATEWAY_ACCESS_MODELS_AIR: '*',
     TIER1_SCHEDULER_SEED: 'claude-contract-test',
     ...(tier1 ? { TIER1_NODES_CONFIG_01: JSON.stringify(tier1) } : {}),
     ...(tier2 ? { TIER2_NODES_CONFIG_01: JSON.stringify(tier2) } : {}),
