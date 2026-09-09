@@ -4,7 +4,7 @@
 // POLICIES_CONFIG: policy name -> { max_attempts, tier_attempts?, hedge? }. Optional.
 // `max_attempts` bounds total LOGICAL attempts per request across ALL tiers
 // (valid range 1-8). `tier_attempts` optionally overrides the per-tier
-// attempt budget (see handler.ts computeTierCaps for the default distribution).
+// attempt budget (see tier-loop.ts computeTierCaps for the distribution rules).
 // Tier order is fixed (tier-1 -> tier-2 -> tier-3, hard precedence).
 //
 // Built-in policies (always present, user config merges on top):
@@ -116,11 +116,14 @@ function analyzePolicies(env: Record<string, unknown>): { policies: Record<strin
         }
         const key = name.trim();
         const base = policies[key];
+        const tierErrorsBefore = errors.length;
         const tierAttempts = cfg.tier_attempts === undefined ? (base?.tierAttempts ?? null) : parseTierAttempts(cfg.tier_attempts, key, errors);
+        const tierAttemptsValid = errors.length === tierErrorsBefore;
         const hedge = cfg.hedge === undefined ? (base?.hedge ?? null) : parseHedge(cfg.hedge, key, errors);
         const firstEventTimeoutMs = cfg.first_event_timeout_ms === undefined ? (base?.firstEventTimeoutMs ?? null) : parseFirstEventTimeoutMs(cfg.first_event_timeout_ms, key, errors);
         const budgetSplit = cfg.budget_split === undefined ? (base?.budgetSplit ?? null) : parseBudgetSplit(cfg.budget_split, key, errors);
         let attempts: number;
+        let maxAttemptsValid = true;
         if (cfg.max_attempts !== undefined) {
           const rawMax = cfg.max_attempts;
           if (typeof rawMax !== 'number'
@@ -129,11 +132,18 @@ function analyzePolicies(env: Record<string, unknown>): { policies: Record<strin
             || rawMax > MAX_ATTEMPTS) {
             errors.push(`POLICIES_CONFIG: "${key}": max_attempts must be an integer between ${MIN_ATTEMPTS} and ${MAX_ATTEMPTS}`);
             attempts = base?.maxAttempts ?? BUILTIN_POLICIES.default.maxAttempts;
+            maxAttemptsValid = false;
           } else {
             attempts = rawMax;
           }
         } else {
           attempts = base?.maxAttempts ?? BUILTIN_POLICIES.default.maxAttempts;
+        }
+        if (tierAttempts && tierAttemptsValid && maxAttemptsValid) {
+          const tierAttemptsTotal = Object.values(tierAttempts).reduce((sum, value) => sum + (value ?? 0), 0);
+          if (tierAttemptsTotal > attempts) {
+            errors.push(`POLICIES_CONFIG: "${key}": tier_attempts total exceeds max_attempts (${tierAttemptsTotal} > ${attempts})`);
+          }
         }
         policies[key] = {
           maxAttempts: attempts,
