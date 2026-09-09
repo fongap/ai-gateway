@@ -2,7 +2,7 @@
 
 ## 概述
 
-Tier 1 使用 `tier1-state.ts`；Tier 2/3 继续使用 `node-state.ts`。两个状态系统有意分离。所有短期运行时状态均为 isolate-local best-effort，随 isolate 重启丢失。
+Tier 1 使用 `tier1-state.ts`；Tier 2/3 使用 `node-state.ts`。两个状态系统有意分离。所有短期运行时状态均为 isolate-local best-effort，随 isolate 重启丢失。
 
 ## Tier 1 可靠性
 
@@ -32,11 +32,11 @@ Streaming 在 headers 后、首个 token 后和完整流期间保持 Tier 1 in-f
 
 ## Tier 2/3 可靠性
 
-保留旧版节点本地 health、latency、active-request slots、cooldown 和 circuit 状态机。
+保留节点本地 health、latency、active-request slots、cooldown 和 circuit 状态机。
 
 ## 错误分类
 
-Error classification (`src/reliability/classify.ts`) 是**单一事实源**——所有消费方 (dispatch / success / hedge / observability / errors) 都通过 `classify*` helper 或 `KIND` 常量引用,没有任何开放字符串字面量 (错误分类契约)。
+Error classification (`src/reliability/classify.ts`) 是**单一事实源**——所有消费方 (dispatch / success / hedge / observability / errors) 都通过 `classify*` helper 或 `KIND` 常量引用，没有开放字符串字面量。
 
 **FailureKind 词汇 (v1.3.0 完整 16 个值)**:
 
@@ -61,7 +61,7 @@ Error classification (`src/reliability/classify.ts`) 是**单一事实源**—�
 
 Tier 1 (`classifyTier1Failure` in `tier1-state.ts`) 将这些 kind 映射到 (account, model) 状态机的具体动作(scope = account / model, action = disable / cooldown, backoff = rate_limit / server / timeout)。
 
-**新增 helper**:
+相关 helper：
 - `classifyPreDispatchRateLimit()` — 预派发被分布式 rate limiter 拒绝
 - `classifyPreDispatchInvalidBaseUrl()` — base_url 不可解析
 - `classifyStreamInterrupted()` — 流截断
@@ -70,8 +70,8 @@ Tier 1 (`classifyTier1Failure` in `tier1-state.ts`) 将这些 kind 映射到 (ac
 - `classifyHedgeUnknown()` — hedge catch-all
 
 **类型安全** (FailureKind 全类型闭集):
-- `AttemptOutcome.kind: FailureKind` (之前是 `string`, 编译期不守护)
-- `LoopState.failureKinds: Partial<Record<FailureKind, number>>` (之前是 `Record<string, number>`)
+- `AttemptOutcome.kind: FailureKind`
+- `LoopState.failureKinds: Partial<Record<FailureKind, number>>`
 - `terminalStatus` 使用 `KIND.*` 常量比较
 
 **契约 (C19–C22)**:
@@ -108,7 +108,7 @@ Concurrency slots 在 `acquireSlot` 中声明（与 eligibility checks 原子操
 
 ## Failure Classification
 
-终端错误分类现在使用聚合的 failure kinds。耗尽响应从 dominant kind 派生终端状态——`rate_limit` → 429，`headers_timeout`/`first_event_timeout` → 504，否则 502——而不是从最后一次 attempt 的结果。
+终端错误分类使用聚合的 failure kinds。耗尽响应从 dominant kind 派生终端状态——`rate_limit` → 429，`headers_timeout`/`first_event_timeout` → 504，否则 502。
 
 ## Neutral Outcomes
 
@@ -127,33 +127,39 @@ Concurrency slots 在 `acquireSlot` 中声明（与 eligibility checks 原子操
 
 ## Adaptive Budget
 
-`POLICIES_CONFIG` 中可选用 `budget_split` 字段控制 per-tier attempt surplus 分配:
+`POLICIES_CONFIG` 中的 `budget_split` 控制没有显式 `tier_attempts` 的可调度 Tier 如何获得 attempt budget：
 
-- **`'even'` (默认, 向后兼容)**: 第一个 dispatchable tier 获得全部 surplus。最大化免费/优先资源利用,保持现有测试与行为。
-- **`'weighted'` (opt-in)**: surplus 按每个 tier 的 live dispatchable 节点数比例分配。容量大的低 tier 获得更多 attempts。
-- **未设置 (`null`)**: 等同于 `'even'`。
+- **`'even'`（默认）**：保持 Tier 优先级；第一个 dispatchable Tier 获得当前默认规则计算出的 surplus。
+- **`'weighted'`**：先锁定显式 `tier_attempts`，再将剩余预算按未显式配置且 dispatchable 的 Tier 的 live 节点数比例分配。
+- **未设置 (`null`)**：等同于 `'even'`。
 
-**算法** (`computeTierCaps` in `src/request/tier-loop.ts`):
-1. 计算 `dispatchable = TIER_ORDER.filter(t => t has at least 1 live node)`
-2. 计算 `surplus = max(0, max_attempts - dispatchable.length)`
-3. 每个 dispatchable tier 获得 baseline 1 attempt
-4. Surplus 按 `liveCount(tier) / totalLive` 权重分配,使用 `Math.floor` 防止 over-allocation
-5. 最后一个 dispatchable tier 吸收 floor 取整 / `tier_attempts` override 导致的余项,保证总和严格等于 `max_attempts`
+显式 `tier_attempts` 是固定 cap，不会被 `even`、`weighted`、rounding 或 remainder 修改。显式值总和超过 `max_attempts` 时配置直接 `invalid`。Tier 1 不存在独立 attempt 上限；Tier 1、Tier 2、Tier 3 都由 `max_attempts`、`tier_attempts`、实时可调度性和整请求 failover budget 共同约束。
 
-**`tier_attempts` 仍然胜出**: 显式设置某 tier 的 `tier_attempts.X = N` 时,该 tier 预算为 `N`,不受 `budget_split` 影响。这让 operator 可以混合使用两种控制:用 `budget_split` 做自适应, 用 `tier_attempts` 做精确 override。
+**weighted 算法** (`computeTierCaps` in `src/request/tier-loop.ts`):
+1. 计算当前 `dispatchable` Tier。
+2. 锁定所有显式 `tier_attempts`，计算 `explicitTotal`。
+3. 配置解析保证 `explicitTotal <= max_attempts`。
+4. 计算 `remaining = max_attempts - explicitTotal`。
+5. `remaining` 只分配给未显式设置且当前 dispatchable 的 Tier。
+6. 可调 Tier 在预算允许时先获得 1 次 baseline，再按 `liveCount(tier) / totalLive` 分配 surplus。
+7. `Math.floor` 产生的 remainder 只能补给未显式配置的 Tier；显式 cap 不参与补差。
+8. `max_attempts` 始终是整请求 logical attempt 的总硬上限。
 
 **示例**:
 ```
 max_attempts=6, Tier 1 不可达, Tier 2 有 1 节点, Tier 3 有 4 节点:
-  "even":     Tier 2=5, Tier 3=1 (Tier 2 拿全部 surplus)
-  "weighted": Tier 2=1, Tier 3=5 (按权重 1/5 vs 4/5 分配 + 余项吸收)
+  "even":     Tier 2=5, Tier 3=1
+  "weighted": Tier 2=1, Tier 3=5
+
+max_attempts=6, tier_attempts.tier2=3, Tier 3 未显式配置且可调度:
+  "weighted": Tier 2=3, Tier 3=3
 ```
 
-**Contract 16**: 上述两种 split 行为在 `architecture-contract-test.mjs` 中均有端到端验证。
+`architecture-contract-test.mjs` 验证默认与 weighted 分配；`config-matrix-test.mjs` 验证显式 cap、超限配置和 Tier 1 统一预算契约。
 
 ## Unified Scheduler Return
 
-`pickCandidate` (Tier 2/3) 与 `pickTier1Candidate` (Tier 1) 返回**完全一致**的 `PickedCandidate | null`:
+`pickCandidate` (Tier 2/3) 与 `pickTier1Candidate` (Tier 1) 都返回 `PickedCandidate | null`：
 
 | 情况 | 返回值 |
 | --- | --- |
@@ -161,8 +167,4 @@ max_attempts=6, Tier 1 不可达, Tier 2 有 1 节点, Tier 3 有 4 节点:
 | Slot 被并发请求抢走 (race lost) | `{ raceLost: true }` |
 | 无合格候选 | `null` |
 
-**修复 bug**: `pickCandidate` 之前在 race-loss 时返回 `null` (与 "无合格候选" 不可区分),导致 tier loop 跳到下一 tier 而不是重试当前 tier。Tier 1 的 `pickTier1Candidate` 之前已经正确返回 `{ raceLost: true }`,现在 Tier 2/3 与之一致。
-
-**Type 共享**: `PickedCandidate` (`src/types/scheduler.ts`) 是两个 picker 的共同返回类型。`pickForTier` (Tier 调度 wrapper) 内部直接处理 `PickedCandidate`,不再做类型包装。
-
-**Contract 15**: 端到端验证 Tier 2/3 picker 返回 `PickedCandidate` (有 `raceLost` / `releaseToken` 字段), 而不是裸 `RuntimeNode`。
+`PickedCandidate` (`src/types/scheduler.ts`) 是两个 picker 的共同返回类型。`pickForTier` 直接处理这一统一结果，使 race loss 与“无合格候选”保持可区分。
