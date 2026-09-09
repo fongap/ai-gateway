@@ -1,0 +1,71 @@
+name: Cleanup Actions History
+
+on:
+  push:
+    branches:
+      - ops/cleanup-actions-history
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      CLEANUP_BRANCH: ops/cleanup-actions-history
+    steps:
+      - name: Delete obsolete workflow runs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          page=1
+          deleted=0
+          while :; do
+            json="$(gh api "repos/${REPO}/actions/runs?per_page=100&page=${page}")"
+            count="$(jq '.workflow_runs | length' <<<"$json")"
+            [ "$count" -gt 0 ] || break
+
+            mapfile -t ids < <(jq -r '
+              .workflow_runs[]
+              | select(
+                  .name == "Apply Tier1 Smooth Admission Patch"
+                  or .name == "Refine Tier1 429 Scope"
+                  or .name == "Release v1.3.0"
+                  or (.name | startswith(".github/workflows/apply-tier1-smo"))
+                  or (.path | contains("apply-tier1-smooth-admission"))
+                  or (.path | contains("refine-tier1-429-scope"))
+                  or (.path | contains("release-v1.3.0"))
+                )
+              | select(.id != env.GITHUB_RUN_ID)
+              | .id
+            ' <<<"$json")
+
+            for id in "${ids[@]:-}"; do
+              [ -n "$id" ] || continue
+              echo "Deleting workflow run $id"
+              gh api --method DELETE "repos/${REPO}/actions/runs/${id}"
+              deleted=$((deleted + 1))
+            done
+
+            page=$((page + 1))
+          done
+          echo "Deleted ${deleted} obsolete workflow run(s)."
+
+      - name: Remove temporary branch
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git init cleanup-repo
+          cd cleanup-repo
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
+          git push origin --delete "${CLEANUP_BRANCH}"
+
+      - name: Delete this cleanup run
+        if: always()
+        shell: bash
+        run: |
+          gh api --method DELETE "repos/${REPO}/actions/runs/${GITHUB_RUN_ID}" || true
