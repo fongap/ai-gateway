@@ -178,7 +178,7 @@ test('secret tier: same tier may bind across different shard suffixes', () => {
   const cfg = loadGatewayConfig({
     GATEWAY_ACCESS_KEY: 'k',
     TIER1_NODES_CONFIG_01: JSON.stringify([configNode('same-tier')]),
-    TIER1_NODES_SECRETS_09: JSON.stringify({ 'same-tier': 'secret' }),
+    TIER1_NODES_SECRETS_07: JSON.stringify({ 'same-tier': 'secret' }),
   });
   assert.equal(cfg.status, 'ready');
   assert.equal(cfg.ready, true);
@@ -262,6 +262,24 @@ test('weighted tier_attempts: unset Tier3 receives only the remaining budget', (
   const caps = computeTierCaps(tiers, reqFor('Code-Max'), new Set(), policy, new Set());
   assert.equal(caps[2], 3, 'explicit Tier2 cap remains locked');
   assert.equal(caps[3], 3, 'unset Tier3 receives the remaining 3 attempts');
+});
+
+test('Tier1 has no independent attempt cap beyond max_attempts and tier_attempts', () => {
+  const tiers = {
+    1: Array.from({ length: 5 }, (_, i) => budgetNode(`tier1-${i + 1}`, 'tier-1')),
+    2: [],
+    3: [],
+  };
+  const basePolicy = {
+    maxAttempts: 5,
+    tierAttempts: { tier1: 5 },
+    hedge: null,
+    firstEventTimeoutMs: null,
+  };
+  const evenCaps = computeTierCaps(tiers, reqFor('Code-Max'), new Set(), { ...basePolicy, budgetSplit: null }, new Set());
+  const weightedCaps = computeTierCaps(tiers, reqFor('Code-Max'), new Set(), { ...basePolicy, budgetSplit: 'weighted' }, new Set());
+  assert.equal(evenCaps[1], 5, 'default split must honor explicit Tier1=5');
+  assert.equal(weightedCaps[1], 5, 'weighted split must honor explicit Tier1=5');
 });
 
 console.log(`\nconfig-matrix tests: ${passed} passed.`);
