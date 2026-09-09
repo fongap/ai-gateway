@@ -1005,7 +1005,8 @@ function resetMock() {
 
 function makeEnv({ tier1, tier2, secrets, extraEnv } = {}) {
   return {
-    GATEWAY_ACCESS_KEY: ACCESS_KEY,
+    GATEWAY_ACCESS_KEY_AIR: ACCESS_KEY,
+    GATEWAY_ACCESS_MODELS_AIR: 'claude-x',
     TIER1_SCHEDULER_SEED: 'conversion-test',
     ...(tier1 ? { TIER1_NODES_CONFIG_01: JSON.stringify(tier1) } : {}),
     ...(tier2 ? { TIER2_NODES_CONFIG_01: JSON.stringify(tier2) } : {}),
@@ -1829,7 +1830,7 @@ await run('handler: OpenAI Responses client + only Anthropic upstream (no fallba
   const env = makeEnv({
     tier1: [anthropicResponsesNode('a1')],
     secrets: { a1: 'k' },
-    extraEnv: { EXPOSE_UPSTREAM_INFO: 'true' },
+    extraEnv: { EXPOSE_UPSTREAM_INFO: 'true', GATEWAY_ACCESS_MODELS_AIR: 'code-max' },
   });
   const res = await worker.fetch(responsesApiRequest({
     model: 'code-max', input: 'hi',
@@ -1845,7 +1846,7 @@ await run('handler: OpenAI Responses client + only Anthropic upstream (no fallba
   const env = makeEnv({
     tier1: [anthropicResponsesNode('a1')],
     secrets: { a1: 'k' },
-    extraEnv: { EXPOSE_UPSTREAM_INFO: 'true' },
+    extraEnv: { EXPOSE_UPSTREAM_INFO: 'true', GATEWAY_ACCESS_MODELS_AIR: 'code-max' },
   });
   const res = await worker.fetch(responsesApiRequest({
     model: 'code-max', input: 'hi', stream: true,
@@ -1861,6 +1862,7 @@ await run('handler: OpenAI Responses client + Anthropic 529 (no fallback) -> 404
   const env = makeEnv({
     tier1: [anthropicResponsesNode('a1')],
     secrets: { a1: 'k' },
+    extraEnv: { GATEWAY_ACCESS_MODELS_AIR: 'code-max' },
   });
   const res = await worker.fetch(responsesApiRequest({
     model: 'code-max', input: 'hi',
@@ -1878,7 +1880,7 @@ await run('handler: OpenAI Responses client + only OpenAI Responses upstream -> 
   const env = makeEnv({
     tier1: [openaiResponsesNodeOnly('r1')],
     secrets: { r1: 'k' },
-    extraEnv: { EXPOSE_UPSTREAM_INFO: 'true' },
+    extraEnv: { EXPOSE_UPSTREAM_INFO: 'true', GATEWAY_ACCESS_MODELS_AIR: 'code-max' },
   });
   const res = await worker.fetch(responsesApiRequest({
     model: 'code-max', input: 'hi',
@@ -1905,6 +1907,7 @@ await run('handler: OpenAI Responses client + Anthropic upstream with tool_use (
   const env = makeEnv({
     tier1: [anthropicResponsesNode('a1')],
     secrets: { a1: 'k' },
+    extraEnv: { GATEWAY_ACCESS_MODELS_AIR: 'code-max' },
   });
   const res = await worker.fetch(responsesApiRequest({
     model: 'code-max',

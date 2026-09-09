@@ -22,14 +22,14 @@ export type RequestDescriptor = {
 };
 
 /**
- * Auth result from authorize(). `mode` is 'grouped' (new system), 'legacy'
- * (GATEWAY_ACCESS_KEY), 'none', or 'skip' (version route short-circuit).
- * `group` is the credential group label ('AIR', 'PRO', 'MAX', 'ULTRA',
- * 'AGENT', 'LEGACY') — the only non-secret identifier used in logs.
+ * Auth result from authorize(). `mode` is 'grouped', 'none', or 'skip'
+ * (version route short-circuit). `group` is the credential group label
+ * ('AIR', 'PRO', 'MAX', 'ULTRA', 'AGENT') — the only non-secret identifier
+ * used in logs.
  */
 export type AuthResult =
-  | { authorized: false, mode: 'none' | 'grouped' | 'legacy' }
-  | { authorized: true, mode: 'legacy' | 'grouped', group: string, allowAll: boolean, allowlist: Set<string> | undefined }
+  | { authorized: false, mode: 'none' | 'grouped' }
+  | { authorized: true, mode: 'grouped', group: string, allowAll: boolean, allowlist: Set<string> | undefined }
   | { authorized: true, mode: 'skip', group: null };
 
 /**

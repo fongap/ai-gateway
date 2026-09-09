@@ -128,13 +128,13 @@ export async function preflight(request: Request, env: Record<string, unknown>, 
     return { ok: false, response: await dashboardResponse(request, env) };
   }
 
-  // ---- Authorization (grouped multi-key or legacy single key, fail closed) ----
-  const accessConfig = route !== 'version' ? loadAccessKeysConfig(env) : { keys: [], anyNewKey: false };
+  // ---- Authorization (grouped multi-key, fail closed) ----
+  const accessConfig = route !== 'version' ? loadAccessKeysConfig(env) : { keys: [] };
   if (accessConfig.keys.length === 0 && route !== 'version') {
     return {
       ok: false,
       response: gatewayError(request, env, route, 500,
-        'Gateway misconfigured: no GATEWAY_ACCESS_KEY_<GROUP> (or legacy GATEWAY_ACCESS_KEY) is set.', requestId),
+        'Gateway misconfigured: no GATEWAY_ACCESS_KEY_<GROUP> is set.', requestId),
     };
   }
   const authResult: AuthResult = route !== 'version' ? await authorize(request, env) : { authorized: true, mode: 'skip', group: null };
@@ -146,7 +146,7 @@ export async function preflight(request: Request, env: Record<string, unknown>, 
   }
 
   // Per-key in-isolate RPM cap. The fingerprint is the credential GROUP
-  // label (e.g. "AIR", "PRO", "LEGACY") — never the raw key. A cap of
+  // label (e.g. "AIR", "PRO") — never the raw key. A cap of
   // 0 means the limiter is disabled. Diagnostic endpoints (health /
   // metrics / version) are exempt: they carry no upstream cost and
   // are useful for an operator to monitor the cap itself.
@@ -154,8 +154,7 @@ export async function preflight(request: Request, env: Record<string, unknown>, 
     const limits = getLimits(env);
     // `in` narrowing keeps this correct under both the loose and strict
     // typecheck gates: only the authorized variants carry `group`.
-    const fingerprint = ('group' in authResult ? authResult.group : null)
-      || (authResult.mode === 'legacy' ? 'LEGACY' : 'ANON');
+    const fingerprint = ('group' in authResult ? authResult.group : null) || 'ANON';
     const verdict = admitKeyRequest(fingerprint, limits.gatewayKeyRpm);
     if (verdict.ok === false) {
       // The union narrows to the deny variant via the `ok === false`

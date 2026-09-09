@@ -18,11 +18,8 @@
 //   * `Access Models` referencing a model that is NOT currently
 //     configured in any TIER*_NODES_CONFIG_*.models emits a diagnostic
 //     warning. The referenced model is NOT auto-created.
-//   * If ANY new GATEWAY_ACCESS_KEY_<GROUP> is configured, the legacy
-//     GATEWAY_ACCESS_KEY is NOT consulted — a misconfigured new Key
-//     never silently widens to a legacy full-access key.
-//   * The legacy GATEWAY_ACCESS_KEY only works when no new key group
-//     is configured (and grants all currently-configured models).
+//   * If no GATEWAY_ACCESS_KEY_<GROUP> is configured, no gateway credential
+//     is accepted.
 //
 // Group identity is the only non-secret identifier in logs/stats.
 
@@ -66,22 +63,21 @@ function parseModelsField(raw: unknown, group: string, knownModels: ReadonlySet<
 }
 
 // collectKnownModels and collectConfiguredModels are defined in registry.ts
-// (the model-catalog module). They are re-exported here for backward
-// compatibility with callers that imported them from this module.
+// (the model-catalog module). They are re-exported here for callers that
+// import them from this module.
 export { collectKnownModels, collectConfiguredModels } from './registry.ts';
 
 type AccessKeyEntry = { group: string, secret: string, allowAll: boolean, allowlist: Set<string> };
 type AccessKeysAnalysis = {
-  config: { keys: AccessKeyEntry[], diagnostics: string[], anyNewKey: boolean },
+  config: { keys: AccessKeyEntry[], diagnostics: string[] },
   keys: AccessKeyEntry[],
   diagnostics: string[],
-  anyNewKey: boolean,
 };
 
 let cachedEnv: Record<string, unknown> | null | undefined;
 let cachedConfig: AccessKeysAnalysis | null | undefined;
 
-export function loadAccessKeysConfig(env: Record<string, unknown>): { keys: AccessKeyEntry[], anyNewKey: boolean } {
+export function loadAccessKeysConfig(env: Record<string, unknown>): { keys: AccessKeyEntry[], diagnostics: string[] } {
   return analyzeAccessKeys(env).config;
 }
 
@@ -107,13 +103,6 @@ function analyzeAccessKeys(env: Record<string, unknown>): AccessKeysAnalysis {
   // the catalog emits a warning (the operator may add it later).
   const knownModels = collectKnownModels(nodes, env);
 
-  // Detect whether any new-style GATEWAY_ACCESS_KEY_<GROUP> is configured.
-  // This decides whether the legacy GATEWAY_ACCESS_KEY is consulted.
-  let anyNewKey = false;
-  for (const group of KEY_GROUPS) {
-    if (readEnv(env, `GATEWAY_ACCESS_KEY_${group}`)) { anyNewKey = true; break; }
-  }
-
   for (const group of KEY_GROUPS) {
     const secret = readEnv(env, `GATEWAY_ACCESS_KEY_${group}`);
     if (!secret) continue; // group not configured -> skip
@@ -129,20 +118,10 @@ function analyzeAccessKeys(env: Record<string, unknown>): AccessKeysAnalysis {
     });
   }
 
-  // Legacy single-key path. Only honored when NO new GATEWAY_ACCESS_KEY_<GROUP>
-  // is configured. A misconfigured new key group never falls back to this.
-  if (!anyNewKey) {
-    const legacy = readEnv(env, 'GATEWAY_ACCESS_KEY');
-    if (legacy) {
-      keys.push({ group: 'LEGACY', secret: String(legacy), allowAll: true, allowlist: new Set() });
-    }
-  }
-
   cachedConfig = {
-    config: { keys, diagnostics, anyNewKey },
+    config: { keys, diagnostics },
     keys,
     diagnostics,
-    anyNewKey,
   };
   return cachedConfig;
 }

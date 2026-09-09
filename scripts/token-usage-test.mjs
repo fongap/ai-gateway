@@ -33,7 +33,7 @@ async function test(name, fn) {
   }
 }
 
-const ENV = { GATEWAY_ACCESS_KEY: 'test-access-key' };
+const ENV = { GATEWAY_ACCESS_KEY_AIR: 'test-access-key', GATEWAY_ACCESS_MODELS_AIR: '*' };
 const authedRequest = () => new Request('https://gateway.example.com/', {
   headers: { authorization: 'Bearer test-access-key', accept: 'text/html' },
 });
@@ -46,12 +46,8 @@ const record = (usage, dims = {}) => recordTokenUsage({
 const pageText = async (request, env = ENV) => (await dashboardResponse(request, env)).text();
 const deepClone = (o) => JSON.parse(JSON.stringify(o));
 
-// ---- normalizeTokenUsage: the single reported-vs-missing gate ---------------
-
 await test('non-object usage normalizes to null (counted missing)', async () => {
-  for (const bad of [null, undefined, 'x', 42, [], {}]) {
-    assert.equal(normalizeTokenUsage(bad), null, String(bad));
-  }
+  for (const bad of [null, undefined, 'x', 42, [], {}]) assert.equal(normalizeTokenUsage(bad), null, String(bad));
 });
 
 await test('numeric strings and invalid numbers are rejected, never coerced', async () => {
@@ -60,94 +56,47 @@ await test('numeric strings and invalid numbers are rejected, never coerced', as
   assert.equal(normalizeTokenUsage({ prompt_tokens: -1 }), null);
   assert.equal(normalizeTokenUsage({ prompt_tokens: Infinity }), null);
   assert.equal(normalizeTokenUsage({ prompt_tokens: NaN }), null);
-  // An unusable value on ONE side makes the whole report untrustworthy — no
-  // half-true number survives. Same for a provided-but-invalid total.
   assert.equal(normalizeTokenUsage({ prompt_tokens: 2, completion_tokens: '9' }), null);
   assert.equal(normalizeTokenUsage({ prompt_tokens: 2, total_tokens: -1 }), null);
-  // A MISSING side is not an error — partial data beats nothing.
   assert.deepEqual(normalizeTokenUsage({ prompt_tokens: 2 }), { input: 2, output: 0, cacheCreation: 0, cacheRead: 0, effectiveInput: 2, total: 2 });
 });
 
 await test('openai and anthropic/responses alias shapes both normalize', async () => {
   assert.deepEqual(normalizeTokenUsage({ prompt_tokens: 2, completion_tokens: 3 }), { input: 2, output: 3, cacheCreation: 0, cacheRead: 0, effectiveInput: 2, total: 5 });
   assert.deepEqual(normalizeTokenUsage({ input_tokens: 4, output_tokens: 6 }), { input: 4, output: 6, cacheCreation: 0, cacheRead: 0, effectiveInput: 4, total: 10 });
-  // One-sided reports are kept (partial data beats nothing).
   assert.deepEqual(normalizeTokenUsage({ prompt_tokens: 2 }), { input: 2, output: 0, cacheCreation: 0, cacheRead: 0, effectiveInput: 2, total: 2 });
-  // Fractional upstream values truncate.
   assert.deepEqual(normalizeTokenUsage({ prompt_tokens: 1.9, completion_tokens: 2.1 }), { input: 1, output: 2, cacheCreation: 0, cacheRead: 0, effectiveInput: 1, total: 3 });
 });
 
 await test('a reported total_tokens wins verbatim over input+output', async () => {
-  assert.deepEqual(
-    normalizeTokenUsage({ prompt_tokens: 2, completion_tokens: 3, total_tokens: 10 }),
-    { input: 2, output: 3, cacheCreation: 0, cacheRead: 0, effectiveInput: 2, total: 10 },
-  );
+  assert.deepEqual(normalizeTokenUsage({ prompt_tokens: 2, completion_tokens: 3, total_tokens: 10 }), { input: 2, output: 3, cacheCreation: 0, cacheRead: 0, effectiveInput: 2, total: 10 });
 });
-
-// ---- withUsageStreamOptions: streaming usage-hint injection is non-invasive ----
 
 await test('withUsageStreamOptions adds include_usage while preserving existing stream_options', async () => {
-  assert.deepEqual(
-    withUsageStreamOptions({ model: 'm', stream: true, stream_options: { other: 'kept' } }),
-    { model: 'm', stream: true, stream_options: { other: 'kept', include_usage: true } },
-  );
-  // A client-provided include_usage is never overwritten.
-  assert.deepEqual(
-    withUsageStreamOptions({ stream: true, stream_options: { include_usage: false } }),
-    { stream: true, stream_options: { include_usage: false } },
-  );
-  // No existing stream_options -> a fresh object is added.
-  assert.deepEqual(
-    withUsageStreamOptions({ model: 'm', stream: true }),
-    { model: 'm', stream: true, stream_options: { include_usage: true } },
-  );
-  // A non-object stream_options (primitive) is normalized without throwing.
-  assert.deepEqual(
-    withUsageStreamOptions({ stream: true, stream_options: 'bogus' }),
-    { stream: true, stream_options: { include_usage: true } },
-  );
+  assert.deepEqual(withUsageStreamOptions({ model: 'm', stream: true, stream_options: { other: 'kept' } }), { model: 'm', stream: true, stream_options: { other: 'kept', include_usage: true } });
+  assert.deepEqual(withUsageStreamOptions({ stream: true, stream_options: { include_usage: false } }), { stream: true, stream_options: { include_usage: false } });
+  assert.deepEqual(withUsageStreamOptions({ model: 'm', stream: true }), { model: 'm', stream: true, stream_options: { include_usage: true } });
+  assert.deepEqual(withUsageStreamOptions({ stream: true, stream_options: 'bogus' }), { stream: true, stream_options: { include_usage: true } });
 });
-
-// ---- recordTokenUsage: empty usage counts missing, real usage reports -----
 
 await test('recordTokenUsage: empty usage counts missing, real usage reports — never both', async () => {
   record({ prompt_tokens: 5, completion_tokens: 7 });
-  record(null);
-  record(undefined);
-  record({});
+  record(null); record(undefined); record({});
   const t = summarizeTokenStats().totals;
-  assert.equal(t.reports, 1);
-  assert.equal(t.missing, 3);
-  assert.equal(t.input, 5);
-  assert.equal(t.output, 7);
-  assert.equal(t.total, 12);
+  assert.equal(t.reports, 1); assert.equal(t.missing, 3); assert.equal(t.input, 5); assert.equal(t.output, 7); assert.equal(t.total, 12);
 });
 
-// ---- Dimension sanitization --------------------------------------------------
-
 await test('hostile dimension values are sanitized at storage time', async () => {
-  record({ prompt_tokens: 1, completion_tokens: 1 }, {
-    model: 'a"b\\c\nd',
-    provider: 'üri provider',
-    nodeId: '',
-    tier: 'tier-9',
-  });
+  record({ prompt_tokens: 1, completion_tokens: 1 }, { model: 'a"b\\c\nd', provider: 'üri provider', nodeId: '', tier: 'tier-9' });
   const [row] = tokenMetricSeries();
-  assert.equal(row.model, 'a_b_c_d');
-  assert.equal(row.provider, '_ri_provider');
-  assert.equal(row.nodeId, 'unknown');
-  assert.equal(row.tier, 'tier-9');
+  assert.equal(row.model, 'a_b_c_d'); assert.equal(row.provider, '_ri_provider'); assert.equal(row.nodeId, 'unknown'); assert.equal(row.tier, 'tier-9');
 });
 
 await test('raw hostile dimensions never reach /metrics text', async () => {
   record({ prompt_tokens: 1, completion_tokens: 1 }, { model: 'a"b\\c\nd', provider: 'üri provider', nodeId: '' });
   const text = await (metricsResponse(new Request('https://gateway.example.com/metrics'), ENV)).text();
-  assert.ok(text.includes('a_b_c_d'));
-  assert.ok(!text.includes('a"b'), 'raw quote must not appear');
-  assert.ok(!text.includes('üri provider'), 'raw provider must not appear');
+  assert.ok(text.includes('a_b_c_d')); assert.ok(!text.includes('a"b')); assert.ok(!text.includes('üri provider'));
 });
-
-// ---- Aggregation, coverage, Top-N ordering ----------------------------------
 
 await test('summarizeTokenStats aggregates per dimension sorted by total desc', async () => {
   record({ prompt_tokens: 100, completion_tokens: 50 }, { model: 'small', provider: 'prov-a', nodeId: 'n1' });
@@ -156,612 +105,160 @@ await test('summarizeTokenStats aggregates per dimension sorted by total desc', 
   const s = summarizeTokenStats();
   assert.deepEqual(s.byModel.map((r) => r.name), ['big', 'small', 'tiny']);
   assert.deepEqual(s.byProvider.map((r) => r.name), ['prov-b', 'prov-a']);
-  // n1 aggregates two records (150 + 15 = 165), n2 one (1500): total-desc puts
-  // n2 first.
   assert.deepEqual(s.byNode.map((r) => r.name), ['n2', 'n1']);
-  assert.equal(s.byModel[0].total, 1500);
-  assert.equal(s.byProvider[1].total, 165);
+  assert.equal(s.byModel[0].total, 1500); assert.equal(s.byProvider[1].total, 165);
 });
 
 await test('usage coverage is reports/(reports+missing), null at 0/0', async () => {
   assert.equal(summarizeTokenStats().usageCoverage, null);
-  record({ prompt_tokens: 1, completion_tokens: 1 });
-  record({ prompt_tokens: 1, completion_tokens: 1 });
-  record({ prompt_tokens: 1, completion_tokens: 1 });
-  record(null);
+  record({ prompt_tokens: 1, completion_tokens: 1 }); record({ prompt_tokens: 1, completion_tokens: 1 }); record({ prompt_tokens: 1, completion_tokens: 1 }); record(null);
   const s = summarizeTokenStats();
-  assert.equal(s.usageCoverage, 0.75);
-  assert.equal(s.totals.reports, 3);
-  assert.equal(s.totals.missing, 1);
+  assert.equal(s.usageCoverage, 0.75); assert.equal(s.totals.reports, 3); assert.equal(s.totals.missing, 1);
 });
 
 await test('usage coverage is also aggregated per dimension row', async () => {
-  record({ prompt_tokens: 3, completion_tokens: 0 }, { model: 'cov' });
-  record(null, { model: 'cov' });
-  record({ prompt_tokens: 1, completion_tokens: 1 }, { model: 'other' });
+  record({ prompt_tokens: 3, completion_tokens: 0 }, { model: 'cov' }); record(null, { model: 'cov' }); record({ prompt_tokens: 1, completion_tokens: 1 }, { model: 'other' });
   const row = summarizeTokenStats().byModel.find((r) => r.name === 'cov');
-  assert.equal(row.reports, 1);
-  assert.equal(row.missing, 1);
+  assert.equal(row.reports, 1); assert.equal(row.missing, 1);
 });
 
 await test('missing records land in their dimension bucket for accurate per-node coverage', async () => {
-  record({ prompt_tokens: 5, completion_tokens: 5 }, { nodeId: 'a', model: 'm' });
-  record(null, { nodeId: 'a', model: 'm' });
-  record(null, { nodeId: 'b', model: 'm' });
+  record({ prompt_tokens: 5, completion_tokens: 5 }, { nodeId: 'a', model: 'm' }); record(null, { nodeId: 'a', model: 'm' }); record(null, { nodeId: 'b', model: 'm' });
   const s = summarizeTokenStats();
-  assert.equal(s.totals.missing, 2);
-  assert.equal(s.totals.reports, 1);
-  // node 'a' has 1 report + 1 missing → 50% coverage; node 'b' is all missing.
-  const a = s.byNode.find((r) => r.name === 'a');
-  const b = s.byNode.find((r) => r.name === 'b');
-  assert.equal(a.reports, 1);
-  assert.equal(a.missing, 1);
-  assert.equal(b.reports, 0);
-  assert.equal(b.missing, 1);
-  // A missing-only bucket still surfaces in /metrics as a labelled zero-input
-  // series, so per-node usage_missing is queryable.
-  const series = tokenMetricSeries();
-  const bSeries = series.find((r) => r.nodeId === 'b');
-  assert.equal(bSeries.missing, 1);
-  assert.equal(bSeries.input, 0);
+  assert.equal(s.totals.missing, 2); assert.equal(s.totals.reports, 1);
+  const a = s.byNode.find((r) => r.name === 'a'); const b = s.byNode.find((r) => r.name === 'b');
+  assert.equal(a.reports, 1); assert.equal(a.missing, 1); assert.equal(b.reports, 0); assert.equal(b.missing, 1);
+  const series = tokenMetricSeries(); const bSeries = series.find((r) => r.nodeId === 'b');
+  assert.equal(bSeries.missing, 1); assert.equal(bSeries.input, 0);
 });
-
-// ---- 使用情况 section (D1-backed: 4-KPI strip + 52×7 activity heatmap) ------
 
 const cellCount = (html) => (html.match(/class="cell"/g) || []).length;
 const monthLabels = (html) => [...html.matchAll(/<span style="grid-column:\d+">(\d{1,2})月<\/span>/g)].map((m) => m[1]);
-
 function seededEnv(writes) {
-  const d1 = createMockD1();
-  const env = deepClone(ENV);
-  env.TOKEN_STATS_DB = d1;
+  const d1 = createMockD1(); const env = deepClone(ENV); env.TOKEN_STATS_DB = d1;
   const h0 = Math.floor(Date.now() / 3_600_000) * 3_600_000;
-  for (const [usage, offsetHours = 0] of writes) {
-    persistTokenUsage(env, usage, h0 - offsetHours * 3_600_000);
-  }
+  for (const [usage, offsetHours = 0] of writes) persistTokenUsage(env, usage, h0 - offsetHours * 3_600_000);
   return env;
 }
 
 await test('no D1 binding degrades to 统计暂不可用 with em dashes, never a fake 0', async () => {
   const html = await pageText(authedRequest(), ENV);
-  assert.ok(html.includes('使用情况'), 'section title');
-  assert.ok(!html.includes('class="utc8"'), 'redundant UTC+8 label removed');
-  assert.ok(html.includes('今日'), 'four KPI labels');
-  assert.ok(html.includes('累计'));
-  assert.ok(html.includes('近 24 小时'));
-  assert.ok(html.includes('7 天'));
-  assert.ok(!html.includes('累计请求'), '累计请求 KPI was removed');
-  assert.ok(!html.includes('今日 Token'), 'old label format removed');
-  assert.ok(!html.includes('累计 Token'), 'old label format removed');
-  // Em dash = "cannot obtain this number right now", NOT a confirmed zero.
-  assert.ok(html.includes('>—<'));
-  // Four KPIs + model-usage-empty degrade to em dash in the fully-degraded state.
-  assert.equal((html.match(/>—</g) || []).length, 5, 'all four KPIs + model panel degrade');
-  assert.ok(html.includes('model-usage-empty'), 'model panel shows degraded state');
-  assert.ok(!html.includes('>0<'), 'a degraded panel must not claim 0 usage');
-  assert.ok(!html.includes('class="cell"'), 'no fabricated heatmap cells');
-  assert.ok(!html.includes('NaN'));
-  assert.ok(!html.includes('undefined'));
-  // The API-address block was removed; quick start stays.
-  assert.ok(!html.includes('API 地址'));
-  assert.ok(!html.includes('api-url'));
-  assert.ok(html.includes('快速开始'));
-  assert.ok(html.includes('data-tab="openai"'));
-  assert.ok(html.includes('data-tab="anthropic"'));
+  assert.ok(html.includes('使用情况')); assert.ok(!html.includes('class="utc8"')); assert.ok(html.includes('今日')); assert.ok(html.includes('累计')); assert.ok(html.includes('近 24 小时')); assert.ok(html.includes('7 天'));
+  assert.ok(!html.includes('累计请求')); assert.ok(!html.includes('今日 Token')); assert.ok(!html.includes('累计 Token')); assert.ok(html.includes('>—<')); assert.equal((html.match(/>—</g) || []).length, 5); assert.ok(html.includes('model-usage-empty')); assert.ok(!html.includes('>0<')); assert.ok(!html.includes('class="cell"')); assert.ok(!html.includes('NaN')); assert.ok(!html.includes('undefined')); assert.ok(!html.includes('API 地址')); assert.ok(!html.includes('api-url')); assert.ok(html.includes('快速开始')); assert.ok(html.includes('data-tab="openai"')); assert.ok(html.includes('data-tab="anthropic"'));
 });
 
 await test('a failing D1 query also degrades instead of 500 / fake zero', async () => {
-  const env = deepClone(ENV);
-  env.TOKEN_STATS_DB = createMockD1({ failReads: true });
-  const res = await dashboardResponse(authedRequest(), env);
-  assert.equal(res.status, 200, 'homepage must still be served');
-  const html = await res.text();
-  assert.ok(html.includes('统计暂不可用'));
-  assert.ok(!html.includes('>0<'));
-  assert.ok(!html.includes('class="cell"'));
+  const env = deepClone(ENV); env.TOKEN_STATS_DB = createMockD1({ failReads: true });
+  const res = await dashboardResponse(authedRequest(), env); assert.equal(res.status, 200); const html = await res.text(); assert.ok(html.includes('统计暂不可用')); assert.ok(!html.includes('>0<')); assert.ok(!html.includes('class="cell"'));
 });
 
 await test('the D1-backed card renders the four KPIs from real aggregates', async () => {
-  const env = seededEnv([
-    [{ prompt_tokens: 10, completion_tokens: 20 }], // 30 tokens, 1 request
-    [{ prompt_tokens: 3, completion_tokens: 2 }],
-    [null], // missing usage: request counted, tokens untouched
-  ]);
-  const html = await pageText(anonRequest(), env);
-  assert.ok(html.includes('使用情况'));
-  assert.ok(html.includes('>35<'), 'cumulative total (10+20)+(3+2) must render');
-  assert.ok(!html.includes('class="utc8"'), 'redundant UTC+8 label removed');
-  assert.ok(!html.includes('累计请求'), '累计请求 KPI removed');
-  assert.ok(!html.includes('Usage 覆盖率'), 'coverage is not part of the new card');
+  const env = seededEnv([[{ prompt_tokens: 10, completion_tokens: 20 }], [{ prompt_tokens: 3, completion_tokens: 2 }], [null]]);
+  const html = await pageText(anonRequest(), env); assert.ok(html.includes('使用情况')); assert.ok(html.includes('>35<')); assert.ok(!html.includes('class="utc8"')); assert.ok(!html.includes('累计请求')); assert.ok(!html.includes('Usage 覆盖率'));
 });
 
 await test('模型使用 renders one row per model with bars plus a donut ring', async () => {
-  const d1 = createMockD1();
-  const env = deepClone(ENV);
-  env.TOKEN_STATS_DB = d1;
-  const HOUR = 3_600_000;
-  const h0 = Math.floor(Date.now() / HOUR) * HOUR;
-  await persistTokenUsage(env, { prompt_tokens: 100, completion_tokens: 0 }, h0, 'code-max');
-  await persistTokenUsage(env, { prompt_tokens: 40, completion_tokens: 10 }, h0, 'ultra');
+  const d1 = createMockD1(); const env = deepClone(ENV); env.TOKEN_STATS_DB = d1; const HOUR = 3_600_000; const h0 = Math.floor(Date.now() / HOUR) * HOUR;
+  await persistTokenUsage(env, { prompt_tokens: 100, completion_tokens: 0 }, h0, 'code-max'); await persistTokenUsage(env, { prompt_tokens: 40, completion_tokens: 10 }, h0, 'ultra');
   const html = await pageText(anonRequest(), env);
-  assert.ok(html.includes('模型使用'), 'panel title');
-  assert.ok(html.includes('bars'), 'bars container present');
-  assert.ok(html.includes('bar-row'), 'at least one model row');
-  assert.ok(html.includes('code-max'), 'top model name shown');
-  assert.ok(html.includes('ultra'), 'second model name shown');
-  assert.ok(html.includes('bar-track'), 'bar element present');
-  assert.ok(html.includes('data-tooltip='), 'rows expose a tooltip');
-  assert.ok(html.includes('bar-value'), 'each row shows its token total');
-  assert.ok(html.includes('class="donut"'), 'donut ring container present');
-  assert.ok(html.includes('donut-center'), 'donut center shows the 7-day total');
-  assert.ok(html.includes('role="img"'), 'donut is announced as an image');
-  // Donut and bars sit side by side inside usage-split container.
-  assert.match(html, /<div class="usage-split">[\s\S]*?<div class="bars">/,
-    'donut ring and bar list are siblings inside usage-split');
-  // Both views must agree: donut center total equals the sum of every row's
-  // token value (code-max 100 + ultra 50 = 150).
-  assert.ok(html.includes('<strong>150</strong>'), 'donut center shows the summed 7-day total');
-  assert.ok(html.includes('code-max\n100 Token'), 'donut segment tooltip total matches the code-max row');
-  assert.ok(html.includes('ultra\n50 Token'), 'donut segment tooltip total matches the ultra row');
-  assert.match(html, /<div class="bar-value">100<\/div>/, 'code-max row shows its exact total');
-  assert.match(html, /<div class="bar-value">50<\/div>/, 'ultra row shows its exact total');
+  assert.ok(html.includes('模型使用')); assert.ok(html.includes('bars')); assert.ok(html.includes('bar-row')); assert.ok(html.includes('code-max')); assert.ok(html.includes('ultra')); assert.ok(html.includes('bar-track')); assert.ok(html.includes('data-tooltip=')); assert.ok(html.includes('bar-value')); assert.ok(html.includes('class="donut"')); assert.ok(html.includes('donut-center')); assert.ok(html.includes('role="img"'));
+  assert.match(html, /<div class="usage-split">[\s\S]*?<div class="bars">/); assert.ok(html.includes('<strong>150</strong>')); assert.ok(html.includes('code-max\n100 Token')); assert.ok(html.includes('ultra\n50 Token')); assert.match(html, /<div class="bar-value">100<\/div>/); assert.match(html, /<div class="bar-value">50<\/div>/);
 });
 
 await test('模型使用 shows official logical IDs, not lowercase statistics keys', async () => {
-  __resetDashboardCacheForTests();
-  const d1 = createMockD1();
-  const env = deepClone(ENV);
-  env.TOKEN_STATS_DB = d1;
-  env.TIER1_NODES_CONFIG_01 = JSON.stringify([
-    { id: 'node-a', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], base_url: 'https://a.example.com/v1', models: { 'Code-Max': 'up-max', 'Code-Ultra': 'up-ultra' }, limits: { concurrency: 1 } },
-  ]);
+  __resetDashboardCacheForTests(); const d1 = createMockD1(); const env = deepClone(ENV); env.TOKEN_STATS_DB = d1;
+  env.TIER1_NODES_CONFIG_01 = JSON.stringify([{ id: 'node-a', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], base_url: 'https://a.example.com/v1', models: { 'Code-Max': 'up-max', 'Code-Ultra': 'up-ultra' }, limits: { concurrency: 1 } }]);
   env.TIER1_NODES_SECRETS_01 = JSON.stringify({ 'node-a': 'test-key' });
-  const HOUR = 3_600_000;
-  const h0 = Math.floor(Date.now() / HOUR) * HOUR;
-  await persistTokenUsage(env, { prompt_tokens: 900, completion_tokens: 0 }, h0, 'code-max');
-  await persistTokenUsage(env, { prompt_tokens: 300, completion_tokens: 0 }, h0, 'CODE-ULTRA');
-  const html = await pageText(anonRequest(), env);
-  assert.ok(html.includes('>Code-Max<'), 'official logical ID shown in the bars list');
-  assert.ok(html.includes('>Code-Ultra<'), 'case-variant canonical key resolves to the official ID');
-  assert.ok(!html.includes('>code-max<'), 'lowercase statistics key is not displayed');
-  assert.ok(!html.includes('>code-ultra<'), 'lowercase statistics key is not displayed');
-  assert.ok(html.includes('Code-Max\n900 Token'), 'donut tooltip carries the official name');
+  const HOUR = 3_600_000; const h0 = Math.floor(Date.now() / HOUR) * HOUR;
+  await persistTokenUsage(env, { prompt_tokens: 900, completion_tokens: 0 }, h0, 'code-max'); await persistTokenUsage(env, { prompt_tokens: 300, completion_tokens: 0 }, h0, 'CODE-ULTRA');
+  const html = await pageText(anonRequest(), env); assert.ok(html.includes('>Code-Max<')); assert.ok(html.includes('>Code-Ultra<')); assert.ok(!html.includes('>code-max<')); assert.ok(!html.includes('>code-ultra<')); assert.ok(html.includes('Code-Max\n900 Token'));
 });
 
 await test('模型使用 folds models beyond the top 4 into one 其他 row', async () => {
-  const d1 = createMockD1();
-  const env = deepClone(ENV);
-  env.TOKEN_STATS_DB = d1;
-  const HOUR = 3_600_000;
-  const h0 = Math.floor(Date.now() / HOUR) * HOUR;
-  // Six models, descending: top 4 shown, the last two fold into 其他 (30 + 20).
+  const d1 = createMockD1(); const env = deepClone(ENV); env.TOKEN_STATS_DB = d1; const HOUR = 3_600_000; const h0 = Math.floor(Date.now() / HOUR) * HOUR;
   const models = [['m1', 600], ['m2', 500], ['m3', 400], ['m4', 300], ['m5', 30], ['m6', 20]];
-  for (const [model, tokens] of models) {
-    await persistTokenUsage(env, { prompt_tokens: tokens, completion_tokens: 0 }, h0, model);
-  }
-  const html = await pageText(anonRequest(), env);
-  for (const model of ['m1', 'm2', 'm3', 'm4']) {
-    assert.ok(html.includes(model), `top model ${model} shown`);
-  }
-  for (const model of ['m5', 'm6']) {
-    assert.ok(!html.includes(`>${model}<`), `model ${model} folded into 其他`);
-  }
-  assert.ok(html.includes('其他'), 'folded row present');
-  assert.ok(html.includes('<strong>1850</strong>'), 'donut center still equals the grand total');
-  assert.match(html, /<div class="bar-value">50<\/div>/, '其他 row shows its aggregated total (30+20)');
+  for (const [model, tokens] of models) await persistTokenUsage(env, { prompt_tokens: tokens, completion_tokens: 0 }, h0, model);
+  const html = await pageText(anonRequest(), env); for (const model of ['m1', 'm2', 'm3', 'm4']) assert.ok(html.includes(model)); for (const model of ['m5', 'm6']) assert.ok(!html.includes(`>${model}<`)); assert.ok(html.includes('其他')); assert.ok(html.includes('<strong>1850</strong>')); assert.match(html, /<div class="bar-value">50<\/div>/);
 });
 
 await test('Token 活动 · 近 52 周 renders a full 364-cell heatmap with month labels', async () => {
-  const env = seededEnv([[{ prompt_tokens: 7, completion_tokens: 7 }]]);
-  const html = await pageText(anonRequest(), env);
-  assert.ok(html.includes('Token 活动 · 近 52 周'), 'heatmap title updated');
-  assert.ok(html.includes('次请求'), 'request count shown on right');
-  assert.equal(cellCount(html), 364, 'exactly 52 weeks × 7 days of square cells');
-  const labels = monthLabels(html);
-  assert.ok(labels.length >= 11 && labels.length <= 13, `12 months covered (got ${labels.length})`);
-  for (const label of labels) assert.match(label, /^\d{1,2}$/);
-  // Levels: the active day is level 4 (it is the max), most days stay level 0.
-  assert.ok(html.includes('data-level="4"'), 'active cells use the teal scale');
-  assert.ok(html.includes('data-level="0"'), 'inactive cells use the light gray');
-  assert.ok(html.includes('data-tooltip="'), 'cells carry data-tooltip instead of native title');
-  assert.ok(html.includes('· 1 次请求'), 'tooltip carries date, tokens and requests');
-  assert.match(html, /class="heatmap-wrap" tabindex="0" role="img"/,
-    'dense heatmap is a labelled, keyboard-scrollable figure');
-  assert.match(html, /aria-label="近 52 周 Token 活动热力图/);
+  const env = seededEnv([[{ prompt_tokens: 7, completion_tokens: 7 }]]); const html = await pageText(anonRequest(), env);
+  assert.ok(html.includes('Token 活动 · 近 52 周')); assert.ok(html.includes('次请求')); assert.equal(cellCount(html), 364); const labels = monthLabels(html); assert.ok(labels.length >= 11 && labels.length <= 13); for (const label of labels) assert.match(label, /^\d{1,2}$/); assert.ok(html.includes('data-level="4"')); assert.ok(html.includes('data-level="0"')); assert.ok(html.includes('data-tooltip="')); assert.ok(html.includes('· 1 次请求')); assert.match(html, /class="heatmap-wrap" tabindex="0" role="img"/); assert.match(html, /aria-label="近 52 周 Token 活动热力图/);
 });
 
 await test('the heatmap colors derive from daily totals, not per-hour noise', async () => {
-  // Two days of activity: 4000 tokens vs 1000 tokens -> 4:1 ratio -> the big
-  // day is lv4, the small day is lv1 (25% of max).
-  const env = seededEnv([
-    [{ prompt_tokens: 4000, completion_tokens: 0 }],
-    [{ prompt_tokens: 1000, completion_tokens: 0 }, 24],
-  ]);
-  const html = await pageText(authedRequest(), env);
-  assert.ok(html.includes('data-level="4"'));
-  assert.ok(html.includes('data-level="1"'));
-  assert.ok(html.includes('4000') && html.includes('Token'), 'tooltips show daily token totals');
-  assert.ok(!html.includes('4,000 Token'), 'tooltips no longer use comma-formatted numbers');
+  const env = seededEnv([[{ prompt_tokens: 4000, completion_tokens: 0 }], [{ prompt_tokens: 1000, completion_tokens: 0 }, 24]]); const html = await pageText(authedRequest(), env); assert.ok(html.includes('data-level="4"')); assert.ok(html.includes('data-level="1"')); assert.ok(html.includes('4000') && html.includes('Token')); assert.ok(!html.includes('4,000 Token'));
 });
 
 await test('the usage card leaks no internal dimensions', async () => {
-  record({ prompt_tokens: 10, completion_tokens: 20 }, {
-    model: 'secret-model', provider: 'secret-provider', nodeId: 'secret-node', tier: 'secret-tier',
-  });
-  const env = seededEnv([[{ prompt_tokens: 1, completion_tokens: 1 }]]);
-  const html = await pageText(anonRequest(), env);
-  assert.ok(!html.includes('secret-node'));
-  assert.ok(!html.includes('secret-provider'));
-  assert.ok(!html.includes('secret-tier'));
-  assert.ok(!html.includes('secret-model'));
+  record({ prompt_tokens: 10, completion_tokens: 20 }, { model: 'secret-model', provider: 'secret-provider', nodeId: 'secret-node', tier: 'secret-tier' }); const env = seededEnv([[{ prompt_tokens: 1, completion_tokens: 1 }]]); const html = await pageText(anonRequest(), env); assert.ok(!html.includes('secret-node')); assert.ok(!html.includes('secret-provider')); assert.ok(!html.includes('secret-tier')); assert.ok(!html.includes('secret-model'));
 });
 
 await test('Chinese unit (万/亿) compaction renders on KPI values, never K/M/B', async () => {
   const card = async (usage) => pageText(authedRequest(), seededEnv([[usage]]));
-  assert.ok((await card({ prompt_tokens: 0, completion_tokens: 0 })).includes('>0<'));
-  assert.ok((await card({ prompt_tokens: 999, completion_tokens: 0 })).includes('>999<'));
-  assert.ok((await card({ prompt_tokens: 9820, completion_tokens: 0 })).includes('>9820<'));
-  assert.ok((await card({ prompt_tokens: 10000, completion_tokens: 0 })).includes('>1万<'));
-  assert.ok((await card({ prompt_tokens: 128000, completion_tokens: 0 })).includes('>12.8万<'));
-  assert.ok((await card({ prompt_tokens: 1280000, completion_tokens: 0 })).includes('>128万<'));
-  assert.ok((await card({ prompt_tokens: 48600000, completion_tokens: 0 })).includes('>4860万<'));
-  assert.ok((await card({ prompt_tokens: 128000000, completion_tokens: 0 })).includes('>1.28亿<'));
-  assert.ok((await card({ prompt_tokens: 2500000000, completion_tokens: 0 })).includes('>25亿<'));
-  const one = await card({ prompt_tokens: 1, completion_tokens: 0 });
-  assert.ok(!one.includes('NaN'));
-  // K/M/B must never appear
-  const cardHtml = await card({ prompt_tokens: 1234567, completion_tokens: 0 });
-  assert.ok(!cardHtml.includes('K<') && !cardHtml.includes('M<') && !cardHtml.includes('B<'), 'K/M/B must not appear');
+  assert.ok((await card({ prompt_tokens: 0, completion_tokens: 0 })).includes('>0<')); assert.ok((await card({ prompt_tokens: 999, completion_tokens: 0 })).includes('>999<')); assert.ok((await card({ prompt_tokens: 9820, completion_tokens: 0 })).includes('>9820<')); assert.ok((await card({ prompt_tokens: 10000, completion_tokens: 0 })).includes('>1万<')); assert.ok((await card({ prompt_tokens: 128000, completion_tokens: 0 })).includes('>12.8万<')); assert.ok((await card({ prompt_tokens: 1280000, completion_tokens: 0 })).includes('>128万<')); assert.ok((await card({ prompt_tokens: 48600000, completion_tokens: 0 })).includes('>4860万<')); assert.ok((await card({ prompt_tokens: 128000000, completion_tokens: 0 })).includes('>1.28亿<')); assert.ok((await card({ prompt_tokens: 2500000000, completion_tokens: 0 })).includes('>25亿<')); const one = await card({ prompt_tokens: 1, completion_tokens: 0 }); assert.ok(!one.includes('NaN')); const cardHtml = await card({ prompt_tokens: 1234567, completion_tokens: 0 }); assert.ok(!cardHtml.includes('K<') && !cardHtml.includes('M<') && !cardHtml.includes('B<'));
 });
-
-// ---- Rolling 24h / 7d time windows ------------------------------------------
 
 await test('rolling 24h/7d windows sum recent totals and prune expired buckets', async () => {
-  // Anchor to an hour boundary so hour/day alignment is deterministic.
-  const h0 = Math.floor(Date.now() / 3600_000) * 3600_000;
-  const HOUR = 3600_000, DAY = 86400_000;
-  // Three reports, 100 tokens each, across three consecutive hours.
-  record({ prompt_tokens: 50, completion_tokens: 50 }, { now: h0 });
-  record({ prompt_tokens: 50, completion_tokens: 50 }, { now: h0 + HOUR });
-  record({ prompt_tokens: 50, completion_tokens: 50 }, { now: h0 + 2 * HOUR });
-  let s = summarizeTokenStats();
-  assert.equal(s.windows.h24.total, 300, '24h window sums the three reports');
-  assert.equal(s.windows.d7.total, 300, '7d window sums the three reports');
-  assert.equal(s.windows.h24.reports, 3);
-
-  // Advance 27h: the three hourly buckets fall outside the 24-bucket window.
-  record({ prompt_tokens: 10, completion_tokens: 0 }, { now: h0 + 27 * HOUR });
-  s = summarizeTokenStats();
-  assert.equal(s.windows.h24.total, 10, 'old hourly buckets pruned from 24h');
-  assert.equal(s.windows.h24.reports, 1);
-  assert.equal(s.windows.d7.total, 310, '27h is still inside the 7d window');
-
-  // Advance 8 more days: the 7-bucket daily window prunes everything older.
-  record({ prompt_tokens: 5, completion_tokens: 0 }, { now: h0 + 27 * HOUR + 8 * DAY });
-  s = summarizeTokenStats();
-  assert.equal(s.windows.d7.total, 5, 'old daily buckets pruned from 7d');
-  assert.equal(s.windows.h24.total, 5);
-  assert.equal(s.totals.total, 315, 'cumulative total is never pruned');
+  const h0 = Math.floor(Date.now() / 3600_000) * 3600_000; const HOUR = 3600_000, DAY = 86400_000;
+  record({ prompt_tokens: 50, completion_tokens: 50 }, { now: h0 }); record({ prompt_tokens: 50, completion_tokens: 50 }, { now: h0 + HOUR }); record({ prompt_tokens: 50, completion_tokens: 50 }, { now: h0 + 2 * HOUR }); let s = summarizeTokenStats(); assert.equal(s.windows.h24.total, 300); assert.equal(s.windows.d7.total, 300); assert.equal(s.windows.h24.reports, 3); record({ prompt_tokens: 10, completion_tokens: 0 }, { now: h0 + 27 * HOUR }); s = summarizeTokenStats(); assert.equal(s.windows.h24.total, 10); assert.equal(s.windows.h24.reports, 1); assert.equal(s.windows.d7.total, 310); record({ prompt_tokens: 5, completion_tokens: 0 }, { now: h0 + 27 * HOUR + 8 * DAY }); s = summarizeTokenStats(); assert.equal(s.windows.d7.total, 5); assert.equal(s.windows.h24.total, 5); assert.equal(s.totals.total, 315);
 });
 
-// ---- Transform-level onUsage contract ----------------------------------------
-
 const encoder = new TextEncoder();
-function sseUpstream(lines) {
-  return new Response(new ReadableStream({
-    pull(c) {
-      for (const line of lines.splice(0)) c.enqueue(encoder.encode(line));
-      c.close();
-    },
-  }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
-}
+function sseUpstream(lines) { return new Response(new ReadableStream({ pull(c) { for (const line of lines.splice(0)) c.enqueue(encoder.encode(line)); c.close(); } }), { status: 200, headers: { 'content-type': 'text/event-stream' } }); }
 const chatChunk = (content) => `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`;
 const chatUsage = (usage) => `data: ${JSON.stringify({ choices: [], usage })}\n\n`;
-async function drain(response) {
-  const reader = response.body.getReader();
-  for (;;) {
-    const { done } = await reader.read();
-    if (done) return;
-  }
-}
-
-// Native-stream onUsage contract: the tracked passthrough reports captured
-// usage EXACTLY ONCE per stream (success or failure alike), a client abort
-// reports nothing, and observability is optional.
+async function drain(response) { const reader = response.body.getReader(); for (;;) { const { done } = await reader.read(); if (done) return; } }
 const noopTrack = { idleTimeoutMs: 0, onSuccess: () => {}, onFailure: () => {}, onNeutral: () => {} };
-
-// Native Anthropic wire shapes.
 const anthropicTextDelta = (text) => `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } })}\n\n`;
 const anthropicUsage = (input, output) => `event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { input_tokens: input, output_tokens: output } })}\n\n`;
 const anthropicStop = 'event: message_stop\ndata: {"type":"message_stop"}\n\n';
-// Native Responses wire shapes.
 const responsesTextDelta = (text) => `event: response.output_text.delta\ndata: ${JSON.stringify({ type: 'response.output_text.delta', sequence_number: 1, item_id: 'msg_1', output_index: 0, content_index: 0, delta: text })}\n\n`;
 const responsesCompleted = (usage) => `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', sequence_number: 2, response: { id: 'resp_1', object: 'response', status: 'completed', model: 'up-model', output: [], usage } })}\n\n`;
 
 await test('anthropic passthrough: interrupted WITH usage reports it exactly once (Anthropic shape)', async () => {
-  const calls = [];
-  const upstream = sseUpstream([
-    anthropicTextDelta('partial'),
-    anthropicUsage(6, 8),
-    // clean EOF, no message_stop → node-failure finalize path
-  ]);
-  const res = trackStreamResponse(upstream, {
-    ...noopTrack,
-    completionMarker: /event:\s*message_stop\b/,
-    onUsage: (u) => calls.push(u),
-  });
-  await drain(res);
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].input_tokens, 6);
-  assert.equal(calls[0].output_tokens, 8);
+  const calls = []; const upstream = sseUpstream([anthropicTextDelta('partial'), anthropicUsage(6, 8)]); const res = trackStreamResponse(upstream, { ...noopTrack, completionMarker: /event:\s*message_stop\b/, onUsage: (u) => calls.push(u) }); await drain(res); assert.equal(calls.length, 1); assert.equal(calls[0].input_tokens, 6); assert.equal(calls[0].output_tokens, 8);
 });
-
 await test('anthropic passthrough: client abort reports nothing', async () => {
-  const calls = [];
-  const ac = new AbortController();
-  // Never-closing upstream: the tracked stream parks in reader.read() until
-  // the client side gives up (signal abort + body cancel, as the runtime does).
-  const upstream = new Response(new ReadableStream({
-    pull(c) { c.enqueue(encoder.encode(anthropicTextDelta('flowing'))); },
-  }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
-  const res = trackStreamResponse(upstream, {
-    ...noopTrack,
-    completionMarker: /event:\s*message_stop\b/,
-    onUsage: (u) => calls.push(u),
-  });
-  const reader = res.body.getReader();
-  await reader.read();
-  ac.abort();
-  await reader.cancel().catch(() => {});
-  assert.equal(calls.length, 0);
+  const calls = []; const ac = new AbortController(); const upstream = new Response(new ReadableStream({ pull(c) { c.enqueue(encoder.encode(anthropicTextDelta('flowing'))); } }), { status: 200, headers: { 'content-type': 'text/event-stream' } }); const res = trackStreamResponse(upstream, { ...noopTrack, completionMarker: /event:\s*message_stop\b/, onUsage: (u) => calls.push(u) }); const reader = res.body.getReader(); await reader.read(); ac.abort(); await reader.cancel().catch(() => {}); assert.equal(calls.length, 0);
 });
-
 await test('responses passthrough: completed stream reports usage exactly once (verbatim native shape)', async () => {
-  const calls = [];
-  const upstream = sseUpstream([
-    responsesTextDelta('hello'),
-    responsesCompleted({ input_tokens: 6, output_tokens: 8, total_tokens: 14 }),
-  ]);
-  const res = trackStreamResponse(upstream, {
-    ...noopTrack,
-    completionMarker: /event:\s*response\.(?:completed|incomplete)\b/,
-    onUsage: (u) => calls.push(u),
-  });
-  await drain(res);
-  assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0], { input_tokens: 6, output_tokens: 8, total_tokens: 14 });
+  const calls = []; const upstream = sseUpstream([responsesTextDelta('hello'), responsesCompleted({ input_tokens: 6, output_tokens: 8, total_tokens: 14 })]); const res = trackStreamResponse(upstream, { ...noopTrack, completionMarker: /event:\s*response\.(?:completed|incomplete)\b/, onUsage: (u) => calls.push(u) }); await drain(res); assert.equal(calls.length, 1); assert.deepEqual(calls[0], { input_tokens: 6, output_tokens: 8, total_tokens: 14 });
 });
-
 await test('responses passthrough: client abort reports nothing', async () => {
-  const calls = [];
-  const ac = new AbortController();
-  const upstream = new Response(new ReadableStream({
-    pull(c) { c.enqueue(encoder.encode(responsesTextDelta('flowing'))); },
-  }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
-  const res = trackStreamResponse(upstream, {
-    ...noopTrack,
-    completionMarker: /event:\s*response\.(?:completed|incomplete)\b/,
-    onUsage: (u) => calls.push(u),
-  });
-  const reader = res.body.getReader();
-  await reader.read();
-  ac.abort();
-  await reader.cancel().catch(() => {});
-  assert.equal(calls.length, 0);
+  const calls = []; const ac = new AbortController(); const upstream = new Response(new ReadableStream({ pull(c) { c.enqueue(encoder.encode(responsesTextDelta('flowing'))); } }), { status: 200, headers: { 'content-type': 'text/event-stream' } }); const res = trackStreamResponse(upstream, { ...noopTrack, completionMarker: /event:\s*response\.(?:completed|incomplete)\b/, onUsage: (u) => calls.push(u) }); const reader = res.body.getReader(); await reader.read(); ac.abort(); await reader.cancel().catch(() => {}); assert.equal(calls.length, 0);
 });
-
 await test('passthrough without onUsage stays fully functional (observability optional)', async () => {
-  const upstream = sseUpstream([
-    anthropicTextDelta('hello'),
-    anthropicUsage(1, 1),
-    anthropicStop,
-  ]);
-  const res = trackStreamResponse(upstream, {
-    ...noopTrack,
-    completionMarker: /event:\s*message_stop\b/,
-  });
-  const text = await res.text();
-  assert.ok(text.includes('message_stop'));
+  const upstream = sseUpstream([anthropicTextDelta('hello'), anthropicUsage(1, 1), anthropicStop]); const res = trackStreamResponse(upstream, { ...noopTrack, completionMarker: /event:\s*message_stop\b/ }); const text = await res.text(); assert.ok(text.includes('message_stop'));
 });
-
-// ---- Dashboard D1 cache: coalescing + TTL --------------------------------------
 
 await test('dashboard D1 cache coalesces concurrent requests within TTL', async () => {
-  const d1 = createMockD1();
-  const env = deepClone(ENV);
-  env.TOKEN_STATS_DB = d1;
-  const HOUR = 3_600_000;
-  const h0 = Math.floor(Date.now() / HOUR) * HOUR;
-  await persistTokenUsage(env, { prompt_tokens: 100, completion_tokens: 0 }, h0, 'code-max');
-  const [html1, html2] = await Promise.all([
-    pageText(anonRequest(), env),
-    pageText(anonRequest(), env),
-  ]);
-  assert.equal(html1, html2, 'concurrent requests share cached D1 result');
-  // New query count: queryTokenSummary (2 reads: totals + hourly windows),
-  // queryTokenDailySeries (3 reads: daily table + today overlay + fallback),
-  // queryTokenModelUsage (1), queryRecentModelEvidence 24h (1),
-  // queryRecentModelEvidence 7d historical (1),
-  // queryAllModelsTtftPercentiles (1 grouped query, all models) = 9 total.
-  assert.equal(d1._reads.length, 9, 'two concurrent pages issue summary + series + evidence + ttft queries');
-  await pageText(anonRequest(), env);
-  assert.equal(d1._reads.length, 9, 'a later request inside the TTL performs no additional reads');
+  const d1 = createMockD1(); const env = deepClone(ENV); env.TOKEN_STATS_DB = d1; const HOUR = 3_600_000; const h0 = Math.floor(Date.now() / HOUR) * HOUR; await persistTokenUsage(env, { prompt_tokens: 100, completion_tokens: 0 }, h0, 'code-max'); const [html1, html2] = await Promise.all([pageText(anonRequest(), env), pageText(anonRequest(), env)]); assert.equal(html1, html2); assert.equal(d1._reads.length, 9); await pageText(anonRequest(), env); assert.equal(d1._reads.length, 9);
 });
-
 await test('dashboard D1 cache refreshes after TTL expires', async () => {
-  const d1 = createMockD1();
-  const env = deepClone(ENV);
-  env.TOKEN_STATS_DB = d1;
-  const HOUR = 3_600_000;
-  const h0 = Math.floor(Date.now() / HOUR) * HOUR;
-  await persistTokenUsage(env, { prompt_tokens: 100, completion_tokens: 0 }, h0, 'code-max');
-  const realNow = Date.now;
-  let fakeNow = h0 + 1_000;
-  Date.now = () => fakeNow;
-  try {
-    const html1 = await pageText(anonRequest(), env);
-    assert.ok(html1.includes('code-max'), 'initial data present');
-    // Initial load: 9 reads (see cache coalescing test).
-    assert.equal(d1._reads.length, 9);
-    await persistTokenUsage(env, { prompt_tokens: 200, completion_tokens: 0 }, h0, 'ultra');
-    fakeNow += 44_000;
-    const cached = await pageText(anonRequest(), env);
-    // Use token count '200' to verify cache: ultra's 200 tokens should NOT
-    // appear in the model-usage section while the cache is still valid.
-    // (The model name 'ultra' always appears in the fixed model status grid.)
-    assert.ok(!cached.includes('>200<'), 'new data stays hidden before TTL expiry');
-    assert.equal(d1._reads.length, 9, 'no refresh before TTL expiry');
-    fakeNow += 2_000;
-    const refreshed = await pageText(anonRequest(), env);
-    assert.ok(refreshed.includes('>200<'), 'new model data appears after TTL expiry');
-    assert.ok(refreshed.includes('code-max'), 'old model remains after refresh');
-    // After TTL expiry: 9 initial + 9 refresh reads = 18 total. The grouped
-    // TTFT query is 1 read regardless of how many models now have rows.
-    assert.equal(d1._reads.length, 18, 'TTL expiry performs exactly one new query set');
-  } finally {
-    Date.now = realNow;
-  }
+  const d1 = createMockD1(); const env = deepClone(ENV); env.TOKEN_STATS_DB = d1; const HOUR = 3_600_000; const h0 = Math.floor(Date.now() / HOUR) * HOUR; await persistTokenUsage(env, { prompt_tokens: 100, completion_tokens: 0 }, h0, 'code-max'); const realNow = Date.now; let fakeNow = h0 + 1_000; Date.now = () => fakeNow;
+  try { const html1 = await pageText(anonRequest(), env); assert.ok(html1.includes('code-max')); assert.equal(d1._reads.length, 9); await persistTokenUsage(env, { prompt_tokens: 200, completion_tokens: 0 }, h0, 'ultra'); fakeNow += 44_000; const cached = await pageText(anonRequest(), env); assert.ok(!cached.includes('>200<')); assert.equal(d1._reads.length, 9); fakeNow += 2_000; const refreshed = await pageText(anonRequest(), env); assert.ok(refreshed.includes('>200<')); assert.ok(refreshed.includes('code-max')); assert.equal(d1._reads.length, 18); } finally { Date.now = realNow; }
 });
-
 await test('dashboard cache does not leak across different D1 bindings', async () => {
-  const d1a = createMockD1();
-  const d1b = createMockD1();
-  const envA = deepClone(ENV);
-  const envB = deepClone(ENV);
-  envA.TOKEN_STATS_DB = d1a;
-  envB.TOKEN_STATS_DB = d1b;
-  const HOUR = 3_600_000;
-  const h0 = Math.floor(Date.now() / HOUR) * HOUR;
-  await persistTokenUsage(envA, { prompt_tokens: 100, completion_tokens: 0 }, h0, 'model-a');
-  await persistTokenUsage(envB, { prompt_tokens: 200, completion_tokens: 0 }, h0, 'model-b');
-  const htmlA = await pageText(anonRequest(), envA);
-  assert.ok(htmlA.includes('model-a'));
-  assert.ok(!htmlA.includes('model-b'));
-  const htmlB = await pageText(anonRequest(), envB);
-  assert.ok(htmlB.includes('model-b'));
-  assert.ok(!htmlB.includes('model-a'));
-  assert.equal(d1a._reads.length, 9);
-  assert.equal(d1b._reads.length, 9);
+  const d1a = createMockD1(); const d1b = createMockD1(); const envA = deepClone(ENV); const envB = deepClone(ENV); envA.TOKEN_STATS_DB = d1a; envB.TOKEN_STATS_DB = d1b; const HOUR = 3_600_000; const h0 = Math.floor(Date.now() / HOUR) * HOUR; await persistTokenUsage(envA, { prompt_tokens: 100, completion_tokens: 0 }, h0, 'model-a'); await persistTokenUsage(envB, { prompt_tokens: 200, completion_tokens: 0 }, h0, 'model-b'); const htmlA = await pageText(anonRequest(), envA); assert.ok(htmlA.includes('model-a')); assert.ok(!htmlA.includes('model-b')); const htmlB = await pageText(anonRequest(), envB); assert.ok(htmlB.includes('model-b')); assert.ok(!htmlB.includes('model-a')); assert.equal(d1a._reads.length, 9); assert.equal(d1b._reads.length, 9);
 });
-
-// P2-5: public homepage must never leak raw D1 errors (table names, SQL,
-// binding names, exception text) into the HTML
 await test('public homepage does not leak raw D1 errors in degraded state', async () => {
-  __resetDashboardCacheForTests();
-  const d1 = createMockD1({ failReads: true });
-  const env = deepClone(ENV);
-  env.TOKEN_STATS_DB = d1;
-  const html = await pageText(anonRequest(), env);
-  // Must show the generic degraded message
-  assert.ok(html.includes('统计暂不可用'), 'shows generic degraded message');
-  // Must NOT leak any raw D1 internals
-  assert.ok(!html.includes('token_usage_hourly'), 'table name not leaked');
-  assert.ok(!html.includes('token_usage_model_hourly'), 'model table name not leaked');
-  assert.ok(!html.includes('TOKEN_STATS_DB'), 'binding name not leaked');
-  assert.ok(!html.includes('mock D1 read failure'), 'exception text not leaked');
-  assert.ok(!html.includes('SELECT'), 'SQL not leaked');
-  assert.ok(!html.includes('FROM'), 'SQL not leaked');
-  assert.ok(!html.includes('WHERE'), 'SQL not leaked');
-  assert.ok(!html.includes('GROUP BY'), 'SQL not leaked');
-  assert.ok(!html.includes('ORDER BY'), 'SQL not leaked');
+  __resetDashboardCacheForTests(); const d1 = createMockD1({ failReads: true }); const env = deepClone(ENV); env.TOKEN_STATS_DB = d1; const html = await pageText(anonRequest(), env); assert.ok(html.includes('统计暂不可用')); for (const leak of ['token_usage_hourly','token_usage_model_hourly','TOKEN_STATS_DB','mock D1 read failure','SELECT','FROM','WHERE','GROUP BY','ORDER BY']) assert.ok(!html.includes(leak));
 });
-
 await test('model usage panel does not leak raw D1 errors in degraded state', async () => {
-  __resetDashboardCacheForTests();
-  const d1 = createMockD1({ failReads: true });
-  const env = deepClone(ENV);
-  env.TOKEN_STATS_DB = d1;
-  const html = await pageText(anonRequest(), env);
-  // Model panel should show em-dash, not error
-  assert.ok(html.includes('模型使用'), 'model panel title present');
-  assert.ok(html.includes('model-usage-empty'), 'model panel shows degraded state');
-  // Must NOT leak any raw D1 internals
-  assert.ok(!html.includes('token_usage_model_hourly'), 'model table name not leaked');
-  assert.ok(!html.includes('mock D1 read failure'), 'exception text not leaked');
-  assert.ok(!html.includes('SELECT'), 'SQL not leaked');
-  assert.ok(!html.includes('FROM'), 'SQL not leaked');
+  __resetDashboardCacheForTests(); const d1 = createMockD1({ failReads: true }); const env = deepClone(ENV); env.TOKEN_STATS_DB = d1; const html = await pageText(anonRequest(), env); assert.ok(html.includes('模型使用')); assert.ok(html.includes('model-usage-empty')); for (const leak of ['token_usage_model_hourly','mock D1 read failure','SELECT','FROM']) assert.ok(!html.includes(leak));
 });
-
-// ---- Dashboard structure: 模型状态 + 使用情况 semantic boundaries ----------------
-
 await test('模型状态 section has model rows with status, P50, P95, sample count', async () => {
-  __resetDashboardCacheForTests();
-  const d1 = createMockD1();
-  const env = deepClone(ENV);
-  env.TOKEN_STATS_DB = d1;
-  // Provide node config so models appear in the status section
-  env.TIER1_NODES_CONFIG_01 = JSON.stringify([
-    { id: 'node-a', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], base_url: 'https://a.example.com/v1', models: { 'max': 'up-max' }, limits: { concurrency: 1 } },
-  ]);
-  env.TIER1_NODES_SECRETS_01 = JSON.stringify({ 'node-a': 'test-key' });
-  const html = await pageText(anonRequest(), env);
-  // Model status section must have rows with P50/P95/samples and status
-  assert.ok(html.includes('P50'), 'P50 label');
-  assert.ok(html.includes('P95'), 'P95 label');
-  assert.ok(html.includes('samples'), 'sample count label');
-  assert.ok(html.includes('mr-status'), 'status class present');
-  assert.ok(html.includes('status-grid'), 'status-grid layout present');
+  __resetDashboardCacheForTests(); const d1 = createMockD1(); const env = deepClone(ENV); env.TOKEN_STATS_DB = d1; env.TIER1_NODES_CONFIG_01 = JSON.stringify([{ id: 'node-a', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], base_url: 'https://a.example.com/v1', models: { 'max': 'up-max' }, limits: { concurrency: 1 } }]); env.TIER1_NODES_SECRETS_01 = JSON.stringify({ 'node-a': 'test-key' }); const html = await pageText(anonRequest(), env); assert.ok(html.includes('P50')); assert.ok(html.includes('P95')); assert.ok(html.includes('samples')); assert.ok(html.includes('mr-status')); assert.ok(html.includes('status-grid'));
 });
-
 await test('使用情况 section does NOT contain success rate, reliability, TTFT P50, TTFT P95', async () => {
-  __resetDashboardCacheForTests();
-  const d1 = createMockD1();
-  const env = deepClone(ENV);
-  env.TOKEN_STATS_DB = d1;
-  const html = await pageText(anonRequest(), env);
-  // Usage section must NOT contain performance metrics
-  assert.ok(!html.includes('perf-section'), 'no performance section');
-  assert.ok(!html.includes('成功率'), 'no success rate text');
-  assert.ok(!html.includes('reliability'), 'no reliability text');
-  assert.ok(!html.includes('Reliability'), 'no Reliability text');
-  assert.ok(!html.includes('Model Reliability'), 'no Model Reliability text');
-  assert.ok(!html.includes('Provider Reliability'), 'no Provider Reliability text');
-  assert.ok(!html.includes('可靠性'), 'no reliability Chinese text');
-  // Usage section should contain expected content
-  assert.ok(html.includes('使用情况'), 'usage section title present');
-  assert.ok(html.includes('Token 活动'), 'heatmap present');
+  __resetDashboardCacheForTests(); const d1 = createMockD1(); const env = deepClone(ENV); env.TOKEN_STATS_DB = d1; const html = await pageText(anonRequest(), env); for (const leak of ['perf-section','成功率','reliability','Reliability','Model Reliability','Provider Reliability','可靠性']) assert.ok(!html.includes(leak)); assert.ok(html.includes('使用情况')); assert.ok(html.includes('Token 活动'));
 });
-
 await test('public dashboard does not leak provider, node id, tier, credential, key', async () => {
-  __resetDashboardCacheForTests();
-  const d1 = createMockD1();
-  const env = deepClone(ENV);
-  env.TOKEN_STATS_DB = d1;
-  const html = await pageText(anonRequest(), env);
-  // Must NOT leak internal details
-  assert.ok(!html.includes('provider'), 'provider not leaked');
-  assert.ok(!html.includes('node'), 'node id not leaked');
-  assert.ok(!html.includes('tier'), 'tier not leaked');
-  assert.ok(!html.includes('credential'), 'credential not leaked');
-  assert.ok(!html.includes('api_key'), 'api_key not leaked');
-  assert.ok(!html.includes('cooldown'), 'cooldown not leaked');
-  assert.ok(!html.includes('circuit'), 'circuit not leaked');
+  __resetDashboardCacheForTests(); const d1 = createMockD1(); const env = deepClone(ENV); env.TOKEN_STATS_DB = d1; const html = await pageText(anonRequest(), env); for (const leak of ['provider','node','tier','credential','api_key','cooldown','circuit']) assert.ok(!html.includes(leak));
 });
-
 await test('model status section is structurally separate from usage section', async () => {
-  __resetDashboardCacheForTests();
-  const d1 = createMockD1();
-  const env = deepClone(ENV);
-  env.TOKEN_STATS_DB = d1;
-  // Provide a node config so the dashboard has at least one model in the public
-  // status section. (Node mappings are the primary source of public models
-  // under the v1.2.6 governance model; MODELS_CONFIG alone no longer surfaces
-  // a model that no node maps to.)
-  env.TIER1_NODES_CONFIG_01 = JSON.stringify([
-    { id: 'node-a', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], base_url: 'https://a.example.com/v1', models: { 'unconfigured-model': 'up-x' }, limits: { concurrency: 1 } },
-  ]);
-  env.TIER1_NODES_SECRETS_01 = JSON.stringify({ 'node-a': 'test-key' });
-  const html = await pageText(anonRequest(), env);
-  // Both sections exist as separate <section> elements
-  const modelStatusIdx = html.indexOf('模型状态');
-  const usageIdx = html.indexOf('使用情况');
-  assert.ok(modelStatusIdx >= 0, '模型状态 section exists');
-  assert.ok(usageIdx >= 0, '使用情况 section exists');
-  assert.ok(modelStatusIdx < usageIdx, '模型状态 appears before 使用情况');
-  // Performance section should NOT exist anywhere
-  assert.ok(!html.includes('perf-section'), 'no perf-section anywhere');
-  assert.ok(!html.includes('可靠性 · 性能'), 'no old performance section title');
-  assert.ok(html.includes('status-grid'), 'status-grid layout present');
+  __resetDashboardCacheForTests(); const d1 = createMockD1(); const env = deepClone(ENV); env.TOKEN_STATS_DB = d1; env.TIER1_NODES_CONFIG_01 = JSON.stringify([{ id: 'node-a', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], base_url: 'https://a.example.com/v1', models: { 'unconfigured-model': 'up-x' }, limits: { concurrency: 1 } }]); env.TIER1_NODES_SECRETS_01 = JSON.stringify({ 'node-a': 'test-key' }); const html = await pageText(anonRequest(), env); const modelStatusIdx = html.indexOf('模型状态'); const usageIdx = html.indexOf('使用情况'); assert.ok(modelStatusIdx >= 0); assert.ok(usageIdx >= 0); assert.ok(modelStatusIdx < usageIdx); assert.ok(!html.includes('perf-section')); assert.ok(!html.includes('可靠性 · 性能')); assert.ok(html.includes('status-grid'));
 });
 
 if (!process.exitCode) console.log(`\ntoken-usage tests passed (${passed}).`);

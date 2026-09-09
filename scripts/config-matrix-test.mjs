@@ -45,8 +45,9 @@ function test(name, fn) {
   }
 }
 
+const access = { GATEWAY_ACCESS_KEY_AIR: 'k', GATEWAY_ACCESS_MODELS_AIR: '*' };
 const env = (models) => ({
-  GATEWAY_ACCESS_KEY: 'k',
+  ...access,
   ...(models ? { MODELS_CONFIG: JSON.stringify(models) } : {}),
 });
 const node = (id, models) => ({
@@ -176,7 +177,7 @@ test('MODELS_CONFIG never widens: a model in MODELS_CONFIG but no node mapping i
 
 test('secret tier: same tier may bind across different shard suffixes', () => {
   const cfg = loadGatewayConfig({
-    GATEWAY_ACCESS_KEY: 'k',
+    ...access,
     TIER1_NODES_CONFIG_01: JSON.stringify([configNode('same-tier')]),
     TIER1_NODES_SECRETS_07: JSON.stringify({ 'same-tier': 'secret' }),
   });
@@ -187,7 +188,7 @@ test('secret tier: same tier may bind across different shard suffixes', () => {
 
 test('secret tier: TIER2 node cannot consume a TIER1 credential', () => {
   const cfg = loadGatewayConfig({
-    GATEWAY_ACCESS_KEY: 'k',
+    ...access,
     TIER2_NODES_CONFIG_01: JSON.stringify([configNode('tier2-cross')]),
     TIER1_NODES_SECRETS_01: JSON.stringify({ 'tier2-cross': 'secret' }),
   });
@@ -200,7 +201,7 @@ test('secret tier: TIER2 node cannot consume a TIER1 credential', () => {
 
 test('secret tier: TIER3 node cannot consume a TIER2 credential', () => {
   const cfg = loadGatewayConfig({
-    GATEWAY_ACCESS_KEY: 'k',
+    ...access,
     TIER3_NODES_CONFIG_01: JSON.stringify([configNode('tier3-cross')]),
     TIER2_NODES_SECRETS_07: JSON.stringify({ 'tier3-cross': 'secret' }),
   });
@@ -237,7 +238,7 @@ test('POLICIES_CONFIG rejects explicit tier_attempts total above max_attempts', 
     `expected tier_attempts total diagnostic, got ${diags}`);
 
   const cfg = loadGatewayConfig({
-    GATEWAY_ACCESS_KEY: 'k',
+    ...access,
     TIER2_NODES_CONFIG_01: JSON.stringify([configNode('over-budget')]),
     TIER2_NODES_SECRETS_01: JSON.stringify({ 'over-budget': 'secret' }),
     ...extra,
