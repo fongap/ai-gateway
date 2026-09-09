@@ -100,10 +100,12 @@ const ACCESS_FACT_FILES = [
   '.dev.vars.example',
   'config/access-keys.example.json',
 ];
+const GROUP_KEY_DOC = /GATEWAY_ACCESS_KEY_(?:AIR|PRO|MAX|ULTRA|AGENT|<GROUP>|\{AIR,PRO,MAX,ULTRA,AGENT\})/;
+const GROUP_MODELS_DOC = /GATEWAY_ACCESS_MODELS_(?:AIR|PRO|MAX|ULTRA|AGENT|<GROUP>|\{AIR,PRO,MAX,ULTRA,AGENT\})/;
 for (const file of ACCESS_FACT_FILES) {
   const text = readDoc(file);
-  assert.match(text, /GATEWAY_ACCESS_KEY_(?:AIR|PRO|MAX|ULTRA|AGENT)/, `${file}: must document at least one current Group Key`);
-  assert.match(text, /GATEWAY_ACCESS_MODELS_(?:AIR|PRO|MAX|ULTRA|AGENT)/, `${file}: must document the corresponding Group Models`);
+  assert.match(text, GROUP_KEY_DOC, `${file}: must document the current Group Keys`);
+  assert.match(text, GROUP_MODELS_DOC, `${file}: must document the corresponding Group Models`);
   passed++;
   console.log(`ok - ${file} uses the current Gateway Access Group model`);
 }
