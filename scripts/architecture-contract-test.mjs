@@ -66,7 +66,8 @@ function makeEnv({ tier1, tier2, tier3, secrets, extraEnv } = {}) {
   const tier2Secrets = tierSecrets(tier2);
   const tier3Secrets = tierSecrets(tier3);
   return {
-    GATEWAY_ACCESS_KEY: ACCESS_KEY,
+    GATEWAY_ACCESS_KEY_AIR: ACCESS_KEY,
+    GATEWAY_ACCESS_MODELS_AIR: '*',
     TIER1_SCHEDULER_SEED: 'arch-contract-test',
     ...(tier1 ? { TIER1_NODES_CONFIG_01: JSON.stringify(tier1) } : {}),
     ...(tier2 ? { TIER2_NODES_CONFIG_01: JSON.stringify(tier2) } : {}),
@@ -183,11 +184,7 @@ await test('Contract 03: Default ON — Anthropic request with only OpenAI nodes
 await test('Contract 03b: PROTOCOL_FALLBACKS=disable -> 404', async () => {
   resetMock();
   routeHandlers['o1.example.com'] = () => jsonUpstream(okCompletion());
-  const env = makeEnv({
-    tier1: [openaiChatNode('o1')],
-    secrets: { o1: 'k' },
-    extraEnv: { PROTOCOL_FALLBACKS: 'disable' },
-  });
+  const env = makeEnv({ tier1: [openaiChatNode('o1')], secrets: { o1: 'k' }, extraEnv: { PROTOCOL_FALLBACKS: 'disable' } });
   const res = await worker.fetch(messagesRequest({}), env, {});
   assert.equal(res.status, 404, 'explicit disable -> fail closed (no native, no fallback)');
   assert.equal(upstreamCalls.length, 0, 'no upstream contacted when fallback is disabled');
@@ -199,11 +196,7 @@ await test('Contract 03b: PROTOCOL_FALLBACKS=disable -> 404', async () => {
 await test('Contract 04: Unsupported Conversion (responses target) -> 404', async () => {
   resetMock();
   routeHandlers['o-resp.example.com'] = () => jsonUpstream({ object: 'response' });
-  const env = makeEnv({
-    tier1: [openaiResponsesNode('o-resp')],
-    secrets: { 'o-resp': 'k' },
-    extraEnv: { PROTOCOL_FALLBACKS: JSON.stringify({ 'anthropic:messages': ['openai:chat_completions'] }) },
-  });
+  const env = makeEnv({ tier1: [openaiResponsesNode('o-resp')], secrets: { 'o-resp': 'k' }, extraEnv: { PROTOCOL_FALLBACKS: JSON.stringify({ 'anthropic:messages': ['openai:chat_completions'] }) } });
   const res = await worker.fetch(messagesRequest({}), env, {});
   assert.equal(res.status, 404, 'unsupported conversion target must fail closed');
   assert.equal(upstreamCalls.length, 0);
@@ -259,20 +252,11 @@ await test('Contract 06: Stream commit -> no transparent failover', async () => 
       'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
       'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}\n\n',
     ];
-    return new ReadableStream({
-      pull(controller) {
-        if (i >= lines.length) { controller.error(new Error('upstream died')); return; }
-        controller.enqueue(encoder.encode(lines[i++]));
-      },
-    });
+    return new ReadableStream({ pull(controller) { if (i >= lines.length) { controller.error(new Error('upstream died')); return; } controller.enqueue(encoder.encode(lines[i++])); } });
   };
   routeHandlers['an1.example.com'] = () => new Response(streamThenFail(), { status: 200, headers: { 'content-type': 'text/event-stream' } });
   routeHandlers['o1.example.com'] = () => jsonUpstream(okCompletion());
-  const env = makeEnv({
-    tier1: [anthropicNode('an1'), openaiChatNode('o1')],
-    secrets: { an1: 'k', o1: 'k' },
-    extraEnv: { PROTOCOL_FALLBACKS: JSON.stringify({ 'anthropic:messages': ['openai:chat_completions'] }) },
-  });
+  const env = makeEnv({ tier1: [anthropicNode('an1'), openaiChatNode('o1')], secrets: { an1: 'k', o1: 'k' }, extraEnv: { PROTOCOL_FALLBACKS: JSON.stringify({ 'anthropic:messages': ['openai:chat_completions'] }) } });
   const res = await worker.fetch(messagesRequest({ stream: true }), env, {});
   const hosts = upstreamCalls.map(c => c.host);
   assert.equal(hosts.filter(h => h === 'an1.example.com').length, 1, 'primary (streaming native) must be contacted exactly once');
@@ -290,11 +274,7 @@ await test('Contract 07: Shared failover budget (attempts + budget)', async () =
   const env = makeEnv({
     tier1: [anthropicNode('a1'), anthropicNode('a2'), openaiChatNode('o1')],
     secrets: { a1: 'k', a2: 'k', o1: 'k' },
-    extraEnv: {
-      PROTOCOL_FALLBACKS: JSON.stringify({ 'anthropic:messages': ['openai:chat_completions'] }),
-      MODELS_CONFIG: JSON.stringify({ 'Code-Max': { policy: 'default' } }),
-      POLICIES_CONFIG: JSON.stringify({ default: { max_attempts: 3 } }),
-    },
+    extraEnv: { PROTOCOL_FALLBACKS: JSON.stringify({ 'anthropic:messages': ['openai:chat_completions'] }), MODELS_CONFIG: JSON.stringify({ 'Code-Max': { policy: 'default' } }), POLICIES_CONFIG: JSON.stringify({ default: { max_attempts: 3 } }) },
   });
   const res = await worker.fetch(messagesRequest({}), env, {});
   assert.equal(res.status, 200, 'should succeed on 3rd attempt (fallback)');
@@ -311,25 +291,14 @@ await test('Contract 07: Shared failover budget (attempts + budget)', async () =
 // =========================================================================
 await test('Contract 08: Logical attempt != dispatch count', async () => {
   resetMock();
-  const hangUntilAbort = () => async (req, url, init) => new Promise((_, reject) => {
-    if (init?.signal?.aborted) { reject(new Error('aborted')); return; }
-    init?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
-  });
-  const respondAfter = (ms, data) => async (req, url, init) => {
-    await new Promise(r => setTimeout(r, ms));
-    if (init?.signal?.aborted) throw new Error('aborted');
-    return jsonUpstream(data);
-  };
+  const hangUntilAbort = () => async (req, url, init) => new Promise((_, reject) => { if (init?.signal?.aborted) { reject(new Error('aborted')); return; } init?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true }); });
+  const respondAfter = (ms, data) => async (req, url, init) => { await new Promise(r => setTimeout(r, ms)); if (init?.signal?.aborted) throw new Error('aborted'); return jsonUpstream(data); };
   routeHandlers['an-slow.example.com'] = hangUntilAbort();
   routeHandlers['an-twin.example.com'] = respondAfter(150, okMessage());
   const env = makeEnv({
     tier1: [anthropicNode('an-slow'), anthropicNode('an-twin')],
     secrets: { 'an-slow': 'k', 'an-twin': 'k' },
-    extraEnv: {
-      HEDGE_DELAY_MS: '120', FAILOVER_BUDGET_MS: '30000', UPSTREAM_HEADERS_TIMEOUT_MS: '2000',
-      POLICIES_CONFIG: JSON.stringify({ default: { max_attempts: 5, hedge: { enabled: true, tiers: ['tier1'] } } }),
-      MODELS_CONFIG: JSON.stringify({ 'Code-Max': { policy: 'default' } }),
-    },
+    extraEnv: { HEDGE_DELAY_MS: '120', FAILOVER_BUDGET_MS: '30000', UPSTREAM_HEADERS_TIMEOUT_MS: '2000', POLICIES_CONFIG: JSON.stringify({ default: { max_attempts: 5, hedge: { enabled: true, tiers: ['tier1'] } } }), MODELS_CONFIG: JSON.stringify({ 'Code-Max': { policy: 'default' } }) },
   });
   const res = await worker.fetch(messagesRequest({}), env, {});
   assert.equal(res.status, 200);
@@ -346,15 +315,9 @@ await test('Contract 08: Logical attempt != dispatch count', async () => {
 await test('Contract 09: Pre-dispatch denial does not charge budgets', async () => {
   resetMock();
   let cfDenied = false;
-  const mockQuota = {
-    limit: async () => { cfDenied = true; return { success: false }; }
-  };
+  const mockQuota = { limit: async () => { cfDenied = true; return { success: false }; } };
   routeHandlers['an1.example.com'] = () => jsonUpstream(okMessage());
-  const env = makeEnv({
-    tier1: [anthropicNode('an1', { limits: { concurrency: 1, rpm: 60, rpm_mode: 'hard' } })],
-    secrets: { an1: 'k' },
-    extraEnv: { QUOTA_RATE_LIMITER: mockQuota },
-  });
+  const env = makeEnv({ tier1: [anthropicNode('an1', { limits: { concurrency: 1, rpm: 60, rpm_mode: 'hard' } })], secrets: { an1: 'k' }, extraEnv: { QUOTA_RATE_LIMITER: mockQuota } });
   const res = await worker.fetch(messagesRequest({}), env, {});
   assert.ok(cfDenied, 'CF rate limiter was invoked');
   assert.equal(upstreamCalls.length, 0, 'no upstream call on pre-dispatch denial');
@@ -366,16 +329,9 @@ await test('Contract 09: Pre-dispatch denial does not charge budgets', async () 
 // =========================================================================
 await test('Contract 10: Closed Catalog - wildcard node rejects unknown model', async () => {
   resetMock();
-  const wildcardNode = {
-    id: 'wc1', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'],
-    base_url: 'https://wc1.example.com/v1', models: {},
-  };
+  const wildcardNode = { id: 'wc1', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], base_url: 'https://wc1.example.com/v1', models: {} };
   routeHandlers['wc1.example.com'] = () => jsonUpstream(okCompletion());
-  const env = makeEnv({
-    tier1: [wildcardNode],
-    secrets: { wc1: 'k' },
-    extraEnv: { MODELS_CONFIG: JSON.stringify({ 'Code-Max': { policy: 'default' } }) },
-  });
+  const env = makeEnv({ tier1: [wildcardNode], secrets: { wc1: 'k' }, extraEnv: { MODELS_CONFIG: JSON.stringify({ 'Code-Max': { policy: 'default' } }) } });
   const resKnown = await worker.fetch(chatRequest({}), env, {});
   assert.equal(resKnown.status, 200);
   const resUnknown = await worker.fetch(chatRequest({ model: 'random-model-xxx' }), env, {});
@@ -385,31 +341,17 @@ await test('Contract 10: Closed Catalog - wildcard node rejects unknown model', 
 // =========================================================================
 // Contract 11 — Visible == Callable
 // =========================================================================
-await test('Contract 11: Visible == Callable (key-scoped)', () => {
-  assert.ok(true, 'Visible == Callable enforced in model-authz.js and modelsListResponse');
-});
+await test('Contract 11: Visible == Callable (key-scoped)', () => { assert.ok(true, 'Visible == Callable enforced in model-authz.js and modelsListResponse'); });
 
 // =========================================================================
 // Contract 12 — Model Missing Isolation
 // =========================================================================
 await test('Contract 12: Model Missing Isolation (per node-model pair)', async () => {
   resetMock();
-  routeHandlers['an1.example.com'] = async (req) => {
-    const body = await req.json();
-    if (body.model === 'up-max') {
-      return jsonUpstream({ error: { message: 'Model not found' } }, 404);
-    }
-    return jsonUpstream(okMessage());
-  };
-  const env = makeEnv({
-    tier1: [anthropicNode('an1', { models: { 'Code-Max': 'up-max', 'Code-Pro': 'up-pro' } })],
-    secrets: { an1: 'k' },
-    extraEnv: { MODELS_CONFIG: JSON.stringify({ 'Code-Max': { policy: 'default' }, 'Code-Pro': { policy: 'default' } }) },
-  });
-  // Code-Max -> upstream 404 -> model-missing cooldown for (an1, Code-Max) -> gateway exhausts -> 502
+  routeHandlers['an1.example.com'] = async (req) => { const body = await req.json(); if (body.model === 'up-max') return jsonUpstream({ error: { message: 'Model not found' } }, 404); return jsonUpstream(okMessage()); };
+  const env = makeEnv({ tier1: [anthropicNode('an1', { models: { 'Code-Max': 'up-max', 'Code-Pro': 'up-pro' } })], secrets: { an1: 'k' }, extraEnv: { MODELS_CONFIG: JSON.stringify({ 'Code-Max': { policy: 'default' }, 'Code-Pro': { policy: 'default' } }) } });
   const res1 = await worker.fetch(messagesRequest({ model: 'Code-Max' }), env, {});
   assert.ok(res1.status >= 400, 'Code-Max 404 from upstream -> gateway error (exhausted or client error)');
-  // Code-Pro -> same node, different model -> must still work
   const res2 = await worker.fetch(messagesRequest({ model: 'Code-Pro' }), env, {});
   assert.equal(res2.status, 200, 'Code-Pro must still be served after Code-Max 404 on same node');
 });
@@ -417,9 +359,7 @@ await test('Contract 12: Model Missing Isolation (per node-model pair)', async (
 // =========================================================================
 // Contract 13 — Runtime Projection Isolation
 // =========================================================================
-await test('Contract 13: Runtime projection does not feedback to hot path', () => {
-  assert.ok(true, 'model-status is read-only projection; no feedback to hot path');
-});
+await test('Contract 13: Runtime projection does not feedback to hot path', () => { assert.ok(true, 'model-status is read-only projection; no feedback to hot path'); });
 
 // =========================================================================
 // Contract 14 — D1 Outside Hot Routing Decision
@@ -427,20 +367,13 @@ await test('Contract 13: Runtime projection does not feedback to hot path', () =
 await test('Contract 14: D1 failure does not block routing', async () => {
   resetMock();
   routeHandlers['an1.example.com'] = () => jsonUpstream(okMessage());
-  const env = makeEnv({
-    tier1: [anthropicNode('an1')],
-    secrets: { an1: 'k' },
-    // NO TOKEN_STATS_DB binding
-  });
+  const env = makeEnv({ tier1: [anthropicNode('an1')], secrets: { an1: 'k' } });
   const res = await worker.fetch(messagesRequest({}), env, {});
   assert.equal(res.status, 200, 'AI request succeeds without D1 binding');
 });
 
 // Contract 15 — Unified Scheduler Return Type
 // =========================================================================
-// Both picker paths expose PickedCandidate | null. The result is either
-// { node }, { raceLost: true }, or null, so slot races remain distinct from
-// the absence of an eligible candidate.
 await test('Contract 15: Tier 2/3 race-loss returns { raceLost: true }, not null (unified return)', async () => {
   resetMock();
   const { pickCandidate } = await import('../src/scheduler/scheduler.ts');
@@ -452,36 +385,26 @@ await test('Contract 15: Tier 2/3 race-loss returns { raceLost: true }, not null
   ];
   const req = { model: 'Code-Max', protocol: 'openai', surface: 'chat_completions' };
   const r1 = pickCandidate(nodes, req, new Set());
-  assert.ok(r1, 'first pick should succeed');
-  assert.ok(r1.node, 'first pick should return { node: RuntimeNode }');
-  assert.ok(!r1.raceLost, 'first pick should not have raceLost');
-  assert.ok(!r1.releaseToken, 'Tier 2/3 pick should not have a releaseToken (Tier 1 only)');
+  assert.ok(r1); assert.ok(r1.node); assert.ok(!r1.raceLost); assert.ok(!r1.releaseToken);
   const r2 = pickCandidate(nodes, req, new Set([r1.node.id]));
-  assert.ok(r2 && r2.node, 'second pick should succeed with the other node');
+  assert.ok(r2 && r2.node);
   const r3 = pickCandidate(nodes, req, new Set([r1.node.id, r2.node.id]));
-  assert.equal(r3, null, 'third pick with all attempted should return null');
-  assert.ok('raceLost' in r1 || r1.raceLost === undefined, 'PickedCandidate has raceLost field (undefined when not race-lost)');
-  assert.ok('releaseToken' in r1 || r1.releaseToken === undefined, 'PickedCandidate has releaseToken field (undefined for Tier 2/3)');
+  assert.equal(r3, null);
+  assert.ok('raceLost' in r1 || r1.raceLost === undefined);
+  assert.ok('releaseToken' in r1 || r1.releaseToken === undefined);
   reset();
 });
 
 // Contract 16 — Adaptive Budget
 // =========================================================================
-// `weighted` distributes non-explicit budget by live dispatchable node count.
-// `even` keeps the default Tier precedence and gives the first dispatchable
-// tier the computed surplus. Explicit tier_attempts stays fixed in either mode.
 await test('Contract 16: weighted budget split distributes surplus by live node count', async () => {
   resetMock();
   const { computeTierCaps } = await import('../src/request/tier-loop.ts');
   const { __resetAllStateForTests: reset } = await import('../src/reliability/node-state.ts');
   reset();
-  // No Tier 1 nodes. Tier 2 has 1 node, Tier 3 has 4 nodes — with weighted
-  // split, Tier 3 should get more attempts than Tier 2.
   const tiers = {
     1: [],
-    2: [
-      { id: 'r5-t2-a', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], models: { 'Code-Max': 'up' }, priority: 10, limits: { concurrency: 1, rpm: 0, rpmMode: 'hard' } },
-    ],
+    2: [{ id: 'r5-t2-a', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], models: { 'Code-Max': 'up' }, priority: 10, limits: { concurrency: 1, rpm: 0, rpmMode: 'hard' } }],
     3: [
       { id: 'r5-t3-a', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], models: { 'Code-Max': 'up' }, priority: 10, limits: { concurrency: 1, rpm: 0, rpmMode: 'hard' } },
       { id: 'r5-t3-b', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], models: { 'Code-Max': 'up' }, priority: 10, limits: { concurrency: 1, rpm: 0, rpmMode: 'hard' } },
@@ -492,23 +415,23 @@ await test('Contract 16: weighted budget split distributes surplus by live node 
   const req = { model: 'Code-Max', protocol: 'openai', surface: 'chat_completions' };
   const evenPolicy = { maxAttempts: 6, tierAttempts: null, hedge: null, firstEventTimeoutMs: null, budgetSplit: null };
   const evenCaps = computeTierCaps(tiers, req, new Set(), evenPolicy, new Set());
-  assert.equal(evenCaps[1], 0, 'Tier 1 has no nodes, gets 0');
-  assert.equal(evenCaps[2], 5, 'default "even" budget: Tier 2 gets the entire surplus (1 baseline + 4 surplus)');
-  assert.equal(evenCaps[3], 1, 'default "even" budget: Tier 3 gets only its baseline 1 attempt');
+  assert.equal(evenCaps[1], 0);
+  assert.equal(evenCaps[2], 5);
+  assert.equal(evenCaps[3], 1);
   const weightedPolicy = { maxAttempts: 6, tierAttempts: null, hedge: null, firstEventTimeoutMs: null, budgetSplit: 'weighted' };
   const weightedCaps = computeTierCaps(tiers, req, new Set(), weightedPolicy, new Set());
-  assert.equal(weightedCaps[2] + weightedCaps[3], 6, 'weighted split must distribute exactly max_attempts across dispatchable tiers');
-  assert.ok(weightedCaps[3] > weightedCaps[2], 'weighted split gives the larger tier (more nodes) more attempts');
-  assert.ok(weightedCaps[2] >= 1, 'every dispatchable tier gets at least 1 attempt (baseline share)');
+  assert.equal(weightedCaps[2] + weightedCaps[3], 6);
+  assert.ok(weightedCaps[3] > weightedCaps[2]);
+  assert.ok(weightedCaps[2] >= 1);
   const overridePolicy = { maxAttempts: 6, tierAttempts: { tier2: 3 }, hedge: null, firstEventTimeoutMs: null, budgetSplit: 'weighted' };
   const overrideCaps = computeTierCaps(tiers, req, new Set(), overridePolicy, new Set());
-  assert.equal(overrideCaps[2], 3, 'tier_attempts override wins over weighted split');
-  assert.equal(overrideCaps[3], 3, 'non-overridden tier receives the remaining budget');
+  assert.equal(overrideCaps[2], 3);
+  assert.equal(overrideCaps[3], 3);
   const singleTierTiers = { 1: [], 2: tiers[2], 3: [] };
   const singleEvenCaps = computeTierCaps(singleTierTiers, req, new Set(), evenPolicy, new Set());
   const singleWeightedCaps = computeTierCaps(singleTierTiers, req, new Set(), weightedPolicy, new Set());
-  assert.equal(singleEvenCaps[2], 6, 'single dispatchable tier gets the full max_attempts under "even"');
-  assert.equal(singleWeightedCaps[2], 6, 'single dispatchable tier gets the full max_attempts under "weighted"');
+  assert.equal(singleEvenCaps[2], 6);
+  assert.equal(singleWeightedCaps[2], 6);
   reset();
 });
 
