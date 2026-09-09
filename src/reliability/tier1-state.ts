@@ -16,7 +16,6 @@ export const TIER1_EXPLORATION_FACTOR = 0.9;
 export const TIER1_HALF_OPEN_SCORE_PENALTY = 1.4;
 export const TIER1_NEUTRAL_TTFT_MS = 800; // scheduling fallback, never stored as an observation
 export const TIER1_AFFINITY_FACTOR = 0.85; // one factor: the registry has no logical model tiers
-export const TIER1_MAX_ATTEMPTS = 3;
 
 // TTFT scoring: bounded multiplicative demotion (not raw score base).
 export const TIER1_SCORE_BASE = 1000;
