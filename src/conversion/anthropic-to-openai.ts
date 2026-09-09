@@ -202,6 +202,12 @@ export function convertAnthropicToOpenAIRequest(body: Record<string, unknown>): 
       } else {
         messages.push({ role: 'user', content: converted });
       }
+    } else if (msg.role === 'system') {
+      // Claude Code can inject system instructions mid-conversation when the
+      // mid-conversation-system beta is enabled. OpenAI Chat has a native
+      // system role, so preserve both the content and its position in history.
+      const midConversationSystem = systemToOpenAI(msg.content);
+      if (midConversationSystem) messages.push(midConversationSystem);
     } else if (msg.role === 'tool') {
       messages.push({ role: 'tool', tool_call_id: msg.tool_use_id, content: extractToolResultText(msg.content) });
     } else {
