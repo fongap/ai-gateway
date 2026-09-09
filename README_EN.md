@@ -4,6 +4,8 @@
 
 Aggregate multiple AI APIs, keys, and models behind one endpoint with rate-limit handling, failover, and protocol fallback.
 
+Current version: **1.3.0**
+
 ![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)
 ![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22-43853d?logo=node.js&logoColor=white)
 ![MIT](https://img.shields.io/badge/license-MIT-2ea44f)
@@ -71,11 +73,14 @@ For production deployment, see [docs/operations/deployment.md](docs/operations/d
 | --- | --- |
 | `TIER*_NODES_CONFIG_*` | Node configuration |
 | `TIER*_NODES_SECRETS_*` | Node credentials |
-| `GATEWAY_ACCESS_KEY_*` | Gateway access keys |
+| `GATEWAY_ACCESS_KEY_{AIR,PRO,MAX,ULTRA,AGENT}` | Five gateway access-key groups; configure at least one for a new deployment |
+| `GATEWAY_ACCESS_MODELS_{AIR,PRO,MAX,ULTRA,AGENT}` | Model allowlist for the corresponding group |
 | `MODELS_CONFIG` | Model configuration |
 | `POLICIES_CONFIG` | Routing policies |
 
-A Secret must belong to the same Tier as its node and bind by node id; 01..10 are shard numbers only.
+Each Access Group is independent. When a group Key is configured, explicitly configure its Models as well; a missing or empty Models value grants that Key zero model access. The legacy `GATEWAY_ACCESS_KEY` remains only for compatibility: it is honored only when none of the five group Keys is configured and is not the recommended path for new deployments.
+
+A Secret must belong to the same Tier as its node and bind by node id; `01..10` are shard numbers only, and Config/Secret shard suffixes do not need to match.
 
 ## API
 
