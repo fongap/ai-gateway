@@ -90,12 +90,12 @@ export function makeTier1Rng(env: Record<string, unknown>): () => number {
 //     receives no attempt budget.
 //   * A tier with no dispatchable candidate for the request descriptor gets 0
 //     budget.
-//   * `even` gives the first dispatchable tier the available surplus.
-//   * `weighted` distributes non-explicit budget according to each adjustable
-//     tier's live dispatchable node count.
 //   * Explicit `tier_attempts` values are fixed caps. Their configured total is
 //     reserved first; remaining budget may only be assigned to dispatchable
 //     tiers without an explicit value. An explicit 0 disables that tier.
+//   * `even` gives the first adjustable tier the available surplus.
+//   * `weighted` distributes adjustable budget according to each tier's live
+//     dispatchable node count.
 // Budget is a per-tier upper bound; the shared state.maxAttempts still caps the
 // request's total upstream attempts, and FAILOVER_BUDGET_MS caps wall-clock.
 export function computeTierCaps(tiers: Record<number, RuntimeNode[]>, reqDescriptor: RoutableRequest, attempted: Set<string>, policy: PolicyConfig, knownModels: ReadonlySet<string>): Record<number, number> {
@@ -107,25 +107,27 @@ export function computeTierCaps(tiers: Record<number, RuntimeNode[]>, reqDescrip
       ? tier1HasDispatchableNode(tiers[t], reqDescriptor, attempted, now, knownModels)
       : tierHasDispatchableNode(tiers[t], reqDescriptor, attempted, now, knownModels));
   if (dispatchable.length === 0) return caps;
+
   const max = policy.maxAttempts;
+  const explicitTotal = TIER_ORDER.reduce((sum, t) =>
+    sum + (policy.tierAttempts?.[`tier${t}`] ?? 0), 0);
+  const hasExplicit = TIER_ORDER.some((t) =>
+    policy.tierAttempts?.[`tier${t}`] !== undefined);
+  const adjustable = dispatchable.filter((t) =>
+    policy.tierAttempts?.[`tier${t}`] === undefined);
+
+  for (const t of dispatchable) {
+    const override = policy.tierAttempts?.[`tier${t}`];
+    if (override !== undefined) caps[t] = override;
+  }
+
   const liveCount = (tierNumber: number): number => {
     return tierNumber === 1
       ? tier1CountDispatchableNodes(tiers[tierNumber], reqDescriptor, attempted, now, knownModels)
       : countDispatchableNodes(tiers[tierNumber], reqDescriptor, attempted, now, knownModels);
   };
-  const useWeighted = policy.budgetSplit === 'weighted';
-  if (useWeighted) {
-    const explicitTotal = TIER_ORDER.reduce((sum, t) =>
-      sum + (policy.tierAttempts?.[`tier${t}`] ?? 0), 0);
-    const adjustable = dispatchable.filter((t) =>
-      policy.tierAttempts?.[`tier${t}`] === undefined);
 
-    for (const t of dispatchable) {
-      const override = policy.tierAttempts?.[`tier${t}`];
-      if (override === undefined) continue;
-      caps[t] = override;
-    }
-
+  if (policy.budgetSplit === 'weighted') {
     if (adjustable.length === 0) return caps;
     const remaining = Math.max(0, max - explicitTotal);
     if (remaining === 0) return caps;
@@ -158,11 +160,23 @@ export function computeTierCaps(tiers: Record<number, RuntimeNode[]>, reqDescrip
     return caps;
   }
 
-  // Default `even`: first dispatchable tier gets the entire surplus.
-  const surplus = Math.max(0, max - dispatchable.length);
-  dispatchable.forEach((t, i) => {
-    caps[t] = policy.tierAttempts?.[`tier${t}`] ?? (i === 0 ? 1 + surplus : 1);
-  });
+  // With no explicit caps, preserve the existing default allocation exactly.
+  if (!hasExplicit) {
+    const surplus = Math.max(0, max - dispatchable.length);
+    dispatchable.forEach((t, i) => {
+      caps[t] = i === 0 ? 1 + surplus : 1;
+    });
+    return caps;
+  }
+
+  // With explicit caps, only the remaining budget is adjustable. Keep the
+  // default Tier precedence by giving any surplus to the first adjustable tier.
+  if (adjustable.length === 0) return caps;
+  const remaining = Math.max(0, max - explicitTotal);
+  if (remaining === 0) return caps;
+  const baselineCount = Math.min(remaining, adjustable.length);
+  for (let i = 0; i < baselineCount; i++) caps[adjustable[i]] = 1;
+  if (remaining > baselineCount) caps[adjustable[0]] += remaining - baselineCount;
   return caps;
 }
 
