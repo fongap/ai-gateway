@@ -23,8 +23,8 @@
 //     the new account is written (no-op without a KV binding).
 //   - Failure: single transient failure does not immediately trip cooldown;
 //     >= FAILURE_THRESHOLD consecutive counted failures do; HALF_OPEN needs
-//     2 successes; 401/403 disables the account; model_not_found disables
-//     only the (account, model) pair; 429 defaults to model scope with
+//     2 successes; 401/403 cools the account; model_not_found short-cools
+//     only the (account, upstream model) pair; 429 defaults to model scope with
 //     scope_ambiguous and respects Retry-After; cooldown never breaks the
 //     "no call against an unexpired cooldown" rule.
 import assert from 'node:assert/strict';
@@ -629,17 +629,26 @@ await test('Failure: 401/403 applies long cooldown, not permanent disable', () =
   assert.equal(isTier1Eligible(a, { ...REQ, model: 'm2' }), false, 'm2 also blocked');
 });
 
-await test('Failure: model_not_found applies long cooldown, not permanent disable', () => {
-  const a = node('a');
-  applyTier1Outcome('a', 'm1', classifyTier1Failure({ kind: 'model_missing' }));
-  const m1 = getTier1Account('a').models.get('m1');
-  // model_missing applies a long cooldown (TIER1_MODEL_MISSING_DISABLED_COOLDOWN_MS)
-  // so the node can self-recover when the model is re-added upstream.
-  assert.equal(m1.disabled, false, 'model is NOT permanently disabled');
-  assert.equal(m1.failureState, TIER1_FAILURE_STATES.COOLDOWN, 'model is in COOLDOWN state');
-  assert.ok(m1.cooldownUntil > Date.now(), 'model has a cooldown active');
-  assert.equal(m1.cooldownReason, 'model_missing');
+await test('Failure: model_not_found short-cools only the resolved upstream model', () => {
+  const now = 1_000_000;
+  const a = node('a', { models: { m1: 'up-a', m2: 'up-b' } });
+  const c = classifyTier1Failure({ kind: 'model_missing', cooldownMs: 5_000 });
+  assert.equal(c.scope, 'upstream_model');
+  assert.equal(c.action, 'cooldown');
+  applyTier1Outcome('a', 'up-a', c, now);
+
+  assert.equal(isTier1Eligible(a, REQ, now), false, 'current upstream mapping is cooling');
+  assert.equal(tier1BlockingWaitMs(a, 'm1', now), 5_000, 'cooldown remains short');
+  assert.equal(isTier1Eligible(a, { ...REQ, model: 'm2' }, now), true, 'sibling upstream model stays eligible');
+  assert.equal(getTier1Account('a').models.get('m1'), undefined,
+    'model_missing must not create logical-model reliability state');
   assert.equal(getTier1Account('a').accountDisabled, false, 'account is NOT disabled');
+
+  const remapped = { ...a, models: { ...a.models, m1: 'up-new' } };
+  assert.equal(isTier1Eligible(remapped, REQ, now), true,
+    'new upstream mapping must not inherit the old upstream model cooldown');
+  assert.equal(isTier1Eligible(a, REQ, now + 5_001), true,
+    'old upstream mapping becomes eligible after the short cooldown');
 });
 
 await test('Failure: single transient failure does NOT trip cooldown (hysteresis)', () => {
