@@ -106,14 +106,26 @@ function mapToolChoice(toolChoice: unknown): string | Record<string, unknown> | 
   unsupportedBlock(`tool_choice:${tc.type}`);
 }
 
+function assertDroppableThinkingConfig(thinking: unknown): void {
+  if (thinking === undefined || thinking === null) return;
+  if (!isRecord(thinking)) unsupportedBlock('invalid thinking');
+}
+
 export function convertAnthropicToOpenAIRequest(body: Record<string, unknown>): Record<string, unknown> {
   // `metadata` is an Anthropic attribution field with no safe generic OpenAI
   // equivalent — different OpenAI-compatible providers disagree on `user`,
   // `metadata`, `safety_identifier`. It never changes generated content, so it
-  // is accepted here and deliberately NOT forwarded to the OpenAI upstream
-  // (intentional drop, not an omission). The remaining fields are validated as
-  // required / convertible / semantic-error below.
-  assertFields(body, ['model', 'messages', 'system', 'max_tokens', 'temperature', 'top_p', 'stream', 'stop_sequences', 'tools', 'tool_choice', 'metadata'], 'request');
+  // is accepted here and deliberately NOT forwarded to the OpenAI upstream.
+  //
+  // Top-level `thinking` is different: it is a request-control setting with
+  // real semantics, but generic OpenAI-compatible Chat providers do not share
+  // one portable reasoning-control field. For this cross-protocol fallback we
+  // therefore accept a structurally valid object and deliberately DROP it so
+  // Claude Code can still use Chat-only nodes. Thinking CONTENT blocks remain
+  // non-convertible in convertAssistantContent/convertUserContent because
+  // silently deleting message history would lose conversation semantics.
+  assertFields(body, ['model', 'messages', 'system', 'max_tokens', 'temperature', 'top_p', 'stream', 'stop_sequences', 'tools', 'tool_choice', 'metadata', 'thinking'], 'request');
+  assertDroppableThinkingConfig(body.thinking);
   assertSampling(body);
   if (!Array.isArray(body.messages)) unsupportedBlock('invalid messages');
   const out: Record<string, unknown> = {};
