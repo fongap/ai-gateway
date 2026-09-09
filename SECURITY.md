@@ -20,7 +20,7 @@ If private advisories are unavailable, open a public Issue containing only a req
 
 ## Deployment responsibilities
 
-- Store configured `GATEWAY_ACCESS_KEY_{AIR,PRO,MAX,ULTRA,AGENT}` values and all `TIER{1,2,3}_NODES_SECRETS_*` shards as Cloudflare Secrets. Store `GATEWAY_ACCESS_MODELS_{AIR,PRO,MAX,ULTRA,AGENT}` and node configs (`TIER{1,2,3}_NODES_CONFIG_*`) as non-secret variables. Node credentials bind by **Tier + node id**; `01..10` are shard numbers only, and Config/Secret shard suffixes do not need to match;
+- Store configured `GATEWAY_ACCESS_KEY_AIR`, `GATEWAY_ACCESS_KEY_PRO`, `GATEWAY_ACCESS_KEY_MAX`, `GATEWAY_ACCESS_KEY_ULTRA`, `GATEWAY_ACCESS_KEY_AGENT` values and all `TIER{1,2,3}_NODES_SECRETS_*` shards as Cloudflare Secrets. Store the corresponding `GATEWAY_ACCESS_MODELS_AIR`, `GATEWAY_ACCESS_MODELS_PRO`, `GATEWAY_ACCESS_MODELS_MAX`, `GATEWAY_ACCESS_MODELS_ULTRA`, `GATEWAY_ACCESS_MODELS_AGENT` values and node configs (`TIER{1,2,3}_NODES_CONFIG_*`) as non-secret variables. Node credentials bind by **Tier + node id**; `01..10` are shard numbers only, and Config/Secret shard suffixes do not need to match;
 - never commit `.dev.vars`, `.env`, `secrets*.json`, or `wrangler.user.jsonc`;
 - never pass credentials through URL query parameters;
 - keep `/health` and `/metrics` protected;
