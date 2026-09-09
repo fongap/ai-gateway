@@ -10,7 +10,7 @@ Do not disclose exploitable details in a public Issue. Use the repository's **Se
 
 Never include:
 
-- API tokens or `GATEWAY_ACCESS_KEY` values;
+- API tokens or gateway access-key values;
 - full authorization headers;
 - private upstream URLs;
 - user prompts, request bodies, or personal data;
@@ -20,7 +20,7 @@ If private advisories are unavailable, open a public Issue containing only a req
 
 ## Deployment responsibilities
 
-- Store `GATEWAY_ACCESS_KEY` and all `TIER{1,2,3}_NODES_SECRETS_*` shards as Cloudflare Secrets (tier-scoped, paired 1:1 with the matching `TIERx_NODES_CONFIG_*` shard); node configs (`TIERx_NODES_CONFIG_*`) are plain variables and must never contain credential material;
+- Store configured `GATEWAY_ACCESS_KEY_{AIR,PRO,MAX,ULTRA,AGENT}` values and all `TIER{1,2,3}_NODES_SECRETS_*` shards as Cloudflare Secrets. Store `GATEWAY_ACCESS_MODELS_{AIR,PRO,MAX,ULTRA,AGENT}` and node configs (`TIER{1,2,3}_NODES_CONFIG_*`) as non-secret variables. Node credentials bind by **Tier + node id**; `01..10` are shard numbers only, and Config/Secret shard suffixes do not need to match;
 - never commit `.dev.vars`, `.env`, `secrets*.json`, or `wrangler.user.jsonc`;
 - never pass credentials through URL query parameters;
 - keep `/health` and `/metrics` protected;
