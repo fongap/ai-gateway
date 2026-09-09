@@ -34,10 +34,8 @@ const ALLOWED_FIELDS = new Set(['max_attempts', 'tier_attempts', 'hedge', 'first
 type HedgePolicy = { enabled?: boolean, delayMs?: number, tiers?: Array<'tier1' | 'tier2' | 'tier3'> } | null;
 type TierAttempts = { tier1?: number, tier2?: number, tier3?: number } | null;
 
-// Built-in policies — always present, user config merges on top.
-// These are the single source of truth; no runtime fallback needed.
-// All built-ins now explicitly declare hedge behavior (no undefined).
-// default and stable enable hedging for Tier 1 only; fast and long-reasoning disable it.
+// Built-in policies are the single source of truth. default and stable enable
+// hedging for Tier 1 only; fast and long-reasoning disable it.
 const BUILTIN_POLICIES: Record<string, PolicyConfig> = Object.freeze({
   default: {
     maxAttempts: 5,
@@ -58,7 +56,7 @@ const BUILTIN_POLICIES: Record<string, PolicyConfig> = Object.freeze({
     tierAttempts: null,
     hedge: { enabled: true, tiers: ['tier1'] },
     firstEventTimeoutMs: null,
-    budgetSplit: null,    
+    budgetSplit: null,
   },
   'long-reasoning': {
     maxAttempts: 3,
@@ -238,11 +236,9 @@ function parseFirstEventTimeoutMs(value: unknown, policyName: string, errors: st
   return value;
 }
 
-// Parse an optional budget_split strategy.
-//   "even"     (default, backward-compatible): first dispatchable tier gets
-//              the entire surplus.
-//   "weighted": surplus is distributed proportionally to each tier's live
-//              dispatchable node count.
+// `budget_split` controls only budget that remains after explicit
+// `tier_attempts` are reserved. `even` keeps Tier precedence; `weighted`
+// distributes adjustable budget by live dispatchable node count.
 function parseBudgetSplit(value: unknown, policyName: string, errors: string[]): 'even' | 'weighted' | null {
   if (value === undefined || value === null) return null;
   if (value === 'even' || value === 'weighted') return value;
