@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DOCS = [
   'README.md',
-  'README_EN.md',
+  'README.zh-CN.md',
   'SECURITY.md',
   'docs/architecture/overview.md',
   'docs/architecture/protocol-model.md',
@@ -56,7 +56,7 @@ const FORBIDDEN = [
 // OpenAI Responses is Native Only.
 const PROTOCOL_FACT_FILES = [
   'README.md',
-  'README_EN.md',
+  'README.zh-CN.md',
   'docs/architecture/protocol-model.md',
   'docs/architecture/routing-model.md',
   'docs/operations/configuration.md',
@@ -94,7 +94,7 @@ console.log('ok - configuration.md default chain matches SUPPORTED_CONVERSIONS')
 // Access-key fact contract: current operator-facing material is group-first.
 const ACCESS_FACT_FILES = [
   'README.md',
-  'README_EN.md',
+  'README.zh-CN.md',
   'SECURITY.md',
   'docs/operations/configuration.md',
   'docs/operations/deployment.md',
@@ -114,7 +114,7 @@ for (const file of ACCESS_FACT_FILES) {
 // Secret shards bind by Tier + node id. Suffixes are independent shard numbers.
 const SHARD_FACT_FILES = [
   'README.md',
-  'README_EN.md',
+  'README.zh-CN.md',
   'SECURITY.md',
   'docs/architecture/routing-model.md',
   'docs/operations/configuration.md',

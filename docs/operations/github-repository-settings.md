@@ -8,11 +8,11 @@ Use a short description that explains the operational value rather than repeatin
 
 **Description**
 
-> Resilient AI API gateway for Cloudflare Workers — multi-provider routing, multi-key traffic shaping, tiered failover, and OpenAI/Anthropic protocol fallback.
+> Resilient AI API gateway for Cloudflare Workers — multi-provider routing, multi-key load balancing, rate limiting, tiered failover, and OpenAI/Anthropic compatibility.
 
 **Topics**
 
-Topics should balance three jobs: identify the project precisely, participate in high-traffic ecosystem searches, and capture lower-volume high-intent searches. Avoid filling all 20 slots with synonyms or generic infrastructure terms.
+Topics should balance project identity, high-traffic ecosystem discovery, and high-intent capability searches. Avoid filling all 20 slots with synonyms or generic infrastructure terms.
 
 Recommended set:
 
@@ -21,30 +21,23 @@ ai-gateway
 llm-gateway
 llm-router
 cloudflare-workers
-multi-provider
-api-gateway
+claude-code
 openai-api
 openai-compatible
-claude-code
-llmops
 anthropic-api
-llm-proxy
-openai-proxy
-rate-limiting
 load-balancing
+rate-limiting
 ```
 
-Topic roles:
+The set deliberately keeps overlapping gateway/router terms only where they represent distinct real search habits. Broad or redundant terms such as `ai`, `llm`, `proxy`, `serverless`, `api-gateway`, `llm-proxy`, `openai-proxy`, and `llmops` are omitted from the canonical set unless repository positioning changes.
 
-- **Core identity:** `ai-gateway`, `llm-gateway`, `llm-router`, `cloudflare-workers`, `multi-provider`.
-- **High-traffic discovery:** `api-gateway`, `openai-api`, `openai-compatible`, `claude-code`, `llmops`.
-- **High-intent long tail:** `anthropic-api`, `llm-proxy`, `openai-proxy`, `rate-limiting`, `load-balancing`.
-
-Do not add broad terms such as `ai`, `llm`, `proxy`, or `serverless` merely for volume when a more precise topic already covers the same discovery path. Topics should reflect implemented behavior, not aspirational features.
+Topics should reflect implemented behavior, not aspirational features.
 
 **Homepage**
 
-Leave blank unless there is a stable public documentation or project page intended to be a supported entry point. Do not use a private/operator endpoint merely to fill the field.
+> https://api.135468.xyz/
+
+The homepage is the public live gateway dashboard. It exposes model availability, traffic/token activity, and client quick-start information without exposing private operator configuration.
 
 These values are the canonical About metadata recommendation. Update this document when the project positioning materially changes.
 
@@ -72,7 +65,7 @@ Intended repository settings:
 - disable rebase merge;
 - delete merged branches automatically when practical.
 
-This keeps one accepted commit per PR on `main` and makes release-tag targeting unambiguous.
+This keeps one accepted commit per PR on `main` and makes stable-tag targeting unambiguous.
 
 ## Required checks
 
@@ -82,7 +75,7 @@ This keeps one accepted commit per PR on `main` and makes release-tag targeting 
 | `validate-deploy` | main push, scheduled/manual CI | full production validation; not a PR required check |
 | Deploy workflow | after successful eligible main CI or manual Deploy | production action; not a PR required check |
 
-Do not configure Deploy as a pre-merge required check: it runs after the release candidate has reached `main`.
+Do not configure Deploy as a pre-merge required check: it runs after the accepted change has reached `main`.
 
 ## GitHub Actions
 
@@ -106,10 +99,10 @@ Discussions may remain enabled for general project conversation. Issues should b
 
 ## Repository metadata maintenance
 
-When changing the About description/topics:
+When changing the About description/topics/homepage:
 
 1. update GitHub repository metadata;
 2. update the canonical block in this file in the same maintenance change;
-3. keep `package.json` keywords and public README terminology semantically aligned where relevant.
+3. keep `package.json` description/keywords and public README terminology semantically aligned where relevant.
 
 About metadata is product positioning, not a substitute for architecture documentation.

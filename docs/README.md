@@ -1,6 +1,6 @@
 # ai-gateway documentation
 
-This documentation describes the current repository contract. It is organized by responsibility so runtime facts, operating procedures, governance rules, and release history do not compete as equal sources of truth.
+This documentation describes the current repository contract. It is organized by responsibility so runtime facts, operating procedures, governance rules, and version history do not compete as equal sources of truth.
 
 ## Documentation model
 
@@ -8,10 +8,10 @@ This documentation describes the current repository contract. It is organized by
 docs/
 ├── architecture/     durable system boundaries and invariants
 ├── operations/       current configuration, deployment, and troubleshooting procedures
-└── governance/       rules for changing, validating, documenting, and releasing the system
+└── governance/       rules for changing, validating, documenting, and versioning the system
 ```
 
-Historical version changes belong in [CHANGELOG.md](../CHANGELOG.md), Pull Requests, commits, and GitHub Releases. Completed migration plans and temporary project-status documents do not remain in the long-lived documentation tree.
+Historical version changes belong in [CHANGELOG.md](../CHANGELOG.md), Git tags, Pull Requests, commits, and existing GitHub Releases. Completed migration plans and temporary project-status documents do not remain in the long-lived documentation tree.
 
 ## Architecture
 
@@ -41,9 +41,9 @@ Historical version changes belong in [CHANGELOG.md](../CHANGELOG.md), Pull Reque
 | --- | --- |
 | [README.md](governance/README.md) | Governance index and authority model |
 | [development-policy.md](governance/development-policy.md) | Branch, PR, refactor, and architecture-change rules |
-| [quality-policy.md](governance/quality-policy.md) | CI, tests, security, and release gates |
+| [quality-policy.md](governance/quality-policy.md) | CI, tests, security, and production gates |
 | [dependency-policy.md](governance/dependency-policy.md) | Dependency and toolchain update policy |
-| [release-policy.md](governance/release-policy.md) | Version, tag, deployment, and GitHub Release rules |
+| [release-policy.md](governance/release-policy.md) | Version, stable-tag, deployment/build, and historical Release rules |
 | [documentation-policy.md](governance/documentation-policy.md) | English-canonical documentation and code-to-doc synchronization |
 
 ## Authority order
@@ -52,13 +52,14 @@ When documents disagree with executable behavior, resolve the conflict in this o
 
 1. Runtime code, schemas, configuration parsers, tests, and workflows define what the repository actually does.
 2. Canonical current documentation explains that behavior and must be corrected when it drifts.
-3. `CHANGELOG.md`, Releases, PRs, and commits explain how the current state was reached.
+3. `CHANGELOG.md`, tags, existing Releases, PRs, and commits explain how the current state was reached.
 
 Documentation must not invent a capability that is absent from the runtime.
 
 ## Entry points
 
 - [README.md](../README.md) — canonical project landing page.
+- [README.zh-CN.md](../README.zh-CN.md) — Simplified Chinese reader-facing mirror.
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — contribution workflow.
 - [SECURITY.md](../SECURITY.md) — vulnerability reporting and secret-handling rules.
 - [CHANGELOG.md](../CHANGELOG.md) — version history.

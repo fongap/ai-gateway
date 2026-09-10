@@ -8,16 +8,18 @@
 
 [English](README.md) · [**简体中文**](README.zh-CN.md)
 
-![Version](https://img.shields.io/badge/version-1.3.1-0969da)
+![Version](https://img.shields.io/github/package-json/v/fongap/ai-gateway?label=Version)
 ![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)
-![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.18%20%3C23-43853d?logo=node.js&logoColor=white)
-![License](https://img.shields.io/badge/license-MIT-2ea44f)
+![Node.js](https://img.shields.io/badge/Node.js-22.18%2B-43853d?logo=node.js&logoColor=white)
+![License](https://img.shields.io/github/license/fongap/ai-gateway?label=License)
 
-[快速开始](#快速开始) · [架构](docs/architecture/overview.md) · [配置](docs/operations/configuration.md) · [部署](docs/operations/deployment.md) · [完整文档](docs/README.md)
+[实时面板](https://api.135468.xyz/) · [快速开始](#快速开始) · [架构](docs/architecture/overview.md) · [配置](docs/operations/configuration.md) · [部署](docs/operations/deployment.md) · [完整文档](docs/README.md)
 
 </div>
 
 ai-gateway 将不同 AI Provider、API Key 和逻辑模型聚合为一个稳定端点。它面向高吞吐、上游不稳定的使用场景，优先解决 **可用性、额度保护和可预测故障转移**，而不是一味追逐当前最快的 Key。
+
+**实时面板：** [api.135468.xyz](https://api.135468.xyz/) — 查看当前模型可用性、流量、Token 活动与客户端快速接入示例。
 
 > 本页为简体中文阅读版。项目长期文档以 [English README](README.md) 及英文 canonical docs 为准。
 
@@ -60,11 +62,11 @@ Tier 1 的目标是 **稳定利用整个 Key 池，而不是持续追打某一�
 | `POST` | `/v1/messages/count_tokens` | Anthropic-compatible 本地 Token 计数 |
 | `GET` | `/v1/models` | 模型目录 |
 | `GET` | `/health` | 鉴权后的健康诊断 |
-| `GET` | `/version` | Release 与部署 Build 标识 |
+| `GET` | `/version` | 源码版本与已部署 Build 标识 |
 
 ## 快速开始
 
-要求：Node.js **>=22.18.0 <23**；生产部署需要 Cloudflare 账户。
+要求：Node.js **>=22.18.0**；生产部署需要 Cloudflare 账户。
 
 ```bash
 git clone https://github.com/fongap/ai-gateway.git
@@ -121,7 +123,7 @@ success / automatic Worker rollback
 | --- | --- |
 | [Architecture](docs/architecture/overview.md) | 长期架构边界、路由、协议与可靠性契约 |
 | [Operations](docs/operations/configuration.md) | 配置、部署、故障排查与 Provider Discovery |
-| [Governance](docs/governance/README.md) | 开发、质量、依赖、Release 与文档治理 |
+| [Governance](docs/governance/README.md) | 开发、质量、依赖、版本/Tag 与文档治理 |
 | [CHANGELOG](CHANGELOG.md) | 版本历史 |
 
 英文是 canonical 文档语言；本页仅作为中文阅读入口。Executable behavior、tests、schemas 与英文 canonical docs 具有更高事实优先级。

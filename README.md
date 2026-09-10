@@ -8,16 +8,18 @@ Multi-provider routing · Multi-key load balancing · Rate limiting · Tiered fa
 
 [**English**](README.md) · [简体中文](README.zh-CN.md)
 
-![Version](https://img.shields.io/badge/version-1.3.1-0969da)
+![Version](https://img.shields.io/github/package-json/v/fongap/ai-gateway?label=Version)
 ![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)
-![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.18%20%3C23-43853d?logo=node.js&logoColor=white)
-![License](https://img.shields.io/badge/license-MIT-2ea44f)
+![Node.js](https://img.shields.io/badge/Node.js-22.18%2B-43853d?logo=node.js&logoColor=white)
+![License](https://img.shields.io/github/license/fongap/ai-gateway?label=License)
 
-[Quick Start](#quick-start) · [Architecture](docs/architecture/overview.md) · [Configuration](docs/operations/configuration.md) · [Deployment](docs/operations/deployment.md) · [Documentation](docs/README.md)
+[Live Dashboard](https://api.135468.xyz/) · [Quick Start](#quick-start) · [Architecture](docs/architecture/overview.md) · [Configuration](docs/operations/configuration.md) · [Deployment](docs/operations/deployment.md) · [Documentation](docs/README.md)
 
 </div>
 
 ai-gateway turns heterogeneous AI providers, API keys, and logical models into one stable endpoint. It is built for high-volume, failure-prone upstream pools where **availability, quota protection, and predictable failover** matter more than simply picking the fastest key.
+
+**Live dashboard:** [api.135468.xyz](https://api.135468.xyz/) — current model availability, traffic, token activity, and client quick-start examples.
 
 ## Highlights
 
@@ -58,11 +60,11 @@ Tier 1 is intentionally biased toward **stable capacity, not a single "best" key
 | `POST` | `/v1/messages/count_tokens` | Anthropic-compatible local token count |
 | `GET` | `/v1/models` | Model catalog |
 | `GET` | `/health` | Authenticated health diagnostics |
-| `GET` | `/version` | Release and deployed-build identity |
+| `GET` | `/version` | Source version and deployed-build identity |
 
 ## Quick start
 
-Requirements: Node.js **>=22.18.0 <23** and a Cloudflare account for deployment.
+Requirements: Node.js **>=22.18.0** and a Cloudflare account for deployment.
 
 ```bash
 git clone https://github.com/fongap/ai-gateway.git
@@ -119,7 +121,7 @@ Documentation-only commits are intentionally excluded from Worker redeployment.
 | --- | --- |
 | [Architecture](docs/architecture/overview.md) | Durable system boundaries, routing, protocol and reliability contracts |
 | [Operations](docs/operations/configuration.md) | Configuration, deployment, troubleshooting and provider discovery |
-| [Governance](docs/governance/README.md) | Development, quality, dependency, release and documentation policy |
+| [Governance](docs/governance/README.md) | Development, quality, dependency, version/tag and documentation policy |
 | [CHANGELOG](CHANGELOG.md) | Version history |
 
 English is the canonical documentation language. The [Simplified Chinese README](README.zh-CN.md) is maintained as a reader-facing translation; executable behavior, tests, schemas and the English canonical documentation remain the source of truth.

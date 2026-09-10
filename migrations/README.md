@@ -1,83 +1,66 @@
 # D1 migrations
 
-This directory holds the canonical D1 schema for the **token-usage
-observability** D1 database. The D1 binding name is **`TOKEN_STATS_DB`**.
+This directory owns the ordered schema changes for ai-gateway token-usage observability.
 
-Migrations are applied **in numeric order** at deploy time by the GitHub Actions
-deploy workflow (and by `scripts/deploy.sh` / `deploy.ps1` / `update.sh` /
-`update.ps1` on a local deploy when the binding is present). The deploy
-workflow runs D1 migrations AFTER `wrangler deploy` so the Worker is already
-serving the new code path; rolling-deploy safety is provided by the existing
-fail-open fallbacks documented in `docs/operations/deployment.md` (Dashboard
-reads fall back from totals→hourly, heatmap from daily→hourly+today, model
-status continues to read `token_usage_model_hourly` 24h).
+## Production ordering
 
-**A failing migration blocks the deploy.** Nothing in production is updated
-until every migration in this directory has been applied to the remote D1.
+When `TOKEN_STATS_D1_ID` is configured, the production deployment path applies D1 migrations **before** publishing the new Worker:
+
+```text
+preflight + runtime configuration validation
+        ↓
+D1 migrations
+        ↓
+atomic Worker deployment
+        ↓
+remote verification
+        ↓
+success / Worker rollback on post-deploy failure
+```
+
+A migration failure blocks the Worker deployment. If D1 is not configured, the migration step is skipped.
+
+Worker rollback does **not** undo an already-applied D1 migration. New migrations must therefore remain compatible with the previous Worker version that may be restored during rollback.
+
+See [Deployment](../docs/operations/deployment.md) for the complete production sequence.
 
 ## Governance
 
-1. **File naming** — every migration is `<NNN>_<short_slug>.sql` where
-   `NNN` is a zero-padded monotonic counter. Numbers MUST be unique and
-   strictly increasing. Re-using a number for a new schema change is a
-   governance violation and is rejected by `npm run migrations:check`.
-2. **No edits to applied files** — once a migration is part of a release,
-   its SQL is immutable. Schema corrections always go in a new migration
-   (forward-only). `npm run migrations:check` refuses modified files.
-3. **Idempotent SQL** — every migration uses `CREATE TABLE IF NOT EXISTS`
-   and `CREATE INDEX IF NOT EXISTS`. Cloudflare D1 does not track applied
-   migration history (there is no `migrations` table), so re-running the
-   sequence is a no-op for every table the file declares. This is the
-   only safety net we have against partial deploys and re-runs.
-4. **One logical change per file** — bundling unrelated schema changes into
-   a single migration is rejected by `npm run migrations:check` (the
-   commit message and the file name are required to describe a single
-   concern; reviewers can challenge combined migrations).
-5. **No data loss in the same migration as a schema change** — destructive
-   operations (DROP COLUMN, RENAME) MUST be a separate migration so a
-   rolling deploy can reason about each step independently.
-6. **Local first** — every migration is exercised locally with
-   `npm run migrations:apply --local` (and covered by the unit tests in
-   `scripts/migrations-test.mjs`) BEFORE the PR is merged. The deploy
-   workflow will still run them, but only after the test pass on main.
+`npm run migrations:check` enforces the executable migration contract:
 
-## Current schema
+1. SQL migration files use `NNN_slug.sql` names with unique, consecutive numeric prefixes.
+2. Applied SQL files are immutable. Schema corrections are added as a new migration rather than editing, deleting, or renaming an existing migration.
+3. `CREATE TABLE` / `CREATE INDEX` statements use `IF NOT EXISTS` where applicable so safe re-application remains possible.
+4. Destructive operations are blocked by default because they can break rollback compatibility.
+5. A destructive migration is allowed only through the explicit allowlist in `scripts/migrations-check.mjs` after backward compatibility has been established.
 
-| Migration | Adds |
-|---|---|
-| `0001_token_usage_hourly.sql` | `token_usage_hourly` — the global hourly aggregate. PK = UTC hour key. |
-| `0002_token_usage_model_hourly.sql` | `token_usage_model_hourly` — per-model hourly window for the homepage / model status. |
-| `0003_token_usage_ttft_histogram.sql` | `token_usage_ttft_histogram` — bucketed TTFT counts for the dashboard. |
-| `0004_token_usage_totals.sql` | `token_usage_totals` — single-row cumulative counter, read by the public homepage. |
-| `0005_token_usage_daily.sql` | `token_usage_daily` — UTC+8 daily aggregate for the heatmap. |
-| `0006_token_usage_weekly.sql` | `token_usage_weekly` — UTC+8 weekly aggregate for the rolling 52-week chart. |
-| `0007_drop_redundant_usage_indexes.sql` | Drops redundant PK indexes on hourly / model_hourly (PK index is already implicit on the PK column). |
+`0007_drop_redundant_usage_indexes.sql` is the current explicit allowlisted cleanup: it removes redundant indexes without changing the schema expected by the previous Worker.
 
-The full retention policy and the fail-open fallback chain are documented in
-`docs/operations/deployment.md` and `docs/architecture/observability.md`.
+Keep each new migration focused and forward-compatible. Do not rely on a Worker rollback to restore database schema.
 
-## How the deploy applies migrations
+## Current schema history
 
-```
-wrangler deploy --dry-run          # validates the new Worker code path
-  → wrangler deploy                # publishes the new Worker
-  → scripts/apply-d1-migrations.sh # wrangler d1 migrations apply TOKEN_STATS_DB
-                                  # (drives migrations/ in numeric order)
-  → verify deployed gateway
-```
+| Migration | Change |
+| --- | --- |
+| `0001_token_usage_hourly.sql` | Adds global hourly token-usage aggregation |
+| `0002_token_usage_model_hourly.sql` | Adds per-model hourly aggregation used by model status and dashboard reads |
+| `0003_token_usage_ttft_histogram.sql` | Adds bucketed TTFT histogram storage |
+| `0004_token_usage_totals.sql` | Adds cumulative token-usage totals |
+| `0005_token_usage_daily.sql` | Adds UTC+8 daily aggregation for the activity heatmap |
+| `0006_token_usage_weekly.sql` | Adds UTC+8 weekly aggregation for rolling activity views |
+| `0007_drop_redundant_usage_indexes.sql` | Removes redundant indexes already covered by primary-key indexes |
+| `0008_token_usage_cache_tokens.sql` | Adds Anthropic prompt-cache creation/read token breakdown columns to usage tables |
 
-If `TOKEN_STATS_DB` is not bound (free-tier / observability-disabled
-deployments), the migrations step is skipped automatically and the deploy
-succeeds. Token usage then falls back to the in-memory aggregator that
-ships with the Worker.
+The SQL files themselves are the schema-change source of truth; this table is only an index.
 
 ## Validation
 
-`npm run migrations:check` enforces the governance rules above:
-- monotonic numeric prefix,
-- unique numbers,
-- one `0001` / `0007` (etc.) per logical concern,
-- `IF NOT EXISTS` on every `CREATE` (so re-applies are no-ops),
-- no file deletions or renames in the working tree.
+Run:
 
-The check is part of `npm run validate:merge` and `npm run validate:deploy`.
+```bash
+npm run migrations:check
+```
+
+The governance check is covered by [`scripts/migrations-check-test.mjs`](../scripts/migrations-check-test.mjs) and is included in both merge and deploy validation.
+
+Do not add a separate migration runner or parallel schema history unless the deployment mechanism actually changes.

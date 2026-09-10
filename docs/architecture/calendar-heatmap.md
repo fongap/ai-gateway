@@ -27,7 +27,7 @@
   display timezone; mixing UTC and local math produces off-by-one
   errors in the date / weekday / month positions. There is exactly
   one place that converts from a UTC ms to a YYYY-MM-DD string
-  (`isoDayUtc8` in `src/dashboard/heatmap.js`).
+  (`isoDayUtc8` in `src/dashboard/heatmap.ts`).
 
 - **Month labels**. Each label is anchored to the **week column that
   contains the 1st day of the month**, NOT to the column whose
@@ -105,7 +105,7 @@ buildCalendarHeatmap({
 }
 ```
 
-The renderer (`src/dashboard/heatmap-view.js`) is the single source
+The renderer (`src/dashboard/heatmap-view.ts`) is the single source
 of truth for the HTML output. It emits a `<i class="cell" ...>`
 tag per day with `data-week`, `data-weekday`, an explicit inline
 `grid-column` / `grid-row` placement, `data-level`, `data-date`,
