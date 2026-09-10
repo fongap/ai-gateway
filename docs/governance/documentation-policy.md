@@ -6,8 +6,8 @@ Long-lived project documentation is English-canonical.
 
 - `README.md` is the canonical repository landing page.
 - `README_EN.md` is retained only as a compatibility link for older references and is not maintained as a second source of truth.
-- Additional translations are optional. When they exist, they must identify the English canonical document and must not introduce independent behavior, configuration, or policy claims.
-- File names use lowercase English `kebab-case.md`, except conventional `README.md` files.
+- Additional translations are optional. Localized root READMEs use `README.<locale>.md` (for example `README.zh-CN.md`), must identify the English canonical document, and must not introduce independent behavior, configuration, or policy claims.
+- Files under `docs/` use lowercase English `kebab-case.md`, except conventional `README.md` files.
 
 ## Source-of-truth model
 
@@ -79,11 +79,13 @@ Documentation may summarize these values, but should point back to the owner and
 
 Keep implementation-detail inventories out of the README when a dedicated document already owns them.
 
+Localized READMEs are reader-facing mirrors, not additional sources of truth. They should follow the canonical README structure closely enough to remain easy to synchronize, while links to architecture, operations, governance, security, and history continue to target the canonical English documents.
+
 ## Documentation checks
 
 The repository validates documentation through:
 
-- `scripts/docs-check.mjs` — directory, naming, and internal-link rules;
+- `scripts/docs-check.mjs` — directory, naming, localized-README, and internal-link rules;
 - `scripts/link-check.mjs` — Markdown link integrity;
 - `scripts/docs-contract-test.mjs` — guards against known architecture and configuration drift.
 
