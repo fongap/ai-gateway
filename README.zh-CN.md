@@ -8,9 +8,10 @@ Cloudflare Workers · 多 Provider 路由 · 多 Key 负载均衡 · 限流保�
 
 [English](README.md) · [**简体中文**](README.zh-CN.md)
 
+[![CI](https://github.com/fongap/ai-gateway/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/fongap/ai-gateway/actions/workflows/ci.yml)
+[![Deploy](https://github.com/fongap/ai-gateway/actions/workflows/deploy.yml/badge.svg?branch=main&event=workflow_run)](https://github.com/fongap/ai-gateway/actions/workflows/deploy.yml)
 ![Version](https://img.shields.io/github/package-json/v/fongap/ai-gateway?label=Version)
 ![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)
-![Node.js](https://img.shields.io/badge/Node.js-22.18%2B-43853d?logo=node.js&logoColor=white)
 ![License](https://img.shields.io/github/license/fongap/ai-gateway?label=License)
 
 [实时面板](https://api.135468.xyz/) · [快速开始](#快速开始) · [架构](docs/architecture/overview.md) · [配置](docs/operations/configuration.md) · [部署](docs/operations/deployment.md) · [完整文档](docs/README.md)
