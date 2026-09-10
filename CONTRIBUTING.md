@@ -23,7 +23,9 @@ Use Node.js **>=22.18.0**.
 5. Run `npm run validate:merge` and `npm run check:deploy`.
 6. Use squash merge after required checks pass.
 
-PR descriptions should state the problem, behavior change, verification, compatibility impact, resource impact, and security impact. A refactor must state whether external behavior changed; behavior-preserving refactors must not quietly alter scheduler, protocol, timeout, cooldown, fallback, or configuration semantics.
+PR descriptions should state the problem, behavior change, verification, compatibility impact, resource impact, security impact, and any measured hot-path impact. A refactor must state whether external behavior changed; behavior-preserving refactors must not quietly alter scheduler, protocol, timeout, cooldown, fallback, or configuration semantics.
+
+For request-hot-path changes, compare `npm run bench` before and after on the same machine and Node.js version. Treat the delta as regression evidence rather than an SLA or cross-machine score; see [benchmark/README.md](benchmark/README.md).
 
 ## Repository ownership
 
@@ -34,7 +36,7 @@ PR descriptions should state the problem, behavior change, verification, compati
 - `migrations/` — ordered D1 schema changes.
 - `docs/` — long-lived architecture, operations, and governance documentation.
 
-Do not place test files back under `scripts/`; tests may exercise scripts, but tooling and verification have separate owners.
+Do not place test files back under `scripts/`; tests may exercise scripts, but tooling and verification have separate owners. Do not add duplicate deployment/update wrappers when the supported entry point already exists; see [scripts/README.md](scripts/README.md).
 
 ## Documentation responsibilities
 
