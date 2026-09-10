@@ -36,7 +36,7 @@ Do not copy a transient implementation plan into a permanent policy document. Do
 | top-level module layout | `docs/architecture/repository-layout.md` |
 | CI and quality gates | `docs/governance/quality-policy.md` |
 | dependency/toolchain policy | `docs/governance/dependency-policy.md` |
-| version/tag mechanism | `docs/governance/release-policy.md` |
+| version/tag mechanism | `docs/governance/version-policy.md` |
 | public API surface or project positioning | `README.md` |
 
 A behavior-changing PR updates its responsible canonical document in the same PR. A documentation-only PR may correct drift without changing runtime behavior.
@@ -87,7 +87,7 @@ The repository validates documentation through:
 
 - `scripts/docs-check.mjs` — directory, naming, localized-README, and internal-link rules;
 - `scripts/link-check.mjs` — Markdown link integrity;
-- `scripts/docs-contract-test.mjs` — guards against known architecture and configuration drift.
+- `tests/docs-contract-test.mjs` — executable guards against known architecture and configuration drift.
 
 A green docs check does not prove every sentence is current. Reviewers must still compare changed claims with their executable source.
 

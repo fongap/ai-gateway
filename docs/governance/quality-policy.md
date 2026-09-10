@@ -97,6 +97,6 @@ Do not maintain two equal README implementations. `README.md` is canonical; loca
 
 ## Version/tag quality
 
-A stable version tag is created only after the intended `main` commit has passed the full production gate and, for deployable changes, the production deployment/verification path has succeeded. Version and tag rules are defined in [release-policy.md](release-policy.md).
+A stable version tag is created only after the intended `main` commit has passed the full production gate and, for deployable changes, the production deployment/verification path has succeeded. Version and tag rules are defined in [version-policy.md](version-policy.md).
 
 GitHub Releases are not required by the current service-deployment model. Existing Releases are historical records rather than a second version authority.

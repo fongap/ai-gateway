@@ -12,7 +12,8 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const checkPath = path.join(here, 'migrations-check.mjs');
+const root = path.resolve(here, '..');
+const checkPath = path.join(root, 'scripts', 'migrations-check.mjs');
 
 // Re-import the same constants the check uses by parsing the source.
 // This keeps the test in lockstep with whatever the production regex is.
@@ -61,10 +62,10 @@ await test('reject: missing NNN prefix', () => {
 });
 
 await test('reject: invalid slug characters', () => {
-  expectReject('0001_Token.sql');    // uppercase
-  expectReject('0001_foo-bar.sql');  // hyphen
-  expectReject('0001_foo bar.sql');  // space
-  expectReject('0001_.sql');         // empty slug
+  expectReject('0001_Token.sql');
+  expectReject('0001_foo-bar.sql');
+  expectReject('0001_foo bar.sql');
+  expectReject('0001_.sql');
 });
 
 await test('reject: non-sql files', () => {
@@ -75,13 +76,11 @@ await test('reject: non-sql files', () => {
 
 await test('shipped files in migrations/ all parse cleanly', async () => {
   const fs = await import('node:fs');
-  const root = path.resolve(here, '..');
   const dir = path.join(root, 'migrations');
   const files = fs.readdirSync(dir).filter((f) => f.endsWith('.sql'));
   for (const f of files) {
     expectParse(f);
   }
-  // Numbers must be strictly consecutive from 1.
   const nums = files.map((f) => expectParse(f).num).sort((a, b) => a - b);
   for (let i = 1; i < nums.length; i += 1) {
     assert.equal(nums[i] - nums[i - 1], 1, `gap between ${nums[i - 1]} and ${nums[i]}`);

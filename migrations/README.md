@@ -61,6 +61,6 @@ Run:
 npm run migrations:check
 ```
 
-The governance check is covered by [`scripts/migrations-check-test.mjs`](../scripts/migrations-check-test.mjs) and is included in both merge and deploy validation.
+The governance check is covered by [`tests/migrations-check-test.mjs`](../tests/migrations-check-test.mjs) and is included in both merge and deploy validation.
 
 Do not add a separate migration runner or parallel schema history unless the deployment mechanism actually changes.
