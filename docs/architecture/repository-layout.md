@@ -1,6 +1,6 @@
 # Repository layout
 
-The repository has one durable owner for each class of work: Worker runtime, tests, tooling, configuration examples, migrations, benchmarks, and documentation. Physical placement should make that ownership obvious.
+The repository has one durable owner for each class of work: Worker runtime, tests, tooling, configuration examples, migrations, and documentation. Physical placement should make that ownership obvious.
 
 ```text
 src/                         Cloudflare Worker runtime
@@ -40,10 +40,6 @@ scripts/                     repository/operator/CI tooling
 ├── *-check.*                validation/operator checks
 └── provider-discovery/      read-only provider catalog/diff/report implementation
 
-benchmark/                   performance-regression measurement
-├── README.md                interpretation and limits
-└── benchmark.mjs            gateway-added-overhead benchmark
-
 config/                      public configuration examples
 migrations/                  ordered D1 migrations
 docs/                        long-lived current documentation
@@ -62,9 +58,9 @@ docs/                        long-lived current documentation
 
 `src/` contains only code that is part of the Worker product/runtime. Test-only helpers and executable contracts belong in `tests/`. Repository, deployment, installation, configuration, discovery, and validation tools belong in `scripts/`.
 
-A file is a **test** when its primary purpose is to verify behavior and failure is meaningful only as test evidence. A file is a **script/tool** when operators, CI, or maintainers invoke it to perform an independent repository action. Tests may exercise tools in `scripts/`; the tool itself does not move into `tests/`.
+A file is a **test** when its primary purpose is to verify behavior and failure is meaningful as test evidence. A file is a **script/tool** when operators, CI, or maintainers invoke it to perform an independent repository action. Tests may exercise tools in `scripts/`; the tool itself does not move into `tests/`.
 
-`benchmark/` remains separate because a benchmark measures performance rather than asserting correctness. Its results are relative regression evidence, not an SLA or cross-machine score. `migrations/` remains separate because migration order and immutability are deployment contracts, not test fixtures.
+`migrations/` remains separate because migration order and immutability are deployment contracts, not test fixtures.
 
 Repository governance is enforced by GitHub rules/workflows and executable checks. Developer-specific Git hooks may be used locally, but `.githooks/` is not a repository-owned contract because machine-specific hook behavior is non-portable and can rewrite commits outside CI review.
 
@@ -107,7 +103,6 @@ Tier 2/3 retain their separate scheduler/reliability path.
 
 - `tests/` is the only normal home for executable tests and test-only helpers.
 - `scripts/` must not accumulate `*-test.mjs` files.
-- `benchmark/` contains performance measurement, not correctness tests or production tooling.
 - `.githooks/` is not committed; local hooks remain developer-local and advisory.
 - `docs/**/*.md` uses lowercase `kebab-case.md` except conventional `README.md`.
 - `.dev.vars`, `.env*`, `secrets*.json`, and `wrangler.user.jsonc` remain local/gitignored.

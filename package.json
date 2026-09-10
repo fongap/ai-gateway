@@ -20,8 +20,6 @@
     "test": "npm run test:unit",
     "test:integration": "node tests/integration-test.mjs",
     "test:conversion": "node tests/conversion-test.mjs",
-    "bench": "node benchmark/benchmark.mjs --quick",
-    "bench:full": "node benchmark/benchmark.mjs",
     "security:scan": "node scripts/secret-scan.mjs",
     "typecheck": "npx tsc --noEmit",
     "validate:merge": "npm run check && npm run check:version && npm run check:deployment-config && npm run migrations:check && npm run test:unit && npm run security:scan && npm run check:docs && npm run typecheck && npm run check:links",

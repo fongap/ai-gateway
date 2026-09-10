@@ -1,6 +1,6 @@
 # Tooling
 
-`scripts/` contains repository, operator, CI, configuration, deployment, validation, and provider-discovery tools. It is not a home for Worker runtime code, tests, or benchmarks.
+`scripts/` contains repository, operator, CI, configuration, deployment, validation, and provider-discovery tools. It is not a home for Worker runtime code or tests.
 
 ## Supported entry points
 
@@ -49,7 +49,6 @@ The repository uses focused executable checks under `scripts/`, including syntax
 
 - Worker runtime code → `src/`
 - executable tests/contracts/test-only helpers → `tests/`
-- performance measurement → `benchmark/`
 - persistent configuration examples → `config/`
 - D1 schema changes → `migrations/`
 - long-lived design and policy documentation → `docs/`

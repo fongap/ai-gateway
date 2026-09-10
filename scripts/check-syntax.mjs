@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Syntax-check every ES module in src/, scripts/, benchmark/, tests/.
+// Syntax-check every JavaScript ES module in src/, scripts/, and tests/.
 // This script ONLY checks .js and .mjs files using `node --check`.
 // TypeScript files (.ts) are validated by `tsc --noEmit` (npm run typecheck),
 // not by this script. Do not add TypeScript syntax checking here.
@@ -23,7 +23,6 @@ function walk(dir, out = []) {
 const files = [
   ...walk(path.join(root, 'src')),
   ...walk(path.join(root, 'scripts')),
-  ...walk(path.join(root, 'benchmark')),
   ...walk(path.join(root, 'tests')),
 ];
 
