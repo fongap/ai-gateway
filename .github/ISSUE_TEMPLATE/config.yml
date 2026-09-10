@@ -1,2 +1,10 @@
 blank_issues_enabled: false
-contact_links: []
+
+contact_links:
+  - name: Ask a question
+    url: https://github.com/fongap/ai-gateway/discussions/categories/q-a
+    about: Setup, configuration, provider integration, usage, and troubleshooting questions belong in Discussions / Q&A.
+
+  - name: Suggest an idea
+    url: https://github.com/fongap/ai-gateway/discussions/categories/ideas
+    about: Feature, protocol, routing, reliability, and product improvement ideas belong in Discussions / Ideas.
