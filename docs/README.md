@@ -43,7 +43,7 @@ Historical version changes belong in [CHANGELOG.md](../CHANGELOG.md), Git tags, 
 | [development-policy.md](governance/development-policy.md) | Branch, PR, refactor, and architecture-change rules |
 | [quality-policy.md](governance/quality-policy.md) | CI, tests, security, and production gates |
 | [dependency-policy.md](governance/dependency-policy.md) | Dependency and toolchain update policy |
-| [release-policy.md](governance/release-policy.md) | Version, stable-tag, deployment/build, and historical Release rules |
+| [version-policy.md](governance/version-policy.md) | Version, stable-tag, deployment/build, and historical Release rules |
 | [documentation-policy.md](governance/documentation-policy.md) | English-canonical documentation and code-to-doc synchronization |
 
 ## Authority order
