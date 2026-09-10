@@ -2,37 +2,32 @@
 
 # ai-gateway
 
-**Resilient AI API gateway for Cloudflare Workers**
+### Resilient AI API gateway for Cloudflare Workers
 
-Multi-provider routing · Multi-key load balancing · Rate limiting · Tiered failover · OpenAI/Anthropic compatibility
+Multi-provider routing · Multi-key load balancing · Rate limiting · Tiered failover  
+OpenAI Chat · OpenAI Responses · Anthropic Messages
 
 [**English**](README.md) · [简体中文](README.zh-CN.md)
 
 ![Version](https://img.shields.io/github/package-json/v/fongap/ai-gateway?label=Version)
 ![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)
-![Node.js](https://img.shields.io/badge/Node.js-22.18%2B-43853d?logo=node.js&logoColor=white)
 ![License](https://img.shields.io/github/license/fongap/ai-gateway?label=License)
 
-[Live Dashboard](https://api.135468.xyz/) · [Quick Start](#quick-start) · [Architecture](docs/architecture/overview.md) · [Configuration](docs/operations/configuration.md) · [Deployment](docs/operations/deployment.md) · [Documentation](docs/README.md)
+[Live Dashboard](https://api.135468.xyz/) · [Quick Start](#quick-start) · [Architecture](docs/architecture/overview.md) · [Documentation](docs/README.md)
 
 </div>
 
-ai-gateway turns heterogeneous AI providers, API keys, and logical models into one stable endpoint. It is built for high-volume, failure-prone upstream pools where **availability, quota protection, and predictable failover** matter more than simply picking the fastest key.
+One stable endpoint over heterogeneous AI providers, API keys, and logical model aliases. ai-gateway is built for high-volume, failure-prone upstream pools where **availability, quota protection, and predictable failover** matter more than chasing a single fastest key.
 
-**Live dashboard:** [api.135468.xyz](https://api.135468.xyz/) — current model availability, traffic, token activity, and client quick-start examples.
+## Why ai-gateway
 
-## Highlights
+**Resilient routing.** Route through **Tier 1 → Tier 2 → Tier 3** under one request budget, with P2C selection, passive TTFT learning, RPM/concurrency shaping, cooldown, affinity, and heat protection.
 
-| Capability | Current behavior |
-| --- | --- |
-| **Multi-provider routing** | Aggregate independent providers, keys, and logical model aliases behind one gateway |
-| **Tiered failover** | Route through **Tier 1 → Tier 2 → Tier 3** under one request budget |
-| **Multi-key resilience** | P2C selection, passive TTFT learning, concurrency/RPM shaping, cooldown and heat protection |
-| **Protocol compatibility** | Native OpenAI Chat, OpenAI Responses, and Anthropic Messages |
-| **Safe fallback** | OpenAI Chat ↔ Anthropic Messages only; **OpenAI Responses is Native Only** |
-| **Streaming & observability** | Protocol-aware first-event guards, guarded SSE, sanitized diagnostics, token-usage aggregation |
+**Protocol-aware failover.** Serve OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages natively. OpenAI Chat ↔ Anthropic Messages fallback is supported; **OpenAI Responses remains Native Only**.
 
-Designed for heterogeneous OpenAI-compatible and Anthropic-compatible upstreams, including coding-agent and Claude Code workloads.
+**Operational visibility.** Guard streaming before commit, keep diagnostics sanitized, aggregate token usage, expose model status, and verify production deployments with automatic Worker rollback on post-deploy failure.
+
+Built for heterogeneous OpenAI-compatible and Anthropic-compatible upstreams, including coding-agent and Claude Code workloads. [Open the live dashboard →](https://api.135468.xyz/)
 
 ## Architecture
 
