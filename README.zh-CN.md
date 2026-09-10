@@ -34,13 +34,13 @@ OpenAI Chat · OpenAI Responses · Anthropic Messages
 ## 架构
 
 ```mermaid
-flowchart LR
+flowchart TB
     A[Client] --> B[Auth + Route]
-    B --> C[Native protocol pool]
-    C --> D[Tiered scheduler]
-    D --> E[Upstream APIs]
-    C -. Native pool exhausted .-> F[Chat ↔ Messages bridge]
+    B --> C{Native pool}
+    C -->|available| D[Tiered scheduler]
+    C -. exhausted .-> F[Chat ↔ Messages bridge]
     F --> D
+    D --> E[Upstream APIs]
 ```
 
 始终优先执行原生协议。跨协议 fallback 与 native retry 共享同一 logical-attempt 和 wall-clock failover budget，Hedge twin 不跨协议。
