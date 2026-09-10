@@ -12,14 +12,35 @@ Use a short description that explains the operational value rather than repeatin
 
 **Topics**
 
+Topics should balance three jobs: identify the project precisely, participate in high-traffic ecosystem searches, and capture lower-volume high-intent searches. Avoid filling all 20 slots with synonyms or generic infrastructure terms.
+
+Recommended set:
+
 ```text
-cloudflare-workers
 ai-gateway
-openai-api
-anthropic-api
+llm-gateway
 llm-router
-api-proxy
+cloudflare-workers
+multi-provider
+api-gateway
+openai-api
+openai-compatible
+claude-code
+llmops
+anthropic-api
+llm-proxy
+openai-proxy
+rate-limiting
+load-balancing
 ```
+
+Topic roles:
+
+- **Core identity:** `ai-gateway`, `llm-gateway`, `llm-router`, `cloudflare-workers`, `multi-provider`.
+- **High-traffic discovery:** `api-gateway`, `openai-api`, `openai-compatible`, `claude-code`, `llmops`.
+- **High-intent long tail:** `anthropic-api`, `llm-proxy`, `openai-proxy`, `rate-limiting`, `load-balancing`.
+
+Do not add broad terms such as `ai`, `llm`, `proxy`, or `serverless` merely for volume when a more precise topic already covers the same discovery path. Topics should reflect implemented behavior, not aspirational features.
 
 **Homepage**
 
