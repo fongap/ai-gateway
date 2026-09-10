@@ -2,9 +2,9 @@
 
 # ai-gateway
 
-**Resilient AI API gateway for Cloudflare Workers**
+**Turn fragmented AI capacity into one stable endpoint.**
 
-Multi-provider routing · Multi-key load balancing · Rate limiting · Tiered failover · OpenAI/Anthropic compatibility
+Cloudflare Workers · Multi-provider routing · Multi-key load balancing · Rate limiting · Tiered failover · OpenAI/Anthropic compatibility
 
 [**English**](README.md) · [简体中文](README.zh-CN.md)
 
@@ -17,7 +17,13 @@ Multi-provider routing · Multi-key load balancing · Rate limiting · Tiered fa
 
 </div>
 
-ai-gateway turns heterogeneous AI providers, API keys, and logical models into one stable endpoint. It is built for high-volume, failure-prone upstream pools where **availability, quota protection, and predictable failover** matter more than simply picking the fastest key.
+ai-gateway aggregates heterogeneous AI providers, API keys, and logical model aliases behind one predictable endpoint. It is built to maximize the useful capacity of low-cost and failure-prone resources while preserving scarce or premium capacity for higher-value workloads.
+
+## Why ai-gateway
+
+Low-cost AI capacity is often fragmented across providers and accounts, constrained by RPM or concurrency limits, and uneven in latency and availability. ai-gateway treats that capacity as a pool: it spreads load across usable resources, protects hot or rate-limited keys, and moves through configured fallback tiers under one request budget instead of relying on a single "best" key.
+
+With tiered routing, operators can place abundant or lower-cost capacity earlier in the path and keep scarcer or premium resources available for workloads that need them. The goal is not simply to pick the fastest upstream, but to improve **availability, quota utilization, and predictable recovery** across the whole pool.
 
 **Live dashboard:** [api.135468.xyz](https://api.135468.xyz/) — current model availability, traffic, token activity, and client quick-start examples.
 
@@ -25,9 +31,9 @@ ai-gateway turns heterogeneous AI providers, API keys, and logical models into o
 
 | Capability | Current behavior |
 | --- | --- |
-| **Multi-provider routing** | Aggregate independent providers, keys, and logical model aliases behind one gateway |
-| **Tiered failover** | Route through **Tier 1 → Tier 2 → Tier 3** under one request budget |
 | **Multi-key resilience** | P2C selection, passive TTFT learning, concurrency/RPM shaping, cooldown and heat protection |
+| **Tiered failover** | Route through **Tier 1 → Tier 2 → Tier 3** under one request budget |
+| **Multi-provider routing** | Aggregate independent providers, keys, and logical model aliases behind one gateway |
 | **Protocol compatibility** | Native OpenAI Chat, OpenAI Responses, and Anthropic Messages |
 | **Safe fallback** | OpenAI Chat ↔ Anthropic Messages only; **OpenAI Responses is Native Only** |
 | **Streaming & observability** | Protocol-aware first-event guards, guarded SSE, sanitized diagnostics, token-usage aggregation |
