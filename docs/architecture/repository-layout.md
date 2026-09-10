@@ -1,13 +1,13 @@
 # Repository layout
 
-The repository separates Worker runtime code, configuration examples, operational tooling, tests, migrations, and long-lived documentation. Directory ownership is part of the architecture contract.
+The repository has one durable owner for each class of work: Worker runtime, tests, tooling, configuration examples, migrations, benchmarks, and documentation. Physical placement should make that ownership obvious.
 
 ```text
 src/                         Cloudflare Worker runtime
-├── config/                  env parsing, nodes, Model Registry, policies, provider quirks, version
-├── scheduler/               Tier 1 P2C/affinity selection and Tier 2/3 candidate selection
-├── reliability/             failure classification, Tier 1 state/heat, Tier 2/3 node state
-├── transport/               upstream paths, protocol headers, native transport behavior
+├── config/                  environment parsing, nodes, Model Registry, policies, provider quirks, version
+├── scheduler/               Tier 1 P2C/affinity and Tier 2/3 candidate selection
+├── reliability/             failure classification, cooldowns, quota/heat/state
+├── transport/               upstream paths, headers, native transport behavior
 ├── protocol/                client validation, CORS, protocol-specific request/error behavior
 ├── conversion/              Chat Completions ↔ Anthropic Messages conversion only
 ├── stream/                  first-event guards, SSE parsing, stream lifecycle
@@ -17,26 +17,33 @@ src/                         Cloudflare Worker runtime
 ├── runtime/                 runtime availability and read-only public model status
 └── dashboard/               public/operator presentation
 
-scripts/                     repository tooling and executable test contracts
-├── *-test.mjs               unit/contract suites
+tests/                       all executable test/contract code
+├── run-unit.mjs             canonical ordered unit/contract registry
+├── *-test.mjs               unit and executable contract suites
 ├── integration-test.mjs     integration suite
 ├── stress-test.mjs          stress/reliability suite
+├── scheduler-stability-test.mjs
 ├── codex-contract-test.mjs  Codex compatibility contract
 ├── claude-contract-test.mjs Claude compatibility contract
-├── cloudflare-wrangler.mjs  pinned Wrangler wrapper and local deploy behavior
-└── provider-discovery/      read-only provider catalog/diff/report tooling
+└── mock-d1-database.mjs     shared test helper
 
-tests/
-├── run-unit.mjs             canonical ordered unit-suite registry
-└── README.md
+scripts/                     repository/operator/CI tooling
+├── check-*.mjs              validation tools
+├── *-check.mjs              focused repository checks
+├── config-cli.mjs           configuration inspection/diff CLI
+├── node-config-shards.mjs   node configuration planning/sharding
+├── github-deployment-config.mjs
+├── cloudflare-wrangler.mjs  pinned Wrangler wrapper and deploy behavior
+├── install.* / update.* / deploy.* / reconfigure.*
+└── provider-discovery/      read-only provider catalog/diff/report implementation
 
-config/                      public example configuration
+config/                      public configuration examples
 benchmark/                   performance benchmarks
 migrations/                  ordered D1 migrations
-docs/                        long-lived documentation
-├── architecture/
-├── operations/
-└── governance/
+docs/                        long-lived current documentation
+├── architecture/            durable system boundaries and invariants
+├── operations/              current configuration/deployment/operator procedures
+└── governance/              rules for changing and validating the system
 
 .github/
 ├── workflows/               CI, Deploy, Provider Discovery
@@ -45,49 +52,42 @@ docs/                        long-lived documentation
 └── dependabot.yml
 ```
 
+## Ownership rules
+
+`src/` contains only code that is part of the Worker product/runtime. Test-only helpers and executable contracts belong in `tests/`. Repository, deployment, installation, configuration, discovery, and validation tools belong in `scripts/`.
+
+A file is a **test** when its primary purpose is to verify behavior and failure is meaningful only as test evidence. A file is a **script/tool** when operators, CI, or maintainers invoke it to perform an independent repository action. Tests may exercise tools in `scripts/`; the tool itself does not move into `tests/`.
+
+`benchmark/` remains separate because a benchmark measures performance rather than asserting correctness. `migrations/` remains separate because migration order and immutability are deployment contracts, not test fixtures.
+
 ## Runtime boundaries
 
-`src/` contains Worker runtime source. Tests and operational scripts do not belong in `src/` unless they are actually imported into the Worker runtime.
-
-Key ownership rules:
-
-- `config` builds trusted internal configuration from untrusted/external environment data.
-- `scheduler` chooses; it does not call providers directly.
-- `reliability` records availability/failure state; it does not convert request protocols.
-- `request` orchestrates existing domain modules; it should not copy their logic.
-- `transport` owns upstream HTTP semantics after a node is chosen.
+- `config` builds trusted internal configuration from external environment data.
+- `scheduler` chooses an eligible node; it does not call providers directly.
+- `reliability` records availability/failure state; it does not convert protocols.
+- `request` orchestrates domain modules; it should not duplicate their logic.
+- `transport` owns upstream HTTP semantics after a node is selected.
 - `conversion` owns only the explicit Chat ↔ Messages bridge.
-- `observability` and `runtime` projections must not feed public/D1 evidence back into routing unless a future design explicitly changes that contract.
+- `observability` and public runtime projections do not feed historical/D1 evidence back into routing unless that contract is explicitly redesigned.
 
-## Tier 1 files
-
-The current Tier 1 design is intentionally split by responsibility:
+## Tier 1 ownership
 
 - `src/scheduler/tier1-scheduler.ts` — Eligibility → Affinity → P2C selection and slot claim.
 - `src/scheduler/tier1-affinity.ts` — hashed session binding, cache, and escape decision.
 - `src/reliability/tier1-state.ts` — isolate-local RPM, in-flight, TTFT, cooldown, half-open, quota state.
 - `src/reliability/tier1-heat.ts` — bounded RPM-headroom/affinity/hedge heat protection.
 
-Tier 2/3 continue to use their separate scheduler/reliability path.
+Tier 2/3 retain their separate scheduler/reliability path.
 
-## Conversion files
+## Conversion ownership
 
-`src/conversion/result.ts` adds fidelity/diagnostic/structured-output strategy information around the existing direct converters. It does not create a new all-protocol IR and does not make OpenAI Responses convertible.
-
-## Documentation layout
-
-`docs/` contains only long-lived current documentation:
-
-- `architecture/` — what the system is and which invariants are durable;
-- `operations/` — how the current system is configured and operated;
-- `governance/` — how changes are proposed, validated, documented, and released.
-
-Temporary status, completed migrations, and historical implementation plans belong in PRs/issues/history rather than permanent docs.
+`src/conversion/result.ts` adds fidelity, diagnostics, and structured-output strategy around the direct converters. It does not introduce a universal protocol IR and does not make OpenAI Responses convertible.
 
 ## File rules
 
+- `tests/` is the only normal home for executable tests and test-only helpers.
+- `scripts/` must not accumulate `*-test.mjs` files.
 - `docs/**/*.md` uses lowercase `kebab-case.md` except conventional `README.md`.
-- `scripts/*-test.mjs` is reserved for executable test/contract files.
 - `.dev.vars`, `.env*`, `secrets*.json`, and `wrangler.user.jsonc` remain local/gitignored.
 - A new top-level directory requires a durable responsibility that does not overlap an existing owner.
-- Do not add a second directory merely to represent “new”, “final”, or version-specific copies of an existing responsibility.
+- Do not create `new`, `final`, `latest`, or version-suffixed copies of an existing responsibility.
