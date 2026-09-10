@@ -32,13 +32,13 @@ Built for heterogeneous OpenAI-compatible and Anthropic-compatible upstreams, in
 ## Architecture
 
 ```mermaid
-flowchart LR
+flowchart TB
     A[Client] --> B[Auth + Route]
-    B --> C[Native protocol pool]
-    C --> D[Tiered scheduler]
-    D --> E[Upstream APIs]
-    C -. Native pool exhausted .-> F[Chat ↔ Messages bridge]
+    B --> C{Native pool}
+    C -->|available| D[Tiered scheduler]
+    C -. exhausted .-> F[Chat ↔ Messages bridge]
     F --> D
+    D --> E[Upstream APIs]
 ```
 
 Native execution always comes first. Cross-protocol fallback shares the same logical-attempt and wall-clock failover budget; hedge twins never cross protocol boundaries.
