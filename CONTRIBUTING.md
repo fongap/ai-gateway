@@ -12,7 +12,7 @@ npm run validate:merge
 npm run check:deploy
 ```
 
-Use Node.js **>=22.18.0 <23**.
+Use Node.js **>=22.18.0**.
 
 ## Pull requests
 
@@ -25,14 +25,27 @@ Use Node.js **>=22.18.0 <23**.
 
 PR descriptions should state the problem, behavior change, verification, compatibility impact, resource impact, and security impact. A refactor must state whether external behavior changed; behavior-preserving refactors must not quietly alter scheduler, protocol, timeout, cooldown, fallback, or configuration semantics.
 
+## Repository ownership
+
+- `src/` — Cloudflare Worker runtime.
+- `tests/` — executable tests, contracts, and test-only helpers.
+- `scripts/` — repository, CI, configuration, installation, deployment, and discovery tooling.
+- `benchmark/` — performance measurements.
+- `migrations/` — ordered D1 schema changes.
+- `docs/` — long-lived architecture, operations, and governance documentation.
+
+Do not place test files back under `scripts/`; tests may exercise scripts, but tooling and verification have separate owners.
+
 ## Documentation responsibilities
 
 `README.md` is the canonical project landing page. The documentation tree is English-canonical:
 
 - [Architecture](docs/architecture/overview.md) — durable design boundaries and invariants.
 - [Operations](docs/operations/configuration.md) — configuration and deployment procedures.
-- [Governance](docs/governance/README.md) — development, quality, dependency, release, and documentation policy.
-- [CHANGELOG.md](CHANGELOG.md) and GitHub Releases — historical changes.
+- [Governance](docs/governance/README.md) — development, quality, dependency, version/tag, and documentation policy.
+- [CHANGELOG.md](CHANGELOG.md), Git tags, PRs, commits, and existing GitHub Releases — historical evidence.
+
+GitHub Releases are not part of the normal future service-version lifecycle. Stable source boundaries use Git tags under the [version/tag policy](docs/governance/release-policy.md).
 
 Do not create temporary `latest`, `final`, `new`, or version-suffixed copies of long-lived documentation. Update the responsible document directly.
 
@@ -41,7 +54,7 @@ Do not create temporary `latest`, `final`, `new`, or version-suffixed copies of 
 - [Development policy](docs/governance/development-policy.md)
 - [Quality policy](docs/governance/quality-policy.md)
 - [Dependency policy](docs/governance/dependency-policy.md)
-- [Release policy](docs/governance/release-policy.md)
+- [Version/tag policy](docs/governance/release-policy.md)
 - [Documentation policy](docs/governance/documentation-policy.md)
 
 ## Security
