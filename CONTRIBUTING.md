@@ -45,7 +45,7 @@ Do not place test files back under `scripts/`; tests may exercise scripts, but t
 - [Governance](docs/governance/README.md) — development, quality, dependency, version/tag, and documentation policy.
 - [CHANGELOG.md](CHANGELOG.md), Git tags, PRs, commits, and existing GitHub Releases — historical evidence.
 
-GitHub Releases are not part of the normal future service-version lifecycle. Stable source boundaries use Git tags under the [version/tag policy](docs/governance/release-policy.md).
+GitHub Releases are not part of the normal future service-version lifecycle. Stable source boundaries use Git tags under the [version/tag policy](docs/governance/version-policy.md).
 
 Do not create temporary `latest`, `final`, `new`, or version-suffixed copies of long-lived documentation. Update the responsible document directly.
 
@@ -54,7 +54,7 @@ Do not create temporary `latest`, `final`, `new`, or version-suffixed copies of 
 - [Development policy](docs/governance/development-policy.md)
 - [Quality policy](docs/governance/quality-policy.md)
 - [Dependency policy](docs/governance/dependency-policy.md)
-- [Version/tag policy](docs/governance/release-policy.md)
+- [Version/tag policy](docs/governance/version-policy.md)
 - [Documentation policy](docs/governance/documentation-policy.md)
 
 ## Security
