@@ -39,12 +39,20 @@ assert.equal(
   '.githooks must remain local; repository governance is enforced by CI and GitHub workflows',
 );
 
+assert.equal(
+  fs.existsSync(path.join(root, 'benchmark')),
+  false,
+  'standalone benchmark/ must remain absent unless a governed benchmark system with stable baselines and thresholds is introduced',
+);
+
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 for (const name of ['test:unit', 'test:all', 'test:integration', 'test:conversion']) {
   const command = pkg.scripts?.[name] || '';
   assert.ok(command, `package.json must define ${name}`);
   assert.doesNotMatch(command, /node\s+scripts\/[^\s]*test/i, `${name} must execute tests from tests/, not scripts/`);
 }
+assert.equal(pkg.scripts?.bench, undefined, 'package.json must not expose an ungoverned bench command');
+assert.equal(pkg.scripts?.['bench:full'], undefined, 'package.json must not expose an ungoverned bench:full command');
 
 for (const required of [
   'tests/run-unit.mjs',
