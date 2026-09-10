@@ -1,6 +1,6 @@
 <div align="center">
 
-# ai-gateway
+# AI-Gateway
 
 **Turn fragmented AI capacity into one stable endpoint.**
 
