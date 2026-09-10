@@ -1,75 +1,64 @@
+<div align="center">
+
 # ai-gateway
 
-**Many APIs · many keys · many models · one resilient endpoint**
+**Resilient AI API gateway for Cloudflare Workers**
 
-A lightweight AI API aggregation gateway for Cloudflare Workers. It routes multiple upstream APIs, credentials, and models behind one endpoint, with tiered failover, per-key traffic shaping, protocol-aware streaming, and conservative OpenAI/Anthropic fallback.
+Multi-provider routing · Multi-key load balancing · Rate limiting · Tiered failover · OpenAI/Anthropic compatibility
 
-Current source version: **1.3.1**
+[**English**](README.md) · [简体中文](README.zh-CN.md)
 
+![Version](https://img.shields.io/badge/version-1.3.1-0969da)
 ![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)
 ![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.18%20%3C23-43853d?logo=node.js&logoColor=white)
-![MIT](https://img.shields.io/badge/License-MIT-2ea44f)
+![License](https://img.shields.io/badge/license-MIT-2ea44f)
 
-[Quick start](#quick-start) · [Architecture](docs/architecture/overview.md) · [Configuration](docs/operations/configuration.md) · [Deployment](docs/operations/deployment.md) · [Documentation](docs/README.md) · [Governance](docs/governance/README.md)
+[Quick Start](#quick-start) · [Architecture](docs/architecture/overview.md) · [Configuration](docs/operations/configuration.md) · [Deployment](docs/operations/deployment.md) · [Documentation](docs/README.md)
 
-## What it does
+</div>
 
-| Area | Current contract |
+ai-gateway turns heterogeneous AI providers, API keys, and logical models into one stable endpoint. It is built for high-volume, failure-prone upstream pools where **availability, quota protection, and predictable failover** matter more than simply picking the fastest key.
+
+## Highlights
+
+| Capability | Current behavior |
 | --- | --- |
-| Native APIs | OpenAI Chat Completions, OpenAI Responses, Anthropic Messages |
-| Aggregation | Multiple providers, API keys, and logical models behind one gateway |
-| Tier routing | Tier 1 → Tier 2 → Tier 3 |
-| Tier 1 | Eligibility → soft Affinity → P2C, passive TTFT learning, RPM/concurrency heat protection |
-| Failover | Rotates on rate limits, upstream failures, network errors, and pre-commit timeouts |
-| Protocol fallback | OpenAI Chat ↔ Anthropic Messages only; OpenAI Responses is Native Only |
-| Streaming | Protocol-specific first-event guards and guarded SSE forwarding |
-| Observability | Sanitized diagnostics, token-usage aggregation, public model-status projection |
+| **Multi-provider routing** | Aggregate independent providers, keys, and logical model aliases behind one gateway |
+| **Tiered failover** | Route through **Tier 1 → Tier 2 → Tier 3** under one request budget |
+| **Multi-key resilience** | P2C selection, passive TTFT learning, concurrency/RPM shaping, cooldown and heat protection |
+| **Protocol compatibility** | Native OpenAI Chat, OpenAI Responses, and Anthropic Messages |
+| **Safe fallback** | OpenAI Chat ↔ Anthropic Messages only; **OpenAI Responses is Native Only** |
+| **Streaming & observability** | Protocol-aware first-event guards, guarded SSE, sanitized diagnostics, token-usage aggregation |
+
+Designed for heterogeneous OpenAI-compatible and Anthropic-compatible upstreams, including coding-agent and Claude Code workloads.
+
+## Architecture
 
 ```mermaid
 flowchart LR
     A[Client] --> B[Auth + Route]
     B --> C[Native protocol pool]
-    C --> D[Tier 1]
-    D --> E[Tier 2]
-    E --> F[Tier 3]
-    F --> G[Chat ↔ Messages fallback]
-    G --> H[Response]
+    C --> D[Tiered scheduler]
+    D --> E[Upstream APIs]
+    C -. Native pool exhausted .-> F[Chat ↔ Messages bridge]
+    F --> D
 ```
 
-Native execution always comes first. Cross-protocol fallback begins only after the native pool is exhausted and shares the same logical-attempt and wall-clock failover budget. Hedge twins never cross protocol boundaries.
+Native execution always comes first. Cross-protocol fallback shares the same logical-attempt and wall-clock failover budget; hedge twins never cross protocol boundaries.
 
-## Tier 1 resilience
+Tier 1 is intentionally biased toward **stable capacity, not a single "best" key**. RPM headroom can soften selection before a hard limit, affinity weakens as a key gets hot, and optional hedge twins require spare RPM/concurrency capacity.
 
-Tier 1 is optimized for pools of independent keys where a single fast key should not become a hotspot.
-
-- P2C avoids full-pool sorting.
-- Passive per-`(account, model)` TTFT EWMA influences selection without creating active probes.
-- Session affinity is advisory, not sticky routing.
-- Hard RPM uses isolate-local smooth token-bucket admission.
-- RPM headroom softly penalizes a key before the hard RPM gate is reached.
-- Affinity bias decays toward neutral as RPM or concurrency pressure rises.
-- Optional hedge twins require spare RPM and concurrency capacity.
-- 429 recovery uses scoped cooldown/backoff; success rate is not rewarded as a routing signal.
-
-These controls are best-effort per Worker isolate unless a Cloudflare distributed rate-limiting binding is configured. They are not a provider-wide globally consistent quota system.
-
-## Protocol model
-
-The gateway exposes:
+## API surface
 
 | Method | Path | Surface |
 | --- | --- | --- |
 | `POST` | `/v1/chat/completions` | OpenAI Chat Completions |
 | `POST` | `/v1/responses` | OpenAI Responses |
 | `POST` | `/v1/messages` | Anthropic Messages |
-| `POST` | `/v1/messages/count_tokens` | Local Anthropic-compatible token count |
+| `POST` | `/v1/messages/count_tokens` | Anthropic-compatible local token count |
 | `GET` | `/v1/models` | Model catalog |
 | `GET` | `/health` | Authenticated health diagnostics |
-| `GET` | `/version` | Release and build identity |
-
-The built-in fallback chain is bidirectional between Chat Completions and Messages. `PROTOCOL_FALLBACKS=disable` disables conversion fallback. OpenAI Responses never enters the conversion matrix.
-
-Fallback conversion reports semantic fidelity as `exact`, `portable`, or `degraded` with fixed, non-sensitive diagnostics. Structured-output conversion uses a conservative Native → Tool → Prompt capability model; unknown target capability remains on the Prompt path rather than guessing wire support. See [Protocol model](docs/architecture/protocol-model.md).
+| `GET` | `/version` | Release and deployed-build identity |
 
 ## Quick start
 
@@ -88,63 +77,56 @@ Windows:
 powershell scripts/install.ps1
 ```
 
-For production, use the repository-driven workflow documented in [Deployment](docs/operations/deployment.md).
+For production, use the repository-driven workflow in [Deployment](docs/operations/deployment.md).
 
-## Core configuration
+## Configuration model
 
-Runtime nodes are delivered through tier-scoped configuration shards and credential shards. Credentials bind by **Tier + node id**; shard suffixes are independent.
+| Layer | Configuration |
+| --- | --- |
+| Nodes | `TIER{1,2,3}_NODES_CONFIG_01..10` |
+| Upstream credentials | `TIER{1,2,3}_NODES_SECRETS_01..10` |
+| Gateway access | `GATEWAY_ACCESS_KEY_{AIR,PRO,MAX,ULTRA,AGENT}` |
+| Model access | `GATEWAY_ACCESS_MODELS_{AIR,PRO,MAX,ULTRA,AGENT}` |
+| Model / request policy | `MODELS_CONFIG` · `POLICIES_CONFIG` |
 
-```json
-{
-  "id": "node-01",
-  "provider": "example",
-  "protocol": "openai",
-  "surfaces": ["chat_completions"],
-  "base_url": "https://api.example.com/v1",
-  "priority": 10,
-  "models": { "code": "upstream-model" },
-  "limits": { "concurrency": 3, "rpm": 40 }
-}
+Credentials bind by **Tier + node id**; Config and Secret shard suffixes are independent partitions. Gateway access is fail-closed: a configured access key with a missing or empty model allowlist grants no model access.
+
+See [Configuration](docs/operations/configuration.md) for the complete node schema, runtime variables, protocol fallback settings, RPM behavior, and Cloudflare bindings.
+
+## Production flow
+
+```text
+Pull Request
+    ↓
+validate-merge
+    ↓
+squash merge to main
+    ↓
+validate-deploy
+    ↓
+Worker deploy
+    ↓
+remote verification
+    ↓
+success / automatic Worker rollback
 ```
 
-Primary configuration families:
-
-- `TIER{1,2,3}_NODES_CONFIG_01..10` — non-secret node configuration.
-- `TIER{1,2,3}_NODES_SECRETS_01..10` — tier-scoped credentials keyed by node id.
-- `GATEWAY_ACCESS_KEY_{AIR,PRO,MAX,ULTRA,AGENT}` — client gateway keys; configure at least one group.
-- `GATEWAY_ACCESS_MODELS_{AIR,PRO,MAX,ULTRA,AGENT}` — per-group model allowlists.
-- `MODELS_CONFIG` — logical model registry overrides.
-- `POLICIES_CONFIG` — attempt, tier, and hedge policy overrides.
-
-Gateway access is fail-closed: a configured group key with a missing or empty model allowlist grants no model access.
-
-See [Configuration](docs/operations/configuration.md) for the complete runtime contract.
-
-## Deliberate boundaries
-
-ai-gateway intentionally does not turn every provider difference into a framework abstraction.
-
-- Provider labels are metadata and known-quirk selectors, not model-capability authority.
-- The Model Registry owns logical model capabilities and policy association.
-- Provider Discovery is read-only advisory tooling and never changes runtime routing.
-- Public Model Status is a read-only projection and never feeds the scheduler.
-- OpenAI Responses remains native-only.
-- Cross-isolate global concurrency is not claimed.
+Documentation-only commits are intentionally excluded from Worker redeployment.
 
 ## Documentation
 
-The documentation is English-canonical and organized by responsibility:
+| Area | Purpose |
+| --- | --- |
+| [Architecture](docs/architecture/overview.md) | Durable system boundaries, routing, protocol and reliability contracts |
+| [Operations](docs/operations/configuration.md) | Configuration, deployment, troubleshooting and provider discovery |
+| [Governance](docs/governance/README.md) | Development, quality, dependency, release and documentation policy |
+| [CHANGELOG](CHANGELOG.md) | Version history |
 
-- [Architecture](docs/architecture/overview.md) — durable system boundaries and invariants.
-- [Operations](docs/operations/configuration.md) — current configuration, deployment, and troubleshooting procedures.
-- [Governance](docs/governance/README.md) — development, quality, release, dependency, and documentation rules.
-- [CHANGELOG](CHANGELOG.md) and GitHub Releases — historical version changes.
-
-`README_EN.md` is retained only as a compatibility link for older references; `README.md` is the canonical project landing page.
+English is the canonical documentation language. The [Simplified Chinese README](README.zh-CN.md) is maintained as a reader-facing translation; executable behavior, tests, schemas and the English canonical documentation remain the source of truth.
 
 ## Security
 
-Do not place upstream credentials in node configuration or commit local secret files. See [SECURITY.md](SECURITY.md) for reporting and deployment requirements.
+Never place upstream credentials in node configuration or public logs. See [SECURITY.md](SECURITY.md) for secret handling and vulnerability reporting.
 
 ## License
 
