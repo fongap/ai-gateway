@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Fongap Studio
+//
 // Gateway added-overhead benchmark.
 //
 // Measures the cost of running the same mocked upstream through ai-gateway
@@ -10,9 +13,9 @@
 //
 // Usage:
 //   node benchmark/benchmark.mjs            # full run
-//   node benchmark/benchmark.mjs --quick    # CI smoke (fewer iterations)
+//   node benchmark/benchmark.mjs --quick    # short local run
 import { performance } from 'node:perf_hooks';
-import worker from '../src/index.js';
+import worker from '../src/index.ts';
 import { __resetAllStateForTests } from '../src/reliability/node-state.ts';
 
 const QUICK = process.argv.includes('--quick');
@@ -75,7 +78,8 @@ function makeEnv(nodeCount) {
     secrets[id] = `cred-${i}`;
   }
   return {
-    GATEWAY_ACCESS_KEY: ACCESS_KEY,
+    GATEWAY_ACCESS_KEY_AIR: ACCESS_KEY,
+    GATEWAY_ACCESS_MODELS_AIR: 'm',
     TIER1_NODES_CONFIG_01: JSON.stringify(nodes),
     TIER1_NODES_SECRETS_01: JSON.stringify(secrets),
     LOG_LEVEL: 'none',

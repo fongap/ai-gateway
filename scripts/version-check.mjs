@@ -58,14 +58,14 @@ if (!nodeMatch) {
 // Check that the generated version module exists and matches
 const versionModulePath = path.join(root, 'src', 'config', 'version.ts');
 if (!fs.existsSync(versionModulePath)) {
-  fail('Generated version module src/config/version.ts is missing (run generate-version.mjs)');
+  fail('Generated version module src/config/version.ts is missing (run npm run version:sync)');
 } else {
   const versionModuleContent = fs.readFileSync(versionModulePath, 'utf8');
   const moduleVersionMatch = versionModuleContent.match(/export const VERSION = '([^']+)'/);
   if (!moduleVersionMatch) {
     fail('src/config/version.ts does not contain expected VERSION export');
   } else if (moduleVersionMatch[1] !== version) {
-    fail(`src/config/version.ts VERSION=${moduleVersionMatch[1]} does not match package.json.version=${version}`);
+    fail(`src/config/version.ts VERSION=${moduleVersionMatch[1]} does not match package.json.version=${version} (run npm run version:sync)`);
   }
 }
 

@@ -5,7 +5,7 @@ if(-not $GatewayUrl){$GatewayUrl=Read-Host '网关地址，例如 https://name.a
 $uri=$null
 if(-not [Uri]::TryCreate($GatewayUrl,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -ne 'https' -or -not $uri.Host){throw '网关地址必须是完整 HTTPS URL。'}
 if(-not $AccessKey){
-  $secure=Read-Host 'GATEWAY_ACCESS_KEY' -AsSecureString
+  $secure=Read-Host 'Gateway access key (configured group key)' -AsSecureString
   $ptr=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
   try{$AccessKey=[Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr)}finally{[Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)}
 }

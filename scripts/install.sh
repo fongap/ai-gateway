@@ -4,7 +4,6 @@ set -e
 cd "$(dirname "$0")/.."
 
 # Node.js version contract: single source of truth is package.json -> engines.node
-# Reuse version-check.mjs logic for consistent semver validation.
 if ! node scripts/version-check.mjs 2>/dev/null; then
   echo "Node.js version check failed. Required: $(node -e 'console.log(require("./package.json").engines.node)')" >&2
   exit 1
@@ -18,52 +17,56 @@ WORKER_NAME="${WORKER_NAME:-$DEFAULT_NAME}"
 printf "Tier 1 affinity KV namespace ID (required): "
 read -r AFFINITY_KV_ID
 node -e '
-const fs = require("fs");
 const name = process.argv[1];
 if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) { console.error("invalid worker name"); process.exit(1); }
 if (!/^[a-fA-F0-9]{32}$/.test(process.argv[2])) { console.error("Tier 1 affinity KV namespace ID must be 32 hexadecimal characters"); process.exit(1); }
-const c = JSON.parse(fs.readFileSync("wrangler.jsonc", "utf8"));
-c.name = name;
-fs.writeFileSync("wrangler.jsonc", JSON.stringify(c, null, 2) + "\n");
 ' "$WORKER_NAME" "$AFFINITY_KV_ID"
 
 echo "==> Installing dependencies and verifying project"
 npm ci
 npm run validate:merge
 
-# Cloudflare login: whoami -> login (only if not logged in)
-npx --yes wrangler@4.114.0 whoami >/dev/null 2>&1 || npx --yes wrangler@4.114.0 login
+node scripts/cloudflare-wrangler.mjs whoami >/dev/null 2>&1 || node scripts/cloudflare-wrangler.mjs login
 
 echo "==> Node configuration"
 echo "Node configs are PLAIN variables without credentials; credentials go into a separate NODE_SECRETS file."
-read -r -p "tier-1 node config JSON file: " TIER1
+printf "tier-1 node config JSON file: "
+read -r TIER1
 [ -n "$TIER1" ] && [ -f "$TIER1" ] || { echo "tier-1 file is required." >&2; exit 1; }
-PLAN_ARGS="validate --tier1 $TIER1"
+TIER2=""
+TIER3=""
 for N in 2 3; do
-  read -r -p "tier-$N node config JSON file (optional, empty to skip): " TIER_FILE
+  printf "tier-%s node config JSON file (optional, empty to skip): " "$N"
+  read -r TIER_FILE
   if [ -n "$TIER_FILE" ]; then
     [ -f "$TIER_FILE" ] || { echo "file not found: $TIER_FILE" >&2; exit 1; }
-    PLAN_ARGS="$PLAN_ARGS --tier$N $TIER_FILE"
   fi
-  eval "TIER$N=$TIER_FILE"
+  case "$N" in
+    2) TIER2="$TIER_FILE" ;;
+    3) TIER3="$TIER_FILE" ;;
+  esac
 done
-read -r -p "node secrets JSON file ({ \"node-id\": \"credential\" }): " SECRETS_FILE
+printf 'node secrets JSON file ({ "node-id": "credential" }): '
+read -r SECRETS_FILE
 [ -n "$SECRETS_FILE" ] && [ -f "$SECRETS_FILE" ] || { echo "secrets file is required." >&2; exit 1; }
-PLAN_ARGS="$PLAN_ARGS --secrets $SECRETS_FILE"
-# shellcheck disable=SC2086
-node scripts/plan-node-configuration.mjs $PLAN_ARGS
+
+set -- validate --tier1 "$TIER1"
+[ -n "$TIER2" ] && set -- "$@" --tier2 "$TIER2"
+[ -n "$TIER3" ] && set -- "$@" --tier3 "$TIER3"
+set -- "$@" --secrets "$SECRETS_FILE"
+node scripts/plan-node-configuration.mjs "$@"
 
 echo "==> Sharding config into variables + secrets"
 TMP_PLAN="$(mktemp)"
 TMP_ACCESS="$(mktemp)"
 TMP_BULK="$(mktemp)"
 trap 'rm -f "$TMP_PLAN" "$TMP_ACCESS" "$TMP_BULK"' EXIT INT TERM
-SHARD_ARGS="plan --secrets $SECRETS_FILE --out $TMP_PLAN"
-[ -n "${TIER1:-}" ] && SHARD_ARGS="$SHARD_ARGS --tier1 $TIER1"
-[ -n "${TIER2:-}" ] && SHARD_ARGS="$SHARD_ARGS --tier2 $TIER2"
-[ -n "${TIER3:-}" ] && SHARD_ARGS="$SHARD_ARGS --tier3 $TIER3"
-# shellcheck disable=SC2086
-node scripts/plan-node-configuration.mjs $SHARD_ARGS
+
+set -- plan --tier1 "$TIER1"
+[ -n "$TIER2" ] && set -- "$@" --tier2 "$TIER2"
+[ -n "$TIER3" ] && set -- "$@" --tier3 "$TIER3"
+set -- "$@" --secrets "$SECRETS_FILE" --out "$TMP_PLAN"
+node scripts/plan-node-configuration.mjs "$@"
 printf '{}\n' > "$TMP_ACCESS"
 
 echo "==> Gateway Access Groups"
@@ -104,11 +107,12 @@ if [ "$ACCESS_GROUP_COUNT" -eq 0 ]; then
   exit 1
 fi
 
-AFFINITY_KV_ID="$AFFINITY_KV_ID" node -e '
+WORKER_NAME="$WORKER_NAME" AFFINITY_KV_ID="$AFFINITY_KV_ID" node -e '
 const fs = require("fs");
 const base = JSON.parse(fs.readFileSync("wrangler.jsonc", "utf8"));
 const plan = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
 const access = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+base.name = process.env.WORKER_NAME;
 base.vars = { ...plan.vars };
 for (const [name, value] of Object.entries(access)) {
   if (name.startsWith("GATEWAY_ACCESS_MODELS_")) base.vars[name] = value;
@@ -128,10 +132,10 @@ for (const [name, value] of Object.entries(access)) {
 fs.writeFileSync(process.argv[3], JSON.stringify(bulk));
 ' "$TMP_PLAN" "$TMP_ACCESS" "$TMP_BULK"
 
-# Single deploy with secrets file — avoids code/secret two-phase deploy
-npx --yes wrangler@4.114.0 deploy -c wrangler.user.jsonc --keep-vars --secrets-file "$TMP_BULK"
+node scripts/cloudflare-wrangler.mjs deploy -c wrangler.user.jsonc --keep-vars --secrets-file "$TMP_BULK"
 
-read -r -p "Gateway URL after deploy (empty to skip verification): " URL
+printf "Gateway URL after deploy (empty to skip verification): "
+read -r URL
 if [ -n "$URL" ]; then
   case "$URL" in https://*) ;; *) echo "gateway URL must be https://" >&2; exit 1;; esac
   curl -fsS "$URL/version" >/dev/null

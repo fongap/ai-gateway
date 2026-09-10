@@ -1,27 +1,31 @@
 #!/bin/sh
 # Reconfigure an already-deployed worker using the current group-key schema.
-# Delegates deploy to cloudflare-wrangler.mjs for migration-before-deploy.
+# Delegates Cloudflare CLI actions to cloudflare-wrangler.mjs.
 set -e
 cd "$(dirname "$0")/.."
 
-npx --yes wrangler@4.114.0 whoami >/dev/null 2>&1 || { echo "login first: npm run cf:login" >&2; exit 1; }
+node scripts/cloudflare-wrangler.mjs whoami >/dev/null 2>&1 || { echo "login first: npm run cf:login" >&2; exit 1; }
 
-read -r -p "tier-1 node config JSON file: " TIER1
+printf "tier-1 node config JSON file: "
+read -r TIER1
 [ -n "$TIER1" ] && [ -f "$TIER1" ] || { echo "tier-1 file is required." >&2; exit 1; }
-PLAN_ARGS="plan --tier1 $TIER1"
+TIER2=""
+TIER3=""
 for N in 2 3; do
-  read -r -p "tier-$N node config JSON file (optional, empty to skip): " TIER_FILE
+  printf "tier-%s node config JSON file (optional, empty to skip): " "$N"
+  read -r TIER_FILE
   if [ -n "$TIER_FILE" ]; then
     [ -f "$TIER_FILE" ] || { echo "file not found: $TIER_FILE" >&2; exit 1; }
-    PLAN_ARGS="$PLAN_ARGS --tier$N $TIER_FILE"
   fi
-  eval "TIER$N=$TIER_FILE"
+  case "$N" in
+    2) TIER2="$TIER_FILE" ;;
+    3) TIER3="$TIER_FILE" ;;
+  esac
 done
-read -r -p "node secrets JSON file ({ \"node-id\": \"credential\" }): " SECRETS_FILE
+printf 'node secrets JSON file ({ "node-id": "credential" }): '
+read -r SECRETS_FILE
 [ -n "$SECRETS_FILE" ] && [ -f "$SECRETS_FILE" ] || { echo "secrets file is required." >&2; exit 1; }
-PLAN_ARGS="$PLAN_ARGS --secrets $SECRETS_FILE"
 
-# Existing managed var names from the local user config (if present).
 EXISTING_VARS_FILE="$(mktemp)"
 if [ -f wrangler.user.jsonc ]; then
   node -e '
@@ -32,15 +36,17 @@ if [ -f wrangler.user.jsonc ]; then
 else
   echo "[]" > "$EXISTING_VARS_FILE"
 fi
-PLAN_ARGS="$PLAN_ARGS --existing-vars $EXISTING_VARS_FILE"
 
 TMP_PLAN="$(mktemp)"
 TMP_ACCESS="$(mktemp)"
 TMP_BULK="$(mktemp)"
 trap 'rm -f "$EXISTING_VARS_FILE" "$TMP_PLAN" "$TMP_ACCESS" "$TMP_BULK"' EXIT INT TERM
-PLAN_ARGS="$PLAN_ARGS --out $TMP_PLAN"
-# shellcheck disable=SC2086
-node scripts/plan-node-configuration.mjs $PLAN_ARGS
+
+set -- plan --tier1 "$TIER1"
+[ -n "$TIER2" ] && set -- "$@" --tier2 "$TIER2"
+[ -n "$TIER3" ] && set -- "$@" --tier3 "$TIER3"
+set -- "$@" --secrets "$SECRETS_FILE" --existing-vars "$EXISTING_VARS_FILE" --out "$TMP_PLAN"
+node scripts/plan-node-configuration.mjs "$@"
 printf '{}\n' > "$TMP_ACCESS"
 
 AFFINITY_KV_ID=""
@@ -123,7 +129,6 @@ for (const [name, value] of Object.entries(access)) {
 fs.writeFileSync(process.argv[3], JSON.stringify(bulk));
 ' "$TMP_PLAN" "$TMP_ACCESS" "$TMP_BULK"
 
-# Delegate deploy to cloudflare-wrangler.mjs (handles D1 migrations)
 node scripts/cloudflare-wrangler.mjs deploy -c wrangler.user.jsonc --keep-vars --secrets-file "$TMP_BULK"
 
 node -e '
@@ -131,7 +136,7 @@ const plan = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
 for (const key of plan.deleteSecrets) console.log(key);
 ' "$TMP_PLAN" | while IFS= read -r KEY; do
   [ -n "$KEY" ] || continue
-  echo "y" | npx --yes wrangler@4.114.0 secret delete "$KEY" >/dev/null && echo "deleted stale secret: $KEY"
+  echo "y" | node scripts/cloudflare-wrangler.mjs secret delete "$KEY" >/dev/null && echo "deleted stale secret: $KEY"
 done
 
 echo "Configuration updated."

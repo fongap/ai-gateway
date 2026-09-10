@@ -51,6 +51,7 @@ const UNIT_TESTS = [
   'tests/version-check-test.mjs',
   'tests/architecture-contract-test.mjs',
   'tests/repository-layout-test.mjs',
+  'tests/benchmark-contract-test.mjs',
   'tests/reliability-core-contract-test.mjs',
   'tests/deployment-workflow-contract-test.mjs',
   'tests/scheduler-racelost-test.mjs',

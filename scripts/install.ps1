@@ -5,7 +5,7 @@ $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
 
 function Invoke-Wrangler([string[]]$Arguments) {
-  & npx --yes 'wrangler@4.114.0' @Arguments
+  & node scripts/cloudflare-wrangler.mjs @Arguments
   if ($LASTEXITCODE -ne 0) { throw "wrangler failed: $($Arguments -join ' ')" }
 }
 function Read-SecretText([string]$Prompt) {
@@ -21,29 +21,25 @@ function Read-FilePath([string]$Prompt, [bool]$Required) {
 }
 
 # Node.js version contract: single source of truth is package.json -> engines.node
-# Reuse version-check.mjs for consistent semver validation.
 $versionCheck = node scripts/version-check.mjs 2>$null
 if ($LASTEXITCODE -ne 0) {
   $required = (Get-Content (Join-Path $Root 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json).engines.node
   throw "Node.js version check failed. Required: $required"
 }
 
-$defaultWorkerName = ((Get-Content (Join-Path $Root 'wrangler.jsonc') -Raw -Encoding UTF8 | ConvertFrom-Json).name)
+$configPath = Join-Path $Root 'wrangler.jsonc'
+$baseConfig = Get-Content $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$defaultWorkerName = $baseConfig.name
 $workerName = (Read-Host "Worker name [$defaultWorkerName]").Trim()
 if (!$workerName) { $workerName = $defaultWorkerName }
 if ($workerName -notmatch '^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$') { throw 'Worker name must be 1-63 chars: lowercase letters, digits, hyphens.' }
 $affinityKvId = (Read-Host 'Tier 1 affinity KV namespace ID (required)').Trim()
 if ($affinityKvId -notmatch '^[a-fA-F0-9]{32}$') { throw 'Tier 1 affinity KV namespace ID must be 32 hexadecimal characters.' }
-$configPath = Join-Path $Root 'wrangler.jsonc'
-$config = Get-Content $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
-$config.name = $workerName
-[IO.File]::WriteAllText($configPath, ($config | ConvertTo-Json -Depth 30) + "`n", [Text.UTF8Encoding]::new($false))
 
 Write-Host '==> Installing dependencies and verifying project'
 npm ci; if ($LASTEXITCODE -ne 0) { throw 'npm ci failed.' }
 npm run validate:merge; if ($LASTEXITCODE -ne 0) { throw 'project verification failed.' }
 
-# Cloudflare login: whoami -> login (only if not logged in)
 try {
   Invoke-Wrangler @('whoami')
 } catch {
@@ -94,9 +90,10 @@ try {
 
   $plan = Get-Content $planFile -Raw -Encoding UTF8 | ConvertFrom-Json
 
-  # Build wrangler.user.jsonc with the plain vars for deploy.
+  # Build operator-local config; the tracked wrangler.jsonc remains immutable.
   $userConfigPath = Join-Path $Root 'wrangler.user.jsonc'
   $userConfig = Get-Content $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  $userConfig.name = $workerName
   $varsMap = [ordered]@{}
   foreach ($prop in $plan.vars.PSObject.Properties) { $varsMap[$prop.Name] = $prop.Value }
   foreach ($group in $accessModels.Keys) { $varsMap["GATEWAY_ACCESS_MODELS_$group"] = $accessModels[$group] }
@@ -106,7 +103,6 @@ try {
   ) -Force
   [IO.File]::WriteAllText($userConfigPath, ($userConfig | ConvertTo-Json -Depth 30) + "`n", [Text.UTF8Encoding]::new($false))
 
-  # Secrets bulk file: configured Gateway Access Group Keys + node-secret shards.
   $bulkPath = Join-Path ([IO.Path]::GetTempPath()) ("gateway-secrets-" + [guid]::NewGuid().ToString('N') + '.json')
   $tmpFiles += $bulkPath
   $bulk = [ordered]@{}

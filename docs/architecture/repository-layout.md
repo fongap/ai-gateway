@@ -28,17 +28,23 @@ tests/                       all executable test/contract code
 └── mock-d1-database.mjs     shared test helper
 
 scripts/                     repository/operator/CI tooling
-├── check-*.mjs              validation tools
-├── *-check.mjs              focused repository checks
+├── README.md                supported tooling entry points and boundaries
+├── cloudflare-wrangler.mjs  sole Wrangler pin + direct CLI/deploy behavior
+├── install.*                first-time local bootstrap
+├── reconfigure.*            existing operator configuration update
 ├── config-cli.mjs           configuration inspection/diff CLI
 ├── node-config-shards.mjs   node configuration planning/sharding
+├── plan-node-configuration.mjs
 ├── github-deployment-config.mjs
-├── cloudflare-wrangler.mjs  pinned Wrangler wrapper and deploy behavior
-├── install.* / update.* / deploy.* / reconfigure.*
+├── deploy-gate-decision.mjs
+├── *-check.*                validation/operator checks
 └── provider-discovery/      read-only provider catalog/diff/report implementation
 
+benchmark/                   performance-regression measurement
+├── README.md                interpretation and limits
+└── benchmark.mjs            gateway-added-overhead benchmark
+
 config/                      public configuration examples
-benchmark/                   performance benchmarks
 migrations/                  ordered D1 migrations
 docs/                        long-lived current documentation
 ├── architecture/            durable system boundaries and invariants
@@ -58,9 +64,21 @@ docs/                        long-lived current documentation
 
 A file is a **test** when its primary purpose is to verify behavior and failure is meaningful only as test evidence. A file is a **script/tool** when operators, CI, or maintainers invoke it to perform an independent repository action. Tests may exercise tools in `scripts/`; the tool itself does not move into `tests/`.
 
-`benchmark/` remains separate because a benchmark measures performance rather than asserting correctness. `migrations/` remains separate because migration order and immutability are deployment contracts, not test fixtures.
+`benchmark/` remains separate because a benchmark measures performance rather than asserting correctness. Its results are relative regression evidence, not an SLA or cross-machine score. `migrations/` remains separate because migration order and immutability are deployment contracts, not test fixtures.
 
 Repository governance is enforced by GitHub rules/workflows and executable checks. Developer-specific Git hooks may be used locally, but `.githooks/` is not a repository-owned contract because machine-specific hook behavior is non-portable and can rewrite commits outside CI review.
+
+## Tooling entry-point ownership
+
+- First-time local bootstrap: `scripts/install.sh` / `scripts/install.ps1`.
+- Existing local/operator reconfiguration: `scripts/reconfigure.sh` / `scripts/reconfigure.ps1`.
+- Direct local code deployment: `npm run deploy`.
+- Wrangler login, identity, tail, development and deploy calls route through `scripts/cloudflare-wrangler.mjs`.
+- `scripts/cloudflare-wrangler.mjs` is the only repository owner of the pinned Wrangler version.
+- Compatibility aliases such as `setup-and-deploy.*`, `update.*`, and duplicate `deploy.*` wrappers are not separate responsibilities and should not be reintroduced.
+- `wrangler.jsonc` is the tracked baseline; operator-specific configuration belongs in gitignored `wrangler.user.jsonc`.
+
+Production deployment remains owned by GitHub Actions rather than any local script.
 
 ## Runtime boundaries
 
@@ -89,6 +107,7 @@ Tier 2/3 retain their separate scheduler/reliability path.
 
 - `tests/` is the only normal home for executable tests and test-only helpers.
 - `scripts/` must not accumulate `*-test.mjs` files.
+- `benchmark/` contains performance measurement, not correctness tests or production tooling.
 - `.githooks/` is not committed; local hooks remain developer-local and advisory.
 - `docs/**/*.md` uses lowercase `kebab-case.md` except conventional `README.md`.
 - `.dev.vars`, `.env*`, `secrets*.json`, and `wrangler.user.jsonc` remain local/gitignored.

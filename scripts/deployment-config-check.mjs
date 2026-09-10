@@ -10,11 +10,7 @@ const config = JSON.parse(read('wrangler.jsonc'));
 
 assert.equal(config.keep_vars, true, 'wrangler.jsonc must set keep_vars=true');
 assert.equal(config.main, 'src/index.ts');
-assert.equal(
-  config.secrets,
-  undefined,
-  'wrangler.jsonc must not block the first deployment before runtime Secrets can be configured',
-);
+assert.equal(config.secrets, undefined, 'wrangler.jsonc must not block the first deployment before runtime Secrets can be configured');
 assert.equal(config.env, undefined, 'no per-Worker environments');
 assert.equal(config.vars, undefined, 'wrangler.jsonc must not carry node config vars; they belong in wrangler.user.jsonc (generated)');
 assert.ok(
@@ -23,14 +19,13 @@ assert.ok(
 );
 assert.ok(fs.existsSync(path.join(root, 'package-lock.json')), 'package-lock.json is required for npm ci');
 
-// New-schema deployment files must exist.
 for (const file of [
   'scripts/install.sh', 'scripts/install.ps1',
-  'scripts/update.sh', 'scripts/update.ps1',
   'scripts/reconfigure.sh', 'scripts/reconfigure.ps1',
   'scripts/node-config-shards.mjs', 'scripts/plan-node-configuration.mjs',
+  'scripts/cloudflare-wrangler.mjs', 'scripts/github-deployment-config.mjs',
 ]) {
-  assert.ok(fs.existsSync(path.join(root, file)), `Missing deployment file: ${file}`);
+  assert.ok(fs.existsSync(path.join(root, file)), `Missing deployment/tooling file: ${file}`);
 }
 
 for (const file of ['scripts/install.sh', 'scripts/install.ps1']) {
@@ -39,15 +34,28 @@ for (const file of ['scripts/install.sh', 'scripts/install.ps1']) {
   assert.match(source, /keep-vars/, `${file} must preserve remote vars`);
   assert.match(source, /plan-node-configuration\.mjs/, `${file} must shard node configs via the shared planner`);
   assert.match(source, /TIER1_AFFINITY/, `${file} must configure the required Tier 1 affinity KV binding`);
+  assert.match(source, /cloudflare-wrangler\.mjs/, `${file} must route Cloudflare CLI actions through the canonical Wrangler wrapper`);
+  assert.match(source, /wrangler\.user\.jsonc/, `${file} must write operator configuration to wrangler.user.jsonc`);
 }
+assert.doesNotMatch(
+  read('scripts/install.sh'),
+  /writeFileSync\(["']wrangler\.jsonc["']/i,
+  'scripts/install.sh must not mutate tracked wrangler.jsonc',
+);
+assert.doesNotMatch(
+  read('scripts/install.ps1'),
+  /WriteAllText\(\$configPath/i,
+  'scripts/install.ps1 must not mutate tracked wrangler.jsonc',
+);
+
 for (const file of ['scripts/reconfigure.sh', 'scripts/reconfigure.ps1']) {
   const source = read(file);
   assert.match(source, /--secrets-file/, `${file} must update runtime secrets using --secrets-file`);
   assert.match(source, /plan-node-configuration\.mjs/, `${file} must shard node configs via the shared planner`);
   assert.match(source, /TIER1_AFFINITY/, `${file} must preserve or configure the Tier 1 affinity KV binding`);
+  assert.match(source, /cloudflare-wrangler\.mjs/, `${file} must route Cloudflare CLI actions through the canonical Wrangler wrapper`);
 }
 
-// Access entry points must use the same five Group Keys + Models as runtime.
 const accessGroups = ['AIR', 'PRO', 'MAX', 'ULTRA', 'AGENT'];
 const standaloneAccessKeyName = 'GATEWAY_ACCESS_' + 'KEY';
 const standaloneAccessKeyPattern = new RegExp(`${standaloneAccessKeyName}(?!_)`);
@@ -66,27 +74,33 @@ for (const file of ['scripts/install.sh', 'scripts/install.ps1']) {
   assert.doesNotMatch(source, /GATEWAY_ACCESS_MODELS_[^\n]*[=:][^\n]*["']\*["']/, `${file} must not default any Group Models to wildcard access`);
 }
 
-for (const file of ['scripts/update.sh', 'scripts/update.ps1', 'scripts/deploy.sh', 'scripts/deploy.ps1']) {
-  const source = read(file);
-  assert.match(source, /keep-vars|scripts\/deploy\.sh|deploy\.ps1/, `${file} must preserve remote vars (directly or via deploy script)`);
-}
-// cloudflare-wrangler.mjs is the single source of truth for deploy business logic
-// (already checked above for TIER1_AFFINITY, migrations, etc.)
-// Thin wrappers deploy.sh / deploy.ps1 delegate to it.
-
-// D1 migration-before-deploy is enforced by cloudflare-wrangler.mjs (checked above).
-// Thin wrappers deploy.sh / deploy.ps1 delegate to it.
-
-// The package.json deploy entry goes through cloudflare-wrangler.mjs. That wrapper
-// must also migrate before a real deploy, otherwise the most obvious local
-// deployment command can publish code before its schema exists.
 const packageJson = JSON.parse(read('package.json'));
+for (const scriptName of ['deploy', 'tail', 'cf:login', 'cf:whoami']) {
+  assert.match(
+    packageJson.scripts?.[scriptName] || '',
+    /cloudflare-wrangler\.mjs/,
+    `npm script ${scriptName} must use scripts/cloudflare-wrangler.mjs`,
+  );
+}
 assert.match(packageJson.scripts?.deploy || '', /cloudflare-wrangler\.mjs\s+deploy/, 'npm run deploy must use cloudflare-wrangler.mjs');
+
 const runWranglerSource = read('scripts/cloudflare-wrangler.mjs');
+assert.match(runWranglerSource, /wrangler@4\.114\.0/, 'cloudflare-wrangler.mjs must own the pinned Wrangler version');
+for (const file of ['package.json', 'scripts/install.sh', 'scripts/install.ps1', 'scripts/reconfigure.sh', 'scripts/reconfigure.ps1']) {
+  assert.doesNotMatch(read(file), /wrangler@\d+\.\d+\.\d+/, `${file} must not duplicate the Wrangler version pin`);
+}
 for (const token of ['migrations', 'apply', 'TOKEN_STATS_DB', '--remote', '--dry-run']) {
   assert.ok(runWranglerSource.includes(token), `cloudflare-wrangler.mjs must include ${token} migration/deploy handling`);
 }
 assert.match(runWranglerSource, /TIER1_AFFINITY/, 'cloudflare-wrangler.mjs must enforce the affinity KV binding on real deploys');
+
+for (const removed of [
+  'scripts/deploy.sh', 'scripts/deploy.ps1',
+  'scripts/update.sh', 'scripts/update.ps1',
+  'scripts/setup-and-deploy.sh', 'scripts/setup-and-deploy.ps1',
+]) {
+  assert.equal(fs.existsSync(path.join(root, removed)), false, `${removed} must not return as a duplicate lifecycle entry point`);
+}
 
 const workflowSource = read('.github/workflows/deploy.yml');
 assert.match(workflowSource, /github\.repository\s*==\s*'fongap\/ai-gateway'\s*\|\|\s*vars\.DEPLOY_ENABLED\s*==\s*'true'/, 'deploy job must run for the main repo or forks opted in via DEPLOY_ENABLED');
@@ -107,18 +121,14 @@ for (const group of accessGroups) {
   assert.match(workflowSource, new RegExp(`GATEWAY_ACCESS_KEY_${group}:`), `deploy workflow must inject GATEWAY_ACCESS_KEY_${group}`);
   assert.match(workflowSource, new RegExp(`GATEWAY_ACCESS_MODELS_${group}:`), `deploy workflow must inject GATEWAY_ACCESS_MODELS_${group}`);
 }
-assert.ok(fs.existsSync(path.join(root, 'scripts/github-deployment-config.mjs')), 'GitHub deployment config bridge is required');
 assert.ok(fs.existsSync(path.join(root, 'config/worker-vars.example.json')), 'Worker text-variable example is required');
 
-// The new schema forbids removed legacy artifacts anywhere in deploy tooling.
 for (const file of ['scripts/install.sh', 'scripts/install.ps1', 'scripts/reconfigure.sh', 'scripts/reconfigure.ps1']) {
   const source = read(file);
   assert.doesNotMatch(source, /PRIMARY_API_TOKENS|FALLBACK_API_TOKEN|MODEL_MAPPING/, `${file} must not reference removed legacy variables`);
-  assert.doesNotMatch(source, /TIER[123]_NODES_CONFIG(?![_\d])['"]/ , `${file} must not create un-suffixed legacy node config variables`);
+  assert.doesNotMatch(source, /TIER[123]_NODES_CONFIG(?![_\d])['"]/, `${file} must not create un-suffixed legacy node config variables`);
 }
 
-// The shipped config/ examples must always be valid current-schema configs and
-// demonstrate the intended multi-key / multi-account / multi-model layout.
 const configDir = path.join(root, 'config');
 const tier1 = parseJsonFile(path.join(configDir, 'tier1-nodes.example.json'));
 const tier2 = parseJsonFile(path.join(configDir, 'tier2-nodes.example.json'));
@@ -152,7 +162,6 @@ for (const group of accessGroups) {
   }
 }
 
-// Source tree must not contain legacy concepts.
 const srcFiles = [];
 function walk(dir) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
