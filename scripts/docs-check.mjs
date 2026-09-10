@@ -46,11 +46,13 @@ check(
 
 // --- 8.2 root directory markdown whitelist ---
 const ALLOWED_ROOT_MDS = ['README.md', 'README_EN.md', 'CONTRIBUTING.md', 'SECURITY.md', 'CHANGELOG.md', 'AGENTS.md', 'CLAUDE.md'];
+const LOCALIZED_README_PATTERN = /^README\.[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*\.md$/;
 const rootEntries = fs.readdirSync(root, { withFileTypes: true });
 const rootMds = rootEntries.filter(e => e.isFile() && e.name.endsWith('.md')).map(e => e.name);
-const unexpectedRootMds = rootMds.filter(f => !ALLOWED_ROOT_MDS.includes(f));
+const localizedReadmes = rootMds.filter(f => LOCALIZED_README_PATTERN.test(f));
+const unexpectedRootMds = rootMds.filter(f => !ALLOWED_ROOT_MDS.includes(f) && !LOCALIZED_README_PATTERN.test(f));
 check(
-  `root only contains allowed .md files: ${ALLOWED_ROOT_MDS.join(', ')}`,
+  `root only contains allowed .md files plus localized README.<locale>.md files`,
   unexpectedRootMds.length === 0,
   unexpectedRootMds.length ? `unexpected: ${unexpectedRootMds.join(', ')}` : '',
 );
@@ -102,6 +104,7 @@ const LINK_PATTERN = /!?(?:\[[^\]]*\])\(([^)]+)\)/g;
 const MD_FILES = [
   'README.md',
   'README_EN.md',
+  ...localizedReadmes,
   'CONTRIBUTING.md',
   ...allDocsMd.map(f => path.relative(root, f)),
 ];
