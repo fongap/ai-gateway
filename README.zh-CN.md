@@ -2,9 +2,9 @@
 
 # ai-gateway
 
-**面向 Cloudflare Workers 的高韧性 AI API 网关**
+**将碎片化 AI 容量汇聚成一个稳定端点。**
 
-多 Provider 路由 · 多 Key 负载均衡 · 限流保护 · 分层故障转移 · OpenAI / Anthropic 兼容
+Cloudflare Workers · 多 Provider 路由 · 多 Key 负载均衡 · 限流保护 · 分层故障转移 · OpenAI / Anthropic 兼容
 
 [English](README.md) · [**简体中文**](README.zh-CN.md)
 
@@ -17,7 +17,13 @@
 
 </div>
 
-ai-gateway 将不同 AI Provider、API Key 和逻辑模型聚合为一个稳定端点。它面向高吞吐、上游不稳定的使用场景，优先解决 **可用性、额度保护和可预测故障转移**，而不是一味追逐当前最快的 Key。
+ai-gateway 将异构 AI Provider、API Key 和逻辑模型别名聚合到一个可预测端点之后。它面向低成本、碎片化且稳定性不一的 AI 容量，目标是在尽可能充分利用可用资源的同时，将稀缺或高价值容量保留给更需要它们的任务。
+
+## 为什么选择 ai-gateway
+
+低成本 AI 容量通常分散在不同 Provider 与账户之间，并受到 RPM、并发、额度、延迟和可用性波动的共同约束。ai-gateway 将这些容量视为一个资源池：在可用节点之间分散负载，对热点或受限 Key 进行保护，并在同一请求预算内按配置的 Tier 逐层故障转移，而不是持续追打某一个“最好”的 Key。
+
+通过分层路由，可以将更充足或成本更低的容量放在前层承担更多基础流量，同时让更稀缺或高价值的资源保持可用，用于真正需要它们的任务。项目追求的不只是更快的单次选择，而是整个资源池的 **可用性、额度利用率与可预测恢复能力**。
 
 **实时面板：** [api.135468.xyz](https://api.135468.xyz/) — 查看当前模型可用性、流量、Token 活动与客户端快速接入示例。
 
@@ -27,9 +33,9 @@ ai-gateway 将不同 AI Provider、API Key 和逻辑模型聚合为一个稳定�
 
 | 能力 | 当前行为 |
 | --- | --- |
-| **多 Provider 路由** | 将多个 Provider、API Key 和逻辑模型别名统一到一个网关 |
-| **分层故障转移** | 在同一请求预算内按 **Tier 1 → Tier 2 → Tier 3** 逐层托底 |
 | **多 Key 韧性** | P2C、被动 TTFT 学习、并发/RPM 整形、Cooldown 与热点保护 |
+| **分层故障转移** | 在同一请求预算内按 **Tier 1 → Tier 2 → Tier 3** 逐层托底 |
+| **多 Provider 路由** | 将多个 Provider、API Key 和逻辑模型别名统一到一个网关 |
 | **协议兼容** | 原生支持 OpenAI Chat、OpenAI Responses、Anthropic Messages |
 | **安全转换** | 仅 OpenAI Chat ↔ Anthropic Messages；**OpenAI Responses 保持 Native Only** |
 | **流式与观测** | 协议感知首事件保护、SSE 转发、脱敏诊断、Token Usage 聚合 |
