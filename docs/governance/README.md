@@ -20,7 +20,7 @@ The governance documents define how ai-gateway is changed. They are intentionall
 | [development-policy.md](development-policy.md) | Branches, PRs, refactors, module boundaries, change discipline |
 | [quality-policy.md](quality-policy.md) | CI gates, test expectations, security checks, production validation |
 | [dependency-policy.md](dependency-policy.md) | npm, GitHub Actions, Wrangler, and dependency-update rules |
-| [release-policy.md](release-policy.md) | Version source, stable-tag discipline, deployment/build identity |
+| [version-policy.md](version-policy.md) | Version source, stable-tag discipline, deployment/build identity |
 | [documentation-policy.md](documentation-policy.md) | Canonical language, document ownership, synchronization rules |
 
 ## Document classes

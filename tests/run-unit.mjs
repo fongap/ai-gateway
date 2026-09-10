@@ -2,26 +2,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
 //
-// Unit test runner. Loads and runs every unit-test file in order.
-// Each test file is a standalone script that calls process.exit(1) on
-// failure, so this runner just chains them and propagates the first
-// non-zero exit code. The runner itself does not import any src/ code
-// — every test file owns its own imports.
-//
-// Used by: `npm run test:unit` (from package.json).
-// Also wired into `npm run validate:merge`.
-//
-// To add a new unit test:
-//   1. Create scripts/<name>-test.mjs (it must exit non-zero on
-//      failure).
-//   2. Add the file path to UNIT_TESTS below.
-//   3. Run `npm run test:unit` to verify.
-//
-// Integration / stress / contract tests (integration-test.mjs,
-// stress-test.mjs, codex-contract-test.mjs, claude-contract-test.mjs,
-// scheduler-stability-test.mjs) are NOT part of the unit suite — they
-// are slower and require a fuller environment. They run via
-// `npm run test:all` (which chains test:unit first).
+// Ordered unit/contract suite runner. Every executable test lives under tests/;
+// repository tooling remains under scripts/.
 
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -31,46 +13,47 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
 
 const UNIT_TESTS = [
-  'scripts/node-config-shards-test.mjs',
-  'scripts/github-deployment-config-test.mjs',
-  'scripts/gateway-configuration-test.mjs',
-  'scripts/request-reliability-test.mjs',
-  'scripts/tier1-upstream-model-cooldown-test.mjs',
-  'scripts/tier1-heat-protection-test.mjs',
-  'scripts/stream-completion-test.mjs',
-  'scripts/token-usage-store-test.mjs',
-  'scripts/token-usage-test.mjs',
-  'scripts/protocol-matrix-test.mjs',
-  'scripts/config-cli-test.mjs',
-  'scripts/docs-contract-test.mjs',
-  'scripts/provider-discovery-test.mjs',
-  'scripts/provider-discovery/ssrf-guard-test.mjs',
-  'scripts/model-status-test.mjs',
-  'scripts/model-status-window-contract-test.mjs',
-  'scripts/model-stats-canonicalization-test.mjs',
-  'scripts/ttft-query-contract-test.mjs',
-  'scripts/reliability-performance-test.mjs',
-  'scripts/conversion-test.mjs',
-  'scripts/conversion-result-test.mjs',
-  'scripts/claude-fallback-compatibility-test.mjs',
-  'scripts/fallback-conversion-observability-test.mjs',
-  'scripts/conversion-boundary-test.mjs',
-  'scripts/deployment-identity-test.mjs',
-  'scripts/config-matrix-test.mjs',
-  'scripts/access-keys-test.mjs',
-  'scripts/closed-catalog-test.mjs',
-  'scripts/tier1-affinity-bounding-test.mjs',
-  'scripts/reliability-fault-injection-test.mjs',
-  'scripts/key-rpm-test.mjs',
-  'scripts/calendar-heatmap-test.mjs',
-  'scripts/calendar-heatmap-view-test.mjs',
-  'scripts/calendar-heatmap-contract-test.mjs',
-  'scripts/migrations-check-test.mjs',
-  'scripts/version-check-test.mjs',
-  'scripts/architecture-contract-test.mjs',
-  'scripts/reliability-core-contract-test.mjs',
-  'scripts/deployment-workflow-contract-test.mjs',
-  'scripts/scheduler-racelost-test.mjs',
+  'tests/node-config-shards-test.mjs',
+  'tests/github-deployment-config-test.mjs',
+  'tests/gateway-configuration-test.mjs',
+  'tests/request-reliability-test.mjs',
+  'tests/tier1-upstream-model-cooldown-test.mjs',
+  'tests/tier1-heat-protection-test.mjs',
+  'tests/stream-completion-test.mjs',
+  'tests/token-usage-store-test.mjs',
+  'tests/token-usage-test.mjs',
+  'tests/protocol-matrix-test.mjs',
+  'tests/config-cli-test.mjs',
+  'tests/docs-contract-test.mjs',
+  'tests/provider-discovery-test.mjs',
+  'tests/provider-discovery-ssrf-guard-test.mjs',
+  'tests/model-status-test.mjs',
+  'tests/model-status-window-contract-test.mjs',
+  'tests/model-stats-canonicalization-test.mjs',
+  'tests/ttft-query-contract-test.mjs',
+  'tests/reliability-performance-test.mjs',
+  'tests/conversion-test.mjs',
+  'tests/conversion-result-test.mjs',
+  'tests/claude-fallback-compatibility-test.mjs',
+  'tests/fallback-conversion-observability-test.mjs',
+  'tests/conversion-boundary-test.mjs',
+  'tests/deployment-identity-test.mjs',
+  'tests/config-matrix-test.mjs',
+  'tests/access-keys-test.mjs',
+  'tests/closed-catalog-test.mjs',
+  'tests/tier1-affinity-bounding-test.mjs',
+  'tests/reliability-fault-injection-test.mjs',
+  'tests/key-rpm-test.mjs',
+  'tests/calendar-heatmap-test.mjs',
+  'tests/calendar-heatmap-view-test.mjs',
+  'tests/calendar-heatmap-contract-test.mjs',
+  'tests/migrations-check-test.mjs',
+  'tests/version-check-test.mjs',
+  'tests/architecture-contract-test.mjs',
+  'tests/repository-layout-test.mjs',
+  'tests/reliability-core-contract-test.mjs',
+  'tests/deployment-workflow-contract-test.mjs',
+  'tests/scheduler-racelost-test.mjs',
 ];
 
 let failed = 0;

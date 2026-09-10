@@ -135,7 +135,7 @@ check(
 const govReadme = path.join(root, 'docs/governance/README.md');
 if (fs.existsSync(govReadme)) {
   const govContent = fs.readFileSync(govReadme, 'utf8');
-  const expectedLinks = ['development-policy.md', 'quality-policy.md', 'dependency-policy.md', 'release-policy.md', 'documentation-policy.md'];
+  const expectedLinks = ['development-policy.md', 'quality-policy.md', 'dependency-policy.md', 'version-policy.md', 'documentation-policy.md'];
   const missingLinks = expectedLinks.filter(l => !govContent.includes(l));
   check(
     'governance/README.md indexes all governance files',

@@ -5,7 +5,7 @@ import {
   buildPlan, assertNodesArray, assertSecretsObject,
   MANAGED_VAR_PATTERN, MANAGED_SECRET_PATTERN,
   MAX_SHARD_NUMBER,
-} from './node-config-shards.mjs';
+} from '../scripts/node-config-shards.mjs';
 
 const node = (id, extra = {}) => ({
   id,
@@ -119,7 +119,6 @@ test('patterns only match managed names', () => {
 
 test('shard limit is 10 (config) and 10 (secret), matching GitHub Deploy', () => {
   assert.equal(MAX_SHARD_NUMBER, 10, 'MAX_SHARD_NUMBER must be 10');
-  // buildPlan with 300 nodes forces enough shards to exercise the 01..10 bound.
   const big = buildPlan({
     tiers: { 1: Array.from({ length: 300 }, (_, i) => node(`n${i}`)) },
     secretsMap: Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`n${i}`, 'x'])),

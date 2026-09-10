@@ -3,7 +3,7 @@ import path from 'node:path';
 import {
   loadRuntimeConfig, normalizeRuntimeConfig, validateGatewayRuntime, buildWranglerConfig, withStaleNodeSecretsRemoved,
   collectVarsFromEnv, collectSecretsFromEnv, buildRuntimeFromEnv, preflight, buildDeploymentSummary,
-} from './github-deployment-config.mjs';
+} from '../scripts/github-deployment-config.mjs';
 
 function fixture() {
   return {
@@ -74,7 +74,6 @@ function envFixture() {
   };
 }
 
-// Individual sources are collected and validate.
 {
   const built = buildRuntimeFromEnv(envFixture());
   const c = validateGatewayRuntime(built.runtime);
@@ -85,14 +84,12 @@ function envFixture() {
   assert.equal(JSON.parse(built.runtime.secrets.TIER1_NODES_SECRETS_01)['node-a'], 'upstream-key');
 }
 
-// Credentials must never appear in the vars map.
 {
   const v = collectVarsFromEnv({ ...envFixture(), GATEWAY_ACCESS_KEY_AIR: 'gw-key', TIER1_NODES_SECRETS_01: JSON.stringify({ 'node-a': 'x' }) });
   assert.ok(!('GATEWAY_ACCESS_KEY_AIR' in v.vars), 'GATEWAY_ACCESS_KEY_AIR kept out of vars');
   assert.ok(!('TIER1_NODES_SECRETS_01' in v.vars), 'TIER1_NODES_SECRETS_01 kept out of vars');
 }
 
-// Empty values are skipped, not collected as empty strings.
 {
   const env = envFixture();
   env.TIER1_NODES_CONFIG_02 = '';
@@ -103,7 +100,6 @@ function envFixture() {
   assert.ok(!('TIER1_NODES_SECRETS_02' in s.secrets), 'empty secret skipped');
 }
 
-// TIER*_NODES_CONFIG_* always comes from vars, never from secrets.
 {
   const env = envFixture();
   const v = collectVarsFromEnv(env);
@@ -112,7 +108,6 @@ function envFixture() {
   assert.ok(!('TIER1_NODES_CONFIG_01' in s.secrets), 'TIER1_NODES_CONFIG_01 NOT in secrets');
 }
 
-// TIER*_NODES_SECRETS_* always comes from secrets, never from vars.
 {
   const env = envFixture();
   const v = collectVarsFromEnv(env);
@@ -121,7 +116,6 @@ function envFixture() {
   assert.ok(!('TIER1_NODES_SECRETS_01' in v.vars), 'TIER1_NODES_SECRETS_01 NOT in vars');
 }
 
-// GATEWAY_ACCESS_MODELS_* as Variables (not Secrets) regression.
 {
   const env = envFixture();
   env.GATEWAY_ACCESS_KEY_MAX = 'max-secret';
@@ -132,7 +126,6 @@ function envFixture() {
   assert.ok(!('GATEWAY_ACCESS_MODELS_MAX' in s.secrets), 'MODELS_MAX NOT in secrets');
 }
 
-// GATEWAY_ACCESS_KEY_* remains a secret, not a variable.
 {
   const env = envFixture();
   env.GATEWAY_ACCESS_KEY_PRO = 'pro-secret';
@@ -143,14 +136,12 @@ function envFixture() {
   assert.equal(s.secrets.GATEWAY_ACCESS_KEY_PRO, 'pro-secret', 'KEY_PRO collected in secrets');
 }
 
-// Preflight passes for a complete configuration.
 {
   const r = preflight(envFixture());
   assert.equal(r.ok, true, 'preflight ok for complete config');
   assert.deepEqual(r.errors, [], 'no preflight errors');
 }
 
-// Preflight FAILS (not skips) when required config is missing.
 {
   const env = envFixture();
   delete env.CLOUDFLARE_ACCOUNT_ID;
@@ -167,7 +158,6 @@ function envFixture() {
   assert.ok(r.errors.some((e) => e.includes('No TIER[123]_NODES_SECRETS')), 'names the missing credential shard');
 }
 
-// MODELS_CONFIG / POLICIES_CONFIG absence is a warning, never a failure.
 {
   const env = envFixture();
   delete env.MODELS_CONFIG;
@@ -178,7 +168,6 @@ function envFixture() {
   assert.ok(r.warnings.some((w) => w.includes('POLICIES_CONFIG')), 'POLICIES_CONFIG absence warned');
 }
 
-// A node without a matching credential fails runtime validation.
 {
   const built = buildRuntimeFromEnv({ ...envFixture(), TIER1_NODES_SECRETS_01: JSON.stringify({ 'other-node': 'key' }) });
   assert.throws(
@@ -187,7 +176,6 @@ function envFixture() {
   );
 }
 
-// The deployment summary contains safe counts only — never credential values.
 {
   const summary = buildDeploymentSummary({
     config: cfg,
@@ -206,9 +194,6 @@ function envFixture() {
   assert.ok(disabled.includes('disabled'), 'D1 disabled is stated explicitly');
 }
 
-// ---- GATEWAY_ACCESS_MODELS_* as Variables (not Secrets) regression ----
-
-// GATEWAY_ACCESS_MODELS_MAX is collected as a variable, not a secret.
 {
   const env = envFixture();
   env.GATEWAY_ACCESS_KEY_MAX = 'max-secret';
@@ -219,7 +204,6 @@ function envFixture() {
   assert.ok(!('GATEWAY_ACCESS_MODELS_MAX' in s.secrets), 'MODELS_MAX NOT in secrets');
 }
 
-// GATEWAY_ACCESS_KEY_* remains a secret, not a variable.
 {
   const env = envFixture();
   env.GATEWAY_ACCESS_KEY_PRO = 'pro-secret';
@@ -230,7 +214,6 @@ function envFixture() {
   assert.equal(s.secrets.GATEWAY_ACCESS_KEY_PRO, 'pro-secret', 'KEY_PRO collected in secrets');
 }
 
-// Deployment config: GATEWAY_ACCESS_MODELS_MAX appears in vars map, never in secrets.
 {
   const env = envFixture();
   env.GATEWAY_ACCESS_KEY_MAX = 'max-key';
@@ -241,9 +224,6 @@ function envFixture() {
   assert.ok(!('GATEWAY_ACCESS_MODELS_MAX' in s.secrets), 'MODELS_MAX not in secrets map');
 }
 
-// ---- Node shard range 01..10 (matches GitHub Deploy fixed range) ----
-
-// Shard 10 is a valid config/secret shard; shard 11 is NOT collected.
 {
   const env = envFixture();
   env.TIER1_NODES_CONFIG_10 = env.TIER1_NODES_CONFIG_01;
@@ -258,7 +238,6 @@ function envFixture() {
   assert.ok(!('TIER1_NODES_SECRETS_11' in s.secrets), 'TIER1_NODES_SECRETS_11 NOT collected (shard index > 10)');
 }
 
-// normalizeRuntimeConfig rejects a shard index above the fixed 01..10 range.
 {
   assert.throws(
     () => normalizeRuntimeConfig({

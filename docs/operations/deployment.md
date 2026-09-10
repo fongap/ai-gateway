@@ -145,4 +145,4 @@ npm run validate:deploy
 npm run check:deploy
 ```
 
-For configuration semantics, see [Configuration](configuration.md). For formal release/tag sequencing, see [Release policy](../governance/release-policy.md).
+For configuration semantics, see [Configuration](configuration.md). For formal version/tag sequencing, see [Version policy](../governance/version-policy.md).

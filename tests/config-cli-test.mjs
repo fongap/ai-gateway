@@ -7,8 +7,8 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const cli = path.join(here, 'config-cli.mjs');
 const root = path.resolve(here, '..');
+const cli = path.join(root, 'scripts', 'config-cli.mjs');
 const cfg = (p) => path.join(root, 'config', p);
 
 function writeJSON(file, obj) {

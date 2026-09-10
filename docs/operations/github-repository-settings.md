@@ -8,30 +8,31 @@ Use a short description that explains the operational value rather than repeatin
 
 **Description**
 
-> Resilient AI API gateway for Cloudflare Workers — multi-provider routing, multi-key load balancing, rate limiting, tiered failover, and OpenAI/Anthropic compatibility.
+> AI API gateway on Cloudflare Workers that turns fragmented, failure-prone providers and keys into one stable OpenAI/Anthropic-compatible endpoint — maximizing low-cost capacity through smart routing and tiered failover.
 
 **Topics**
 
-Topics should balance project identity, high-traffic ecosystem discovery, and high-intent capability searches. Avoid filling all 20 slots with synonyms or generic infrastructure terms.
+Topics should balance project identity, ecosystem discovery, and high-intent capability searches. Avoid filling all available slots with generic infrastructure terms or near-duplicate proxy labels.
 
-Recommended set:
+Canonical set:
 
 ```text
 ai-gateway
+anthropic-api
+claude-code
+cloudflare-workers
 llm-gateway
 llm-router
-cloudflare-workers
-claude-code
+load-balancing
+multi-provider
 openai-api
 openai-compatible
-anthropic-api
-load-balancing
 rate-limiting
 ```
 
-The set deliberately keeps overlapping gateway/router terms only where they represent distinct real search habits. Broad or redundant terms such as `ai`, `llm`, `proxy`, `serverless`, `api-gateway`, `llm-proxy`, `openai-proxy`, and `llmops` are omitted from the canonical set unless repository positioning changes.
+The set keeps gateway/router terms where they represent distinct search habits and keeps `multi-provider` because provider aggregation is a core project characteristic. Broad or redundant terms such as `ai`, `llm`, `proxy`, `serverless`, `api-gateway`, `llm-proxy`, `openai-proxy`, and `llmops` are omitted unless project positioning changes.
 
-Topics should reflect implemented behavior, not aspirational features.
+Topics must describe implemented behavior, not aspirational features.
 
 **Homepage**
 
@@ -39,7 +40,7 @@ Topics should reflect implemented behavior, not aspirational features.
 
 The homepage is the public live gateway dashboard. It exposes model availability, traffic/token activity, and client quick-start information without exposing private operator configuration.
 
-These values are the canonical About metadata recommendation. Update this document when the project positioning materially changes.
+These values are the canonical About metadata target. Update this document together with GitHub metadata when project positioning materially changes.
 
 ## Main branch Ruleset
 

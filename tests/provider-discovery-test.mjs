@@ -48,12 +48,12 @@ import {
   formatChangesMarkdown,
   formatActionSummary,
   formatJsonReport,
-} from './provider-discovery/index.js';
+} from '../scripts/provider-discovery/index.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
-const cliPath = path.join(here, 'provider-discovery.mjs');
-const samplesDir = path.join(here, 'provider-discovery', 'samples');
+const cliPath = path.join(root, 'scripts', 'provider-discovery.mjs');
+const samplesDir = path.join(root, 'scripts', 'provider-discovery', 'samples');
 
 let passed = 0;
 function test(name, fn) {
@@ -115,8 +115,6 @@ test('OpenAI Chat supported / Responses unknown is preserved', () => {
   assert.equal(warnings.length, 0);
   assert.equal(entry.supported, SUPPORT_TRUE);
   assert.deepEqual(entry.surfaces, ['chat_completions']);
-  // The Catalog does NOT synthesize a `responses` field. The absence
-  // must remain absence (unknown), never silently coerced to false.
   assert.ok(!('responses' in entry));
 });
 
@@ -132,10 +130,6 @@ test('null must not be coerced to false (unknown != unsupported)', () => {
 });
 
 test('Surface not listed is NOT auto-interpreted as unsupported', () => {
-  // Provide a Catalog entry with surfaces: [chat_completions] under
-  // openai. The fact that `responses` is not listed must not appear as a
-  // capability flag in the normalized entry. Diff() must also not emit
-  // a "responses unsupported" change between this entry and itself.
   const { catalog } = normalizeCatalog({
     schema_version: '1.1',
     providers: {
@@ -147,7 +141,6 @@ test('Surface not listed is NOT auto-interpreted as unsupported', () => {
   });
   const diff = diffCatalogs(catalog, catalog);
   assert.equal(diff.changed.length, 0);
-  // And `responses` must not have a synthesized entry either.
   assert.ok(!('responses' in catalog.providers.ex.openai));
 });
 
@@ -201,11 +194,7 @@ test('surfaces entry with supported=false must be empty', () => {
 // ----------------- Protocol Discovery invariants --------------------------
 
 test('A successful /models observation does NOT imply Responses support', () => {
-  // The Catalog data path itself never makes generation requests; this
-  // test pins the design: there is no API call anywhere in the discovery
-  // module that posts to /v1/chat/completions, /v1/responses, or
-  // /v1/messages.
-  const discoveryRoot = path.join(here, 'provider-discovery');
+  const discoveryRoot = path.join(root, 'scripts', 'provider-discovery');
   const files = fs.readdirSync(discoveryRoot).filter((f) => f.endsWith('.js'));
   const forbiddenEndpoints = [
     '/v1/chat/completions',
@@ -226,7 +215,6 @@ test('A successful /models observation does NOT imply Responses support', () => 
       );
     }
   }
-  // Also check the CLI driver.
   const cliText = fs.readFileSync(cliPath, 'utf8');
   for (const needle of forbiddenEndpoints) {
     assert.ok(
@@ -237,7 +225,7 @@ test('A successful /models observation does NOT imply Responses support', () => 
 });
 
 test('Discovery module never imports src/runtime, src/scheduler, src/transport, src/request, src/reliability, src/stream', () => {
-  const discoveryRoot = path.join(here, 'provider-discovery');
+  const discoveryRoot = path.join(root, 'scripts', 'provider-discovery');
   const files = fs.readdirSync(discoveryRoot).filter((f) => f.endsWith('.js'));
   for (const f of files) {
     const text = fs.readFileSync(path.join(discoveryRoot, f), 'utf8');
@@ -290,9 +278,6 @@ test('OpenAI and Anthropic can keep distinct base URLs', () => {
   });
   assert.equal(warnings.length, 0);
   assert.equal(catalog.providers.multi.openai.base_url, 'https://open.multi.example/v1');
-  // URL with root-only pathname canonicalizes to host/; the entry must
-  // round-trip without dropping the host or inventing one. Both forms
-  // (with or without trailing slash) are accepted as canonical.
   assert.ok(
     catalog.providers.multi.anthropic.base_url === 'https://anthropic.multi.example'
       || catalog.providers.multi.anthropic.base_url === 'https://anthropic.multi.example/',
@@ -311,18 +296,12 @@ test('base_url null is preserved as unknown', () => {
 });
 
 test('Base URL must not be guessed from provider name', () => {
-  // The Catalog schema itself has no field that suggests URL guessing.
-  // This test pins behavior: even with a valid provider name, if the
-  // base_url field is missing the entry must surface as null.
   const { entry, warnings } = normalizeCapabilityEntry('openai', {
     supported: true,
     surfaces: ['chat_completions'],
     evidence: 'configured',
   });
-  // base_url is undefined, so normalize coerces to null.
   assert.equal(entry.base_url, null);
-  // No warning implies "we guessed https://api.<provider>.com/v1" —
-  // warnings are explicit and never pretend a URL was guessed.
   assert.ok(!warnings.some((w) => /guess/i.test(w)));
 });
 
@@ -343,12 +322,13 @@ test('Base URL order/format changes do not produce false diff', () => {
       ex: { openai: { supported: true, base_url: 'https://api.example.com/v1', surfaces: ['chat_completions'], evidence: 'configured' }, anthropic: { supported: null, base_url: null, surfaces: [], evidence: 'unknown' } },
     },
   }).catalog;
-  const b = normalizeCatalog({
+  const bRaw = {
     schema_version: '1.1',
     providers: {
       ex: { openai: { supported: true, base_url: 'https://api.example.com/v1/', surfaces: ['chat_completions'], evidence: 'configured' }, anthropic: { supported: null, base_url: null, surfaces: [], evidence: 'unknown' } },
     },
-  }).catalog;
+  };
+  const b = normalizeCatalog(bRaw).catalog;
   const diff = diffCatalogs(a, b);
   assert.equal(diff.changed.length, 0);
 });
@@ -365,9 +345,6 @@ test('Credential-bearing URLs are refused', () => {
 });
 
 test('Credential-like token in base URL is dropped, not persisted', () => {
-  // Build the URL with a placeholder that does NOT match the secret-scan
-  // regex (which requires 20+ chars after the "sk-" prefix), but still
-  // contains the substring so the catalog's credential hint fires.
   const secretMarker = 'sk-' + 'a'.repeat(24);
   const { entry, warnings } = normalizeCapabilityEntry('openai', {
     supported: true,
@@ -423,7 +400,6 @@ test('surface_support_changed is reported when a surface appears/disappears', ()
   assert.equal(surf.length, 1);
   assert.equal(surf[0].before, 'unknown');
   assert.equal(surf[0].after, 'supported');
-  // unknown -> supported is P2 (capability learned).
   assert.equal(surf[0].severity, 'P2');
 });
 
@@ -445,7 +421,6 @@ test('base_url_changed is reported when URL differs', () => {
 });
 
 test('unknown -> supported is a lower-severity change than supported -> unsupported', () => {
-  // supported -> unsupported is P1.
   const a = normalizeCatalog({
     schema_version: '1.1',
     providers: { ex: { openai: { supported: true, base_url: 'https://ex/v1', surfaces: ['chat_completions'], evidence: 'configured' }, anthropic: { supported: null, base_url: null, surfaces: [], evidence: 'unknown' } } },
@@ -458,7 +433,6 @@ test('unknown -> supported is a lower-severity change than supported -> unsuppor
   const downgrade = d1.changed.find((c) => c.kind === 'protocol_support_changed');
   assert.equal(downgrade.severity, 'P1');
 
-  // unknown -> supported is P2.
   const c = normalizeCatalog({
     schema_version: '1.1',
     providers: { ex: { openai: { supported: null, base_url: null, surfaces: [], evidence: 'unknown' }, anthropic: { supported: null, base_url: null, surfaces: [], evidence: 'unknown' } } },
@@ -473,7 +447,6 @@ test('unknown -> supported is a lower-severity change than supported -> unsuppor
 });
 
 test('supported -> unknown is more severe than unknown -> supported', () => {
-  // supported -> unknown
   const a = normalizeCatalog({
     schema_version: '1.1',
     providers: { ex: { openai: { supported: true, base_url: 'https://ex/v1', surfaces: ['chat_completions'], evidence: 'configured' }, anthropic: { supported: null, base_url: null, surfaces: [], evidence: 'unknown' } } },
@@ -486,7 +459,6 @@ test('supported -> unknown is more severe than unknown -> supported', () => {
   const downUnknown = d1.changed.find((c) => c.kind === 'protocol_support_changed');
   assert.equal(downUnknown.severity, 'P1');
 
-  // unknown -> supported
   const c = normalizeCatalog({
     schema_version: '1.1',
     providers: { ex: { openai: { supported: null, base_url: null, surfaces: [], evidence: 'unknown' }, anthropic: { supported: null, base_url: null, surfaces: [], evidence: 'unknown' } } },
@@ -499,7 +471,6 @@ test('supported -> unknown is more severe than unknown -> supported', () => {
   const upUnknown = d2.changed.find((c2) => c2.kind === 'protocol_support_changed');
   assert.equal(upUnknown.severity, 'P2');
 
-  // supported -> unknown is at least as severe as unknown -> supported.
   const order = { P0: 0, P1: 1, P2: 2, P3: 3 };
   assert.ok(order[downUnknown.severity] < order[upUnknown.severity]);
 });
@@ -512,7 +483,6 @@ test('Provider /models ordering or JSON key order does not produce CHANGED', () 
       a: { openai: { supported: true, base_url: 'https://a/v1', surfaces: ['chat_completions'], evidence: 'configured' }, anthropic: { supported: null, base_url: null, surfaces: [], evidence: 'unknown' } },
     },
   }).catalog;
-  // Reverse the provider key order in the input.
   const bRaw = {
     schema_version: '1.1',
     providers: {
@@ -550,7 +520,6 @@ test('hasProtocolDowngrade true iff supported flipped to false/null', () => {
     providers: { ex: { openai: { supported: false, base_url: null, surfaces: [], evidence: 'verified' }, anthropic: { supported: null, base_url: null, surfaces: [], evidence: 'unknown' } } },
   }).catalog;
   assert.equal(hasProtocolDowngrade(diffCatalogs(before, afterDown)), true);
-  // Lateral — surfaces changed but support stayed true.
   const afterLateral = normalizeCatalog({
     schema_version: '1.1',
     providers: { ex: { openai: { supported: true, base_url: 'https://ex/v1', surfaces: ['chat_completions', 'responses'], evidence: 'configured' }, anthropic: { supported: null, base_url: null, surfaces: [], evidence: 'unknown' } } },
@@ -559,10 +528,6 @@ test('hasProtocolDowngrade true iff supported flipped to false/null', () => {
 });
 
 test('summarizeBySeverity buckets counts correctly', () => {
-  // true -> false (P1 protocol downgrade) AND true -> unknown on the
-  // chat_completions surface that the prior snapshot listed (P1
-  // surface demotion) AND a base URL change (P3). Two P1 events and
-  // one P3 event is the correct, semantically meaningful result.
   const before = normalizeCatalog({
     schema_version: '1.1',
     providers: { ex: { openai: { supported: true, base_url: 'https://ex/v1', surfaces: ['chat_completions'], evidence: 'configured' }, anthropic: { supported: null, base_url: null, surfaces: [], evidence: 'unknown' } } },
@@ -573,8 +538,8 @@ test('summarizeBySeverity buckets counts correctly', () => {
   }).catalog;
   const diff = diffCatalogs(before, after);
   const sev = summarizeBySeverity(diff);
-  assert.equal(sev.P1, 2); // protocol_support_changed + chat_completions surface demoted
-  assert.equal(sev.P3, 1); // base_url_changed
+  assert.equal(sev.P1, 2);
+  assert.equal(sev.P3, 1);
 });
 
 // ----------------- Runtime Validation --------------------------------------
@@ -603,15 +568,12 @@ test('Runtime Node Base URL differs yields a warning (does not claim invalid)', 
   const warnings = checkRuntimeAgainstCatalog(runtime, catalog);
   const drift = warnings.find((w) => w.kind === 'runtime_base_url_differs');
   assert.ok(drift);
-  // Crucially: it MUST say "differs", never "invalid" or "expired".
   assert.ok(/differs/i.test(drift.detail));
   assert.ok(!/invalid/i.test(drift.detail));
   assert.ok(!/expired/i.test(drift.detail));
 });
 
 test('Discovery warnings do not mutate Runtime Node', () => {
-  // Run the consistency check and verify the runtime view object is not
-  // mutated by the check (no field added/removed).
   const runtime = normalizeRuntimeView([
     { id: 'n1', provider: 'ex', protocol: 'openai', surfaces: ['chat_completions'], base_url: 'https://old.example/v1' },
   ]);
@@ -625,10 +587,7 @@ test('Discovery warnings do not mutate Runtime Node', () => {
 });
 
 test('Discovery does not synthesize or create Runtime Nodes', () => {
-  // The Catalog data path has no code path that emits a Node-like
-  // object. We assert by scanning for absence of node construction
-  // helpers.
-  const discoveryRoot = path.join(here, 'provider-discovery');
+  const discoveryRoot = path.join(root, 'scripts', 'provider-discovery');
   for (const f of fs.readdirSync(discoveryRoot).filter((f) => f.endsWith('.js'))) {
     const text = fs.readFileSync(path.join(discoveryRoot, f), 'utf8');
     assert.ok(!text.includes('buildRuntimeNode'), `${f} contains buildRuntimeNode reference`);
@@ -639,13 +598,6 @@ test('Discovery does not synthesize or create Runtime Nodes', () => {
 });
 
 test('count_tokens mismatch is NOT a Runtime Node conflict (Runtime schema does not declare it)', () => {
-  // Runtime Node schema (src/config/nodes.ts) does not list count_tokens
-  // in any protocol's allowed surfaces. The Runtime consistency layer
-  // must therefore ignore count_tokens in the conflict path. We test
-  // that by submitting a runtime view that mentions count_tokens (the
-  // normalization filters it out because it is not in the allowed
-  // runtime set per SURFACES_BY_PROTOCOL) and observing no false
-  // positive.
   const catalog = normalizeCatalog({
     schema_version: '1.1',
     providers: { ex: { openai: { supported: null, base_url: null, surfaces: [], evidence: 'unknown' }, anthropic: { supported: true, base_url: 'https://ex', surfaces: ['messages', 'count_tokens'], evidence: 'official' } } },
@@ -654,17 +606,12 @@ test('count_tokens mismatch is NOT a Runtime Node conflict (Runtime schema does 
     { id: 'a1', provider: 'ex', protocol: 'anthropic', surfaces: ['messages', 'count_tokens'], base_url: 'https://ex' },
   ]);
   const warnings = checkRuntimeAgainstCatalog(runtime, catalog);
-  // No P0/P1 surface mismatch expected: count_tokens is not a Runtime
-  // Node surface, and `messages` IS in the catalog surfaces list.
   assert.ok(!warnings.some((w) => w.kind === 'runtime_surface_mismatch'));
 });
 
 // ----------------- Security -----------------------------------------------
 
 test('Secrets do not appear in changes.md output', () => {
-  // Use a placeholder built at runtime so the secret-scan regex does
-  // not flag this test source. The detection logic in normalize.js
-  // uses a substring hint that catches `sk-` even in a 24-char run.
   const secretMarker = 'sk-' + 'a'.repeat(24);
   const before = normalizeCatalog({
     schema_version: '1.1',
@@ -676,10 +623,6 @@ test('Secrets do not appear in changes.md output', () => {
   }).catalog;
   const diff = diffCatalogs(before, after);
   const md = formatChangesMarkdown({ diff, catalog: after, warnings: [], generatedAt: 'test' });
-  // The credential marker must not survive normalization. If it did,
-  // the assertion that the markdown does not contain `sk-` would still
-  // pass because the secret marker is built at runtime — but the
-  // catalog entry's base_url must be null. We assert both.
   assert.ok(!md.includes(secretMarker));
 });
 
@@ -689,9 +632,6 @@ test('Secrets do not appear in Action Summary output', () => {
     providers: { ex: { openai: { supported: true, base_url: 'https://ex/v1', surfaces: ['chat_completions'], evidence: 'configured' }, anthropic: { supported: null, base_url: null, surfaces: [], evidence: 'unknown' } } },
   }).catalog;
   const summary = formatActionSummary({ diff: { added: [], removed: [], changed: [] }, warnings: [], capability: aggregateCatalogCapabilities(catalog), generatedAt: 'test' });
-  // We don't store secrets in the test source — only the SENSITIVE_TOKEN_HINT
-  // regex string exists in normalize.js itself. The summary has no
-  // Authorization header and no bearer tokens.
   assert.ok(!/Bearer/.test(summary));
   assert.ok(!/Authorization/i.test(summary));
 });
@@ -710,9 +650,6 @@ test('Secrets do not appear in JSON artifact output', () => {
 });
 
 test('Authorization header is not used as evidence source', () => {
-  // Provide an entry with an "authorization" extra field. The normalizer
-  // must surface a warning because `authorization` is not a known field
-  // and the catalog never treats Authorization as evidence.
   const { warnings } = normalizeCatalog({
     schema_version: '1.1',
     providers: {
@@ -774,13 +711,9 @@ test('aggregateCatalogCapabilities counts supported only (no inferred), supports
   }).catalog;
   const agg = aggregateCatalogCapabilities(catalog);
   assert.equal(agg.providers_total, 4);
-  // openai_only (chat_completions) + mixed (chat_completions + responses) -> 2
   assert.equal(agg.openai_chat_supported, 2);
-  // Only `mixed` declares responses.
   assert.equal(agg.openai_responses_supported, 1);
-  // anthropic_only + mixed both declare messages.
   assert.equal(agg.anthropic_messages_supported, 2);
-  // Only anthropic_only declares count_tokens.
   assert.equal(agg.anthropic_count_tokens_supported, 1);
 });
 
@@ -789,8 +722,6 @@ test('aggregateCatalogCapabilities counts supported only (no inferred), supports
 test('sample catalog loads + validates', () => {
   const samplePath = path.join(samplesDir, 'catalog.example.json');
   if (!fs.existsSync(samplePath)) {
-    // Skipped if samples directory not present (e.g. fresh checkout that
-    // did not include sample files). The presence is asserted below.
     throw new Error(`sample missing: ${samplePath}`);
   }
   const { valid, loadWarnings } = loadCatalogFile(samplePath);
@@ -814,7 +745,7 @@ test('sample runtime view loads and normalizes', () => {
 
 test('CLI check-snapshot exits 0 for sample catalog', () => {
   const samplePath = path.join(samplesDir, 'catalog.example.json');
-  if (!fs.existsSync(samplePath)) return; // skip if sample absent
+  if (!fs.existsSync(samplePath)) return;
   const result = spawnSync(process.execPath, [cliPath, 'check-snapshot', samplePath], { encoding: 'utf8' });
   assert.equal(result.status, 0, `cli exited non-zero: ${result.stderr}`);
   assert.ok(result.stdout.includes('Providers:'));
@@ -830,9 +761,6 @@ test('CLI summary prints protocol/surface counts for sample catalog', () => {
 });
 
 test('CLI runtime-check exits 2 when P1 surface mismatch is present', () => {
-  // Build a temp catalog with surfaces: [chat_completions] and a runtime
-  // view that declares surfaces: [responses]. The runtime check must
-  // produce a warning AND exit non-zero (P1 by default).
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pd-test-'));
   const catPath = path.join(tmp, 'cat.json');
   const rtPath = path.join(tmp, 'rt.json');
