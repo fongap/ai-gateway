@@ -1,102 +1,94 @@
-# 文档同步规则
+# Documentation policy
 
-## 文档原则
+## Canonical language
 
-1. 正文以中文为主。
-2. 文件名使用英文 `kebab-case`。
-3. 代码、命令、路径、配置字段、协议名和 Git/GitHub 固有名称保持英文。
-4. 文件名描述长期职责，不描述某次工作状态。
-5. 一个文件只承担一个明确主题。
-6. 当前已经失效、后续不再使用的文档直接删除。
-7. 历史变更通过 Git commit、Pull Request、Release 和 `CHANGELOG.md` 追溯。
-8. 现有规则发生变化时直接修改原文件，不创建重复版本。
+Long-lived project documentation is English-canonical.
 
-## 核心原则
+- `README.md` is the canonical repository landing page.
+- `README_EN.md` is retained only as a compatibility link for older references and is not maintained as a second source of truth.
+- Additional translations are optional. When they exist, they must identify the English canonical document and must not introduce independent behavior, configuration, or policy claims.
+- File names use lowercase English `kebab-case.md`, except conventional `README.md` files.
 
-文档应和对应代码在同一个 PR 更新。不得留下 `TODO: later update docs` 这种明显的文档债务。
+## Source-of-truth model
 
-## 代码 → 文档映射
+Documentation explains executable behavior; it does not define behavior by itself.
 
-| 代码变化 | 必须同步更新的文档 |
-|---|---|
-| `src/config/*` | [operations/configuration.md](../operations/configuration.md) |
-| `src/scheduler/*` | [architecture/routing-model.md](../architecture/routing-model.md) |
-| `src/reliability/*` | [architecture/reliability-model.md](../architecture/reliability-model.md) |
-| `src/transport/*` | [architecture/protocol-model.md](../architecture/protocol-model.md) |
-| `src/protocol/*` | [architecture/protocol-model.md](../architecture/protocol-model.md) |
-| `src/stream/*` | [architecture/protocol-model.md](../architecture/protocol-model.md), [architecture/reliability-model.md](../architecture/reliability-model.md) |
-| `src/config/runtime-vars.ts` | [operations/configuration.md](../operations/configuration.md)（运行时参数表） |
-| `wrangler.jsonc` | [operations/deployment.md](../operations/deployment.md) |
-| 顶层目录调整 | [architecture/repository-layout.md](../architecture/repository-layout.md) |
-| CI / workflow | [governance/quality-policy.md](quality-policy.md) |
-| Dependabot | [governance/dependency-policy.md](dependency-policy.md) |
-| release workflow / version mechanism | [governance/release-policy.md](release-policy.md) |
-| 新增/删除/修改对外端点 | README.md、README_EN.md |
+When evidence conflicts, use this order:
 
-## 文档同步检查
+1. Runtime code, configuration parsers/schemas, tests, and GitHub workflows determine current executable behavior.
+2. Canonical current documentation summarizes that behavior and must be corrected when it drifts.
+3. `CHANGELOG.md`, GitHub Releases, Pull Requests, Issues, and commits preserve historical context.
 
-以下变更必须同步检查文档：
+Do not copy a transient implementation plan into a permanent policy document. Do not keep completed migration plans in `docs/governance/` solely for history.
 
-- 顶层目录变化
-- 模块职责变化
-- CI 规则变化
-- Release 流程变化
-- 用户配置方式变化
-- `CHANGELOG.md` 维护规则变化
+## Document ownership
 
-文档应随代码一起更新，不把明显过期内容留给后续处理。
+| Change area | Canonical documentation |
+| --- | --- |
+| `src/config/*` | `docs/operations/configuration.md` |
+| `src/scheduler/*` | `docs/architecture/routing-model.md` |
+| `src/reliability/*` | `docs/architecture/reliability-model.md` |
+| `src/transport/*`, `src/protocol/*`, `src/conversion/*` | `docs/architecture/protocol-model.md` |
+| `src/stream/*` | `docs/architecture/protocol-model.md`, `docs/architecture/reliability-model.md` |
+| `src/runtime/*` public projection | `docs/operations/public-model-status.md` |
+| Provider Discovery tooling | `docs/operations/provider-discovery.md` |
+| deployment workflow / Wrangler bindings | `docs/operations/deployment.md` |
+| repository settings / About metadata | `docs/operations/github-repository-settings.md` |
+| top-level module layout | `docs/architecture/repository-layout.md` |
+| CI and quality gates | `docs/governance/quality-policy.md` |
+| dependency/toolchain policy | `docs/governance/dependency-policy.md` |
+| version/tag/release mechanism | `docs/governance/release-policy.md` |
+| public API surface or project positioning | `README.md` |
 
-## README 同步
+A behavior-changing PR updates its responsible canonical document in the same PR. A documentation-only PR may correct drift without changing runtime behavior.
 
-影响用户可见行为时，必须同时更新：
-- `README.md`
-- `README_EN.md`
+## Current contract vs. history
 
-两版保持结构和语义一致。不要求逐字翻译，但不能出现功能、配置和边界差异。
+Architecture and operations documents describe the **current contract**. Avoid headings such as “v1.3.0 routing”, “latest architecture”, or “final configuration” in long-lived documents.
 
-## 版本同步
+Use version labels only where version identity matters, for example:
 
-修改版本时，必须同步：
-- `package.json` → `version`
-- `CHANGELOG.md` → 版本条目
-- Git Tag（发布时）
+- `CHANGELOG.md` entries;
+- Git tags and Releases;
+- compatibility notes tied to a real release boundary;
+- an active migration document that will be removed when the migration is complete.
 
-## 治理优先文档 PR
+Do not create parallel documents named `*-v2.md`, `*-latest.md`, `*-final.md`, `*-new.md`, `misc.md`, or `temp.md`.
 
-正常情况仍然是：
+## Avoid duplicated facts
 
-```text
-代码 + 对应文档
-同 PR
-```
+High-drift values should have one executable owner whenever practical.
 
-较大结构治理允许：
+- Software version: `package.json.version`.
+- Node requirement: `package.json.engines.node`.
+- Runtime variable names/defaults: `src/config/runtime-vars.ts`.
+- Error-kind vocabulary: `src/reliability/classify.ts`.
+- Unit-suite registry: `tests/run-unit.mjs`.
+- Wrangler pin: `scripts/cloudflare-wrangler.mjs`.
 
-```text
-先修订长期治理规则
-↓
-后实施代码
-```
+Documentation may summarize these values, but should point back to the owner and must be updated when the summary changes.
 
-条件：
+## README policy
 
-- 只描述长期约束
-- 不把未来文件描述成当前事实
-- 不建立临时状态型文档
-- 不创建 xxx-v2.md / latest.md / final.md
+`README.md` should answer, in this order:
 
-## 质量检查
+1. what the gateway is;
+2. what protocols and reliability behavior it currently supports;
+3. how to start and configure it;
+4. where to find architecture, operations, governance, security, and history.
 
-CI 中的文档检查包括：
-- `scripts/docs-check.mjs` — 文档结构和命名规范检查
-- `scripts/link-check.mjs` — Markdown 内部链接有效性检查
-- `scripts/docs-contract-test.mjs` — 防止旧架构语义回流
+Keep implementation-detail inventories out of the README when a dedicated document already owns them.
 
-## 禁止事项
+## Documentation checks
 
-- 不在文档中保留已废弃的规则
-- 不创建临时状态型文档
-- 不为每个源码模块建 Markdown
-- 不引入大型文档框架
-- 不生成大量空壳文档
-- 不创建带 `v2`、`new`、`latest`、`final` 等后缀的重复版本
+The repository validates documentation through:
+
+- `scripts/docs-check.mjs` — directory, naming, and internal-link rules;
+- `scripts/link-check.mjs` — Markdown link integrity;
+- `scripts/docs-contract-test.mjs` — guards against known architecture and configuration drift.
+
+A green docs check does not prove every sentence is current. Reviewers must still compare changed claims with their executable source.
+
+## Deletion policy
+
+Delete a long-lived document when its responsibility no longer exists or has been absorbed elsewhere. Git history is the archive. Do not keep obsolete documents merely to preserve historical narrative.

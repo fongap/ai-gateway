@@ -1,137 +1,109 @@
-# 发布策略
+# Release policy
 
-## Semantic Versioning
+## Version authority
 
-项目遵循 Semantic Versioning：
-
-- **Major**：不兼容的 API 变更
-- **Minor**：向后兼容的功能新增
-- **Patch**：向后兼容的问题修复
-
-## 版本事实来源
+The software version has one primary source:
 
 ```text
-软件版本
-→ package.json.version
-
-Node Runtime Requirement
-→ package.json.engines.node
+package.json.version
 ```
 
-以下属于同步副本（必须保持一致）：
+The Node.js runtime requirement is owned by:
 
 ```text
-package-lock.json
-src/config/version.ts（由 scripts/generate-version.mjs 从 package.json 生成）
-CHANGELOG.md
-README.md
-README_EN.md
+package.json.engines.node
 ```
 
-版本变更时必须同步更新：
+Generated or synchronized copies must agree when a version changes, including `package-lock.json`, `src/config/version.ts`, `CHANGELOG.md`, and the version shown in the canonical README when present.
 
-1. `package.json` → `version`
-2. `package-lock.json` → `version`（通过 npm 正常生成，不得手动编辑）
-3. `CHANGELOG.md` → 对应版本条目
-4. Git Tag → `v*.*.*`
+## Version changes
+
+The project follows Semantic Versioning as an external compatibility convention:
+
+- **Major** — incompatible public/API/configuration change.
+- **Minor** — backward-compatible capability addition.
+- **Patch** — backward-compatible correction or hardening.
+
+A documentation-only correction does not require a version bump. A maintenance cycle may also keep the existing patch version while hardening that same release line, provided no already-published immutable release contract is being rewritten.
 
 ## CHANGELOG
 
-CHANGELOG 记录所有版本的变化，格式遵循 [Keep a Changelog](https://keepachangelog.com/)。每个版本条目包含：
-- 版本号和日期
-- `Changed`、`Fixed`、`Added`、`Removed` 分类
-- 变化的简明描述
+`CHANGELOG.md` records historical release changes. It is not a place for current architecture or governance rules.
 
-CHANGELOG 只记录历史版本变化，不放长期治理规则。
+A release entry should contain the release version/date and concise Added/Changed/Fixed/Removed notes that matter to users or operators.
 
-## Git Tag
+## Deployment and release are different
 
-- 格式：`v*.*.*`（如 `v1.2.4`）
-- 由维护者显式创建
-- 不自动触发 Release workflow（当前由维护者手动创建）
+Production deployment and GitHub Release are separate events:
+
+- **Deployment** publishes a Worker build from `main` after the production gate.
+- **Release** publishes a versioned repository snapshot using a Git tag plus a GitHub Release.
+
+A deployed source version may temporarily exist before a corresponding GitHub Release is published. Documentation must not conflate “source version”, “deployed build”, and “latest published release”.
+
+## Formal release lifecycle
+
+The repository uses squash merge. A release tag therefore must point to the accepted commit on `main`, not to a pre-merge PR-head commit.
+
+```text
+version / changelog change, when required
+        ↓
+Pull Request
+        ↓
+squash merge to main
+        ↓
+main validate-merge + validate-deploy succeed
+        ↓
+production deploy and verification succeed for deployable changes
+        ↓
+identify the final main commit SHA
+        ↓
+create tag vX.Y.Z on that SHA
+        ↓
+create GitHub Release for vX.Y.Z
+```
+
+## Tag rules
+
+1. Do not create a formal release tag before the release commit is on `main`.
+2. The tag must point to the final `main` commit that passed the required production evidence.
+3. Do not point a release tag at the PR branch merely because PR CI is green.
+4. Once a GitHub Release has been published for a tag, treat that tag as immutable external history. Corrections require a new version rather than moving the published tag.
+5. If an unpublished tag was created on the wrong commit, delete and recreate it before publishing the GitHub Release.
+
+Tag format: `vX.Y.Z`.
 
 ## GitHub Release
 
-- 由维护者显式创建
-- 包含：
-  - CHANGELOG 中对应版本的条目
-  - ZIP 和 TAR.GZ 发布资产
-  - `release/SHA256SUMS` 校验文件
+The current repository does **not** define an automatic tag-triggered Release workflow. Creating a Git tag does not by itself satisfy the formal release contract; the maintainer explicitly creates the GitHub Release.
 
-## Release Workflow
+A release should include concise notes derived from the corresponding `CHANGELOG.md` entry or the accepted PR history. GitHub automatically exposes source ZIP/TAR archives for tagged releases.
 
-本仓库使用 **Squash Merge**:PR 分支上的 commit 永远不会成为 `main` 历史的 ancestor。因此正式 release 的 tag 必须指向 **main 上的 squash commit**——指向 PR 分支 commit 的 tag 不在 `main` 的可达历史内,不是合法的 release 基线。
+Custom release assets or checksum manifests are required only if a real repository workflow builds, validates, and publishes those artifacts. Do not document a non-existent asset pipeline as a release requirement.
 
-正式 release 生命周期(每一步依赖上一步成功):
+## Release evidence
 
-```text
-PR Merge (squash)
-↓
-main 完整 CI(validate-merge + validate-deploy 全绿 = Production Gate)
-↓
-Production Deploy 成功(gate: 仅 push 触发的 CI 允许部署)
-↓
-确认 main release commit(final main SHA)
-↓
-创建 tag:vX.Y.Z → 指向该 final main SHA
-↓
-创建 GitHub Release
-```
-
-### Tag 纪律(硬性规则)
-
-1. **禁止在 PR merge 之前创建正式 release tag。** tag 不是"准备好就打"的标记,而是"该 commit 已通过完整 CI 并成功部署"的确认。
-2. tag 必须指向 `main` 的 squash commit(final main SHA);禁止在 PR 分支上打 tag 或重建 tag。
-3. 如果提前创建了 tag 但对应版本**尚未发布过 GitHub Release**(未形成不可修改的外部发布契约),必须删除并重建到正确的 main SHA:
-
-   ```bash
-   git push origin :refs/tags/vX.Y.Z
-   git tag -a vX.Y.Z <FINAL_MAIN_SHA> -m "vX.Y.Z"
-   git push origin vX.Y.Z
-   ```
-
-   已发布 GitHub Release 的 tag 视为外部契约,不得移动;需要变更时走新版本号。
-4. correctness/hardening 轮内版本号保持不变;下一功能版本的版本号单独决策,不与修复混在一起反复变更。
-
-### 流程步骤
-
-1. 更新版本号(`package.json`,然后运行 `scripts/generate-version.mjs` 生成 `src/config/version.ts`,同步副本自动校验)
-2. 更新 CHANGELOG
-3. 通过 PR(squash)合入 `main`
-4. 等待 main 完整 CI + Production Deploy 成功
-5. 创建 Git Tag(`v*.*.*`,指向 final main SHA)
-6. 维护者显式创建 GitHub Release
-7. CI / Deploy 自动化(`npm ci → npm run validate:merge → npm run check:deploy`)
-
-## Deployment / Release Relationship
-
-- Deployment 由 push 到 `main` 触发
-- Release 由 Git Tag `v*.*.*` 触发
-- 两者独立但相关：Deployment 更新生产环境，Release 归档发布资产
-
-## 发布资产
-
-每个 Release 包含：
-- ZIP 归档
-- TAR.GZ 归档
-- `SHA256SUMS` 校验文件
-
-归档排除：dry-run 产物、临时 Secrets 文件、node_modules、.wrangler 目录。
-
-## 正式 Release
-
-正式 Release 的唯一外部证据是：
+The external evidence of a formal release is:
 
 ```text
 Git tag vX.Y.Z
 +
-GitHub Release
+GitHub Release for vX.Y.Z
 ```
 
-内部条件：
+The internal evidence should include:
 
-- CI 全部通过
-- 版本号一致
-- CHANGELOG 已更新
-- 发布资产完整且校验通过
-- 健康检查通过
+- the tag target is reachable from `main`;
+- required CI passed for that commit;
+- version synchronization passed;
+- production verification passed when the change was deployable;
+- release notes accurately describe the shipped behavior.
+
+## Build identity
+
+Release identity and deployment identity are deliberately separate:
+
+- `version` — SemVer release identity from `package.json` / generated version metadata.
+- `build` — deployed commit SHA injected by CI/Deploy and exposed by `/version`.
+
+This allows operators to identify the exact deployed commit without inventing extra version numbers for every deployment.

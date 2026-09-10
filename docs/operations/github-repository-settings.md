@@ -1,70 +1,94 @@
-# GitHub 仓库设置
+# GitHub repository settings
 
-本文档记录项目期望的 GitHub repository 配置。
+This document defines the **intended repository configuration**. GitHub Settings/API is the authority for the settings that are actually active at any moment; this file is the reviewable target state.
 
-## Branch Protection / Ruleset
+## About
 
-`main` 分支必须配置 Rulesets（**Settings → Rules → Rulesets**）：
+Use a short description that explains the operational value rather than repeating every supported endpoint.
 
-### Ruleset: main
+**Description**
 
-- **Target**: branch `main`
-- **Require a pull request before merging**
-  - 0 required approving reviews（由 `validate-merge` status check 守护质量；fork/solo 项目避免阻塞）
-  - Require review thread resolution
-- **Require status checks to pass**
-  - `validate-merge`（CI workflow，唯一 PR 合并前的硬门控）
-  - `Deploy` 是 main 合并**之后**才运行的工作流，**不**适合作为 PR 合并前的 required check
-- **Require linear history**（仅允许 squash merge）
-- **Block force push**
-- **Block branch deletion**
+> Resilient AI API gateway for Cloudflare Workers — multi-provider routing, multi-key traffic shaping, tiered failover, and OpenAI/Anthropic protocol fallback.
 
-### Pull Requests
+**Topics**
 
-**Settings → General → Pull Requests**：
-- Allow squash merge（推荐）
-- 禁用 Allow merge commits
-- 禁用 Allow rebase merge
+```text
+cloudflare-workers
+ai-gateway
+openai-api
+anthropic-api
+llm-router
+api-proxy
+```
 
-## Required Checks
+**Homepage**
 
-CI 在 `main` 和 Pull Request 上运行：
+Leave blank unless there is a stable public documentation or project page intended to be a supported entry point. Do not use a private/operator endpoint merely to fill the field.
 
-| Check | Workflow | 何时运行 | 内容 |
-|---|---|---|---|
-| `validate-merge` | CI | PR + main | `npm run validate:merge`（syntax + version + config + tests + security scan） |
-| `validate-deploy` | CI | main | 完整 deploy.yml 语法 + 配置 dry-run 校验 |
-| `Deploy` | Deploy | main | 实际部署 Worker + health check（仅 main 合并后触发，不在 PR 阻塞链路上） |
+These values are the canonical About metadata recommendation. Update this document when the project positioning materially changes.
 
-## Actions Permissions
+## Main branch Ruleset
 
-- Actions 限为 `contents: read`
-- 使用 SHA-pinned actions：
-  - `actions/checkout` — 完整 SHA
-  - `actions/setup-node` — 完整 SHA
+Target: `main`.
+
+Intended controls:
+
+- require a Pull Request before merging;
+- require review-thread resolution;
+- require the `validate-merge` status check;
+- require linear history;
+- block force pushes;
+- block branch deletion.
+
+The solo-project review count should be set by the actual Ruleset rather than hard-coded in governance prose. Quality is primarily enforced by executable checks and focused review.
+
+## Pull Request merge strategy
+
+Intended repository settings:
+
+- allow squash merge;
+- disable merge commits;
+- disable rebase merge;
+- delete merged branches automatically when practical.
+
+This keeps one accepted commit per PR on `main` and makes release-tag targeting unambiguous.
+
+## Required checks
+
+| Check/workflow | When | Role |
+| --- | --- | --- |
+| `validate-merge` | PR + push | required PR merge gate |
+| `validate-deploy` | main push, scheduled/manual CI | full production validation; not a PR required check |
+| Deploy workflow | after successful eligible main CI or manual Deploy | production action; not a PR required check |
+
+Do not configure Deploy as a pre-merge required check: it runs after the release candidate has reached `main`.
+
+## GitHub Actions
+
+Workflow permissions should remain minimal. Required actions should be pinned to immutable commit SHAs where practical.
+
+The deployment workflow owns production mutation. CI workflows should remain read/validation oriented and must not silently deploy nightly/manual test runs.
 
 ## Dependabot
 
-`.github/dependabot.yml` 配置：
-- npm 依赖：每月检查，最多 5 个 open PR
-- GitHub Actions：每月检查，最多 5 个 open PR
+`.github/dependabot.yml` is the source of truth for dependency update cadence. Current policy tracks npm and GitHub Actions monthly, with security fixes handled promptly.
 
-## Auto Merge
+## Security reporting
 
-Dependabot PR 在 CI 通过且为 patch/minor 更新时可自动合并。
+Keep GitHub private vulnerability reporting / Security Advisories available. Public Issues must not contain live credentials, authorization headers, private upstream URLs, request bodies, or exploit details that should be reported privately.
 
-## Branch Deletion
+See [SECURITY.md](../../SECURITY.md).
 
-合并后的分支应自动删除。
+## Discussions and Issues
 
-## Security Advisories
+Discussions may remain enabled for general project conversation. Issues should be used for reproducible defects and focused feature requests, with the provided templates preferred.
 
-已开通 GitHub Security Advisories 私密报告渠道。见 `SECURITY.md`。
+## Repository metadata maintenance
 
-## Repository Topics
+When changing the About description/topics:
 
-仓库 Topics 应与实际定位一致：`cloudflare-workers`、`ai-gateway`、`openai-api`、`anthropic-api`、`llm-router`、`api-proxy`。
+1. update GitHub repository metadata;
+2. update the canonical block in this file in the same maintenance change;
+3. keep `package.json` keywords and public README terminology semantically aligned where relevant.
 
-## License
-
-MIT License。版权行正确。
+About metadata is product positioning, not a substitute for architecture documentation.

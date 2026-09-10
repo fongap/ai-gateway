@@ -1,50 +1,53 @@
-# 配置参考
+# Configuration
 
-> 当前 1.3.0 配置架构。生产环境通过 GitHub Repository Variables（非敏感 Worker 文本变量）和 Secrets（凭据）交付。节点配置（provider、base_url、models、priority）存储在 Variables 中；凭据（api_key、token）存储在 Secrets 中。
+Production configuration is delivered from GitHub Actions into Cloudflare Workers. Non-sensitive configuration belongs in repository **Variables**; credentials belong in **Secrets**. The Cloudflare Dashboard is not the canonical day-to-day configuration source.
 
-## 生产配置来源
+## Configuration sources
 
-| 来源 | 用途 | 示例 |
-|---|---|---|
-| `TIER{1,2,3}_NODES_CONFIG_01..10` | 各层节点池 | JSON 数组 |
-| `MODELS_CONFIG` | 模型注册表覆盖 | JSON 对象 |
-| `POLICIES_CONFIG` | Attempt budgets 和 tier 策略 | JSON 对象 |
-| `GATEWAY_ACCESS_MODELS_{AIR,PRO,MAX,ULTRA,AGENT}` | 对应 Access Group 的模型 allowlist | `general-air,code-pro` |
-| `TIER{1,2,3}_NODES_SECRETS_01..10` | 节点凭据（tier-scoped；`01..10` 仅为分片，同 Tier 可跨 suffix 按节点 ID 绑定） | `{ "node-id": "credential" }` |
-| `GATEWAY_ACCESS_KEY_{AIR,PRO,MAX,ULTRA,AGENT}` | 五组网关访问密钥 | Bearer token |
-| 运行时参数 | 超时、冷却等 | 见下方表格 |
+| Source | Purpose |
+| --- | --- |
+| `TIER{1,2,3}_NODES_CONFIG_01..10` | Non-secret node definitions for each tier |
+| `TIER{1,2,3}_NODES_SECRETS_01..10` | Tier-scoped credentials keyed by node id |
+| `GATEWAY_ACCESS_KEY_{AIR,PRO,MAX,ULTRA,AGENT}` | Client gateway access keys |
+| `GATEWAY_ACCESS_MODELS_{AIR,PRO,MAX,ULTRA,AGENT}` | Per-access-group logical-model allowlists |
+| `MODELS_CONFIG` | Optional logical-model metadata/capability/policy configuration |
+| `POLICIES_CONFIG` | Request-attempt and hedge policy configuration |
+| runtime variables | Timeouts, failover, stream, CORS, logging, and related tunables |
 
-GitHub Deployment Variables 持有非敏感配置；GitHub Secrets 持有凭据。Cloudflare Dashboard 不是日常配置界面。
+`src/config/runtime-vars.ts` is the source of truth for recognized non-sensitive runtime variables and their numeric defaults/ranges. Sensitive values are deliberately excluded from that registry.
 
-## Gateway Access Groups
+## Gateway access groups
 
-当前 Runtime 只使用五个独立 Access Group：`AIR`、`PRO`、`MAX`、`ULTRA`、`AGENT`。每组由以下两项组成：
+The runtime uses five independent access groups:
+
+```text
+AIR
+PRO
+MAX
+ULTRA
+AGENT
+```
+
+Each group has:
 
 ```text
 GATEWAY_ACCESS_KEY_<GROUP>
 GATEWAY_ACCESS_MODELS_<GROUP>
 ```
 
-规则以 `src/config/access-keys.ts` 为唯一事实来源：
+Rules:
 
-- 至少配置一个 `GATEWAY_ACCESS_KEY_<GROUP>`；
-- 每个 Group 独立，无继承、无隐式默认；
-- Key 已配置但对应 Models 缺失或为空时，该 Key 获得 **0 个模型**（fail-closed）；
-- Models 是 CSV allowlist；运行时支持显式 `*`，但安装脚本不会自动生成 `*`，也不会默认授予全部模型；
-- 未配置任何分组 Key 时，网关保持 `unconfigured` / fail-closed，不接受客户端鉴权。
+- at least one grouped gateway key must be configured for the gateway to be usable;
+- groups do not inherit from one another;
+- a configured key with a missing/empty model allowlist grants **zero models**;
+- model allowlists are CSV values and may explicitly use `*` where supported by the access-key parser;
+- no ungrouped legacy gateway key is required by the current runtime.
 
-## Worker Secrets
+This is fail-closed by design.
 
-| 配置项 | 必需 | 内容 |
-|---|---|---|
-| `GATEWAY_ACCESS_KEY_{AIR,PRO,MAX,ULTRA,AGENT}` | 至少一个 Group | 客户端访问网关的分组密钥；对应 `GATEWAY_ACCESS_MODELS_<GROUP>` 存放于 Variables |
-| `TIER{1,2,3}_NODES_SECRETS_01..10` | 至少一个 | JSON 对象 `{ "node-id": "credential" }`，按 entry 边界分片。Secret 的 Tier 前缀必须与节点所属 `TIER{1,2,3}_NODES_CONFIG_*` 一致；suffix 仅用于分片，与 Config shard suffix 独立 |
+## Node configuration
 
-节点按 `id` 在同 Tier 的 credential 中绑定。Secret Tier 与节点 Tier 不一致属于配置错误，启动校验会拒绝服务；缺少 credential 的节点被排除调度；没有节点的 credential 在 `/health` 诊断中报告。
-
-## 节点配置
-
-### Node Schema
+Example OpenAI-compatible node:
 
 ```json
 {
@@ -54,12 +57,18 @@ GATEWAY_ACCESS_MODELS_<GROUP>
   "surfaces": ["chat_completions"],
   "base_url": "https://integrate.api.nvidia.com/v1",
   "priority": 10,
-  "models": { "general-air": "model-a", "code-pro": "model-b" },
-  "limits": { "concurrency": 1 }
+  "models": {
+    "Code-Max": "upstream-code-model"
+  },
+  "limits": {
+    "concurrency": 3,
+    "rpm": 40,
+    "rpm_mode": "hard"
+  }
 }
 ```
 
-Anthropic 原生节点：
+Example Anthropic node:
 
 ```json
 {
@@ -69,93 +78,107 @@ Anthropic 原生节点：
   "surfaces": ["messages"],
   "base_url": "https://api.anthropic.com",
   "priority": 10,
-  "models": { "max": "claude-sonnet-4-5" }
+  "models": {
+    "Code-Max": "claude-compatible-model"
+  },
+  "limits": {
+    "concurrency": 2
+  }
 }
 ```
 
-### 加载时规则
+### Node rules
 
-- `id` 匹配 `^[a-z0-9][a-z0-9-]{0,63}$`；重复 id 使整个配置 `invalid`
-- Credential 字段（`token`、`api_key`、`apikey`、`authorization`、`password`、`secret`、`credential`）被**拒绝**——凭据属于 `TIER{1,2,3}_NODES_SECRETS_*`
-- `tier` 字段被拒绝；tier 来自变量前缀
-- `base_url` 必须是绝对 URL；`https://` 除非 `ALLOW_INSECURE_HTTP_UPSTREAM=true`
-- `priority`：数字，默认 `100`。Tier 2/3 使用；Tier 1 P2C 忽略
-- `protocol`：`"openai"`（默认）或 `"anthropic"`
-- `surfaces`：`openai` 协议可选 `chat_completions` / `responses`；`anthropic` 协议只能是 `messages`
-- `models`：object mapping logical → upstream model。Missing 或显式空 `{}` = wildcard
-- 未知字段被拒绝；无效 `protocol` / `surfaces` / `priority` / `limits.concurrency` / `limits.rpm` 被拒绝
+- `id` matches `^[a-z0-9][a-z0-9-]{0,63}$` and is globally unique.
+- `tier` is rejected inside node JSON; tier comes from the variable prefix.
+- credential-bearing fields such as `token`, `api_key`, `credential`, `authorization`, `password`, or `secret` are rejected.
+- `protocol` is `openai` or `anthropic`.
+- OpenAI surfaces are `chat_completions` and/or `responses`.
+- Anthropic runtime node surface is `messages`.
+- `base_url` must be an absolute HTTPS URL unless insecure HTTP is explicitly enabled.
+- `priority` defaults to `100`; it is used by Tier 2/3 and ignored by Tier 1 P2C.
+- `models` maps logical model name → provider-facing model name. An empty object is the runtime wildcard form, bounded by the gateway's known-model/catalog rules where applicable.
+- allowed `limits` fields are `concurrency`, `rpm`, and `rpm_mode`.
+- `rpm_mode` accepts `hard`, `local_hard`, or `soft`; hard/local_hard are isolate-local best-effort hard shaping, not provider-global quota.
+- unknown node or limits fields are rejected instead of silently ignored.
 
-### 迁移兼容
+Missing `protocol` or `surfaces` can still use deprecated compatibility defaults; operators should declare both explicitly.
 
-旧节点缺少 `protocol` 时默认 `"openai"`、缺少 `surfaces` 时默认对应协议的默认 surface，并输出 deprecated diagnostic。建议尽快显式声明。
+## Credential shards
 
-## 运行时参数
+A credential shard is a JSON object:
 
-| 变量 | 默认值 | 范围 | 说明 |
-|---|---|---|---|
-| `MAX_BODY_BYTES` | 20971520 | 1KB–100MB | 请求体限制 |
-| `UPSTREAM_HEADERS_TIMEOUT_MS` | 15000 | 5s–600s | 上游响应头超时 |
-| `FIRST_EVENT_TIMEOUT_MS` | 30000 | 5s–600s | 流式首事件超时 |
-| `STREAM_IDLE_TIMEOUT_MS` | 120000 | 10s–600s | 流块最大间隔 |
-| `RATE_LIMIT_COOLDOWN_MS` | 30000 | 1s–600s | 429 cooldown（无 Retry-After） |
-| `AUTH_FAIL_COOLDOWN_MS` | 3600000 | 1min–7d | 401/403 credential cooldown |
-| `FAILOVER_BUDGET_MS` | 60000 | 1s–900s | 整请求 failover budget |
-| `HEDGE_DELAY_MS` | 3000 | 0s–600s | Reactive hedge delay；`0` 禁用 |
-| `MAX_HEDGES_PER_REQUEST` | 1 | 0–3 | 每请求最大 hedge twin 数 |
-| `GATEWAY_KEY_RPM` | 0 | 0–100000 | 单 isolate 内每个 access key 的 60s 滑动窗口请求上限；`0` 禁用。需要跨 isolate 严格上限时使用 `QUOTA_RATE_LIMITER` binding |
-| `ALLOWED_ORIGIN` | *(unset)* | origin 或 `*` | CORS 默认关闭 |
-| `EXPOSE_UPSTREAM_INFO` | false | | 暴露上游节点/provider/tier |
-| `FAKE_STREAM_PROTECTION` | false | | 非流式请求转流式上游 + 重组 |
-| `ALLOW_INSECURE_HTTP_UPSTREAM` | false | | 允许 http:// base_url |
-| `ANTHROPIC_COUNT_TOKENS_MODE` | approximate | approximate/disabled | 本地 token 计数 |
-| `LOG_LEVEL` | info | none/error/info/debug | 日志级别 |
-| `STREAM_INCLUDE_USAGE` | auto | auto/always/never | 是否在流式请求中携带 `stream_options.include_usage` |
-| `STREAM_USAGE_INCLUDE_OFF_PROVIDERS` | *(empty)* | provider 列表 | 按 provider 排除 usage hint |
-| `PROJECT_REPOSITORY_URL` | — | https URL | Dashboard 显示 |
-| `PROTOCOL_FALLBACKS` | *内置默认（v1.3.0 双向 fallback）* | unset / `disable` / JSON object | 跨协议 fallback 链。未配置或为空时使用 `{"anthropic:messages":["openai:chat_completions"], "openai:chat_completions":["anthropic:messages"]}`；设 `disable` 关闭；显式 JSON（即使为空数组）覆盖默认。OpenAI Responses 始终 Native Only。详细见 [protocol-model.md](../architecture/protocol-model.md) |
+```json
+{
+  "nvidia-01": "credential-value",
+  "nvidia-02": "credential-value"
+}
+```
 
-运行时参数的唯一事实来源是 `src/config/runtime-vars.ts`。
+Credentials bind by **Tier + node id**. Config and Secret shard suffixes do **not** pair. For example, a node declared in `TIER1_NODES_CONFIG_03` may receive its credential from `TIER1_NODES_SECRETS_01` as long as the tier and node id match.
 
-## limits.rpm 语义
+The `01..10` suffix is only a transport/sharding boundary for GitHub Actions.
 
-- **hard（默认）**：isolate-local cap，exhausted 节点被跳过，完全 exhaustion 返回 503 + Retry-After
-- **soft**：best-effort，exhausted 节点仍作为 last-resort fallback
+## Runtime variables
 
-## 分布式 Rate Shaping
+Current numeric tunables from `src/config/runtime-vars.ts`:
 
-可选的 Cloudflare Workers Rate Limiting binding（`QUOTA_RATE_LIMITER`）提供分布式 per-location fixed-window 检查。它是近似的、per-location 的，不是严格的全局/account quota。
+| Variable | Default | Range | Meaning |
+| --- | ---: | ---: | --- |
+| `UPSTREAM_HEADERS_TIMEOUT_MS` | 15000 | 5s–600s | Time to upstream response headers |
+| `FIRST_EVENT_TIMEOUT_MS` | 30000 | 5s–600s | Time to first meaningful stream event |
+| `STREAM_IDLE_TIMEOUT_MS` | 120000 | 10s–600s | Maximum idle interval in an active stream |
+| `RATE_LIMIT_COOLDOWN_MS` | 30000 | 1s–600s | General rate-limit cooldown input |
+| `AUTH_FAIL_COOLDOWN_MS` | 3600000 | 1min–7d | Auth-failure credential cooldown |
+| `MAX_BODY_BYTES` | 20971520 | 1KB–100MB | Request-body limit |
+| `FAILOVER_BUDGET_MS` | 60000 | 1s–900s | Whole-request failover wall clock |
+| `HEDGE_DELAY_MS` | 3000 | 0–600s | Reactive hedge delay; `0` disables |
+| `MAX_HEDGES_PER_REQUEST` | 1 | 0–3 | Physical hedge twins per request |
+| `GATEWAY_KEY_RPM` | 0 | 0–100000 | Per-isolate gateway-access-key 60s sliding-window cap; `0` disables |
 
-## Tier 1 Session Affinity
+String variables:
 
-必需的 `TIER1_AFFINITY` Cloudflare KV binding。客户端通过 `x-session-id`（8–128 字符）启用。原始 session ID 经 SHA-256 哈希后存储，30 分钟 TTL。
+- `ALLOWED_ORIGIN` — empty by default; CORS is not broadly enabled unless configured.
+- `STREAM_INCLUDE_USAGE` — default `auto`.
+- `STREAM_USAGE_INCLUDE_OFF_PROVIDERS` — provider exclusion list for usage hints.
+- `ANTHROPIC_COUNT_TOKENS_MODE` — default `approximate`.
+- `LOG_LEVEL` — default `info`.
+- `PROTOCOL_FALLBACKS` — empty/unset means the built-in fallback chain.
 
-## Token-Usage Persistence（可选 D1）
+Boolean variables, all default `false`:
 
-`TOKEN_STATS_DB` Cloudflare D1 binding。fail-open、非计费可观测性组件。
+- `EXPOSE_UPSTREAM_INFO`
+- `FAKE_STREAM_PROTECTION`
+- `ALLOW_INSECURE_HTTP_UPSTREAM`
 
-**存储分层：**
-- KV (TIER1_AFFINITY)：30 分钟 TTL，仅用于 Tier 1 会话亲和
-- D1 `token_usage_totals`：单行 'global'，生命周期累计，永不清理
-- D1 `token_usage_hourly`：7 天保留，UTC 小时桶
-- D1 `token_usage_model_hourly`：7 天保留，按模型 UTC 小时桶
-- D1 `token_usage_daily`：52 周保留，UTC+8 自然日桶
-- D1 `token_usage_weekly`：52 周保留，UTC 周一起始周桶
+## Protocol fallback
 
-**定时维护**（cron `0 3 * * *`）：`aggregateHourlyToDaily` → `aggregateDailyToWeekly` → `cleanupUsageRetention`；所有聚合幂等（覆盖而非累加）。
+Unset/empty `PROTOCOL_FALLBACKS` resolves to:
 
-**Dashboard 读取路径：**
-- 累计 KPI：`token_usage_totals`（部署过渡期回退 hourly）
-- 52 周热力图：`token_usage_daily`（部署过渡期回退 hourly + 今日叠加）
-- 模型用量：`token_usage_model_hourly`（7 天窗口）
-- 公开 Model Status：`token_usage_model_hourly`（24h 证据窗口，不变）
+```json
+{
+  "anthropic:messages": ["openai:chat_completions"],
+  "openai:chat_completions": ["anthropic:messages"]
+}
+```
 
-Token 计数仅使用上游报告的 usage，缺失时从不估算。
+Set `PROTOCOL_FALLBACKS=disable` for Native-Only Chat/Messages behavior, or provide an explicit JSON mapping to override the default. OpenAI Responses remains Native Only regardless.
 
-## POLICIES_CONFIG 详细字段 (v1.3.0)
+Unsupported conversion routes are configuration errors rather than implicit best-effort conversions.
 
-`POLICIES_CONFIG` 是 per-model 策略映射（`MODELS_CONFIG.<model>.policy` 引用），决定 attempt budget 与 hedge 行为。v1.3.0 新增 `budget_split` 字段用于自适应 budget 分配。
+## Tier 1 RPM and heat protection
 
-### 完整 schema
+Tier 1 hard RPM uses isolate-local smooth token-bucket admission. The runtime also derives a bounded heat signal from current RPM headroom and concurrency:
+
+- lower RPM headroom can softly increase a candidate's P2C score before the hard gate;
+- session-affinity preference decays toward neutral under heat;
+- optional hedge twins require spare headroom.
+
+This behavior has **no additional configuration variables**. The existing node `limits.rpm`, `limits.rpm_mode`, and `limits.concurrency` remain the only inputs. There is no success-rate weight and no dynamic concurrency setting.
+
+## Policies
+
+`POLICIES_CONFIG` is a per-policy object referenced by model configuration. Important fields include:
 
 ```json
 {
@@ -169,64 +192,39 @@ Token 计数仅使用上游报告的 usage，缺失时从不估算。
 }
 ```
 
-### 字段说明
+- `max_attempts` is the request-wide logical-attempt ceiling.
+- `tier_attempts` optionally caps individual tiers.
+- `hedge.enabled`, optional delay/tier fields control reactive hedge policy.
+- `first_event_timeout_ms` can override the global first-event timeout per model/policy.
+- `budget_split` supports the current `even`/`weighted` allocation semantics.
 
-| 字段 | 类型 | 默认 | 说明 |
-|---|---|---|---|
-| `max_attempts` | int 1-8 | 5 | 整请求 logical attempt 上限（跨 tier 共享） |
-| `tier_attempts` | object \| null | `null` | 显式 per-tier budget: `{"tier1": N, "tier2": N, "tier3": N}`。`0` 禁用该 tier。显式值优先级最高，不会被 `budget_split` 修改；显式值总和不得超过 `max_attempts`，否则配置 `invalid` |
-| `hedge.enabled` | bool | true | 是否启用 reactive hedge。`false` 完全禁用 |
-| `hedge.delay_ms` | int ≥ 0 | (env HEDGE_DELAY_MS) | Hedge twin 启动延迟 |
-| `hedge.tiers` | array \| null | null | 仅这些 tier 允许 hedge twin；null = 全部 |
-| `first_event_timeout_ms` | int 5000-600000 \| null | null | Per-model 首事件超时 override（覆盖 `FIRST_EVENT_TIMEOUT_MS`） |
-| **`budget_split`** | `'even' \| 'weighted' \| null` | `null` | **v1.3.0 新增**：per-tier surplus 分配策略 |
+Explicit tier caps are authoritative and must fit within `max_attempts`.
 
-### `budget_split` 详解
+## Cloudflare bindings and deployment identifiers
 
-- **`'even'` (默认)**: 第一个 dispatchable tier 获得全部 surplus。最大化免费资源利用。
-- **`'weighted'`**: 先锁定所有显式 `tier_attempts`，再计算 `remaining = max_attempts - sum(explicit tier_attempts)`；`remaining` 只按每个未显式配置且当前 dispatchable 的 tier 的 live 节点数比例分配。显式 cap 不参与补差或 remainder reconciliation。
+Deployment-level identifiers are handled separately from runtime tunables, including:
 
-**示例** (`max_attempts=6`, Tier 2=1 节点, Tier 3=4 节点, Tier 1 不可达):
+- `CLOUDFLARE_ACCOUNT_ID`
+- `GATEWAY_PUBLIC_BASE_URL`
+- optional `TOKEN_STATS_D1_ID`
+- `TIER1_AFFINITY_KV_ID` when Tier 1 affinity is configured
 
-```json
-{ "balanced": { "max_attempts": 6, "budget_split": "even" } }
-// → Tier 2: 5, Tier 3: 1
-{ "spread":   { "max_attempts": 6, "budget_split": "weighted" } }
-// → Tier 2: 1, Tier 3: 5
-```
+Runtime bindings may include:
 
-显式覆盖示例：
+- `TIER1_AFFINITY` KV — hashed session binding, 30-minute TTL;
+- `TOKEN_STATS_DB` D1 — token-usage persistence and recent public-status evidence;
+- optional `QUOTA_RATE_LIMITER` — additional distributed per-location RPM shaping.
 
-```json
-{ "spread": { "max_attempts": 6, "tier_attempts": { "tier2": 3 }, "budget_split": "weighted" } }
-// → Tier 2 始终为 3；剩余 3 只分配给未显式配置且可调度的 Tier
-```
+None of these should be described as a globally exact provider-account concurrency/quota system.
 
-详细算法与示例见 [reliability-model.md → Adaptive Budget](../architecture/reliability-model.md#adaptive-budget-r5-v130)。
+## Local validation
 
-### 内置策略 (always present, user config merges on top)
-
-| Name | max_attempts | hedge | budget_split | 用途 |
-|---|---|---|---|---|
-| `default` | 5 | enabled | `null` (= even) | 平衡模式 |
-| `fast` | 1 | disabled | `null` | 速度优先 |
-| `stable` | 5 | enabled, tier1 only | `null` | 可靠性优先 |
-| `long-reasoning` | 3 | disabled | `null` | 长推理（first_event 120s） |
-
-未知字段被拒绝（产生 diagnostic），非法值产生 fatal 配置错误。详细校验规则在 `scripts/gateway-configuration-test.mjs` 中。
-
-## Configuration Status
-
-| 状态 | 条件 |
-|---|---|
-| `unconfigured` | 未配置任何可用 Gateway Access Group Key，或任何 `TIER*_NODES_CONFIG_*` 缺失 |
-| `invalid` | 配置存在但零可用节点，或结构冲突 |
-| `degraded` | 部分节点不可用，至少一个可用 |
-| `ready` | 所有声明节点可用 |
-
-## 本地开发
+Use the repository CLI/scripts before deployment:
 
 ```bash
-cp .dev.vars.example .dev.vars   # 填入值
-npm run dev
+npm run config:check
+npm run validate:merge
+npm run check:deploy
 ```
+
+See [Deployment](deployment.md) for the production bridge and [Routing model](../architecture/routing-model.md) for how the resulting runtime node fields are used.

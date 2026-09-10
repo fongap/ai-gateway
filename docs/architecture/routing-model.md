@@ -1,104 +1,167 @@
-# 调度模型
+# Routing model
 
-## 调度器概述
+Routing is always constrained by **protocol + surface + model + tier**. Native requests enter only nodes that explicitly support the active protocol and surface; converted fallback requests enter the target protocol pool only after conversion succeeds.
 
-调度器 (`src/scheduler/scheduler.ts`) 实现 protocol + surface + model 三重过滤（`supportsRequest`）。对每一次实际调度，protocol、surface、model 和 tier 始终是硬性门控；原生请求只进入同 protocol/surface 的节点池。OpenAI Chat Completions ↔ Anthropic Messages 的跨协议 fallback 会先转换为目标协议请求，再进入目标协议节点池；OpenAI Responses 保持 Native Only。Tier 2/3 永远不会进入 Tier 1 调度器。
+Tier order is fixed:
 
-## Model Registry
+```text
+Tier 1 → Tier 2 → Tier 3
+```
 
-Model Registry (`src/config/registry.ts`) 是逻辑模型的策略和能力（`capabilities.tools/reasoning/vision/stream`、`reasoning_efforts`）的唯一事实来源，由 `MODELS_CONFIG` 驱动。`MODELS_CONFIG` 亦接受 `modalities: { input: [...], output: [...] }` schema 预留（闭集词汇 `text/image/audio/video`，语义：模型能接收/输出什么；`capabilities` 语义：模型能做什么）。该字段当前仅解析、校验并随注册表携带——**不做任何路由，也不暴露于任何公开 API surface**，供 Omni 阶段启用；未声明的模型不携带该字段（under-report 原则）。`/v1/models` 枚举至少一个节点服务的注册模型，报告 `api_backends`（provider 标签，或 `apiBackend: "mixed"`）和节点 `surfaces` 的并集——不从 provider 标签推导能力。
+OpenAI Chat Completions ↔ Anthropic Messages fallback is evaluated after the native route is exhausted. OpenAI Responses remains Native Only.
 
-## Node 与 Tier
+## Model Registry and nodes
 
-节点配置通过 `src/config/nodes.ts` 合并 `TIER{1,2,3}_NODES_CONFIG_01..10` Worker 文本变量与 `TIER{1,2,3}_NODES_SECRETS_01..10` Worker Secrets 生成 Runtime Node。Credential 按 **Tier + node id** 绑定；`01..10` 只是各自的分片编号，Config shard 与 Secret shard suffix 无需对应：
+The Model Registry owns logical model policy and declared capabilities. Runtime nodes own upstream routing facts: provider metadata, base URL, protocol, surfaces, logical→upstream model mapping, priority, limits, and the bound credential.
 
-- Tier 仅从变量前缀派生；节点 JSON 不能声明它
-- Credential lookup 在此且仅在此发生；下游模块只看到 `runtimeNode.credential`
-- `protocol`（`openai` | `anthropic`）决定 wire format、上游 endpoint、认证头和协议头
-- `surfaces` 声明节点真正支持的接口
-- `provider` 为自由标签，仅用于诊断，不影响 transport
-- Tier 顺序固定：tier-1 → tier-2 → tier-3
+Credentials bind by **Tier + node id**. `TIER*_NODES_CONFIG_XX` and `TIER*_NODES_SECRETS_XX` suffixes are independent shard numbers; they are not positional pairs.
+
+`priority` remains meaningful for Tier 2/3. Tier 1 deliberately ignores static priority.
 
 ## Tier 1: Eligibility → Affinity → P2C
 
-Tier 1 有一条刻意精简的决策路径：
+<!-- Tier 1 没有独立 attempt 上限 -->
+
+Tier 1 has no independent attempt cap. It uses the shared request attempt budget, per-tier policy, current dispatchability, and wall-clock failover budget.
+
+The Tier 1 decision path is intentionally bounded:
 
 ```text
-Eligibility → soft session affinity → sample two eligible accounts
-→ compare simple scores → real upstream request → passive TTFT/failure update
-→ retry within Tier 1 → existing Tier Router → Tier 2 → Tier 3
+Eligibility
+   ↓
+soft session Affinity
+   ↓
+P2C: sample two eligible accounts
+   ↓
+compare bounded scores
+   ↓
+claim RPM/concurrency slot
+   ↓
+real upstream request
+   ↓
+passive TTFT / failure state update
 ```
+
+There is no full-pool latency sort.
 
 ### Eligibility
 
-网络无关，要求节点支持协议/surface/model、已启用、不在 account/model cooldown 内、有 isolate-local concurrency 和 hard-RPM 容量、且没有已知 exhausted quota。Cooldown 是严格的：没有 blocked account 的 fail-open 选择。
+A Tier 1 node must:
 
-### Affinity
+- be `tier-1`;
+- match protocol and surface;
+- serve the requested logical model;
+- not be disabled or in an active account/model/upstream-model cooldown;
+- have isolate-local concurrency capacity;
+- have hard-RPM admission capacity when hard RPM is configured;
+- not have known exhausted quota state.
 
-客户端可通过 `x-session-id`（8–128 字符）启用会话亲和。亲和存储在必需的 `TIER1_AFFINITY` Cloudflare KV binding 中，30 分钟 TTL。原始 session ID 在成为 KV key 前经过 SHA-256 哈希。KV 每个客户端请求读取一次，仅在首次 Tier 1 成功或成功 affinity 逃逸后写入；Tier 2/3 fallback 永不改变它。Affinity 是 `0.85` 分数乘数，不是硬绑定。
+Eligibility is a hard gate. Heat protection never makes an otherwise ineligible node eligible.
 
-### P2C（Power of Two Choices）
+### Soft session affinity
 
-采样两个不同的 eligible account，选择得分较低的。无全池性能排序。得分仅包含：被动 per-`(account, model)` TTFT、capacity-relative 当前负载、recovery/quota 因子、soft affinity 因子和小 UNKNOWN 探索因子。Tier 1 忽略静态 `priority`、旧 health score、LRU、节点级 latency/TTFT 和 probe freshness。因此不承诺每次请求都选到全局最快 account。
+Clients may provide `x-session-id` (8–128 characters). The gateway hashes it before using it as a KV key and stores the Tier 1 account binding in `TIER1_AFFINITY` with a 30-minute TTL.
 
-### 被动 TTFT
+Affinity is a score bias, not sticky routing. The cold/healthy base factor is `0.85`. It can help preserve provider-side locality without forcing requests to a hot or unavailable key.
 
-从上游 attempt dispatch 开始，到首个有意义的模型输出结束。OpenAI Chat 要求非空 content/reasoning/tool-call 输出；Responses 要求非空 supported output delta；Anthropic 要求非空 text/thinking/tool-input delta。状态起始为 `ttftEwma=null, sampleCount=0`；首次观测直接赋值，后续使用 EWMA alpha `0.25`。
+### P2C score
 
-## Tier 2 / Tier 3
+When more than one candidate exists, Tier 1 samples two distinct eligible accounts and chooses the lower score. The score combines bounded factors for:
 
-Tier 2 和 Tier 3 继续使用旧版动态候选选择器和 `node-state.ts`：priority、active requests、health band、LRU、latency preference、cooldown 和 circuit breaker。不受 Tier 1 TTFT 训练，不读写 Tier 1 affinity。
+- passive per-`(account, model)` TTFT;
+- current concurrency load;
+- half-open recovery state;
+- explicit quota-near-limit state;
+- soft affinity;
+- exploration for unobserved nodes;
+- RPM headroom heat protection.
 
-## Priority
+Success rate is **not** a positive score/reward signal. This avoids concentrating traffic on a currently successful key until it becomes the next rate-limited hotspot.
 
-`priority` 字段在共享节点 schema 中保留用于 Tier 2/3 兼容性。Tier 1 P2C 有意忽略它。较小的 priority 值 = 更高优先级。
+### Passive TTFT
 
-## Eligible Candidate
+TTFT is learned only from real requests. The first valid observation initializes the value; later observations use EWMA alpha `0.25`. Unknown nodes remain eligible and receive a small exploration opportunity.
 
-候选节点需满足：支持当前实际调度请求的 protocol + surface + model，不在 cooldown 中，有可用 concurrency 和 RPM 容量，circuit 未 OPEN。
+Tier 1 does not run background latency probes.
 
-## Node Rotation
+## Tier 1 heat protection
 
-同一 tier 内轮换；移动到 tier N+1 仅在当前 tier 无 eligible candidate 或花完 per-tier budget 时发生。Tier 保持硬优先级。
+Heat protection spreads load before a key reaches its hard limit, without creating another quota system.
 
-## Tier Fallback
+### RPM headroom
 
-Tier 间 fallback 严格按优先级顺序。Budget 分配在当前可调度的 tier 上，`tier_attempts` 可覆盖。全局 `max_attempts` 和 `FAILOVER_BUDGET_MS` 仍限制整个请求。
+Hard-RPM admission uses a tiny smooth token bucket. While a key still has a dispatchable token but its headroom is reduced, selection receives an RPM penalty from `1.0` up to at most `1.20`.
 
-## Attempt Budget
+This is a **soft score effect**. The existing hard RPM gate remains the final admission authority.
 
-每个请求有 per-tier attempt budget。默认 `max_attempts` 拆分为：每个实际持有 schedulable candidate 的 tier 至少获得一次 attempt，剩余分配给最高 tier。`POLICIES_CONFIG` 的 `tier_attempts`（`{"tier1": N, "tier2": N, "tier3": N}`，`0` 禁用 tier）可覆盖。
+### Affinity decay
 
-Tier 1 没有独立 attempt 上限；Tier 1、Tier 2、Tier 3 都由 `max_attempts`、`tier_attempts`、实时可调度性和共享 wall-clock failover budget 共同约束。
+Heat is the maximum of current RPM-headroom pressure and concurrency pressure. As heat rises, the affinity factor moves linearly from `0.85` toward neutral `1.0`.
 
-### Adaptive Budget
+Affinity never turns into an independent negative penalty. A hot affinity account merely loses its preference.
 
-`POLICIES_CONFIG` 中可选用 `budget_split` 字段 (与 `tier_attempts` 正交):
+### Hedge spare-capacity gate
 
-- **`'even'` (默认)**: 第一个 dispatchable tier 获得全部 surplus。
-- **`'weighted'` (opt-in)**: surplus 按每个 tier 的 live dispatchable 节点数比例分配。
-- **`'tier_attempts'` 仍然胜出**: 显式 override 不受 `budget_split` 影响。
+A Tier 1 hedge twin is optional latency work. It is allowed only when the candidate has visible spare capacity:
 
-详细算法与示例见 [reliability-model.md → Adaptive Budget](./reliability-model.md#adaptive-budget-r5-v130)。
+- RPM pressure `<= 0.50`;
+- concurrency pressure `< 0.75`.
 
-## Failover Budget
+Primary requests do not use these soft hedge thresholds. If only one eligible primary candidate remains, heat protection does not hard-block it.
 
-整个请求由 `FAILOVER_BUDGET_MS`（默认 60s）限制。时间从网关收到请求开始计算；每次新 attempt 检查剩余 budget。Budget 耗尽时停止轮换，返回 504 + attempt count。客户端 abort 是特权的；首事件后透明 failover 不安全。
+### What heat protection does not do
 
-## Hedge（Reactive per-try hedge）
+It does not add:
 
-当 logical attempt 在 `HEDGE_DELAY_MS`（默认 3s；`0` 禁用）内未提交时，启动 ONE twin attempt 对抗下一个最佳候选者。Twin 是同一 logical attempt 的额外执行者，不消耗 `max_attempts` 或 tier budget，继承 logical attempt 的绝对 deadline。
+- success-rate weighting;
+- dynamic concurrency learning;
+- cross-isolate global coordination;
+- new environment variables;
+- new node configuration fields;
+- Tier 2/3 behavior changes.
 
-- 被赢家的 peer commit 取消的 loser 是 NEUTRAL——无 health penalty、无 cooldown、无 circuit failure
-- Twin 自身真实 timeout/5xx 计为真实失败
-- 受 `MAX_HEDGES_PER_REQUEST`（默认 1）和硬 dispatch 上限 `max_attempts + max_hedges_per_request` 约束
+## Tier 2 and Tier 3
 
-## RPM
+Tier 2/3 continue to use the existing selector and `node-state.ts` reliability model. Their selection may use priority, active-request load, health/circuit state, cooldown, and latency preference according to the existing scheduler implementation.
 
-`limits.rpm` 默认 **hard**——exhausted 节点被跳过（不作为 last-resort fallback），在单 Worker isolate 内网关永远不超过配置配额；完全 exhaustion 返回 503 + Retry-After。`"rpm_mode":"soft"` 恢复 best-effort 行为。
+They do not read Tier 1 TTFT, Tier 1 affinity, or Tier 1 heat state.
 
-当存在 `QUOTA_RATE_LIMITER` Rate Limiting binding 时，hard-RPM dispatch 额外通过分布式（per-Cloudflare-location）fixed-window 检查。该检查是近似的、per-location 的，不是严格的全局/account quota。
+## Attempt budget
 
-## Concurrency
+`max_attempts` is the request-wide logical-attempt ceiling. `tier_attempts` can explicitly cap individual tiers. When a tier has no explicit cap, the current budget-split policy allocates the remaining logical attempts among dispatchable tiers.
 
-`limits.concurrency` 是 isolate-local shaping，不是全局硬限制或 provider-wide accurate quota。没有 Durable Objects 的跨 PoP 配额。
+`budget_split` supports:
+
+- `even` / `null` — preserve tier priority and give surplus to the first dispatchable unbounded tier;
+- `weighted` — distribute remaining budget among unbounded dispatchable tiers by live candidate count.
+
+Explicit `tier_attempts` wins over budget splitting. The sum of explicit tier caps must not exceed `max_attempts`.
+
+## Failover budget
+
+`FAILOVER_BUDGET_MS` limits the entire request wall clock; the current default is **60 seconds**. New attempts stop when the remaining budget cannot safely fit another try.
+
+The budget starts when the gateway receives the request. Protocol fallback does not receive a fresh clock.
+
+## Hedge
+
+Reactive hedge starts one twin when the current logical attempt has not committed before the configured delay. The current `HEDGE_DELAY_MS` default is **3 seconds**; `0` disables it.
+
+Important semantics:
+
+- the twin is the same logical attempt and does not consume another `max_attempts` slot;
+- it does consume a physical dispatch and is bounded by the request dispatch ceiling;
+- the twin uses the same protocol and surface as the primary;
+- the loser cancelled after a peer commit is neutral;
+- a twin's genuine timeout/server failure remains a real failure;
+- Tier 1 twins additionally pass the heat spare-capacity gate.
+
+## RPM and concurrency
+
+`limits.rpm` defaults to hard shaping. Tier 1 hard RPM is isolate-local smooth admission; when no capacity remains, the node is not dispatchable. `rpm_mode: "soft"` keeps best-effort semantics.
+
+`limits.concurrency` is isolate-local shaping. Neither value is a claim of globally accurate provider-account quota.
+
+When the optional Cloudflare rate-limiting binding is configured, hard-RPM dispatch receives an additional distributed per-location check. It remains approximate rather than a globally consistent account quota.
+
+See [Reliability model](reliability-model.md) for cooldown, 429 recovery, and failure accounting.

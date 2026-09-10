@@ -1,115 +1,94 @@
-# 系统架构总览
+# Architecture overview
 
-## 设计目标
+ai-gateway is a Cloudflare Workers aggregation gateway designed to make a pool of heterogeneous AI APIs and credentials behave like one predictable endpoint without hiding protocol boundaries or inventing global guarantees the runtime does not have.
 
-每个功能都必须回答：是否提高了上游配额利用率？是否提高了可靠性？是否降低了 Worker CPU 开销？是否更可预测？否则不在范围内。
+## Design goals
 
-## 概览
+A runtime feature should improve at least one of these properties without materially damaging the others:
 
-网关原生支持两种协议族——OpenAI 和 Anthropic。网关采用 Native First 策略：OpenAI Chat Completions 与 Anthropic Messages 都优先走同 protocol、同 surface 的原生上游；原生池耗尽后，默认允许 OpenAI Chat Completions ↔ Anthropic Messages 双向跨协议 fallback。OpenAI Responses 始终为 Native Only，不做跨协议转换。`PROTOCOL_FALLBACKS` 未配置或为空时使用内置默认链 `{"anthropic:messages":["openai:chat_completions"],"openai:chat_completions":["anthropic:messages"]}`；设 `disable` 关闭；显式 JSON 覆盖默认。
+- upstream quota utilization;
+- request success and recovery behavior;
+- tail-latency control;
+- protocol compatibility;
+- operational predictability;
+- Worker hot-path cost.
 
-```text
-Client (OpenAI / Anthropic SDK)
-   ↓  auth (timing-safe), route allowlist, body limits
-Request Orchestration (src/request/*)
-   ↓  route → (protocol, surface): openai chat|responses, anthropic messages
-Config Layer (src/config)          ← parses env shards ONCE per isolate
-   ↓  Runtime Node { id, tier, provider, protocol, surfaces, baseUrl, credential, priority, models, limits }
-Scheduler (src/scheduler)
-   ↓  Tier 1: Eligibility → Affinity → P2C; Tier 2/3: existing selector
-Reliability (src/reliability)      ← Tier 1 account/model state; legacy Tier 2/3 node state
-Transport (src/transport)          ← openai.js / anthropic.js: native path, headers, stream semantics
-   ↓
-Upstream providers (native endpoint of the SAME protocol + surface)
-```
+The project prefers bounded, local mechanisms over global coordination unless production evidence shows local shaping is insufficient.
 
-## 职责划分
+## Request flow
 
 ```text
-Model Registry (src/config/registry.ts)   →  logical model, its policy + capabilities
-Node (src/config/nodes.ts)                →  logical model → upstream model, protocol + surfaces
-Transport (src/transport)                 →  HOW to talk to the upstream (path, headers, stream semantics)
-Provider quirks (src/config/provider-quirks.ts) → known wire-format compatibility differences
-Scheduler (src/scheduler)                 →  decides WHICH node gets a request
-Reliability (src/reliability)             →  whether a node is currently usable
+Client
+  ↓
+Authentication + route/body validation
+  ↓
+Request orchestration
+  ↓
+Native protocol/surface candidate pool
+  ↓
+Tier 1 → Tier 2 → Tier 3
+  ↓
+Optional Chat Completions ↔ Anthropic Messages fallback
+  ↓
+Protocol-specific response / stream
 ```
 
-`src/transport/*` 不调度节点；`src/scheduler` 和 `src/reliability` 不解析协议事件，也不知道上游使用什么 wire format。`provider` 仅为元数据（dashboard / metrics / diagnostics / quirks），不决定 transport。Model Registry 拥有模型能力声明；任何 transport 或 provider 标签都不声称模型能力。
+OpenAI Chat Completions and Anthropic Messages are Native First. Only after the native pool is exhausted may the configured cross-protocol fallback run. OpenAI Responses is Native Only.
 
-## 不变量
-
-- 原生协议转发：Chat → 上游 `/v1/chat/completions`，Responses → 上游 `/v1/responses`，Messages → 上游 `/v1/messages`
-- Native First：OpenAI Chat Completions 与 Anthropic Messages 都优先原生；原生池耗尽后默认允许双向跨协议 fallback；OpenAI Responses 保持 Native Only
-- `PROTOCOL_FALLBACKS` 未配置或为空时使用内置双向默认链；`disable` 关闭；显式 JSON 覆盖默认
-- `limits.rpm` 默认 hard，单 Worker isolate 内不主动越配额
-- 整请求 failover budget，超时即停
-- 所有短期运行时状态（Tier 1 TTFT/inFlight/cooldown，Tier 2/3 health/circuit/concurrency/RPM）均为 isolate-local best-effort，随 isolate 重启丢失
-- D1 仅用于可选的 token-usage 聚合，不在 AI 请求热路径上
-- KV (TIER1_AFFINITY)：30 分钟 TTL，仅用于 Tier 1 会话亲和
-- D1 token_usage_totals：单行 'global'，生命周期累计，永不清理
-- D1 token_usage_hourly：7 天保留，UTC 小时桶
-- D1 token_usage_model_hourly：7 天保留，按模型 UTC 小时桶
-- D1 token_usage_daily：52 周保留，UTC+8 自然日桶
-- D1 token_usage_weekly：52 周保留，UTC 周一起始周桶
-- 定时任务 (0 3 * * *)：hourly→daily 聚合 → daily→weekly 聚合 → 清理过期数据；所有聚合幂等（覆盖而非累加）
-
-## Provider Discovery（v1.1，运维观察）
+## Module ownership
 
 ```text
-Provider Capability
-        ↓
-Discovery Catalog
-        ↓
-Semantic Diff
-        ↓
-GitHub Report
-        ↓
-Human Review
-        ↓
-Node / Model Registry Config
+Model Registry     logical model policy and declared capabilities
+Node config         upstream address, protocol, surfaces, model mapping, limits, credential binding
+Scheduler           which eligible node should receive the next attempt
+Reliability         whether a node/account/model is currently usable and how failures change state
+Transport           how to call the selected upstream endpoint
+Protocol            client request validation and protocol-specific errors
+Conversion          supported Chat ↔ Messages semantic bridge
+Stream              first-event guards, SSE lifecycle, commit boundary
+Observability       logs, metrics, token usage, diagnostics
+Runtime             runtime availability and public read-only projections
+Dashboard           presentation only
 ```
 
-`scripts/provider-discovery/` 是一个**只读观察**子系统：维护 Provider 的协议能力、Surface 与 Base URL 信息，并与 Runtime Node 配置做一致性校验。详见 [operations/provider-discovery.md](../operations/provider-discovery.md)。
+These boundaries are intentional. Transport does not select nodes. Scheduler and Reliability do not parse provider wire events. Provider labels are metadata and known-quirk selectors, not a substitute for model capability declarations.
 
-边界约束：
+## Current invariants
 
-- Discovery **从不**修改 Runtime Node、Model Registry、Worker Variables 或 Worker Secrets
-- Discovery **从不**主动发送模型生成请求（`/v1/chat/completions`、`/v1/responses`、`/v1/messages`）
-- Discovery **从不**进入 Runtime 请求热路径
-- Discovery 故障 **不会**导致 Runtime 请求链路失效
+- Native OpenAI Chat targets `/v1/chat/completions` upstream.
+- Native OpenAI Responses targets `/v1/responses` upstream.
+- Native Anthropic Messages targets `/v1/messages` upstream.
+- The built-in conversion matrix is only OpenAI Chat Completions ↔ Anthropic Messages.
+- OpenAI Responses does not enter cross-protocol conversion.
+- Native retry and conversion fallback share the same logical-attempt and wall-clock failover budget.
+- A hedge twin remains in the primary request's protocol and surface.
+- Tier 1 uses Eligibility → soft Affinity → P2C with passive TTFT and bounded heat protection.
+- Tier 2/3 remain separate from Tier 1 adaptive state.
+- Short-lived scheduler/reliability state is isolate-local best-effort and disappears with the isolate.
+- D1 token usage is observability, not a routing authority.
+- `TIER1_AFFINITY` KV stores only hashed session affinity and does not make routing globally sticky.
+- Provider Discovery is read-only advisory tooling.
+- Public Model Status is a read-only projection and never feeds Scheduler or Reliability.
 
-## 公开 Model Status（只读投影）
+## Configuration authority
 
-公开首页的"模型状态"是**跨隔离区**的投影，而不是当前 isolate 的 Runtime Availability：
+- Runtime variable names/defaults: `src/config/runtime-vars.ts`.
+- Node parsing and credential binding: `src/config/nodes.ts` and related config modules.
+- Logical model policy/capabilities: `src/config/registry.ts`.
+- Protocol fallback matrix: protocol fallback config/conversion modules and their contract tests.
+- Failure taxonomy: `src/reliability/classify.ts`.
 
-```text
-Runtime Availability (当前 isolate)
-        ↓
-+  持久化 D1 近期成功证据
-        ↓
-Public Model Status (跨 isolate 投影)
-        ↓
-公开首页 HTML
-```
+Architecture documentation summarizes these sources; it must be corrected when executable behavior changes.
 
-`src/runtime/model-status.js` 是一个**只读**投影层，**永不**反向影响 Scheduler / Reliability / Transport / Request / Hedge / Failover / Cooldown。它仅在 `dashboardResponse` 渲染时被调用，请求热路径完全不引用它。详见 [operations/public-model-status.md](../operations/public-model-status.md)。
+## Persistence boundaries
 
-## 协议边界
+D1 and KV are deliberately outside the critical scheduling decision path where possible.
 
-网关原生支持以下端点：
+- `TIER1_AFFINITY` KV: short-lived session binding, 30-minute TTL.
+- Token-usage D1: persisted usage aggregation and recent public-status evidence.
+- Tier 1 TTFT, in-flight, cooldown, RPM bucket, half-open state: isolate-local memory.
+- Tier 2/3 health/circuit/concurrency state: isolate-local memory.
 
-| 客户端路径 | 协议 | 上游路径 |
-|---|---|---|
-| `/v1/chat/completions` | OpenAI Chat | 上游 `/v1/chat/completions` |
-| `/v1/responses` | OpenAI Responses | 上游 `/v1/responses` |
-| `/v1/messages` | Anthropic Messages | 上游 `/v1/messages` |
+The gateway does not claim cross-PoP globally accurate concurrency or provider-account quota from these local states.
 
-跨协议 fallback 契约：
-
-| 请求协议 | Native | Fallback |
-|---|---|---|
-| OpenAI Chat Completions | 支持 | 可转 Anthropic Messages |
-| Anthropic Messages | 支持 | 可转 OpenAI Chat Completions |
-| OpenAI Responses | 支持 | 不做跨协议转换 |
-
-每个客户端 surface 首先映射到同一 `(protocol, surface)` 的原生上游 endpoint。`PROTOCOL_FALLBACKS` 未配置或为空时使用内置默认链 `{"anthropic:messages":["openai:chat_completions"],"openai:chat_completions":["anthropic:messages"]}`；设 `PROTOCOL_FALLBACKS=disable` 关闭；显式 JSON 值覆盖默认。OpenAI Responses 始终保持 Native Only。
+See [Protocol model](protocol-model.md), [Routing model](routing-model.md), and [Reliability model](reliability-model.md) for the detailed contracts.

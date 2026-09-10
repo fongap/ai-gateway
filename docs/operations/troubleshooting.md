@@ -1,115 +1,188 @@
-# 故障排查
+# Troubleshooting
 
-## 部署错误
+Start with evidence from the failing boundary: configuration validation, CI job/step, `/version` build identity, sanitized gateway logs, and the aggregated `failure_kinds`. Do not rotate or rewrite unrelated configuration until the failing layer is identified.
 
-### `ERROR: CLOUDFLARE_ACCOUNT_ID is missing`
+## Configuration failures
 
-设置 GitHub Variable（见 deployment.md §2）。
+### Gateway is `unconfigured`
 
-### `ERROR: GATEWAY_ACCESS_KEY is missing`
+Check that:
 
-设置 GitHub Secret（见 deployment.md §3）。
+- at least one `GATEWAY_ACCESS_KEY_{AIR,PRO,MAX,ULTRA,AGENT}` Secret is configured;
+- its matching `GATEWAY_ACCESS_MODELS_<GROUP>` Variable is present and non-empty;
+- at least one `TIER{1,2,3}_NODES_CONFIG_XX` Variable exists;
+- usable nodes have credentials in a `TIER{1,2,3}_NODES_SECRETS_XX` Secret for the same tier.
 
-### `ERROR: No TIER{1,2,3}_NODES_CONFIG_XX Variable is configured`
+A group key with an empty model allowlist intentionally grants zero models.
 
-添加至少一个 tier-config Variable，包含有效 JSON。
+### `No TIER{1,2,3}_NODES_CONFIG_XX Variable is configured`
 
-### `ERROR: No TIER{N}_NODES_SECRETS_XX Secret is configured`
+Add at least one valid tier config shard containing a JSON array of nodes. The suffix is only a shard number.
 
-添加至少一个 `TIER{1,2,3}_NODES_SECRETS_01` Secret，包含 JSON 对象 `{ "node-id": "credential" }`。Secret 的 tier 前缀必须与所配对的 `TIER*_NODES_CONFIG_*` 一致。
+### Missing node credential
 
-### `D1 persistence disabled: TOKEN_STATS_D1_ID is not configured`
+Credentials bind by Tier + node id. They do not need to be in a Secret shard with the same suffix as the Config shard.
 
-如不需要持久化 token 统计，这是预期行为。如需启用，设置 `TOKEN_STATS_D1_ID` Variable。
+Example:
 
-## 运行时错误
+```text
+TIER1_NODES_CONFIG_03 contains node "nvidia-01"
+TIER1_NODES_SECRETS_01 may contain {"nvidia-01":"..."}
+```
+
+If the tier differs, the credential is invalid for that node.
+
+### `MODELS_CONFIG` / `POLICIES_CONFIG` invalid
+
+These auxiliary configs are validated fail-fast. Check malformed JSON, unknown fields, invalid values, and model→policy references to policy names that do not exist.
+
+Use:
+
+```bash
+npm run config:check
+npm run validate:merge
+```
+
+## Deployment failures
+
+### Preflight fails
+
+Use the exact missing Variable/Secret named by the job. Do not add unrelated placeholders merely to make preflight continue.
+
+### D1 migration fails
+
+The Worker is not deployed after a required migration failure. Inspect the migration error first; do not bypass migration ordering.
+
+### Worker deploy succeeds but verification fails
+
+The workflow attempts Worker rollback. Check the `Verify deployed gateway`, rollback, and rollback-verification steps separately.
+
+If rollback verification also fails, the previous Worker may not be healthy or external configuration/upstream state may have changed. Stop automatic retries and inspect the deployed build/configuration evidence.
+
+### Docs-only change did not deploy
+
+This is expected when the triggering `main` commit changes only Markdown files and/or `docs/**`. The deploy gate intentionally skips Worker deployment for documentation-only changes.
+
+## Runtime HTTP failures
+
+### 400 / other client-class 4xx
+
+The current failure taxonomy treats terminal request-invalid 4xx as `client` and stops the logical request. The gateway does not currently claim provider-specific 400 compatibility classification and automatic rotation for every such error.
+
+Check:
+
+- whether the selected upstream actually supports the request field;
+- whether the request reached a native or converted fallback path;
+- structured-output/tool fields and provider wire compatibility;
+- sanitized upstream error text where available.
+
+Do not assume a 400 means the key itself is unhealthy.
 
 ### 429 Too Many Requests
 
-- 检查节点 `limits.rpm` 配置
-- 检查是否有 `QUOTA_RATE_LIMITER` binding
-- Retry-After header 指示最早可用时间
-- 所有节点 exhausted 时返回 503 + Retry-After
+Check:
+
+- node `limits.rpm` / `rpm_mode`;
+- current concurrency pressure;
+- `Retry-After` if the provider sends it;
+- whether the rate limit is model-scoped or account-scoped;
+- whether multiple Worker isolates/PoPs are sharing the same upstream key;
+- optional Cloudflare distributed rate-limiting binding status.
+
+Tier 1 uses smooth isolate-local RPM admission, scoped cooldown/backoff, recovery gating, and heat protection. These controls reduce local hot spots but do not create a globally exact provider quota.
 
 ### 502 Bad Gateway
 
-- 所有节点均失败
-- 检查 `failure_kinds` 确定失败类型（`failure_kinds` 是 16 个闭合 FailureKind 值之一，见 [reliability-model.md → 错误分类](../architecture/reliability-model.md#错误分类)）
-- 检查上游服务状态
-- 常见 kind:
-  - `server`：上游 5xx
-  - `headers_timeout`：上游响应头超时
-  - `first_event_timeout`：首事件超时
-  - `network`：网络错误
-  - `endpoint_not_found`：404（非 model_missing）
-  - `stream_interrupted`：流中途截断
+Use `failure_kinds` and attempt diagnostics to identify whether the dominant issue is:
+
+- `server`
+- `network`
+- `headers_timeout`
+- `first_event_timeout`
+- `stream_interrupted`
+- `model_missing`
+- `endpoint_not_found`
+- conversion failure / unsupported fallback semantics
+
+A converted fallback still returns the original client's error envelope.
 
 ### 503 Service Unavailable
 
-- 配置状态为 `invalid` 或 `unconfigured`
-- 检查 `/health` 确定配置状态
-- 所有节点 RPM exhausted
+Common causes:
+
+- gateway configuration is invalid/unconfigured;
+- all eligible nodes are temporarily unavailable;
+- all hard-RPM capacity is exhausted;
+- all matching protocol/surface/model candidates are blocked.
+
+Use authenticated `/health` and sanitized runtime diagnostics.
 
 ### 504 Gateway Timeout
 
-- Failover budget 耗尽
-- 检查 `FAILOVER_BUDGET_MS` 配置
-- 检查上游响应时间
+The request-wide `FAILOVER_BUDGET_MS` was exhausted or no safe attempt remained within the wall-clock budget. Inspect upstream headers/first-event latency and the number of attempted nodes before increasing the budget.
 
-### First-Event Timeout
+## Model problems
 
-- 上游返回 HTTP 200 但未产生有效 SSE 事件
-- 检查 `FIRST_EVENT_TIMEOUT_MS` 配置
-- 检查上游流式行为
+### Model not listed or unavailable
 
-### Headers Timeout
+Check the logical model name against node `models` mappings and optional `MODELS_CONFIG`. Provider-facing model ids may differ from the gateway's logical model aliases.
 
-- 上游未在规定时间内返回响应头
-- 检查 `UPSTREAM_HEADERS_TIMEOUT_MS` 配置
-- 检查上游网络连通性
+A model-shaped upstream 404 uses a short upstream-model-specific cooldown; it should not permanently poison the logical alias after remapping.
 
-### All Nodes Failed
+### Claude Code / Anthropic Messages fallback problem
 
-- 检查节点配置和凭据
-- 检查上游服务可用性
-- 检查 `/health` 节点状态
+Check whether the model has an Anthropic native node first. If native nodes are exhausted and fallback is enabled, the request may convert to OpenAI Chat.
 
-## 配置错误
+The conversion bridge is intentionally not full Anthropic semantic emulation. Features such as thinking history/control, context-management controls, provider-native tools, and some tool hints may be degraded or rejected. Debug conversion diagnostics expose fixed categories without request content.
 
-### Configuration Invalid
+### OpenAI Responses problem
 
-- 检查 `/health` 中的 `config_status`
-- 运行 `npm run config:check` 本地验证
-- 检查重复 node id、无效 JSON、缺失凭据
+Confirm:
 
-### Model Unavailable
+- node `protocol` is `openai`;
+- `surfaces` contains `responses`;
+- the upstream actually supports `/v1/responses`.
 
-- 检查节点 `models` 映射
-- 检查 `MODELS_CONFIG` 注册表覆盖
-- 运行 `npm run config:check` 验证
+Responses is Native Only. There is no Responses→Chat or Responses→Messages conversion fallback.
 
-### Responses Compatibility
+### Structured output fallback
 
-- 确认节点 `surfaces` 包含 `responses`
-- 确认 `protocol` 为 `openai`
-- 检查上游是否真正支持 `/v1/responses`
+The conversion strategy is conservative:
 
-### Anthropic Compatibility
+- positive native capability evidence can use native JSON Schema;
+- synthetic Tool mode additionally needs a response-side unwrap adapter;
+- unknown target capability uses Prompt emulation.
 
-- 确认节点 `protocol` 为 `anthropic`
-- 确认 `surfaces` 包含 `messages`
-- 检查 `anthropic-version` 头透传
+The current generic runtime fallback path therefore defaults unknown targets to Prompt rather than forcing an unsupported `response_format`.
 
-## Cloudflare Deployment Errors
+## Tier 1 routing diagnosis
 
-### Health Check Fails
+A fast key is not guaranteed to receive most traffic. Tier 1 deliberately balances TTFT with current local pressure.
 
-检查 `wrangler tail` 查看已部署 Worker。`GATEWAY_ACCESS_KEY` Secret 中的密钥必须匹配运行时看到的值。
+If a previously preferred affinity key receives less traffic, check whether:
 
-### `/v1/models` Returns Empty
+- its RPM headroom is low;
+- its concurrency is elevated;
+- its affinity advantage has decayed toward neutral;
+- it is in cooldown/recovery/half-open state;
+- hedge spare-capacity gating excluded it from optional twin work.
 
-当前 `TIER*_NODES_CONFIG_XX` 声明的节点 `models` map 为空（wildcard）或 `MODELS_CONFIG` 注册表覆盖无效。运行 `npm run config:check` 本地验证。
+This is expected heat-protection behavior and does not by itself mean the key is failing.
 
-### Wrangler Dry-Run Fails
+## Streaming problems
 
-检查本地 `wrangler.user.jsonc` 配置。确保 KV namespace binding 正确。
+### Headers timeout
+
+No upstream response headers arrived before `UPSTREAM_HEADERS_TIMEOUT_MS`. Check network/provider responsiveness.
+
+### First-event timeout
+
+Headers arrived but no meaningful protocol-specific output appeared before `FIRST_EVENT_TIMEOUT_MS`. Lifecycle-only SSE events do not necessarily commit the response.
+
+### Stream interruption
+
+A stream can commit successfully and later truncate. After commit, the gateway does not transparently replay the request to another provider because duplicate partial output would be unsafe.
+
+## Safe evidence collection
+
+Never include live credentials, full authorization headers, private upstream URLs, prompts/request bodies, or user data in an Issue or public log sample. See [SECURITY.md](../../SECURITY.md).
