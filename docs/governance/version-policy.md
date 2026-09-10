@@ -22,7 +22,13 @@ The Node.js runtime requirement is owned by:
 package.json.engines.node
 ```
 
-Synchronized copies must agree when a version changes, including `package-lock.json`, `src/config/version.ts`, and the corresponding `CHANGELOG.md` section.
+When `package.json.version` changes, synchronize the generated runtime copy with:
+
+```bash
+npm run version:sync
+```
+
+`package-lock.json`, `src/config/version.ts`, and the corresponding `CHANGELOG.md` section must agree with the source version. `npm run check:version` verifies that contract; it does not choose a new version.
 
 ## Version changes
 
@@ -57,6 +63,8 @@ The repository uses squash merge. A stable version tag must therefore point to t
 
 ```text
 version / changelog change, when required
+        ↓
+npm run version:sync
         ↓
 Pull Request
         ↓
