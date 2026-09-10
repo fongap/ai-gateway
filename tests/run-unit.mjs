@@ -36,6 +36,7 @@ const UNIT_TESTS = [
   'scripts/gateway-configuration-test.mjs',
   'scripts/request-reliability-test.mjs',
   'scripts/tier1-upstream-model-cooldown-test.mjs',
+  'scripts/tier1-heat-protection-test.mjs',
   'scripts/stream-completion-test.mjs',
   'scripts/token-usage-store-test.mjs',
   'scripts/token-usage-test.mjs',
