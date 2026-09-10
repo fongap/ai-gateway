@@ -2,39 +2,34 @@
 
 # ai-gateway
 
-**面向 Cloudflare Workers 的高韧性 AI API 网关**
+### 面向 Cloudflare Workers 的高韧性 AI API 网关
 
-多 Provider 路由 · 多 Key 负载均衡 · 限流保护 · 分层故障转移 · OpenAI / Anthropic 兼容
+多 Provider 路由 · 多 Key 负载均衡 · 限流保护 · 分层故障转移  
+OpenAI Chat · OpenAI Responses · Anthropic Messages
 
 [English](README.md) · [**简体中文**](README.zh-CN.md)
 
 ![Version](https://img.shields.io/github/package-json/v/fongap/ai-gateway?label=Version)
 ![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)
-![Node.js](https://img.shields.io/badge/Node.js-22.18%2B-43853d?logo=node.js&logoColor=white)
 ![License](https://img.shields.io/github/license/fongap/ai-gateway?label=License)
 
-[实时面板](https://api.135468.xyz/) · [快速开始](#快速开始) · [架构](docs/architecture/overview.md) · [配置](docs/operations/configuration.md) · [部署](docs/operations/deployment.md) · [完整文档](docs/README.md)
+[实时面板](https://api.135468.xyz/) · [快速开始](#快速开始) · [架构](docs/architecture/overview.md) · [完整文档](docs/README.md)
 
 </div>
 
-ai-gateway 将不同 AI Provider、API Key 和逻辑模型聚合为一个稳定端点。它面向高吞吐、上游不稳定的使用场景，优先解决 **可用性、额度保护和可预测故障转移**，而不是一味追逐当前最快的 Key。
-
-**实时面板：** [api.135468.xyz](https://api.135468.xyz/) — 查看当前模型可用性、流量、Token 活动与客户端快速接入示例。
+在不同 AI Provider、API Key 与逻辑模型之上提供一个稳定入口。ai-gateway 面向高吞吐、上游易波动的使用场景，优先解决 **可用性、额度保护和可预测故障转移**，而不是持续追逐某一个最快的 Key。
 
 > 本页为简体中文阅读版。项目长期文档以 [English README](README.md) 及英文 canonical docs 为准。
 
-## 核心能力
+## 为什么是 ai-gateway
 
-| 能力 | 当前行为 |
-| --- | --- |
-| **多 Provider 路由** | 将多个 Provider、API Key 和逻辑模型别名统一到一个网关 |
-| **分层故障转移** | 在同一请求预算内按 **Tier 1 → Tier 2 → Tier 3** 逐层托底 |
-| **多 Key 韧性** | P2C、被动 TTFT 学习、并发/RPM 整形、Cooldown 与热点保护 |
-| **协议兼容** | 原生支持 OpenAI Chat、OpenAI Responses、Anthropic Messages |
-| **安全转换** | 仅 OpenAI Chat ↔ Anthropic Messages；**OpenAI Responses 保持 Native Only** |
-| **流式与观测** | 协议感知首事件保护、SSE 转发、脱敏诊断、Token Usage 聚合 |
+**高韧性路由。** 在同一请求预算内按 **Tier 1 → Tier 2 → Tier 3** 逐层托底，并结合 P2C、被动 TTFT 学习、RPM/并发整形、Cooldown、Affinity 与热点保护。
 
-适用于异构 OpenAI-compatible / Anthropic-compatible 上游，包括 Coding Agent 与 Claude Code 场景。
+**协议感知故障转移。** 原生提供 OpenAI Chat Completions、OpenAI Responses 与 Anthropic Messages；支持 OpenAI Chat ↔ Anthropic Messages fallback，**OpenAI Responses 保持 Native Only**。
+
+**可运营、可观察。** 提供流式首事件保护、脱敏诊断、Token Usage 聚合、模型状态展示，以及部署后的远程验证与失败自动 Worker 回滚。
+
+适用于异构 OpenAI-compatible / Anthropic-compatible 上游，包括 Coding Agent 与 Claude Code 场景。[打开实时面板 →](https://api.135468.xyz/)
 
 ## 架构
 
@@ -48,7 +43,7 @@ flowchart LR
     F --> D
 ```
 
-始终优先执行原生协议。只有原生候选池耗尽后才进入跨协议 fallback；native retry 与 protocol fallback 共享同一 logical-attempt 和 wall-clock failover budget，Hedge twin 不跨协议。
+始终优先执行原生协议。跨协议 fallback 与 native retry 共享同一 logical-attempt 和 wall-clock failover budget，Hedge twin 不跨协议。
 
 Tier 1 的目标是 **稳定利用整个 Key 池，而不是持续追打某一个“最好”的 Key**。RPM headroom 会在硬上限前逐步降低热点 Key 的选择优势；Affinity 随热点程度衰减；可选 Hedge twin 只有在 RPM / concurrency 仍有余量时才允许触发。
 
