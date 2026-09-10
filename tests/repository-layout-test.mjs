@@ -33,6 +33,12 @@ const misplacedRuntimeTests = walk(srcDir)
   .map((file) => path.relative(root, file));
 assert.deepEqual(misplacedRuntimeTests, [], 'src/ must contain Worker runtime code, not test files');
 
+assert.equal(
+  fs.existsSync(path.join(root, '.githooks')),
+  false,
+  '.githooks must remain local; repository governance is enforced by CI and GitHub workflows',
+);
+
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 for (const name of ['test:unit', 'test:all', 'test:integration', 'test:conversion']) {
   const command = pkg.scripts?.[name] || '';
