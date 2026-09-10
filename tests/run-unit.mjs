@@ -50,6 +50,7 @@ const UNIT_TESTS = [
   'tests/migrations-check-test.mjs',
   'tests/version-check-test.mjs',
   'tests/architecture-contract-test.mjs',
+  'tests/repository-layout-test.mjs',
   'tests/reliability-core-contract-test.mjs',
   'tests/deployment-workflow-contract-test.mjs',
   'tests/scheduler-racelost-test.mjs',
