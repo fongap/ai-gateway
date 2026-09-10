@@ -60,6 +60,8 @@ A file is a **test** when its primary purpose is to verify behavior and failure 
 
 `benchmark/` remains separate because a benchmark measures performance rather than asserting correctness. `migrations/` remains separate because migration order and immutability are deployment contracts, not test fixtures.
 
+Repository governance is enforced by GitHub rules/workflows and executable checks. Developer-specific Git hooks may be used locally, but `.githooks/` is not a repository-owned contract because machine-specific hook behavior is non-portable and can rewrite commits outside CI review.
+
 ## Runtime boundaries
 
 - `config` builds trusted internal configuration from external environment data.
@@ -87,6 +89,7 @@ Tier 2/3 retain their separate scheduler/reliability path.
 
 - `tests/` is the only normal home for executable tests and test-only helpers.
 - `scripts/` must not accumulate `*-test.mjs` files.
+- `.githooks/` is not committed; local hooks remain developer-local and advisory.
 - `docs/**/*.md` uses lowercase `kebab-case.md` except conventional `README.md`.
 - `.dev.vars`, `.env*`, `secrets*.json`, and `wrangler.user.jsonc` remain local/gitignored.
 - A new top-level directory requires a durable responsibility that does not overlap an existing owner.
