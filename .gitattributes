@@ -3,7 +3,16 @@
 *.ps1 text eol=crlf
 *.bat text eol=crlf
 
-# Test and contract scripts are engineering support code rather than Worker runtime.
-# Exclude them from GitHub Linguist language statistics so the repository language
-# breakdown better reflects the implementation under src/.
-scripts/*-test.mjs linguist-detectable=false
+# Exclude test code from GitHub Linguist language statistics.
+tests/** linguist-detectable=false
+test/** linguist-detectable=false
+**/tests/** linguist-detectable=false
+**/test/** linguist-detectable=false
+**/__tests__/** linguist-detectable=false
+**/*-test.* linguist-detectable=false
+**/*_test.* linguist-detectable=false
+**/*.test.* linguist-detectable=false
+**/*.spec.* linguist-detectable=false
+**/conftest.py linguist-detectable=false
+e2e/** linguist-detectable=false
+**/e2e/** linguist-detectable=false
