@@ -1,3 +1,7 @@
+#!/usr/bin/env node
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Fongap Studio
+
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,7 +15,7 @@ const content = `// SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
 //
 // Auto-generated from package.json. Do not edit manually.
-// Run 'node scripts/generate-version.mjs' to update.
+// Run 'npm run version:sync' to update.
 
 export const VERSION = '${version}';
 `;
