@@ -1,7 +1,6 @@
 // Stable local wrapper around the pinned Cloudflare Wrangler CLI.
 // Single source of truth for: Wrangler version, required KV binding,
-// D1 migration-before-deploy, Worker deploy invocation.
-// Shell/PowerShell entry points delegate here.
+// D1 migration-before-deploy, and direct Worker CLI invocation.
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -21,13 +20,12 @@ const commandPrefix = npxCli ? [npxCli] : [];
 const passthrough = process.argv.slice(2);
 const wranglerVersion = 'wrangler@4.114.0';
 const args = ['--yes', wranglerVersion, ...passthrough];
+
 // Operator config (real D1 id, bindings) is gitignored and lives next to the
 // public wrangler.jsonc. When it exists and the caller did not pick a config
 // explicitly, always deploy/execute against it — a plain-config deploy would
-// silently drop the TOKEN_STATS_DB binding the moment someone runs
-// `npm run deploy` from a configured checkout (that exact accident took the
-// binding down once). Secrets and vars survive via keep-vars; bindings do
-// not, so the config must be the operator one.
+// silently drop operator bindings. Secrets and vars survive via keep-vars;
+// bindings do not, so the config must be the operator one.
 const operatorConfig = path.join(root, 'wrangler.user.jsonc');
 const explicitConfigIndex = passthrough.findIndex((a) => a === '-c' || a === '--config');
 const explicitConfigEquals = passthrough.find((a) => a.startsWith('--config='));
@@ -37,9 +35,9 @@ if (fs.existsSync(operatorConfig) && !hasExplicitConfig) {
 }
 
 function runWrangler(wranglerArgs) {
-  // Prefer invoking npx-cli.js through Node on Windows. This avoids the
-  // shell:true argument-concatenation warning (and its quoting ambiguity)
-  // while retaining a .cmd fallback for unusual Node distributions.
+  // Prefer invoking npx-cli.js through Node on Windows. This avoids shell
+  // argument-concatenation ambiguity while retaining a .cmd fallback for
+  // unusual Node distributions.
   const result = spawnSync(command, [...commandPrefix, ...wranglerArgs], {
     cwd: root,
     stdio: 'inherit',
@@ -56,11 +54,8 @@ function selectedConfigPath() {
   return 'wrangler.jsonc';
 }
 
-// Resolve the D1 database NAME for a binding (not the binding id itself — the
-// `d1 migrations apply` command takes the database name, i.e.
-// `d1_databases[].database_name`, while `binding` is only the runtime var the
-// Worker binds it to). deploy.sh / deploy.ps1 / CI all pass the configured
-// database_name; matches that contract instead of hardcoding 'TOKEN_STATS_DB'.
+// Wrangler D1 migrations use the database name, while `binding` is only the
+// Worker runtime binding. Resolve the configured name rather than hardcoding it.
 function databaseNameForBinding(configSource, binding) {
   if (!configSource) return null;
   try {
@@ -73,7 +68,6 @@ function databaseNameForBinding(configSource, binding) {
   }
 }
 
-// Check required TIER1_AFFINITY KV binding in config
 function checkAffinityKvBinding(configSource) {
   if (!configSource) return false;
   try {
@@ -85,9 +79,9 @@ function checkAffinityKvBinding(configSource) {
   }
 }
 
-// `npm run deploy` is a first-class production path, so it must uphold the
-// same migration-before-code ordering as deploy.sh/deploy.ps1 and CI. Only a
-// real deploy triggers the remote mutation; `deploy --dry-run` remains local.
+// `npm run deploy` and installer/reconfigure flows all pass through this
+// wrapper. A real local deploy must uphold migration-before-code ordering;
+// `deploy --dry-run` remains local and non-mutating.
 if (passthrough[0] === 'deploy' && !passthrough.includes('--dry-run')) {
   const configPath = selectedConfigPath();
   const resolvedConfig = configPath && path.resolve(root, configPath);
