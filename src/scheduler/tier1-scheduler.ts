@@ -15,6 +15,10 @@ import {
   isTier1Eligible, claimTier1Slot, makeTier1ReleaseToken,
   calculateTier1Score, maybeTransitionToHalfOpen,
 } from '../reliability/tier1-state.ts';
+import {
+  tier1CanAcceptHedge,
+  tier1SelectionHeatFactor,
+} from '../reliability/tier1-heat.ts';
 import { tier1AffinityFactor, affinityShouldEscape } from './tier1-affinity.ts';
 import type { RuntimeNode } from '../types/node.ts';
 import type { RoutableRequest, PickedCandidate } from '../types/scheduler.ts';
@@ -40,7 +44,8 @@ export function tier1DeadlineTooSmall(remainingBudgetMs: number, p99TtftMs?: num
 //   affinityAccountId  — the session's preferred account (null = cold session)
 //   evaluateAffinity  — whether a successful non-affinity winner may migrate
 //     the stored binding (escape window reached).
-//   excludeId          — skip the hedge primary when picking a twin.
+//   excludeId          — skip the hedge primary when picking a twin. A non-null
+//     value also marks hedge selection, where spare-capacity gating applies.
 export function pickTier1Candidate(tier1Nodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, {
   affinityAccountId = null, evaluateAffinity = false, now = Date.now(),
   excludeId = null, rng = Math.random, knownModels = null,
@@ -63,6 +68,9 @@ export function pickTier1Candidate(tier1Nodes: ReadonlyArray<RuntimeNode>, req: 
     // recovery — no background probe is ever sent.
     maybeTransitionToHalfOpen(node.id, req.model, now);
     if (!isTier1Eligible(node, req, now, knownModels)) continue;
+    // Hedge is optional latency work. Do not spend the pool's last visible RPM
+    // or concurrency headroom on a twin; primary selection remains unchanged.
+    if (excludeId && !tier1CanAcceptHedge(node, now)) continue;
     eligible.push(node);
   }
   if (eligible.length === 0) return null;
@@ -74,25 +82,31 @@ export function pickTier1Candidate(tier1Nodes: ReadonlyArray<RuntimeNode>, req: 
   let escapedFromAffinity = false;
   let updateAffinity = !affinityAccountId;
 
+  const selectionFactor = (node: RuntimeNode): number => tier1SelectionHeatFactor(
+    node,
+    tier1AffinityFactor(node.id, affinityAccountId),
+    now,
+  );
+
   if (eligible.length === 1) {
     chosen = eligible[0];
   } else {
     // P2C remains a real two-account comparison even with affinity. When the
     // preferred account is eligible it occupies one sample slot and competes
-    // with one random peer; the multiplicative bias is therefore soft, not a
-    // hidden hard binding.
+    // with one random peer. Heat protection weakens the affinity bonus as RPM
+    // or concurrency pressure rises and softly demotes low-headroom RPM nodes.
     const { a, b } = sampleTwo(eligible, rng, affinityNode);
     const scoreA = calculateTier1Score(a, req.model, eligible,
-      tier1AffinityFactor(a.id, affinityAccountId), now);
+      selectionFactor(a), now);
     const scoreB = calculateTier1Score(b, req.model, eligible,
-      tier1AffinityFactor(b.id, affinityAccountId), now);
+      selectionFactor(b), now);
     const p2cWinner = scoreA <= scoreB ? a : b;
     const p2cWinnerScore = Math.min(scoreA, scoreB);
 
     if (affinityNode && affinityNode.id !== p2cWinner.id) {
       // Affinity vs this round's P2C winner only — never a full-pool scan.
       const affScore = calculateTier1Score(affinityNode, req.model, eligible,
-        tier1AffinityFactor(affinityNode.id, affinityAccountId), now);
+        selectionFactor(affinityNode), now);
       if (evaluateAffinity && affinityShouldEscape(affScore, p2cWinnerScore)) {
         chosen = p2cWinner;
         escapedFromAffinity = true;
