@@ -45,13 +45,15 @@ ai-gateway 将异构 AI Provider、API Key 和逻辑模型别名聚合到一个�
 ## 架构
 
 ```mermaid
-flowchart LR
+flowchart TB
     A[Client] --> B[Auth + Route]
-    B --> C[Native protocol pool]
-    C --> D[Tiered scheduler]
-    D --> E[Upstream APIs]
-    C -. Native pool exhausted .-> F[Chat ↔ Messages bridge]
+    B --> C[Native First]
+
+    C --> D["Tier 1 → Tier 2 → Tier 3"]
+    C -. exhausted .-> F["Chat ↔ Messages fallback"]
     F --> D
+
+    D --> E[Upstream APIs]
 ```
 
 始终优先执行原生协议。只有原生候选池耗尽后才进入跨协议 fallback；native retry 与 protocol fallback 共享同一 logical-attempt 和 wall-clock failover budget，Hedge twin 不跨协议。
