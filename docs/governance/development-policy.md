@@ -115,7 +115,7 @@ A breaking public or configuration change requires:
 2. migration guidance;
 3. canonical documentation updates;
 4. `CHANGELOG.md` entry;
-5. an appropriate version change under [release-policy.md](release-policy.md).
+5. an appropriate version change under [version-policy.md](version-policy.md).
 
 Documentation-only wording changes and factual drift corrections do not require a version bump.
 
