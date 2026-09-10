@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Fongap Studio
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { verifyRemote } from './github-deployment-config.mjs';
+import { verifyRemote } from '../scripts/github-deployment-config.mjs';
 import { readFileSync } from 'node:fs';
 
 test('online verification rejects the wrong Worker build before accepting health', async () => {
