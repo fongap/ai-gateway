@@ -8,7 +8,7 @@ Current source version: **1.3.1**
 
 ![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)
 ![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.18%20%3C23-43853d?logo=node.js&logoColor=white)
-![MIT](https://img.shields.io/badge/license-MIT-2ea44f)
+![MIT](https://img.shields.io/badge/License-MIT-2ea44f)
 
 [Quick start](#quick-start) · [Architecture](docs/architecture/overview.md) · [Configuration](docs/operations/configuration.md) · [Deployment](docs/operations/deployment.md) · [Documentation](docs/README.md) · [Governance](docs/governance/README.md)
 
