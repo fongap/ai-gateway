@@ -12,7 +12,7 @@ import {
   readBoundedResponseText,
   enforceMaxModelCount,
   DISCOVERY_LIMITS,
-} from './ssrf-guard.js';
+} from '../scripts/provider-discovery/ssrf-guard.js';
 
 let passed = 0;
 function test(name, fn) {
