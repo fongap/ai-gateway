@@ -39,15 +39,22 @@
 //     or circuit breaker state. The target is skipped and a safe diagnostic is
 //     emitted with only request identity, route, target protocol/surface and
 //     the converter's reason string — never request content or credentials.
+//   * Successful conversion emits a debug-only fidelity record. Diagnostics
+//     contain only fixed feature/action labels; request content, schemas, tool
+//     names and credentials are never logged.
 //   * If every recognized fallback target is rejected by conversion before any
 //     upstream dispatch, return a dedicated 502 instead of misreporting the
 //     condition as node cooldown/circuit exhaustion.
 
-import { convertAnthropicToOpenAIRequest, ConversionError } from '../conversion/anthropic-to-openai.ts';
-import { convertOpenAIChatRequestToAnthropic } from '../conversion/openai-chat-request-to-anthropic.ts';
+import {
+  convertAnthropicToOpenAIResult,
+  convertOpenAIChatToAnthropicResult,
+} from '../conversion/result.ts';
+import { ConversionError } from '../conversion/validation.ts';
 import { getLogger } from '../observability/logger.ts';
 import { buildBudgetExhaustedResponse, gatewayError } from './errors.ts';
 import { computeTierCaps } from './tier-loop.ts';
+import type { ConversionResult } from '../conversion/result.ts';
 import type { LoopContext, ConversionContext } from '../types/request.ts';
 import type { RoutableRequest } from '../types/scheduler.ts';
 
@@ -84,12 +91,15 @@ export async function runFallbackChain({ loopCtx, route, requestedModel, runTier
       return buildBudgetExhaustedResponse(request, env, route, requestId, requestedModel, state, exposeUpstreamInfo);
     }
     const fbReqDescriptor: RoutableRequest = { model: requestedModel, protocol: fb.protocol, surface: fb.surface };
-    let convertedBody;
+    let conversionResult: ConversionResult;
     try {
       if (route === 'anthropic_messages' && fb.protocol === 'openai' && fb.surface === 'chat_completions') {
-        convertedBody = convertAnthropicToOpenAIRequest(bodyJson);
+        // Unknown OpenAI-compatible targets intentionally keep the established
+        // prompt structured-output strategy. Native/tool modes require positive
+        // capability evidence and are not inferred from provider names here.
+        conversionResult = convertAnthropicToOpenAIResult(bodyJson);
       } else if (route === 'openai_chat' && fb.protocol === 'anthropic' && fb.surface === 'messages') {
-        convertedBody = convertOpenAIChatRequestToAnthropic(bodyJson);
+        conversionResult = convertOpenAIChatToAnthropicResult(bodyJson);
       } else {
         continue;
       }
@@ -113,10 +123,26 @@ export async function runFallbackChain({ loopCtx, route, requestedModel, runTier
       throw e;
     }
 
+    // Debug-only: provides an exact denominator for fidelity analysis when an
+    // operator enables debug logging, without adding default per-request noise.
+    logger.debug(JSON.stringify({
+      event: 'fallback_conversion',
+      request_id: requestId,
+      route,
+      fallback_protocol: fb.protocol,
+      fallback_surface: fb.surface,
+      fidelity: conversionResult.fidelity,
+      diagnostic_count: conversionResult.diagnostics.length,
+      diagnostics: conversionResult.diagnostics,
+      ...(conversionResult.structuredOutput
+        ? { structured_output_strategy: conversionResult.structuredOutput.strategy }
+        : {}),
+    }));
+
     convertedTargetCount++;
     const fbTierCaps = computeTierCaps(tiers, fbReqDescriptor, state.attempted, policy, knownModels);
     const conversionContext: ConversionContext = {
-      convertedBody,
+      convertedBody: conversionResult.body,
       fallbackProtocol: fb.protocol,
       fallbackSurface: fb.surface,
       clientRoute: route,
