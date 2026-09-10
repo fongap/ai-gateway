@@ -44,11 +44,12 @@ Designed for heterogeneous OpenAI-compatible and Anthropic-compatible upstreams,
 
 ```mermaid
 flowchart LR
-    A[Client] --> B[Auth + Route]
-    B --> C[Native protocol pool]
-    C --> D[Tiered scheduler]
-    D --> E[Upstream APIs]
-    C -. Native pool exhausted .-> F[Chat ↔ Messages bridge]
+    A[Client] --> B["Auth<br/>Route"]
+    B --> C["Native<br/>First"]
+    C --> D["Tier 1<br/>Tier 2<br/>Tier 3"]
+    D --> E["Upstream<br/>APIs"]
+
+    C -. exhausted .-> F["Chat ↔ Messages<br/>fallback"]
     F --> D
 ```
 
