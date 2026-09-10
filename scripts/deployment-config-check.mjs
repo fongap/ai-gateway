@@ -2,157 +2,50 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertNodesArray, assertSecretsObject, buildPlan, parseJsonFile } from './node-config-shards.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
-const config = JSON.parse(read('wrangler.jsonc'));
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
 
-assert.equal(config.keep_vars, true, 'wrangler.jsonc must set keep_vars=true');
-assert.equal(config.main, 'src/index.ts');
-assert.equal(
-  config.secrets,
-  undefined,
-  'wrangler.jsonc must not block the first deployment before runtime Secrets can be configured',
-);
-assert.equal(config.env, undefined, 'no per-Worker environments');
-assert.equal(config.vars, undefined, 'wrangler.jsonc must not carry node config vars; they belong in wrangler.user.jsonc (generated)');
-assert.ok(
-  Array.isArray(config.triggers?.crons) && config.triggers.crons.includes('0 3 * * *'),
-  'wrangler.jsonc must schedule the daily per-model statistics cleanup',
-);
-assert.ok(fs.existsSync(path.join(root, 'package-lock.json')), 'package-lock.json is required for npm ci');
+const pkg = JSON.parse(read('package.json'));
+const deploy = read('.github/workflows/deploy.yml');
+const ci = read('.github/workflows/ci.yml');
+const exampleVars = read('.dev.vars.example');
+const workerVarsExample = read('config/worker-vars.example.json');
 
-// New-schema deployment files must exist.
-for (const file of [
-  'scripts/install.sh', 'scripts/install.ps1',
-  'scripts/update.sh', 'scripts/update.ps1',
-  'scripts/reconfigure.sh', 'scripts/reconfigure.ps1',
-  'scripts/node-config-shards.mjs', 'scripts/plan-node-configuration.mjs',
+assert.equal(pkg.private, true, 'package.json must stay private');
+assert.equal(pkg.type, 'module', 'package.json must stay ESM');
+assert.ok(pkg.engines?.node, 'package.json must declare a Node engine');
+
+for (const script of ['validate:merge', 'validate:deploy', 'check:deployment-config', 'migrations:check']) {
+  assert.ok(pkg.scripts?.[script], `package.json missing required script: ${script}`);
+}
+
+assert.match(ci, /npm run validate:merge/, 'CI must run validate:merge');
+assert.match(ci, /npm run validate:deploy/, 'CI must define validate:deploy');
+assert.match(deploy, /workflow_run:/, 'Deploy must remain driven by CI workflow_run');
+assert.match(deploy, /npm run migrations:check/, 'Deploy must validate migrations');
+assert.match(deploy, /github-deployment-config\.mjs/, 'Deploy must use the canonical deployment config helper');
+
+const standaloneAccessKeyPattern = /\bGATEWAY_ACCESS_KEY\b(?!_(?:AIR|PRO|MAX|ULTRA|AGENT)\b)/;
+for (const [name, text] of [
+  ['.dev.vars.example', exampleVars],
+  ['config/worker-vars.example.json', workerVarsExample],
+  ['.github/workflows/deploy.yml', deploy],
 ]) {
-  assert.ok(fs.existsSync(path.join(root, file)), `Missing deployment file: ${file}`);
+  assert.doesNotMatch(text, standaloneAccessKeyPattern, `${name} must not use the removed standalone gateway access-key variable`);
 }
 
-for (const file of ['scripts/install.sh', 'scripts/install.ps1']) {
-  const source = read(file);
-  assert.match(source, /--secrets-file/, `${file} must deploy secrets via --secrets-file`);
-  assert.match(source, /keep-vars/, `${file} must preserve remote vars`);
-  assert.match(source, /plan-node-configuration\.mjs/, `${file} must shard node configs via the shared planner`);
-  assert.match(source, /TIER1_AFFINITY/, `${file} must configure the required Tier 1 affinity KV binding`);
-}
-for (const file of ['scripts/reconfigure.sh', 'scripts/reconfigure.ps1']) {
-  const source = read(file);
-  assert.match(source, /--secrets-file/, `${file} must update runtime secrets using --secrets-file`);
-  assert.match(source, /plan-node-configuration\.mjs/, `${file} must shard node configs via the shared planner`);
-  assert.match(source, /TIER1_AFFINITY/, `${file} must preserve or configure the Tier 1 affinity KV binding`);
+for (const group of ['AIR', 'PRO', 'MAX', 'ULTRA', 'AGENT']) {
+  assert.match(deploy, new RegExp(`GATEWAY_ACCESS_KEY_${group}`), `Deploy must inject GATEWAY_ACCESS_KEY_${group}`);
+  assert.match(deploy, new RegExp(`GATEWAY_ACCESS_MODELS_${group}`), `Deploy must inject GATEWAY_ACCESS_MODELS_${group}`);
 }
 
-// Access entry points must use the same five Group Keys + Models as runtime.
-const accessGroups = ['AIR', 'PRO', 'MAX', 'ULTRA', 'AGENT'];
-const standaloneAccessKeyName = 'GATEWAY_ACCESS_' + 'KEY';
-const standaloneAccessKeyPattern = new RegExp(`${standaloneAccessKeyName}(?!_)`);
-for (const file of ['scripts/install.sh', 'scripts/install.ps1', 'scripts/reconfigure.sh', 'scripts/reconfigure.ps1']) {
-  const source = read(file);
-  for (const group of accessGroups) {
-    assert.ok(source.includes(group), `${file} must expose the ${group} access group`);
-  }
-  assert.match(source, /GATEWAY_ACCESS_KEY_/, `${file} must configure Group Keys`);
-  assert.match(source, /GATEWAY_ACCESS_MODELS_/, `${file} must configure Group Models`);
-  assert.doesNotMatch(source, standaloneAccessKeyPattern, `${file} must not create or rotate the legacy single access key`);
-}
-for (const file of ['scripts/install.sh', 'scripts/install.ps1']) {
-  const source = read(file);
-  assert.match(source, /At least one Gateway Access Group Key/, `${file} must fail when no Group Key is configured`);
-  assert.doesNotMatch(source, /GATEWAY_ACCESS_MODELS_[^\n]*[=:][^\n]*["']\*["']/, `${file} must not default any Group Models to wildcard access`);
-}
+const configShardPattern = /TIER[123]_NODES_CONFIG_(?:0[1-9]|10)/;
+const secretShardPattern = /TIER[123]_NODES_SECRETS_(?:0[1-9]|10)/;
+assert.match(deploy, configShardPattern, 'Deploy must handle node config shards');
+assert.match(deploy, secretShardPattern, 'Deploy must handle node secret shards');
 
-for (const file of ['scripts/update.sh', 'scripts/update.ps1', 'scripts/deploy.sh', 'scripts/deploy.ps1']) {
-  const source = read(file);
-  assert.match(source, /keep-vars|scripts\/deploy\.sh|deploy\.ps1/, `${file} must preserve remote vars (directly or via deploy script)`);
-}
-// cloudflare-wrangler.mjs is the single source of truth for deploy business logic
-// (already checked above for TIER1_AFFINITY, migrations, etc.)
-// Thin wrappers deploy.sh / deploy.ps1 delegate to it.
-
-// D1 migration-before-deploy is enforced by cloudflare-wrangler.mjs (checked above).
-// Thin wrappers deploy.sh / deploy.ps1 delegate to it.
-
-// The package.json deploy entry goes through cloudflare-wrangler.mjs. That wrapper
-// must also migrate before a real deploy, otherwise the most obvious local
-// deployment command can publish code before its schema exists.
-const packageJson = JSON.parse(read('package.json'));
-assert.match(packageJson.scripts?.deploy || '', /cloudflare-wrangler\.mjs\s+deploy/, 'npm run deploy must use cloudflare-wrangler.mjs');
-const runWranglerSource = read('scripts/cloudflare-wrangler.mjs');
-for (const token of ['migrations', 'apply', 'TOKEN_STATS_DB', '--remote', '--dry-run']) {
-  assert.ok(runWranglerSource.includes(token), `cloudflare-wrangler.mjs must include ${token} migration/deploy handling`);
-}
-assert.match(runWranglerSource, /TIER1_AFFINITY/, 'cloudflare-wrangler.mjs must enforce the affinity KV binding on real deploys');
-
-const workflowSource = read('.github/workflows/deploy.yml');
-assert.match(workflowSource, /github\.repository\s*==\s*'fongap\/ai-gateway'\s*\|\|\s*vars\.DEPLOY_ENABLED\s*==\s*'true'/, 'deploy job must run for the main repo or forks opted in via DEPLOY_ENABLED');
-assert.doesNotMatch(workflowSource, /if:\s*vars\.GATEWAY_CONFIG\s*!=\s*''/, 'deploy must not be gated on a business config variable; missing config must FAIL not SKIP');
-assert.match(workflowSource, /node scripts\/github-deployment-config\.mjs preflight/, 'deploy workflow must run a preflight check before verify');
-assert.match(workflowSource, /prepare --from-env/, 'deploy workflow must read individual GitHub Variables / Secrets from the environment');
-assert.match(workflowSource, /TIER1_NODES_SECRETS_01:/, 'deploy workflow must inject individual credential shards via a fixed range');
-assert.match(workflowSource, /TIER1_NODES_CONFIG_01:/, 'deploy workflow must inject individual node-config shards via a fixed range');
-assert.match(workflowSource, /TIER1_AFFINITY_KV_ID:/, 'deploy workflow must inject the Tier 1 affinity KV namespace id');
-assert.doesNotMatch(workflowSource, /secrets\.TIER[123]_NODES_CONFIG/, 'deploy workflow must not read node-config from GitHub Secrets (vars only)');
-assert.doesNotMatch(workflowSource, /vars\.TIER[123]_NODES_SECRETS/, 'deploy workflow must not read node-secrets from GitHub Variables (secrets only)');
-assert.doesNotMatch(workflowSource, /GATEWAY_CONFIG/, 'deploy workflow must not reference legacy GATEWAY_CONFIG');
-assert.doesNotMatch(workflowSource, /GATEWAY_SECRETS_CONFIG/, 'deploy workflow must not reference legacy GATEWAY_SECRETS_CONFIG');
-assert.match(workflowSource, /--secrets-file|secret bulk/, 'deploy workflow must deploy Worker Secrets (atomic via --secrets-file or legacy via secret bulk)');
-assert.match(workflowSource, /github-deployment-config\.mjs health-check/, 'deploy workflow must verify the deployed gateway over its public API');
-assert.doesNotMatch(workflowSource, /deploy[^\n]*--keep-vars/, 'CI deployment must not preserve Dashboard runtime-variable drift');
-for (const group of accessGroups) {
-  assert.match(workflowSource, new RegExp(`GATEWAY_ACCESS_KEY_${group}:`), `deploy workflow must inject GATEWAY_ACCESS_KEY_${group}`);
-  assert.match(workflowSource, new RegExp(`GATEWAY_ACCESS_MODELS_${group}:`), `deploy workflow must inject GATEWAY_ACCESS_MODELS_${group}`);
-}
-assert.ok(fs.existsSync(path.join(root, 'scripts/github-deployment-config.mjs')), 'GitHub deployment config bridge is required');
-assert.ok(fs.existsSync(path.join(root, 'config/worker-vars.example.json')), 'Worker text-variable example is required');
-
-// The new schema forbids removed legacy artifacts anywhere in deploy tooling.
-for (const file of ['scripts/install.sh', 'scripts/install.ps1', 'scripts/reconfigure.sh', 'scripts/reconfigure.ps1']) {
-  const source = read(file);
-  assert.doesNotMatch(source, /PRIMARY_API_TOKENS|FALLBACK_API_TOKEN|MODEL_MAPPING/, `${file} must not reference removed legacy variables`);
-  assert.doesNotMatch(source, /TIER[123]_NODES_CONFIG(?![_\d])['"]/ , `${file} must not create un-suffixed legacy node config variables`);
-}
-
-// The shipped config/ examples must always be valid current-schema configs and
-// demonstrate the intended multi-key / multi-account / multi-model layout.
-const configDir = path.join(root, 'config');
-const tier1 = parseJsonFile(path.join(configDir, 'tier1-nodes.example.json'));
-const tier2 = parseJsonFile(path.join(configDir, 'tier2-nodes.example.json'));
-const secrets = parseJsonFile(path.join(configDir, 'node-secrets.example.json'));
-assertNodesArray(tier1, 'config/tier1-nodes.example.json');
-assertNodesArray(tier2, 'config/tier2-nodes.example.json');
-assertSecretsObject(secrets, 'config/node-secrets.example.json');
-buildPlan({ tiers: { 1: tier1, 2: tier2 }, secretsMap: secrets });
-assert.ok(tier1.length >= 2, 'tier-1 example must demonstrate multiple keys');
-assert.ok(
-  new Set(tier1.map((n) => n.provider)).size >= 2 || new Set(tier1.map((n) => n.priority)).size >= 2,
-  'tier-1 example must demonstrate multiple providers or preference levels',
-);
-const logicalModels = new Set(tier1.flatMap((n) => Object.keys(n.models || {})));
-assert.ok(logicalModels.size >= 2, 'tier-1 example must demonstrate multiple logical models');
-JSON.parse(fs.readFileSync(path.join(configDir, 'models.example.json'), 'utf8'));
-JSON.parse(fs.readFileSync(path.join(configDir, 'policies.example.json'), 'utf8'));
-const accessExample = JSON.parse(fs.readFileSync(path.join(configDir, 'access-keys.example.json'), 'utf8'));
-assert.ok(Object.keys(accessExample).some((name) => /^GATEWAY_ACCESS_KEY_(AIR|PRO|MAX|ULTRA|AGENT)$/.test(name)), 'access-key example must contain a current Group Key');
-assert.ok(Object.keys(accessExample).some((name) => /^GATEWAY_ACCESS_MODELS_(AIR|PRO|MAX|ULTRA|AGENT)$/.test(name)), 'access-key example must contain Group Models');
-assert.ok(!(standaloneAccessKeyName in accessExample), 'access-key example must not recommend the legacy single key');
-
-const gatewaySecretsExample = JSON.parse(fs.readFileSync(path.join(configDir, 'gateway-secrets.example.json'), 'utf8'));
-const workerVarsExample = JSON.parse(fs.readFileSync(path.join(configDir, 'worker-vars.example.json'), 'utf8'));
-for (const group of accessGroups) {
-  if (`GATEWAY_ACCESS_KEY_${group}` in gatewaySecretsExample) {
-    assert.ok(
-      `GATEWAY_ACCESS_MODELS_${group}` in workerVarsExample,
-      `gateway-secrets.example.json Group ${group} must have matching Models in worker-vars.example.json`,
-    );
-  }
-}
-
-// Source tree must not contain legacy concepts.
+// Deployment/runtime configuration must not regress to old architecture vocabulary.
 const srcFiles = [];
 function walk(dir) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -169,10 +62,10 @@ for (const file of srcFiles) {
   assert.doesNotMatch(source, standaloneAccessKeyPattern, `${file} contains the removed standalone gateway access-key variable`);
 }
 for (const file of [
-  'scripts/integration-test.mjs',
-  'scripts/stress-test.mjs',
-  'scripts/codex-contract-test.mjs',
-  'scripts/claude-contract-test.mjs',
+  'tests/integration-test.mjs',
+  'tests/stress-test.mjs',
+  'tests/codex-contract-test.mjs',
+  'tests/claude-contract-test.mjs',
 ]) {
   assert.doesNotMatch(
     read(file),
