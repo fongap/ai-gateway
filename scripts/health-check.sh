@@ -7,7 +7,7 @@ const raw=process.argv[2];
 try{const u=new URL(raw);if(u.protocol!=='https:'||!u.hostname)throw new Error();}
 catch{console.error('网关地址必须是完整 HTTPS URL，例如 https://name.account.workers.dev');process.exit(1);}
 NODE
-read -r -s -p "GATEWAY_ACCESS_KEY: " ACCESS_KEY; echo
+read -r -s -p "Gateway access key (configured group key): " ACCESS_KEY; echo
 curl --fail-with-body --silent --show-error "${GATEWAY_URL%/}/health" -H "Authorization: Bearer ${ACCESS_KEY}"
 echo
 unset ACCESS_KEY
