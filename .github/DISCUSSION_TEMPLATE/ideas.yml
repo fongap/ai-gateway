@@ -1,0 +1,39 @@
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Share focused ideas for improving ai-gateway.
+
+        Ideas are for proposals that still need discussion, value confirmation, or implementation boundaries. Once a direction is accepted for implementation, it can be converted into an Issue for execution tracking.
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your idea
+      description: Describe what you would add, change, or remove.
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: Describe the concrete limitation, failure mode, or workflow problem behind the proposal.
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Compatibility and resource impact
+      description: Optional. Note protocol, security, latency, storage, Cloudflare resource, or maintenance implications.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing Discussions and Issues and did not find an obvious duplicate.
+          required: true
+        - label: This is not a confirmed reproducible bug; if it is, I will open an Issue instead.
+          required: true

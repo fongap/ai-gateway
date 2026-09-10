@@ -1,46 +1,54 @@
 name: Bug report
 description: Report a reproducible gateway defect
+title: "[Bug] "
 labels:
   - bug
 body:
   - type: markdown
     attributes:
       value: |
-        Do not paste real API tokens, authorization headers, private URLs, or user data.
+        Thanks for reporting a problem. Issues are for reproducible gateway defects.
+
+        For setup, configuration, usage, provider integration, or troubleshooting questions, use Discussions / Q&A. For feature or product ideas, use Discussions / Ideas.
+
+        Never paste live API tokens, authorization headers, private upstream URLs, request bodies, or user data.
 
   - type: input
     id: version
     attributes:
       label: Gateway version
       description: Open the public `/version` endpoint and provide only the version number.
-      placeholder: 1.2.3
+      placeholder: 1.3.1
     validations:
       required: true
 
   - type: dropdown
     id: protocol
     attributes:
-      label: Client protocol
+      label: Client or surface
       options:
         - OpenAI Chat Completions
+        - OpenAI Responses
         - Anthropic Messages / Claude Code
         - Health or metrics endpoint
         - Deployment or configuration
+        - Other
     validations:
       required: true
 
   - type: textarea
-    id: description
+    id: happened
     attributes:
       label: What happened?
-      description: Describe the expected and actual behavior with sensitive values removed.
+      description: Describe the actual behavior with sensitive values removed.
     validations:
       required: true
 
   - type: textarea
     id: reproduce
     attributes:
-      label: Reproduction steps
+      label: Steps to reproduce
+      description: Provide the smallest reliable reproduction you can.
       placeholder: |
         1. Configure ...
         2. Send ...
@@ -49,9 +57,38 @@ body:
       required: true
 
   - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: Describe what you expected the gateway to do.
+    validations:
+      required: true
+
+  - type: textarea
     id: logs
     attributes:
       label: Sanitized logs
-      description: Remove tokens, full request bodies, private domains, and user data.
+      description: Remove tokens, full request bodies, private domains, authorization headers, and user data.
       render: shell
 
+  - type: dropdown
+    id: regression
+    attributes:
+      label: Regression?
+      description: Did this work correctly in an earlier gateway version?
+      options:
+        - "No"
+        - "Yes"
+        - Unknown
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing Issues and did not find an obvious duplicate.
+          required: true
+        - label: I removed API keys, tokens, authorization headers, private URLs, request bodies, and user data from this report.
+          required: true
