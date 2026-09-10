@@ -45,7 +45,7 @@ check(
 );
 
 // --- 8.2 root directory markdown whitelist ---
-const ALLOWED_ROOT_MDS = ['README.md', 'README_EN.md', 'CONTRIBUTING.md', 'SECURITY.md', 'CHANGELOG.md', 'AGENTS.md', 'CLAUDE.md'];
+const ALLOWED_ROOT_MDS = ['README.md', 'CONTRIBUTING.md', 'SECURITY.md', 'CHANGELOG.md', 'AGENTS.md', 'CLAUDE.md'];
 const LOCALIZED_README_PATTERN = /^README\.[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*\.md$/;
 const rootEntries = fs.readdirSync(root, { withFileTypes: true });
 const rootMds = rootEntries.filter(e => e.isFile() && e.name.endsWith('.md')).map(e => e.name);
@@ -103,7 +103,6 @@ for (const file of allDocsMd) {
 const LINK_PATTERN = /!?(?:\[[^\]]*\])\(([^)]+)\)/g;
 const MD_FILES = [
   'README.md',
-  'README_EN.md',
   ...localizedReadmes,
   'CONTRIBUTING.md',
   ...allDocsMd.map(f => path.relative(root, f)),

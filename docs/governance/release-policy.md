@@ -1,8 +1,16 @@
-# Release policy
+# Version and tag policy
+
+## Distribution model
+
+ai-gateway is deployed as a service on Cloudflare Workers. The repository does not currently distribute versioned software artifacts for users to download and install.
+
+Git tags remain useful as immutable, human-readable boundaries for stable source states. GitHub Releases are **not** part of the current version lifecycle. Existing GitHub Releases are retained as historical records; they do not need to be deleted merely to match the current policy.
+
+If the project later starts shipping packaged artifacts, installers, or other versioned deliverables, this policy must be updated before GitHub Releases are reintroduced as a required mechanism.
 
 ## Version authority
 
-The software version has one primary source:
+The source version has one primary owner:
 
 ```text
 package.json.version
@@ -14,36 +22,38 @@ The Node.js runtime requirement is owned by:
 package.json.engines.node
 ```
 
-Generated or synchronized copies must agree when a version changes, including `package-lock.json`, `src/config/version.ts`, `CHANGELOG.md`, and the version shown in the canonical README when present.
+Synchronized copies must agree when a version changes, including `package-lock.json`, `src/config/version.ts`, and the corresponding `CHANGELOG.md` section.
 
 ## Version changes
 
-The project follows Semantic Versioning as an external compatibility convention:
+The project follows Semantic Versioning:
 
 - **Major** — incompatible public/API/configuration change.
 - **Minor** — backward-compatible capability addition.
 - **Patch** — backward-compatible correction or hardening.
 
-A documentation-only correction does not require a version bump. A maintenance cycle may also keep the existing patch version while hardening that same release line, provided no already-published immutable release contract is being rewritten.
+A documentation-only correction does not require a version bump. Maintenance may keep the existing patch version when no externally meaningful compatibility boundary has changed.
 
 ## CHANGELOG
 
-`CHANGELOG.md` records historical release changes. It is not a place for current architecture or governance rules.
+`CHANGELOG.md` records version history. It is not a source for current architecture or governance rules.
 
-A release entry should contain the release version/date and concise Added/Changed/Fixed/Removed notes that matter to users or operators.
+A version entry should contain the version/date and concise Added/Changed/Fixed/Removed notes that matter to users or operators.
 
-## Deployment and release are different
+## Version, tag, deployment, and build
 
-Production deployment and GitHub Release are separate events:
+These identities are deliberately separate:
 
-- **Deployment** publishes a Worker build from `main` after the production gate.
-- **Release** publishes a versioned repository snapshot using a Git tag plus a GitHub Release.
+- **Source version** — SemVer from `package.json.version`.
+- **Git tag** — immutable stable-source boundary such as `vX.Y.Z`.
+- **Deployment** — a Worker build published from `main` after the production gate.
+- **Build identity** — the exact deployed commit SHA exposed by `/version` as `build`.
 
-A deployed source version may temporarily exist before a corresponding GitHub Release is published. Documentation must not conflate “source version”, “deployed build”, and “latest published release”.
+Do not use “latest Release” as a synonym for the current source version or deployed build.
 
-## Formal release lifecycle
+## Stable tag lifecycle
 
-The repository uses squash merge. A release tag therefore must point to the accepted commit on `main`, not to a pre-merge PR-head commit.
+The repository uses squash merge. A stable version tag must therefore point to the accepted commit on `main`, not to a pre-merge PR head.
 
 ```text
 version / changelog change, when required
@@ -59,51 +69,39 @@ production deploy and verification succeed for deployable changes
 identify the final main commit SHA
         ↓
 create tag vX.Y.Z on that SHA
-        ↓
-create GitHub Release for vX.Y.Z
 ```
 
 ## Tag rules
 
-1. Do not create a formal release tag before the release commit is on `main`.
+1. Do not create a stable version tag before the intended commit is on `main`.
 2. The tag must point to the final `main` commit that passed the required production evidence.
-3. Do not point a release tag at the PR branch merely because PR CI is green.
-4. Once a GitHub Release has been published for a tag, treat that tag as immutable external history. Corrections require a new version rather than moving the published tag.
-5. If an unpublished tag was created on the wrong commit, delete and recreate it before publishing the GitHub Release.
+3. Do not tag a PR branch merely because PR CI is green.
+4. Published stable tags are immutable historical boundaries; corrections use a new version instead of moving an existing tag.
+5. If an unpublished tag was created on the wrong commit, delete and recreate it before it becomes an external reference.
 
 Tag format: `vX.Y.Z`.
 
-## GitHub Release
+## GitHub Releases
 
-The current repository does **not** define an automatic tag-triggered Release workflow. Creating a Git tag does not by itself satisfy the formal release contract; the maintainer explicitly creates the GitHub Release.
+No new GitHub Release is required for normal ai-gateway versioning because the project is operated as a deployed service rather than distributed as release artifacts.
 
-A release should include concise notes derived from the corresponding `CHANGELOG.md` entry or the accepted PR history. GitHub automatically exposes source ZIP/TAR archives for tagged releases.
+Existing GitHub Releases remain historical evidence for earlier repository states. Their presence does not make GitHub Releases part of the current lifecycle.
 
-Custom release assets or checksum manifests are required only if a real repository workflow builds, validates, and publishes those artifacts. Do not document a non-existent asset pipeline as a release requirement.
+## Version evidence
 
-## Release evidence
+For a stable version boundary, the expected evidence is:
 
-The external evidence of a formal release is:
-
-```text
-Git tag vX.Y.Z
-+
-GitHub Release for vX.Y.Z
-```
-
-The internal evidence should include:
-
+- `package.json.version` and synchronized version metadata agree;
+- the corresponding `CHANGELOG.md` section exists;
 - the tag target is reachable from `main`;
 - required CI passed for that commit;
-- version synchronization passed;
-- production verification passed when the change was deployable;
-- release notes accurately describe the shipped behavior.
+- production verification passed when the change was deployable.
 
 ## Build identity
 
-Release identity and deployment identity are deliberately separate:
+`/version` separates:
 
-- `version` — SemVer release identity from `package.json` / generated version metadata.
-- `build` — deployed commit SHA injected by CI/Deploy and exposed by `/version`.
+- `version` — source/version identity generated from `package.json`;
+- `build` — deployed commit SHA injected by CI/Deploy.
 
-This allows operators to identify the exact deployed commit without inventing extra version numbers for every deployment.
+This allows operators to identify the exact live commit without inventing a new semantic version for every deployment.

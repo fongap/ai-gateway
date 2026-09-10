@@ -10,7 +10,7 @@ The governance documents define how ai-gateway is changed. They are intentionall
 4. Current behavior is documented without historical version labels unless the version is itself the subject.
 5. Temporary plans, migration status, and completed work do not become permanent governance documents.
 6. Rules are updated in place rather than copied into `latest`, `final`, `new`, or version-suffixed files.
-7. History belongs in Git, Pull Requests, Issues, `CHANGELOG.md`, and GitHub Releases.
+7. History belongs in Git, Pull Requests, Issues, `CHANGELOG.md`, tags, and existing GitHub Releases.
 8. Documentation changes must not be used to smuggle in runtime behavior changes.
 
 ## Governance documents
@@ -20,7 +20,7 @@ The governance documents define how ai-gateway is changed. They are intentionall
 | [development-policy.md](development-policy.md) | Branches, PRs, refactors, module boundaries, change discipline |
 | [quality-policy.md](quality-policy.md) | CI gates, test expectations, security checks, production validation |
 | [dependency-policy.md](dependency-policy.md) | npm, GitHub Actions, Wrangler, and dependency-update rules |
-| [release-policy.md](release-policy.md) | Version source, tag discipline, deployment/release lifecycle |
+| [release-policy.md](release-policy.md) | Version source, stable-tag discipline, deployment/build identity |
 | [documentation-policy.md](documentation-policy.md) | Canonical language, document ownership, synchronization rules |
 
 ## Document classes
@@ -29,7 +29,7 @@ The governance documents define how ai-gateway is changed. They are intentionall
 | --- | --- |
 | `docs/architecture/` | Durable design boundaries and runtime invariants |
 | `docs/operations/` | Current operator procedures and repository settings |
-| `docs/governance/` | Rules for changing and releasing the system |
+| `docs/governance/` | Rules for changing, validating, documenting, and versioning the system |
 
 Completed migration plans are historical evidence, not permanent governance. If their facts remain relevant, those facts must be moved into the appropriate current architecture, operations, or governance document before the migration document is removed.
 

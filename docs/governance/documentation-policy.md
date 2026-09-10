@@ -5,7 +5,6 @@
 Long-lived project documentation is English-canonical.
 
 - `README.md` is the canonical repository landing page.
-- `README_EN.md` is retained only as a compatibility link for older references and is not maintained as a second source of truth.
 - Additional translations are optional. Localized root READMEs use `README.<locale>.md` (for example `README.zh-CN.md`), must identify the English canonical document, and must not introduce independent behavior, configuration, or policy claims.
 - Files under `docs/` use lowercase English `kebab-case.md`, except conventional `README.md` files.
 
@@ -17,7 +16,7 @@ When evidence conflicts, use this order:
 
 1. Runtime code, configuration parsers/schemas, tests, and GitHub workflows determine current executable behavior.
 2. Canonical current documentation summarizes that behavior and must be corrected when it drifts.
-3. `CHANGELOG.md`, GitHub Releases, Pull Requests, Issues, and commits preserve historical context.
+3. `CHANGELOG.md`, Git tags, existing GitHub Releases, Pull Requests, Issues, and commits preserve historical context.
 
 Do not copy a transient implementation plan into a permanent policy document. Do not keep completed migration plans in `docs/governance/` solely for history.
 
@@ -37,7 +36,7 @@ Do not copy a transient implementation plan into a permanent policy document. Do
 | top-level module layout | `docs/architecture/repository-layout.md` |
 | CI and quality gates | `docs/governance/quality-policy.md` |
 | dependency/toolchain policy | `docs/governance/dependency-policy.md` |
-| version/tag/release mechanism | `docs/governance/release-policy.md` |
+| version/tag mechanism | `docs/governance/release-policy.md` |
 | public API surface or project positioning | `README.md` |
 
 A behavior-changing PR updates its responsible canonical document in the same PR. A documentation-only PR may correct drift without changing runtime behavior.
@@ -49,8 +48,9 @@ Architecture and operations documents describe the **current contract**. Avoid h
 Use version labels only where version identity matters, for example:
 
 - `CHANGELOG.md` entries;
-- Git tags and Releases;
-- compatibility notes tied to a real release boundary;
+- Git tags;
+- existing historical GitHub Releases;
+- compatibility notes tied to a real version boundary;
 - an active migration document that will be removed when the migration is complete.
 
 Do not create parallel documents named `*-v2.md`, `*-latest.md`, `*-final.md`, `*-new.md`, `misc.md`, or `temp.md`.
@@ -66,7 +66,7 @@ High-drift values should have one executable owner whenever practical.
 - Unit-suite registry: `tests/run-unit.mjs`.
 - Wrangler pin: `scripts/cloudflare-wrangler.mjs`.
 
-Documentation may summarize these values, but should point back to the owner and must be updated when the summary changes.
+Documentation may summarize these values, but should point back to the owner and must be updated when the summary changes. README badges that can read an executable source directly should prefer that over a duplicated hard-coded value.
 
 ## README policy
 

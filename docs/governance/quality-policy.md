@@ -93,10 +93,10 @@ See [SECURITY.md](../../SECURITY.md).
 
 Canonical documentation is part of the contract surface. CI checks structure and links, but review must also check factual agreement with source code and workflows.
 
-Do not maintain two equal README implementations. `README.md` is canonical; compatibility or translated documents must point back to it.
+Do not maintain two equal README implementations. `README.md` is canonical; localized documents must point back to it.
 
-## Release quality
+## Version/tag quality
 
-A release is valid only after the intended `main` commit has passed the full production gate and, for deployable changes, the production deployment/verification path has succeeded. Tag and GitHub Release rules are defined in [release-policy.md](release-policy.md).
+A stable version tag is created only after the intended `main` commit has passed the full production gate and, for deployable changes, the production deployment/verification path has succeeded. Version and tag rules are defined in [release-policy.md](release-policy.md).
 
-Do not require custom ZIP/TAR/SHA assets unless the repository actually has a workflow that builds and verifies them. GitHub-generated source archives are not a substitute for a documented custom artifact pipeline.
+GitHub Releases are not required by the current service-deployment model. Existing Releases are historical records rather than a second version authority.
