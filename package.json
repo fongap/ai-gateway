@@ -2,7 +2,7 @@
   "name": "ai-gateway",
   "version": "1.3.1",
   "private": true,
-  "description": "Resilient AI API gateway for Cloudflare Workers — multi-provider routing, multi-key load balancing, rate limiting, tiered failover, and OpenAI/Anthropic compatibility.",
+  "description": "AI API gateway on Cloudflare Workers that turns fragmented, failure-prone providers and keys into one stable OpenAI/Anthropic-compatible endpoint — maximizing low-cost capacity through smart routing and tiered failover.",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -49,7 +49,8 @@
     "openai-compatible",
     "anthropic-api",
     "load-balancing",
-    "rate-limiting"
+    "rate-limiting",
+    "multi-provider"
   ],
   "devDependencies": {
     "typescript": "^5.6.3"
