@@ -107,6 +107,8 @@ Review especially for:
 - full-pool sorting where bounded selection is sufficient;
 - global coordination added without evidence that local shaping is insufficient.
 
+For a change expected to affect the request hot path, run `npm run bench` before and after the change under the same machine, Node.js version, and comparable repository state. Use the delta as regression evidence. Benchmark absolute values are not a production SLA, cross-machine score, or provider-latency measurement. See [`benchmark/README.md`](../../benchmark/README.md).
+
 ## Breaking changes
 
 A breaking public or configuration change requires:
