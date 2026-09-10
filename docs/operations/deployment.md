@@ -45,7 +45,7 @@ Scheduled CI and manually triggered CI are test-only and do not automatically de
 
 A commit that changes only Markdown files and/or `docs/**` is intentionally skipped by the deployment gate. Documentation governance changes therefore do not republish the Worker merely because they reached `main`.
 
-## Manual Deploy
+## Manual Deploy workflow
 
 `workflow_dispatch` on the Deploy workflow is allowed, but it is not a validation bypass. The manual path runs:
 
@@ -55,6 +55,19 @@ npm run check:deploy
 ```
 
 before the deploy job can proceed.
+
+## Local/operator lifecycle
+
+Local tools exist for bootstrap and operator work, but they are not a second production lifecycle.
+
+- `scripts/install.sh` / `scripts/install.ps1` — first-time local bootstrap and initial direct deployment.
+- `scripts/reconfigure.sh` / `scripts/reconfigure.ps1` — update an existing operator configuration and deploy it.
+- `npm run deploy` — the single supported direct local code-deploy entry point for an already configured checkout.
+- `npm run cf:login`, `npm run cf:whoami`, `npm run tail` — Cloudflare operator commands.
+
+All direct Cloudflare CLI calls above route through `scripts/cloudflare-wrangler.mjs`. Do not add parallel `deploy.*`, `update.*`, or `setup-and-deploy.*` aliases.
+
+The tracked `wrangler.jsonc` is the repository baseline. Local Worker name, bindings, and operator configuration belong in gitignored `wrangler.user.jsonc`; installer/reconfigure tooling must not rewrite the tracked baseline.
 
 ## Required configuration
 
@@ -112,7 +125,7 @@ D1 migration is not transactionally rolled back with a Worker rollback. Migratio
 
 The production workflow deploys Worker code and the prepared Secret/variable payload in the same Wrangler deployment operation so the resulting Worker version sees the intended configuration set.
 
-The local wrapper `scripts/cloudflare-wrangler.mjs` owns the pinned Wrangler CLI and local binding/migration behavior. `wrangler.user.jsonc` is operator-local and gitignored.
+For direct local operations, `scripts/cloudflare-wrangler.mjs` is the single owner of the pinned Wrangler CLI and local binding/migration behavior. When `wrangler.user.jsonc` exists, the wrapper uses it by default unless an explicit config is supplied.
 
 ## Verification and rollback
 
@@ -122,11 +135,11 @@ Automatic rollback covers the Worker version/configuration represented by the de
 
 A failed rollback or failed rollback verification requires operator intervention rather than repeated blind deployment.
 
-## Release identity vs. build identity
+## Source version vs. build identity
 
 `/version` separates:
 
-- `version` — SemVer release/source identity generated from `package.json`;
+- `version` — SemVer source identity generated from `package.json`;
 - `build` — deployed commit SHA injected by the CI/Deploy path.
 
 The deploy verifier can therefore prove which commit is live without changing the semantic version for every deployment.
@@ -137,7 +150,7 @@ The intended repository settings are documented in [github-repository-settings.m
 
 ## Local/operator checks
 
-Before a manual production action:
+Before a direct local production action:
 
 ```bash
 npm ci
@@ -145,4 +158,4 @@ npm run validate:deploy
 npm run check:deploy
 ```
 
-For configuration semantics, see [Configuration](configuration.md). For formal version/tag sequencing, see [Version policy](../governance/version-policy.md).
+For configuration semantics, see [Configuration](configuration.md). For formal version/tag sequencing, see [Version policy](../governance/version-policy.md). For tooling entry points, see [`scripts/README.md`](../../scripts/README.md).
