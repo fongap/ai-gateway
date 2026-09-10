@@ -107,7 +107,7 @@ Review especially for:
 - full-pool sorting where bounded selection is sufficient;
 - global coordination added without evidence that local shaping is insufficient.
 
-For a change expected to affect the request hot path, run `npm run bench` before and after the change under the same machine, Node.js version, and comparable repository state. Use the delta as regression evidence. Benchmark absolute values are not a production SLA, cross-machine score, or provider-latency measurement. See [`benchmark/README.md`](../../benchmark/README.md).
+Use focused regression tests and production observability as performance evidence when a change is expected to affect the request hot path. Do not introduce a standalone benchmark harness unless it has a stable baseline, explicit regression thresholds, and a maintained execution path.
 
 ## Breaking changes
 
