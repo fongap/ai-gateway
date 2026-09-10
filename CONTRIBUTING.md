@@ -2,6 +2,14 @@
 
 ai-gateway favors focused, evidence-backed changes over broad rewrites. Runtime behavior, protocol compatibility, routing, reliability, and deployment semantics are treated as explicit contracts.
 
+## Issues and Discussions
+
+Issues are for confirmed, reproducible gateway defects that can be tracked to resolution. Use the `Bug report` form for public Issues.
+
+Setup, configuration, provider integration, usage, and troubleshooting questions belong in Discussions / Q&A. Feature, protocol, routing, reliability, and product improvement proposals belong in Discussions / Ideas. Once a proposal is accepted for implementation, it can be converted into an Issue for execution tracking.
+
+Do not disclose security vulnerabilities publicly. Use the private reporting process described in [SECURITY.md](SECURITY.md).
+
 ## Development setup
 
 ```bash
