@@ -17,13 +17,13 @@ function Read-FilePath([string]$Prompt, [bool]$Required) {
   return (Resolve-Path $p).Path
 }
 
-# Check login
-npx --yes 'wrangler@4.114.0' whoami >$null 2>&1
+& node scripts/cloudflare-wrangler.mjs whoami >$null 2>&1
 if ($LASTEXITCODE -ne 0) { throw 'Login to Cloudflare first (npm run cf:login).' }
-$workerName = ((Get-Content (Join-Path $Root 'wrangler.jsonc') -Raw -Encoding UTF8 | ConvertFrom-Json).name)
-Write-Host "Target worker: $workerName"
 
 $userConfigPath = Join-Path $Root 'wrangler.user.jsonc'
+$targetConfigPath = if (Test-Path $userConfigPath) { $userConfigPath } else { Join-Path $Root 'wrangler.jsonc' }
+$workerName = ((Get-Content $targetConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json).name)
+Write-Host "Target worker: $workerName"
 
 Write-Host '==> Node configuration update'
 $tierFiles = @{}
@@ -34,8 +34,6 @@ foreach ($n in 1, 2, 3) {
 }
 $secretsFile = Read-FilePath 'node secrets JSON file ({ "node-id": "credential" })' $true
 
-# Existing managed names: vars from local wrangler.user.jsonc (if present),
-# secrets from `wrangler secret list`.
 $existingVarNames = @()
 if (Test-Path $userConfigPath) {
   $prevVars = ((Get-Content $userConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json).vars)
@@ -108,12 +106,11 @@ try {
   [IO.File]::WriteAllText($bulkPath, ($bulk | ConvertTo-Json -Depth 30), [Text.UTF8Encoding]::new($false))
 
   Write-Host "==> Deploying updated variables and code for '$workerName'"
-  # Delegate to cloudflare-wrangler.mjs for migration-before-deploy
   & node scripts/cloudflare-wrangler.mjs deploy -c 'wrangler.user.jsonc' --keep-vars --secrets-file $bulkPath
   if ($LASTEXITCODE -ne 0) { throw 'deploy failed.' }
 
   foreach ($key in $plan.deleteSecrets) {
-    'y' | & npx --yes 'wrangler@4.114.0' secret delete $key | Out-Null
+    'y' | & node scripts/cloudflare-wrangler.mjs secret delete $key | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "failed to delete stale secret $key" }
     Write-Host "deleted stale secret: $key"
   }
