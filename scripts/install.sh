@@ -18,13 +18,9 @@ WORKER_NAME="${WORKER_NAME:-$DEFAULT_NAME}"
 printf "Tier 1 affinity KV namespace ID (required): "
 read -r AFFINITY_KV_ID
 node -e '
-const fs = require("fs");
 const name = process.argv[1];
 if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) { console.error("invalid worker name"); process.exit(1); }
 if (!/^[a-fA-F0-9]{32}$/.test(process.argv[2])) { console.error("Tier 1 affinity KV namespace ID must be 32 hexadecimal characters"); process.exit(1); }
-const c = JSON.parse(fs.readFileSync("wrangler.jsonc", "utf8"));
-c.name = name;
-fs.writeFileSync("wrangler.jsonc", JSON.stringify(c, null, 2) + "\n");
 ' "$WORKER_NAME" "$AFFINITY_KV_ID"
 
 echo "==> Installing dependencies and verifying project"
@@ -32,7 +28,7 @@ npm ci
 npm run validate:merge
 
 # Cloudflare login: whoami -> login (only if not logged in)
-npx --yes wrangler@4.114.0 whoami >/dev/null 2>&1 || npx --yes wrangler@4.114.0 login
+node scripts/cloudflare-wrangler.mjs whoami >/dev/null 2>&1 || node scripts/cloudflare-wrangler.mjs login
 
 echo "==> Node configuration"
 echo "Node configs are PLAIN variables without credentials; credentials go into a separate NODE_SECRETS file."
@@ -104,11 +100,12 @@ if [ "$ACCESS_GROUP_COUNT" -eq 0 ]; then
   exit 1
 fi
 
-AFFINITY_KV_ID="$AFFINITY_KV_ID" node -e '
+WORKER_NAME="$WORKER_NAME" AFFINITY_KV_ID="$AFFINITY_KV_ID" node -e '
 const fs = require("fs");
 const base = JSON.parse(fs.readFileSync("wrangler.jsonc", "utf8"));
 const plan = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
 const access = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+base.name = process.env.WORKER_NAME;
 base.vars = { ...plan.vars };
 for (const [name, value] of Object.entries(access)) {
   if (name.startsWith("GATEWAY_ACCESS_MODELS_")) base.vars[name] = value;
@@ -128,8 +125,8 @@ for (const [name, value] of Object.entries(access)) {
 fs.writeFileSync(process.argv[3], JSON.stringify(bulk));
 ' "$TMP_PLAN" "$TMP_ACCESS" "$TMP_BULK"
 
-# Single deploy with secrets file — avoids code/secret two-phase deploy
-npx --yes wrangler@4.114.0 deploy -c wrangler.user.jsonc --keep-vars --secrets-file "$TMP_BULK"
+# Single deploy with secrets file — avoids code/secret two-phase deploy.
+node scripts/cloudflare-wrangler.mjs deploy -c wrangler.user.jsonc --keep-vars --secrets-file "$TMP_BULK"
 
 read -r -p "Gateway URL after deploy (empty to skip verification): " URL
 if [ -n "$URL" ]; then
