@@ -30,8 +30,11 @@ Do not copy a transient implementation plan into a permanent policy document. Do
 | `src/transport/*`, `src/protocol/*`, `src/conversion/*` | `docs/architecture/protocol-model.md` |
 | `src/stream/*` | `docs/architecture/protocol-model.md`, `docs/architecture/reliability-model.md` |
 | `src/runtime/*` public projection | `docs/operations/public-model-status.md` |
-| Provider Discovery tooling | `docs/operations/provider-discovery.md` |
+| Provider Discovery behavior | `docs/operations/provider-discovery.md` |
 | deployment workflow / Wrangler bindings | `docs/operations/deployment.md` |
+| supported local tooling entry points | `scripts/README.md` |
+| benchmark method and interpretation | `benchmark/README.md` |
+| test layout and execution | `tests/README.md` |
 | repository settings / About metadata | `docs/operations/github-repository-settings.md` |
 | top-level module layout | `docs/architecture/repository-layout.md` |
 | CI and quality gates | `docs/governance/quality-policy.md` |
