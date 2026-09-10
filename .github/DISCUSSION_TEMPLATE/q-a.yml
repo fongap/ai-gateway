@@ -1,0 +1,38 @@
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Welcome to ai-gateway Discussions.
+
+        Use Q&A for setup, configuration, provider integration, client usage, and troubleshooting questions. If you have a reproducible gateway defect, open an Issue instead. Do not disclose security vulnerabilities publicly.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: Describe what you are trying to do and what you are seeing.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Gateway version
+      description: If the question is version-specific, provide the gateway version.
+      placeholder: 1.3.1
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: What have you tried?
+      description: Optional. Include relevant sanitized configuration details, commands, or logs.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing Discussions and Issues and did not find an obvious duplicate.
+          required: true
+        - label: I did not include API keys, tokens, authorization headers, private upstream URLs, request bodies, or user data.
+          required: true
