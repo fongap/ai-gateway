@@ -43,13 +43,15 @@ Designed for heterogeneous OpenAI-compatible and Anthropic-compatible upstreams,
 ## Architecture
 
 ```mermaid
-flowchart LR
+flowchart TB
     A[Client] --> B[Auth + Route]
-    B --> C[Native protocol pool]
-    C --> D[Tiered scheduler]
-    D --> E[Upstream APIs]
-    C -. Native pool exhausted .-> F[Chat ↔ Messages bridge]
+    B --> C[Native First]
+
+    C --> D["Tier 1 → Tier 2 → Tier 3"]
+    C -. exhausted .-> F["Chat ↔ Messages fallback"]
     F --> D
+
+    D --> E[Upstream APIs]
 ```
 
 Native execution always comes first. Cross-protocol fallback shares the same logical-attempt and wall-clock failover budget; hedge twins never cross protocol boundaries.
