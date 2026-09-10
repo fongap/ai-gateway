@@ -1,177 +1,131 @@
-# 可靠性模型
+# Reliability model
 
-## 概述
+ai-gateway separates Tier 1 adaptive account/model state from the Tier 2/3 node-state system. Both are short-lived best-effort runtime state unless an explicitly documented Cloudflare persistence primitive is involved.
 
-Tier 1 使用 `tier1-state.ts`；Tier 2/3 使用 `node-state.ts`。两个状态系统有意分离。所有短期运行时状态均为 isolate-local best-effort，随 isolate 重启丢失。
+## Tier 1 state
 
-## Tier 1 可靠性
+Tier 1 state is isolate-local and scoped deliberately:
 
-### Smooth RPM Admission
+- **Account scope** — in-flight count, account cooldown, rate-limit recovery gate, explicit quota state.
+- **Model scope** — TTFT EWMA, failure/cooldown/half-open state, consecutive rate limits/outliers, recovery gate.
+- **Upstream-model scope** — short cooldown for provider-facing model-missing responses so a logical alias remap does not inherit stale 404 state.
 
-Tier 1 的 hard `limits.rpm` 使用 isolate-local Token Bucket 平滑准入，不再使用日历分钟 fixed bucket。补充速率为 `rpm / 60s`，burst capacity 最多 2 个 token（即最多允许 1 个额外瞬时请求）；低于 2 RPM 时 capacity 自动降为 1。`rpmMode=soft` 行为不变，也不新增配置项。
+An isolate restart clears this adaptive state. The gateway does not claim provider-wide state consistency.
 
-429 仍沿用既有 `Retry-After` / model-scoped exponential backoff / rotate 语义。新增的唯一联动是 scoped recovery gate：cooldown 后首个真实准入成功后，同 scope 在 1 个 RPM interval 内不再立即二次准入；model-scoped 429 不影响 sibling models，显式 account-scoped 429 才作用于整个 account。共享 Token Bucket 不被推入未来。
+## Smooth hard-RPM admission
 
-### Account Scope
+Tier 1 hard `limits.rpm` uses an isolate-local token bucket instead of a calendar-minute counter.
 
-包含 in-flight count、account disable/cooldown 和显式 quota 状态。
+- refill rate: `rpm / 60s`;
+- burst capacity: at most 2 tokens;
+- RPM below 2 uses capacity 1;
+- `rpm_mode: "soft"` bypasses the hard Tier 1 bucket behavior.
 
-### Model Scope
+Heat protection observes the remaining local headroom and may softly spread selection before the hard gate is reached. The hard admission rule remains authoritative.
 
-包含 disable/cooldown、`normal → cooldown → half_open → disabled` 恢复、consecutive failures/outliers/rate limits 和被动 TTFT。
+## 429 handling
 
-- 401/403 禁用 account
-- `model_missing` 不进入逻辑 Model Scope；它使用独立的 `(account, upstream model id)` 5s cooldown。逻辑别名重映射到新的 upstream model 后，不继承旧 upstream model 的 404 状态
-- 模糊 429 默认 model scope，记录 `scope_ambiguous_429`
-- `Retry-After` 被尊重；缺失 header 使用 model-scoped exponential backoff
-- 普通 timeout/5xx 失败使用三重失败滞后
-- 过期 cooldown 在真实请求时变为 half-open，需要两次成功返回 normal，half-open 失败立即重入 cooldown
-- 没有主动恢复 probe
+429 is a capacity signal, not a reason to reward another key permanently.
 
-### Streaming Slot
+Tier 1 behavior:
 
-Streaming 在 headers 后、首个 token 后和完整流期间保持 Tier 1 in-flight slot。完成、取消、reader error 或 idle timeout 通过幂等 token 释放，且仅一次。
+- honor an explicit `Retry-After` when available;
+- otherwise use bounded exponential backoff with jitter;
+- scope explicit account-level limits to the account;
+- otherwise default ambiguous 429 handling to model scope and record the ambiguity;
+- after cooldown, gate the first recovery admission for one RPM interval at the same scope;
+- do not push the shared RPM bucket into the future;
+- rotate to other eligible capacity while the limited scope is blocked.
 
-### TTFT（Time to First Event）
+Success rate is not used as a positive routing reward. Recovery is driven by direct failure/rate-limit evidence and real subsequent requests.
 
-被动 per-`(account, model)` TTFT 从上游 attempt dispatch 开始，到首个有意义的模型输出结束。状态起始为 `ttftEwma=null, sampleCount=0`；首次观测直接赋值，后续使用 EWMA alpha `0.25`。一个值超过 `4× EWMA` 被钳位，第二个连续高值被原始接受以使真实退化可见。
+## Heat protection
 
-## Tier 2/3 可靠性
+`src/reliability/tier1-heat.ts` provides a bounded pre-limit signal used by Tier 1 routing:
 
-保留节点本地 health、latency、active-request slots、cooldown 和 circuit 状态机。
+- RPM headroom score factor: at most `1.20`;
+- affinity bias decays toward neutral as RPM/concurrency heat rises;
+- Tier 1 hedge candidate RPM pressure must be `<= 0.50`;
+- Tier 1 hedge candidate concurrency pressure must be `< 0.75`.
 
-## 错误分类
+These thresholds affect optional selection/hedge behavior. They do not replace the existing hard RPM, concurrency, cooldown, or eligibility gates, and they do not apply a new hard block to a primary request.
 
-Error classification (`src/reliability/classify.ts`) 是**单一事实源**——所有消费方 (dispatch / success / hedge / observability / errors) 都通过 `classify*` helper 或 `KIND` 常量引用，没有开放字符串字面量。
+## Passive TTFT
 
-**FailureKind 词汇 (v1.3.0 完整 16 个值)**:
+TTFT is recorded per `(account, logical model)` from a real upstream attempt to the first meaningful model output.
 
-| KIND | 触发条件 | 动作 | Cooldown | 计入 circuit |
-|---|---|---|---|---|
-| `rate_limit` | 429 + Retry-After | rotate | Retry-After clamped [1s, 600s] | 否 |
-| `rate_limit_global` | 预派发被分布式 rate limiter 拒绝 | rotate | 0 | 否 |
-| `auth` | 401/403 | rotate | AUTH_FAIL_COOLDOWN_MS | 否 |
-| `client` | 400/413/415/422 + 其他 4xx | stop | 0 | 否 |
-| `model_missing` | 404 + body 是模型形状 | rotate | 5s (`account + upstream model` scoped) | 否 |
-| `endpoint_not_found` | 404 + body 不是模型形状 | rotate | 5s | 否 |
-| `server` | 5xx / 408/425/409 | rotate | 0 | **是** |
-| `network` | 非 headers-timeout 的网络错 | rotate | 0 | **是** |
-| `headers_timeout` | HTTP 响应头超时 | rotate | 0 | **是** |
-| `first_event_timeout` | 收到 headers 但首事件超时 | rotate | 0 | **是** |
-| `stream_interrupted` | 流中途截断 / 缺完成标记 | rotate | 60s | **是** |
-| `client_abort` | 客户端中断 | neutral | 0 | 否 |
-| `invalid_base_url` | 预派发: base_url 不可解析 | rotate | 0 | 否 |
-| `upstream_200_non_json_body` | 200 + body 非 JSON | neutral | 0 | 否 |
-| `cancelled_after_peer_commit` | Hedge loser 被 peer commit 取消 | neutral | 0 | 否 |
-| `unknown` | Hedge catch-all | rotate | 0 | 否 |
+- initial state is unobserved;
+- first observation initializes the value;
+- subsequent observations use EWMA alpha `0.25`;
+- one extreme sample is bounded relative to the current EWMA, while consecutive extreme samples are allowed to expose persistent degradation;
+- there are no active background probes.
 
-Tier 1 (`classifyTier1Failure` in `tier1-state.ts`) 将这些 kind 映射到具体状态动作（scope = account / model / upstream_model，action = disable / cooldown，backoff = rate_limit / server / timeout）。其中 `upstream_model` 仅用于 `model_missing`，key 为当前节点解析出的 provider-facing model id；调度性能状态仍使用逻辑 model。
+A hedge loser cancelled because its peer already committed is neutral and must not poison TTFT/failure state as if it independently failed.
 
-相关 helper：
-- `classifyPreDispatchRateLimit()` — 预派发被分布式 rate limiter 拒绝
-- `classifyPreDispatchInvalidBaseUrl()` — base_url 不可解析
-- `classifyStreamInterrupted()` — 流截断
-- `classifyNonJsonBody()` — 200 + 非 JSON body
-- `classifyHedgeRaceLoss()` — hedge 竞争失败
-- `classifyHedgeUnknown()` — hedge catch-all
+## Cooldown and half-open recovery
 
-**类型安全** (FailureKind 全类型闭集):
-- `AttemptOutcome.kind: FailureKind`
-- `LoopState.failureKinds: Partial<Record<FailureKind, number>>`
-- `terminalStatus` 使用 `KIND.*` 常量比较
+Tier 1 transient failure state uses conservative recovery rather than active probes.
 
-**契约 (C19–C22)**:
-- C19: `KIND` 是闭合的 failure-kind 词汇 (16 个值, 无遗漏无多余)
-- C20: `src/` 中除 `classify.ts` 外没有任何 `kind: '<literal>'` 开放字面量
-- C21: `AttemptOutcome.kind` 类型为 `FailureKind` (不是 `string`)
-- C22: `src/types/request.ts` 从 `src/reliability/classify.ts` 导入 `FailureKind`
+- transient timeout/server failures can accumulate toward cooldown;
+- an expired cooldown transitions to half-open only when a real request next evaluates the node/model;
+- half-open admits a constrained real probe;
+- repeated successful probes restore normal state;
+- a half-open real failure re-enters cooldown.
 
-## Circuit Breaker
+Authentication failures use a long account-scoped cooldown so a rotated credential can recover without permanently disabling the isolate while repeated rejected requests are suppressed.
 
-连续失败状态机（CLOSED → OPEN after 3 counted failures → HALF_OPEN after open period → single probe → CLOSED on success / OPEN on failure）。仅 transient failures 计数；任何 success 重置计数器并关闭 circuit。计数器有时间边界，使相隔多天的事件不能链式触发 trip。
+## Failure classification
 
-- HALF_OPEN 允许恰好一个 probe，无论配置的 concurrency
-- Probe success 关闭 circuit
-- Probe failure 重新打开，带 fresh open period
+`src/reliability/classify.ts` owns the closed failure vocabulary. Consumers should use the exported classification helpers/constants rather than inventing new string literals.
 
-## Stream Truncation
+| Kind | Typical cause | Request action | Failure penalty |
+| --- | --- | --- | --- |
+| `rate_limit` | HTTP 429 | rotate / cooldown | not circuit-counted |
+| `rate_limit_global` | distributed pre-dispatch rate limiter | rotate | not circuit-counted |
+| `auth` | HTTP 401/403 | rotate / credential cooldown | not circuit-counted |
+| `client` | request-invalid 4xx such as 400/413/415/422 and other terminal 4xx | stop | neutral to upstream reliability |
+| `model_missing` | model-shaped 404 | rotate / upstream-model cooldown | not circuit-counted |
+| `endpoint_not_found` | non-model 404 | rotate / short account cooldown | not circuit-counted |
+| `server` | upstream 5xx and selected retryable HTTP statuses | rotate | circuit-counted |
+| `network` | network failure | rotate | circuit-counted |
+| `headers_timeout` | no upstream response headers in time | rotate | circuit-counted |
+| `first_event_timeout` | headers received but no meaningful first event | rotate | circuit-counted |
+| `stream_interrupted` | committed stream truncates or misses completion semantics | record interruption | circuit-counted |
+| `client_abort` | client cancellation | stop/neutral | neutral |
+| `invalid_base_url` | invalid upstream URL before dispatch | rotate | neutral/non-circuit |
+| `upstream_200_non_json_body` | non-stream 200 with invalid body shape | terminal handling | neutral/non-circuit |
+| `cancelled_after_peer_commit` | hedge loser cancelled after winner commits | neutral | neutral |
+| `unknown` | guarded catch-all | rotate according to caller | conservative |
 
-Stream 中途截断计为 transient failure（驱动 3-consecutive circuit counter），并在 `stream` 键下额外施加 health penalty（与 network failure 同级），因此持续截断的节点在 circuit 打开前就在候选排序中退化。
+Client-class 4xx currently stop the logical request; the gateway does **not** claim that every provider-specific 400 is automatically recognized as a compatibility failure and retried elsewhere.
 
-## Concurrency Slots
+## Tier 2/3
 
-Concurrency slots 在 `acquireSlot` 中声明（与 eligibility checks 原子操作），在 success/failure/neutral outcome recording 中恰好释放一次。
+Tier 2/3 continue to use `node-state.ts` for active requests, health/circuit state, cooldown, and selection inputs. They do not read Tier 1 TTFT, affinity, RPM bucket, or heat state.
 
-## 首事件超时（First Event Guard）
+## Streaming lifecycle
 
-`guard.js` 实现单一 first-event guard：消费上游 SSE 流直到提交事件——具有 per-protocol 的"首个真实输出"判定——或 timeout、abort、malformed data 或 JSON error envelope。两种协议族有意不共享同一判定：
+A Tier 1 in-flight slot remains held through headers, first output, and the active stream. Completion, cancellation, reader error, or idle timeout must release it exactly once.
 
-- **OpenAI Chat**：仅在非空 content、reasoning 或 tool-call 输出时提交
-- **OpenAI Responses**：仅在 `response.*.delta` 事件时提交——生命周期事件不是提交点
-- **Anthropic Messages**：仅在 native content deltas（`text_delta` / `thinking_delta` / `input_json_delta`）时提交——`message_start`、block start/stop、`ping` 和 `message_delta` 不提交
+The first-event guard defines the failover boundary:
 
-提交前可 failover；提交后透明 failover 被禁止——中途死亡投递已缓冲的字节并干净关闭。
+- before meaningful output commits, a failed attempt may rotate within the request budget;
+- after output commits, transparent replay/failover is unsafe and is not attempted.
 
-## Failure Classification
+Commit semantics are protocol-specific; see [protocol-model.md](protocol-model.md).
 
-终端错误分类使用聚合的 failure kinds。耗尽响应从 dominant kind 派生终端状态——`rate_limit` → 429，`headers_timeout`/`first_event_timeout` → 504，否则 502。
+## Circuit behavior
 
-## Neutral Outcomes
+Transient failures drive the existing circuit/cooldown model; rate limits, auth failures, client errors, and hedge race losses are not treated as equivalent server failures.
 
-以下情况记为 neutral（不计失败、不进熔断、无 cooldown）：
-- Client abort
-- Hedge loser 被 peer commit 取消
-- 429/401/403/404 在 half-open probe 期间
+The design intentionally distinguishes “this credential is temporarily limited”, “this model mapping is missing”, “this endpoint is bad”, and “this upstream is transiently failing”. Collapsing those into one generic failure counter would cause unnecessary pool loss.
 
-## Isolate-Local State
+## Distributed rate shaping
 
-所有短期运行时状态（Tier 1 passive TTFT/in-flight/cooldown/half-open state，Tier 2/3 circuit/health/concurrency/RPM）均为 **isolate-local** best-effort；随 isolate 重启丢失，不是全局或 provider-wide quota。`limits.concurrency`/`limits.rpm` 是 isolate-local shaping，不是全局硬限制。
+An optional Cloudflare Rate Limiting binding can add distributed per-location fixed-window admission for hard RPM. This is a useful second guard but is still not a strictly global provider-account quota.
 
-## 分布式 Rate Limiter
+Global concurrency coordination is not implemented. Adding Durable Objects or another strong coordination layer requires evidence that the current isolate-local shaping is insufficient and that the extra latency/complexity is justified.
 
-当存在 `QUOTA_RATE_LIMITER` Rate Limiting binding 时，hard-RPM dispatch 额外通过分布式（per-Cloudflare-location）fixed-window 检查。该检查是近似的、per-location 的，不是严格的全局/account quota。Concurrency 无法在没有 Durable Objects 的情况下全局协调——`limits.concurrency` 按设计保持 isolate-local。
+## Observability boundary
 
-## Adaptive Budget
-
-`POLICIES_CONFIG` 中的 `budget_split` 控制没有显式 `tier_attempts` 的可调度 Tier 如何获得 attempt budget：
-
-- **`'even'`（默认）**：保持 Tier 优先级。没有显式 cap 时沿用默认 surplus 分配；存在显式 cap 时，只在未显式且 dispatchable 的 Tier 中分配 `remaining`，surplus 给第一个可调 Tier。
-- **`'weighted'`**：先锁定显式 `tier_attempts`，再将 `remaining` 按未显式配置且 dispatchable 的 Tier 的 live 节点数比例分配。
-- **未设置 (`null`)**：等同于 `'even'`。
-
-显式 `tier_attempts` 是固定 cap，不会被 `even`、`weighted`、rounding 或 remainder 修改。显式值总和超过 `max_attempts` 时配置直接 `invalid`。Tier 1 不存在独立 attempt 上限；Tier 1、Tier 2、Tier 3 都由 `max_attempts`、`tier_attempts`、实时可调度性和整请求 failover budget 共同约束。
-
-**预算算法** (`computeTierCaps` in `src/request/tier-loop.ts`):
-1. 计算当前 `dispatchable` Tier。
-2. 锁定所有显式 `tier_attempts`，计算 `explicitTotal`。
-3. 配置解析保证 `explicitTotal <= max_attempts`。
-4. 计算 `remaining = max_attempts - explicitTotal`。
-5. `remaining` 只分配给未显式设置且当前 dispatchable 的 Tier。
-6. `even` 保持 Tier 优先级；`weighted` 按 `liveCount(tier) / totalLive` 分配可调预算。
-7. weighted 的 `Math.floor` remainder 只能补给未显式配置的 Tier；显式 cap 不参与补差。
-8. `max_attempts` 始终是整请求 logical attempt 的总硬上限。
-
-**示例**:
-```
-max_attempts=6, Tier 1 不可达, Tier 2 有 1 节点, Tier 3 有 4 节点:
-  "even":     Tier 2=5, Tier 3=1
-  "weighted": Tier 2=1, Tier 3=5
-
-max_attempts=6, tier_attempts.tier2=3, Tier 3 未显式配置且可调度:
-  "even":     Tier 2=3, Tier 3=3
-  "weighted": Tier 2=3, Tier 3=3
-```
-
-`architecture-contract-test.mjs` 验证默认与 weighted 分配；`config-matrix-test.mjs` 验证显式 cap、超限配置和 Tier 1 统一预算契约。
-
-## Unified Scheduler Return
-
-`pickCandidate` (Tier 2/3) 与 `pickTier1Candidate` (Tier 1) 都返回 `PickedCandidate | null`：
-
-| 情况 | 返回值 |
-| --- | --- |
-| 成功获取 slot | `{ node: RuntimeNode }` |
-| Slot 被并发请求抢走 (race lost) | `{ raceLost: true }` |
-| 无合格候选 | `null` |
-
-`PickedCandidate` (`src/types/scheduler.ts`) 是两个 picker 的共同返回类型。`pickForTier` 直接处理这一统一结果，使 race loss 与“无合格候选”保持可区分。
+D1 token-usage persistence and Public Model Status are observational. They do not feed success rates, historical request counts, or public status back into candidate scoring.

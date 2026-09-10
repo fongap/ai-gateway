@@ -1,51 +1,93 @@
-# 仓库目录结构
+# Repository layout
 
-## 目录职责
+The repository separates Worker runtime code, configuration examples, operational tooling, tests, migrations, and long-lived documentation. Directory ownership is part of the architecture contract.
 
 ```text
-src/                          Worker 代码：所有运行时逻辑
-├─ config/                    配置解析：env、nodes、models、registry、policies、timeouts、provider-quirks
-├─ scheduler/                 调度：协议+surface+model 三重过滤、Tier 1 P2C、Tier 2/3 选择器
-├─ reliability/               可靠性：节点状态、熔断、错误分类
-├─ transport/                 协议传输：上游路径、协议头、流式判定
-├─ protocol/                  协议校验：CORS、OpenAI/Anthropic 请求校验、Responses 模块
-├─ conversion/                协议转换：仅用于显式协议 fallback 所需的兼容转换（支持 Anthropic Messages ↔ OpenAI Chat 双向；OpenAI Responses 为 Native Only，不参与转换）
-├─ stream/                    流处理：First-Event Guard、SSE 扫描、流追踪与改写
-├─ request/                   请求处理：鉴权、路由、错误构建、编排
-│   └─ attempt/               Attempt Boundary 内部拆分：index（边界 re-export）、dispatch（单节点出站+超时+分类入口）、hedge（竞速/共享 deadline/胜负生命周期）、success（首事件守卫+各协议成功处理）、outcome（AttemptOutcome 与 attempt/dispatch 记账）、observability（token/D1/流指标记录，不影响调度）；src/request/attempt.ts 本身保持稳定公共边界
-├─ observability/             可观测性：日志、指标、D1 聚合、诊断端点
-├─ runtime/                   Runtime availability 抽象：调度态可观测 + Public Model Status（只读投影，绝不反向影响调度）
-└─ dashboard/                 浏览器页面
+src/                         Cloudflare Worker runtime
+├── config/                  env parsing, nodes, Model Registry, policies, provider quirks, version
+├── scheduler/               Tier 1 P2C/affinity selection and Tier 2/3 candidate selection
+├── reliability/             failure classification, Tier 1 state/heat, Tier 2/3 node state
+├── transport/               upstream paths, protocol headers, native transport behavior
+├── protocol/                client validation, CORS, protocol-specific request/error behavior
+├── conversion/              Chat Completions ↔ Anthropic Messages conversion only
+├── stream/                  first-event guards, SSE parsing, stream lifecycle
+├── request/                 request orchestration, tier loop, fallback, attempt boundary
+│   └── attempt/             dispatch, hedge, success, outcome, attempt observability
+├── observability/           logs, metrics, D1/token usage, safe diagnostics
+├── runtime/                 runtime availability and read-only public model status
+└── dashboard/               public/operator presentation
 
-scripts/                      工具脚本：部署、测试、配置检查、CI 桥接
-├─ *.mjs                      核心工具（deploy、config、health-check 等）
-├─ *-test.mjs                 测试套件
-├─ provider-discovery/        Provider Discovery v1.1：catalog schema、normalize、report、samples（只读观察，不进入 Runtime 热路径）
-└─ *.sh / *.ps1               跨平台部署脚本
+scripts/                     repository tooling and executable test contracts
+├── *-test.mjs               unit/contract suites
+├── integration-test.mjs     integration suite
+├── stress-test.mjs          stress/reliability suite
+├── codex-contract-test.mjs  Codex compatibility contract
+├── claude-contract-test.mjs Claude compatibility contract
+├── cloudflare-wrangler.mjs  pinned Wrangler wrapper and local deploy behavior
+└── provider-discovery/      read-only provider catalog/diff/report tooling
 
-tests/                        测试入口：unit runner + 文档
-├─ run-unit.mjs               单元测试 runner（加载 scripts/*-test.mjs）
-└─ README.md                  测试布局说明
+tests/
+├── run-unit.mjs             canonical ordered unit-suite registry
+└── README.md
 
-config/                       示例配置文件（*.example.json）
-benchmark/                    性能基准测试
-migrations/                   D1 数据库迁移 SQL
-docs/                         文档体系
-├─ architecture/              系统架构文档
-├─ governance/                开发治理文档
-└─ operations/                运维操作文档
+config/                      public example configuration
+benchmark/                   performance benchmarks
+migrations/                  ordered D1 migrations
+docs/                        long-lived documentation
+├── architecture/
+├── operations/
+└── governance/
 
-.github/                      GitHub 配置
-├─ workflows/                 CI / Deploy 工作流
-├─ ISSUE_TEMPLATE/            Issue 模板
-├─ pull_request_template.md   PR 模板
-└─ dependabot.yml             依赖更新配置
+.github/
+├── workflows/               CI, Deploy, Provider Discovery
+├── ISSUE_TEMPLATE/
+├── pull_request_template.md
+└── dependabot.yml
 ```
 
-## 目录规则
+## Runtime boundaries
 
-- `src/` 只包含运行时代码；测试入口在 `tests/` 中，测试文件在 `scripts/` 中，配置示例在 `config/` 中
-- `docs/` 只包含长期文档；临时状态不入文档
-- `scripts/` 中的测试文件以 `-test.mjs` 结尾，工具文件不以 `-test.mjs` 结尾
-- 新增顶层目录需满足：有明确的长期职责，且不与现有目录职责重叠
-- `.dev.vars`、`wrangler.user.jsonc`、`.env*`、`secrets*.json` 均被 gitignore，不入仓库
+`src/` contains Worker runtime source. Tests and operational scripts do not belong in `src/` unless they are actually imported into the Worker runtime.
+
+Key ownership rules:
+
+- `config` builds trusted internal configuration from untrusted/external environment data.
+- `scheduler` chooses; it does not call providers directly.
+- `reliability` records availability/failure state; it does not convert request protocols.
+- `request` orchestrates existing domain modules; it should not copy their logic.
+- `transport` owns upstream HTTP semantics after a node is chosen.
+- `conversion` owns only the explicit Chat ↔ Messages bridge.
+- `observability` and `runtime` projections must not feed public/D1 evidence back into routing unless a future design explicitly changes that contract.
+
+## Tier 1 files
+
+The current Tier 1 design is intentionally split by responsibility:
+
+- `src/scheduler/tier1-scheduler.ts` — Eligibility → Affinity → P2C selection and slot claim.
+- `src/scheduler/tier1-affinity.ts` — hashed session binding, cache, and escape decision.
+- `src/reliability/tier1-state.ts` — isolate-local RPM, in-flight, TTFT, cooldown, half-open, quota state.
+- `src/reliability/tier1-heat.ts` — bounded RPM-headroom/affinity/hedge heat protection.
+
+Tier 2/3 continue to use their separate scheduler/reliability path.
+
+## Conversion files
+
+`src/conversion/result.ts` adds fidelity/diagnostic/structured-output strategy information around the existing direct converters. It does not create a new all-protocol IR and does not make OpenAI Responses convertible.
+
+## Documentation layout
+
+`docs/` contains only long-lived current documentation:
+
+- `architecture/` — what the system is and which invariants are durable;
+- `operations/` — how the current system is configured and operated;
+- `governance/` — how changes are proposed, validated, documented, and released.
+
+Temporary status, completed migrations, and historical implementation plans belong in PRs/issues/history rather than permanent docs.
+
+## File rules
+
+- `docs/**/*.md` uses lowercase `kebab-case.md` except conventional `README.md`.
+- `scripts/*-test.mjs` is reserved for executable test/contract files.
+- `.dev.vars`, `.env*`, `secrets*.json`, and `wrangler.user.jsonc` remain local/gitignored.
+- A new top-level directory requires a durable responsibility that does not overlap an existing owner.
+- Do not add a second directory merely to represent “new”, “final”, or version-specific copies of an existing responsibility.

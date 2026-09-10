@@ -1,86 +1,64 @@
-# ai-gateway 文档
+# ai-gateway documentation
 
-ai-gateway 将多个不稳定的上游 API Key 聚合为一个稳定、自动恢复的 AI API 端点。本文档体系围绕这一核心定位展开。
+This documentation describes the current repository contract. It is organized by responsibility so runtime facts, operating procedures, governance rules, and release history do not compete as equal sources of truth.
 
-## 文档结构
+## Documentation model
 
-```
+```text
 docs/
-├── architecture/           # 系统架构
-│   ├── overview.md         # 设计目标与模块职责
-│   ├── protocol-model.md   # OpenAI / Anthropic 双协议原生转发
-│   ├── routing-model.md    # Tier 1/2/3 调度策略
-│   ├── reliability-model.md # 熔断、TTFT、错误分类
-│   └── repository-layout.md # 仓库目录职责
-│
-├── governance/             # 开发治理
-│   ├── README.md           # 治理总则
-│   ├── development-policy.md # 分支、提交、PR 规则
-│   ├── quality-policy.md   # CI、测试、安全门禁
-│   ├── dependency-policy.md # 依赖更新策略
-│   ├── release-policy.md   # 版本管理、发布流程
-│   └── documentation-policy.md # 文档同步规则
-│
-└── operations/             # 运维操作
-    ├── configuration.md    # 节点配置与运行时参数
-    ├── deployment.md       # GitHub Actions 部署流程
-    ├── troubleshooting.md  # 429/502/503/504 排查
-    ├── provider-discovery.md # Provider Discovery 机制
-    ├── public-model-status.md # 公开模型状态投影
-    └── github-repository-settings.md # GitHub 仓库配置
+├── architecture/     durable system boundaries and invariants
+├── operations/       current configuration, deployment, and troubleshooting procedures
+└── governance/       rules for changing, validating, documenting, and releasing the system
 ```
 
-## 按职责分类
+Historical version changes belong in [CHANGELOG.md](../CHANGELOG.md), Pull Requests, commits, and GitHub Releases. Completed migration plans and temporary project-status documents do not remain in the long-lived documentation tree.
 
-### 理解系统
+## Architecture
 
-| 文档 | 说明 |
-|---|---|
-| [architecture/overview.md](architecture/overview.md) | 系统整体设计：多 Key 聚合、Tier 分层、协议原生转发 |
-| [architecture/protocol-model.md](architecture/protocol-model.md) | OpenAI / Anthropic 双协议如何实现原生透传 |
-| [architecture/routing-model.md](architecture/routing-model.md) | Tier 1 P2C + Affinity、Tier 2/3 fallback 调度逻辑 |
-| [architecture/reliability-model.md](architecture/reliability-model.md) | 熔断器、TTFT 被动学习、错误分类与冷却机制 |
+| Document | Responsibility |
+| --- | --- |
+| [overview.md](architecture/overview.md) | System boundaries, request flow, and source-of-truth ownership |
+| [protocol-model.md](architecture/protocol-model.md) | Native protocols, Chat ↔ Messages fallback, conversion fidelity, streaming boundaries |
+| [routing-model.md](architecture/routing-model.md) | Tier routing, Tier 1 P2C, affinity, heat protection, attempts, hedge |
+| [reliability-model.md](architecture/reliability-model.md) | Failure classification, cooldown, 429 recovery, TTFT, circuit behavior |
+| [repository-layout.md](architecture/repository-layout.md) | Repository and module responsibilities |
+| [calendar-heatmap.md](architecture/calendar-heatmap.md) | Dashboard calendar-heatmap contract |
 
-### 配置与部署
+## Operations
 
-| 文档 | 说明 |
-|---|---|
-| [operations/configuration.md](operations/configuration.md) | 节点 Schema、运行时参数、Model Registry、limits 语义 |
-| [operations/deployment.md](operations/deployment.md) | GitHub Actions 自动部署、Cloudflare 配置、KV/D1 绑定 |
-| [github-repository-settings.md](operations/github-repository-settings.md) | GitHub 仓库 Variable/Secret 配置规范 |
+| Document | Responsibility |
+| --- | --- |
+| [configuration.md](operations/configuration.md) | Node, access-group, model, policy, and runtime configuration |
+| [deployment.md](operations/deployment.md) | CI-to-production workflow, D1 migration, verification, rollback |
+| [troubleshooting.md](operations/troubleshooting.md) | Configuration and runtime failure diagnosis |
+| [provider-discovery.md](operations/provider-discovery.md) | Read-only provider capability observation |
+| [public-model-status.md](operations/public-model-status.md) | Read-only public status projection |
+| [github-repository-settings.md](operations/github-repository-settings.md) | Intended GitHub settings and canonical About metadata |
 
-### 运维与排查
+## Governance
 
-| 文档 | 说明 |
-|---|---|
-| [operations/troubleshooting.md](operations/troubleshooting.md) | 常见错误码排查：429 冷却、502/503/504 超时 |
-| [operations/provider-discovery.md](operations/provider-discovery.md) | Provider Discovery v1.1 观察机制 |
-| [operations/public-model-status.md](operations/public-model-status.md) | 公开模型状态、TTFT P50/P95 展示 |
+| Document | Responsibility |
+| --- | --- |
+| [README.md](governance/README.md) | Governance index and authority model |
+| [development-policy.md](governance/development-policy.md) | Branch, PR, refactor, and architecture-change rules |
+| [quality-policy.md](governance/quality-policy.md) | CI, tests, security, and release gates |
+| [dependency-policy.md](governance/dependency-policy.md) | Dependency and toolchain update policy |
+| [release-policy.md](governance/release-policy.md) | Version, tag, deployment, and GitHub Release rules |
+| [documentation-policy.md](governance/documentation-policy.md) | English-canonical documentation and code-to-doc synchronization |
 
-### 开发治理
+## Authority order
 
-| 文档 | 说明 |
-|---|---|
-| [governance/development-policy.md](governance/development-policy.md) | 分支前缀、Commit 格式、PR 要求、Review 重点 |
-| [governance/quality-policy.md](governance/quality-policy.md) | CI 验证流程、14 个单元测试套件、安全扫描 |
-| [governance/dependency-policy.md](governance/dependency-policy.md) | Dependabot 配置、自动合并规则 |
-| [governance/release-policy.md](governance/release-policy.md) | 版本号规范、Tag 创建、Release 流程 |
-| [governance/documentation-policy.md](governance/documentation-policy.md) | 代码→文档映射、同步检查清单 |
+When documents disagree with executable behavior, resolve the conflict in this order:
 
-## 快速导航
+1. Runtime code, schemas, configuration parsers, tests, and workflows define what the repository actually does.
+2. Canonical current documentation explains that behavior and must be corrected when it drifts.
+3. `CHANGELOG.md`, Releases, PRs, and commits explain how the current state was reached.
 
-| 我想... | 查看 |
-|---|---|
-| 了解系统如何工作 | [architecture/overview.md](architecture/overview.md) |
-| 配置一个新的上游节点 | [operations/configuration.md](operations/configuration.md#节点配置) |
-| 部署到 Cloudflare Workers | [operations/deployment.md](operations/deployment.md) |
-| 排查 429/502/503 错误 | [operations/troubleshooting.md](operations/troubleshooting.md) |
-| 了解 Tier 1 调度策略 | [architecture/routing-model.md](architecture/routing-model.md#tier-1-eligibility--affinity--p2c) |
-| 贡献代码 | [CONTRIBUTING.md](../CONTRIBUTING.md) |
+Documentation must not invent a capability that is absent from the runtime.
 
-## 项目入口
+## Entry points
 
-- [README.md](../README.md) — 项目主页（中文）
-- [README_EN.md](../README_EN.md) — 项目主页（英文）
-- [CONTRIBUTING.md](../CONTRIBUTING.md) — 贡献指南
-- [CHANGELOG.md](../CHANGELOG.md) — 版本历史
+- [README.md](../README.md) — canonical project landing page.
+- [CONTRIBUTING.md](../CONTRIBUTING.md) — contribution workflow.
+- [SECURITY.md](../SECURITY.md) — vulnerability reporting and secret-handling rules.
+- [CHANGELOG.md](../CHANGELOG.md) — version history.

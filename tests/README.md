@@ -1,37 +1,39 @@
 # Tests
 
+The runtime is protected by layered unit, integration, stress, protocol, deployment, and client-compatibility contracts. Test files intentionally remain lightweight Node scripts instead of introducing a runtime or test framework dependency.
+
 ## Layout
 
-```
+```text
 tests/
-├── run-unit.mjs         # Unit test runner (loads scripts/*-test.mjs)
-└── README.md            # This file
+├── run-unit.mjs     # ordered unit-suite runner
+└── README.md
+
+scripts/
+├── *-test.mjs       # unit and contract suites
+├── integration-test.mjs
+├── stress-test.mjs
+├── codex-contract-test.mjs
+└── claude-contract-test.mjs
 ```
 
-### Test files
+`tests/run-unit.mjs` is the source of truth for the current unit-suite list. Do not duplicate a hard-coded suite count in documentation.
 
-Unit, integration, stress, and contract tests currently live in
-`scripts/` alongside their tooling dependencies (e.g.
-`mock-d1-database.mjs`). The `tests/run-unit.mjs` runner loads the
-unit-test files in order and propagates the first non-zero exit code.
+## Commands
 
-### npm scripts
+| Command | Purpose |
+| --- | --- |
+| `npm run test:unit` | Run the suites registered in `tests/run-unit.mjs` |
+| `npm run test:all` | Unit + scheduler stability + integration + stress + Codex + Claude contracts |
+| `npm run validate:merge` | Merge-gate validation: syntax, version, deployment config, migrations, unit tests, security, docs, types, links |
+| `npm run validate:deploy` | Full production validation including `test:all` |
+| `npm run check:deploy` | Wrangler Worker bundle dry-run |
 
-| Script | Description |
-|---|---|
-| `npm run test:unit` | Run `tests/run-unit.mjs` (18 unit-test suites) |
-| `npm run test:all` | Run unit + integration + stress + contract tests |
-| `npm run validate:merge` | `check` + `check:version` + `check:deployment-config` + `test:unit` + `security:scan` + `check:docs` + `typecheck` |
+## Adding a unit suite
 
-### Adding a new unit test
+1. Add `scripts/<name>-test.mjs` and make failures exit non-zero.
+2. Register it in `UNIT_TESTS` in `tests/run-unit.mjs`.
+3. Run `npm run test:unit`.
+4. If the test encodes a public or architectural behavior, update the responsible canonical document in the same PR.
 
-1. Create `scripts/<name>-test.mjs` — it must `process.exit(1)` on
-   failure.
-2. Add the file path to `UNIT_TESTS` in `tests/run-unit.mjs`.
-3. Run `npm run test:unit` to verify.
-
-### File-naming convention
-
-- `scripts/*-test.mjs` — test files (run by `npm test`).
-- `scripts/*.mjs` (no `-test` suffix) — tooling scripts (deploy,
-  config CLI, docs check, etc.).
+Tests are executable contracts. Do not weaken a contract merely to make an unrelated implementation change pass.

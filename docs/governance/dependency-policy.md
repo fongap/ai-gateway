@@ -1,65 +1,58 @@
-# 依赖策略
+# Dependency policy
 
-## Dependabot 配置
+ai-gateway keeps the Worker runtime dependency surface intentionally small. Dependency changes are treated as behavior-risk changes when they affect bundling, protocol semantics, network behavior, or deployment tooling.
 
-项目使用 Dependabot 自动创建依赖更新 PR：
+## Dependabot
 
-- **npm 依赖**：每月检查，最多 5 个 open PR
-- **GitHub Actions**：每月检查，最多 5 个 open PR
+`.github/dependabot.yml` currently checks:
 
-配置见 `.github/dependabot.yml`。
+- npm dependencies monthly, with at most 5 open PRs;
+- GitHub Actions monthly, with at most 5 open PRs.
 
-## 更新策略
+Security updates are not deferred merely to preserve the monthly cadence.
 
-### Patch / Minor
+## Update policy
 
-- 自动创建 PR
-- CI 通过后可自动合并
-- 不引入行为变更
+### Patch and minor updates
 
-### Major
+A patch/minor dependency update may be merged when:
 
-- 自动创建 PR
-- 需要人工 review
-- 检查 breaking changes
-- 更新 CHANGELOG
+- required CI passes;
+- the update does not introduce a known breaking behavior;
+- Worker bundle and deployment dry-run remain valid;
+- security impact is acceptable.
 
-## 自动合并
+Automatic merge is a repository-setting choice, not an assumption made by this policy.
 
-Dependabot PR 在以下条件下可自动合并：
-- CI 全部通过
-- 是 patch 或 minor 更新
-- 不引入新的安全漏洞
+### Major updates
 
-## Breaking Dependency
+Major updates require explicit review of breaking changes, Worker/runtime compatibility, configuration changes, and release impact. If public or operational behavior changes, update the relevant canonical documentation and `CHANGELOG.md`.
 
-当依赖更新引入 breaking change 时：
-1. 在 PR 中明确标记
-2. 评估对项目的影响
-3. 必要时更新代码以适配新版本
-4. 在 CHANGELOG 中记录
+## Runtime dependencies
+
+Prefer no runtime dependency when the Web Platform or a small local implementation is sufficient. A new runtime package needs a concrete reason such as security, protocol correctness, or substantial maintenance reduction.
+
+Avoid adding general frameworks, validation stacks, HTTP wrappers, or utility libraries for convenience alone.
 
 ## Lockfile
 
-- `package-lock.json` 必须提交到仓库
-- CI 使用 `npm ci` 安装依赖，确保确定性构建
-- 不手动编辑 lockfile
+- `package-lock.json` is committed.
+- CI uses `npm ci` for deterministic installation.
+- Do not hand-edit the lockfile.
 
-## 安全更新
+## GitHub Actions
 
-安全漏洞的依赖应立即更新，不受月度周期限制。Dependabot 会自动为安全更新创建 PR。
+Actions used by required workflows should be pinned to immutable commit SHAs. Updating an Action pin requires the same review discipline as other build/deployment dependencies.
 
-## CI 要求
+## Wrangler
 
-所有依赖更新 PR 必须通过：
-- `npm run validate:merge`
-- `npm run check:deploy`
-- 安全扫描
+Wrangler is invoked as a pinned CLI rather than installed as a production dependency. The canonical deploy wrapper is `scripts/cloudflare-wrangler.mjs`, which owns the pinned Wrangler version and the local deploy/migration behavior.
 
-## Wrangler 版本
+When the Wrangler pin changes:
 
-Wrangler 版本固定在 `package.json` 中（当前 `4.114.0`）。升级 Wrangler 需要：
-1. 检查 breaking changes
-2. 更新 `package.json` 中的版本
-3. 运行完整测试套件
-4. 在 CHANGELOG 中记录
+1. review Cloudflare breaking changes;
+2. update every intentionally duplicated CLI pin in repository tooling/scripts;
+3. run `npm run validate:merge`, `npm run validate:deploy`, and `npm run check:deploy` as applicable;
+4. update operator documentation if behavior or requirements changed.
+
+Do not document `package.json` as the Wrangler version source unless Wrangler is actually moved there.

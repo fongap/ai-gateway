@@ -1,107 +1,125 @@
-# 协议模型
+# Protocol model
 
-## 原生协议转发
+ai-gateway supports two protocol families: OpenAI and Anthropic. Protocol is an explicit node property; a provider label does not select a protocol or imply a surface.
 
-网关原生支持恰好两种协议族——OpenAI 和 Anthropic。采用 Native First 策略：OpenAI Chat Completions 与 Anthropic Messages 都先走同 protocol、同 surface 的原生路径；原生池耗尽后默认允许 OpenAI Chat Completions ↔ Anthropic Messages 双向跨协议 fallback。OpenAI Responses 为 Native Only，不参与跨协议 fallback。`PROTOCOL_FALLBACKS` 未配置或为空时使用默认链 `{"anthropic:messages":["openai:chat_completions"], "openai:chat_completions":["anthropic:messages"]}`；设 `disable` 关闭；显式 JSON 覆盖默认。
+## Native surfaces
 
-```text
-Client /v1/chat/completions → OpenAI transport    → upstream /v1/chat_completions
-Client /v1/responses        → OpenAI transport    → upstream /v1/responses
-Client /v1/messages         → Anthropic transport → upstream /v1/messages
-↘ (native pool exhausted, fallback enabled)
-                                   → OpenAI transport → upstream /v1/chat_completions
-Client /v1/chat/completions ↘ (native OpenAI pool exhausted, fallback enabled)
-                            → Anthropic transport → upstream /v1/messages
+| Client path | Protocol | Native upstream path |
+| --- | --- | --- |
+| `/v1/chat/completions` | OpenAI Chat Completions | `/v1/chat/completions` |
+| `/v1/responses` | OpenAI Responses | `/v1/responses` |
+| `/v1/messages` | Anthropic Messages | `/v1/messages` |
+| `/v1/messages/count_tokens` | Anthropic-compatible local utility | local approximate count unless disabled |
+
+Nodes declare `protocol` and `surfaces`; scheduling filters on protocol + surface + model before selecting a node.
+
+## Native First
+
+OpenAI Chat Completions and Anthropic Messages always try native nodes first. Cross-protocol conversion starts only after the native candidate pool has been exhausted and the route is enabled.
+
+The built-in fallback chain is:
+
+```json
+{
+  "anthropic:messages": ["openai:chat_completions"],
+  "openai:chat_completions": ["anthropic:messages"]
+}
 ```
 
-节点通过 `protocol`（`openai` | `anthropic`）和 `surfaces` 声明自己真正支持的接口。调度器按 protocol + surface + model 三重过滤。`/v1/responses` 只路由到 `surfaces` 含 `responses` 的 openai 节点；`/v1/messages` 优先路由到 anthropic 节点。
+`PROTOCOL_FALLBACKS=disable` disables conversion fallback. An explicit JSON mapping overrides the built-in chain. OpenAI Responses is always Native Only and has no cross-protocol conversion route.
 
-**v1.3.0 跨协议 fallback 矩阵**
+Fallback does not reset the request. Native attempts and conversion fallback share the same `max_attempts`, tier-attempt accounting, dispatch ceiling, and `FAILOVER_BUDGET_MS` wall clock. A hedge twin is chosen only from the current protocol/surface pool; cross-protocol hedge is not allowed.
 
-| 客户端 / 上游 | OpenAI Chat | OpenAI Responses | Anthropic Messages |
-| --- | --- | --- | --- |
-| OpenAI Chat | Native | n/a (无 Responses → Chat 转换) | ✅ v1.3.0 默认 ON（双向） |
-| OpenAI Responses | n/a (无 Responses → Chat 转换) | Native | n/a (Native Only) |
-| Anthropic Messages | ✅ v1.3.0 默认 ON（双向） | n/a (无 Messages → Responses 转换) | Native |
+## Conversion boundary
 
-跨协议 fallback 默认启用；要恢复 Native-Only 行为，设 `PROTOCOL_FALLBACKS=disable`；要换映射或单独关掉某条路由，传显式 JSON（例如 `{"anthropic:messages":[]}` 把这一条显式关掉）。所有跨协议 fallback 共享同一个 `max_attempts` / `FAILOVER_BUDGET_MS` budget,**不获取新的尝试配额**。
+`src/conversion/` contains direct adapters for the only supported bridge: OpenAI Chat Completions ↔ Anthropic Messages. The project intentionally does not maintain an all-protocol canonical IR and does not expand the conversion matrix merely because another native surface exists.
 
-## Transport 层
+Conversion is semantic and may be lossy. The result wrapper in `src/conversion/result.ts` reports that explicitly:
 
-Transport 层 (`src/transport/`) 负责上游路径、协议头、模型替换、流式判定与协议特定响应语义。
+```ts
+type ConversionResult = {
+  body: Record<string, unknown>;
+  fidelity: 'exact' | 'portable' | 'degraded';
+  diagnostics: readonly ConversionDiagnostic[];
+  structuredOutput?: { strategy: 'native' | 'tool' | 'prompt' };
+};
+```
 
-- `transport/openai.ts`：OpenAI 上游路径、`Authorization: Bearer` 头、Responses 首事件判定
-- `transport/anthropic.ts`：`/v1/messages` 路径、`x-api-key` 认证头、`anthropic-version`/`anthropic-beta` 透传、Anthropic 首事件判定
-- `transport/index.ts`：按协议分发（`resolveUpstreamPath`、`buildUpstreamHeadersFor`）
+### Fidelity
 
-Transport 层不调度节点；Scheduler 和 Reliability 层不解析协议事件。
+| Fidelity | Meaning |
+| --- | --- |
+| `exact` | No semantic mapping, emulation, default, or drop was recorded |
+| `portable` | Semantics were mapped to a target representation without a known loss |
+| `degraded` | At least one feature was dropped, emulated, or defaulted |
 
-## OpenAI Chat (`/v1/chat/completions`)
+Diagnostics use fixed categories such as `mapped`, `dropped`, `emulated`, and `defaulted`. They must never include request text, prompts, schemas, credentials, private tool names, or other client-controlled sensitive values.
 
-标准 OpenAI Chat Completions 协议。请求转发到上游 `/v1/chat_completions`，响应按 OpenAI SSE 或 JSON 格式返回。
+## Structured output
 
-- 首事件提交判定：非空 content、reasoning 或 tool-call 输出
-- 流式 wire format 兼容差异由 `src/config/provider-quirks.ts` 处理（如 `stream_options.include_usage`）
-- 客户端认证通过 `Authorization: Bearer` 传递
+Structured-output conversion uses a conservative capability order:
 
-## OpenAI Responses (`/v1/responses`)
+```text
+Native JSON Schema
+        ↓ if positively known unsupported/unavailable
+Synthetic Tool
+        ↓ if request-side support + response-side unwrap are both proven
+Prompt emulation
+```
 
-原生 Responses 表面：客户端请求原样转发（模型替换）到上游 `/v1/responses` endpoint，上游原生 Responses 事件序列原样中继。
+Rules:
 
-- 验证：最小契约（`model` + `input`）；字段级语义由上游负责
-- 流式：guarded native stream 直接追踪（`response.completed`/`incomplete` 完成标记，`response.failed` 失败标记）；model 字段在 `response.model` 处内联重写
-- 错误：OpenAI Responses envelope `{ error: { message, type, param, code } }`；终端错误（非 429/503 的任何 HTTP 错误）携带 `x-should-retry: false`
-- 不做 Chat Completions 转换
-- `previous_response_id` 被接受但忽略：网关是无状态中继
+- `native` requires positive evidence that the target wire implementation accepts native JSON Schema.
+- `tool` requires both synthetic-tool output support and a response adapter that can unwrap the reserved tool back into the client's expected structured result.
+- Existing client tool/tool-choice contracts are not overwritten by synthetic-tool emulation.
+- An OpenAI `strict:false` schema is not silently strengthened into a strict Anthropic native schema.
+- Unknown target capabilities use `prompt` rather than guessing provider compatibility.
 
-## Anthropic Messages (`/v1/messages`)
+The current runtime fallback path does not pass per-node structured-output capability evidence into the conversion wrapper, so unknown targets remain on the conservative Prompt strategy by default. The Native and Tool strategies are capability primitives, not a claim that every configured provider automatically uses them.
 
-原生 Messages 表面：请求原样转发到上游 `/v1/messages` endpoint，上游原生 Anthropic SSE 生命周期原样中继。
+## OpenAI Chat → Anthropic Messages
 
-- 认证：`x-api-key`，不使用 `Authorization: Bearer`
-- `anthropic-version` 和 `anthropic-beta` 头透传
-- `count_tokens` 为本地近似估算（script-aware，非 tokenizer）
-- 错误保持 Anthropic envelope `{ type: 'error', error: { type, message } }`
+The converter supports the portable subset needed by the gateway's Chat fallback, including normal messages, function tools/calls/results, image URL mapping where supported by the converter, stop controls, and common generation parameters.
 
-## v1.3.0 协议转换
+Anthropic requires `max_tokens`; when an OpenAI Chat fallback request omits it, the converter applies its current safe default and reports that as `defaulted` fidelity information rather than hiding the semantic choice.
 
-跨协议 fallback 由 `src/conversion/` 中的独立转换器实现。每个方向是独立文件,**不依赖**其他方向的代码:
+OpenAI system/developer semantics may need mapping or emulation because Anthropic uses a top-level system representation. Unsupported request semantics fail conversion rather than being silently invented.
 
-| 方向 | Request | Response | Stream |
-| --- | --- | --- | --- |
-| OpenAI Chat → Anthropic | `openai-chat-request-to-anthropic.ts` | `anthropic-response-to-openai-chat.ts` | `anthropic-stream-to-openai-chat.ts` |
-| OpenAI Chat → Responses | (无 — n/a) | (无 — n/a) | (无 — n/a) |
-| OpenAI Responses (native-only) | (native-only, no cross-protocol conversion) | (native-only, no cross-protocol conversion) | (native-only, no cross-protocol conversion) |
-| Anthropic → OpenAI Chat | (Anthropic 是 native 起点) | `anthropic-response-to-openai-chat.ts` | `anthropic-stream-to-openai-chat.ts` |
+## Anthropic Messages → OpenAI Chat
 
-每个转换器只支持**实际被使用的子集**(Codex 实际下发的字段)。不支持的字段(如 Responses 的 `reasoning` items, `image_generation_call`, `mcp_*` items 等)被**明确拒绝**(返回 `conversion_not_supported` 错误),不静默丢字段。
+Portable function tools and tool call/result history are mapped where representable. Anthropic-specific controls or history that generic Chat cannot safely represent may be dropped or emulated and are surfaced through fidelity diagnostics.
 
-**错误 envelope 跨协议契约**: 跨协议 fallback 后,客户端始终收到**自己协议形状**的错误 envelope。例如:
-- OpenAI Chat 客户端 fallback 到 Anthropic upstream 失败 → 收到 `{ error: { message, type, ... } }` (OpenAI Chat 形状)
-- Anthropic 客户端 fallback 到 OpenAI upstream 失败 → 收到 `{ type: 'error', error: { ... } }` (Anthropic 形状)
-- 上游的内部错误 envelope **从不泄漏**到客户端。
+Examples of potentially degraded semantics include Anthropic thinking controls/history, context-management controls, provider-native tools, tool hints, parallel-tool controls, and mid-conversation system instructions.
 
-**Native First 调度契约**：
-- 客户端请求首先被路由到**同 protocol、同 surface** 的原生上游
-- 只有当原生池**完全耗尽**（所有候选失败或被 cooldown）且 fallback 启用时，跨协议转换才会启动
-- Hedge twin 由同一三重过滤选择器挑选，必然与 primary 同 protocol、同 surface；**跨协议 hedge 被禁止**
-- 跨协议 fallback 与 native retry 共享**同一个** `max_attempts` / `FAILOVER_BUDGET_MS` budget——fallback **不获取**新的 attempt slot
+## Response and stream conversion
 
-## Protocol 隔离规则
+Fallback includes the response direction as well as the request direction. A converted upstream response is returned in the **client's original protocol envelope**.
 
-- **Native First**: 客户端请求优先走同 protocol、同 surface 的原生上游
-- **跨协议 fallback 默认启用**(v1.3.0): 双向 `openai:chat_completions ↔ anthropic:messages`；`openai:responses` 为 Native Only
-- 跨协议 fallback 共享 native retry 的 budget，fallback 不获取新 attempt slot
-- Hedge twin 必须与 primary 同 protocol、同 surface；跨协议 hedge 被禁止
+Streaming adapters translate supported events incrementally. The first-event guard still owns the commit boundary: failover is safe before the first meaningful client-visible output is committed; transparent failover after commit is intentionally not attempted.
 
-## Header / Endpoint / Stream 职责边界
+Protocol-specific completion semantics remain distinct:
 
-| 层 | 职责 |
-|---|---|
-| Transport | 上游路径、协议头、流式判定、协议特定响应语义 |
-| Protocol | 请求校验、错误构建、CORS |
-| Stream | First-Event Guard、SSE 扫描、流追踪 |
-| Reliability | 错误分类、节点状态、熔断 |
-| Conversion (v1.3.0) | 仅 OpenAI Chat Completions ↔ Anthropic Messages 双向跨协议转换；Responses 不转换 |
+- OpenAI Chat commits on meaningful content, reasoning, or tool-call output.
+- OpenAI Responses commits on supported response output deltas and remains native.
+- Anthropic Messages commits on meaningful text, thinking, or tool-input deltas.
 
-Provider quirks (`src/config/provider-quirks.ts`) 仅记录 wire-format 兼容差异（如 `stream_options.include_usage` 是否可添加），不决定协议/路径/transport。
+## Error envelopes
+
+A fallback failure must not leak the target upstream's protocol envelope to the original client.
+
+- OpenAI Chat clients receive OpenAI-shaped errors.
+- Anthropic Messages clients receive Anthropic-shaped errors.
+- Conversion failures are reported as gateway conversion failures before an invalid target request is dispatched.
+
+## Responsibility boundaries
+
+| Layer | Responsibility |
+| --- | --- |
+| Protocol | Client validation and protocol-specific errors |
+| Transport | Upstream path, headers, native wire behavior |
+| Conversion | Only the supported Chat ↔ Messages semantic bridge |
+| Stream | First-event guard and stream lifecycle |
+| Scheduler | Candidate selection; never protocol-event parsing |
+| Reliability | Failure state; never request-shape conversion |
+
+See [Routing model](routing-model.md) and [Reliability model](reliability-model.md) for how protocol eligibility interacts with attempts, hedge, and cooldown.

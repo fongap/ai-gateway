@@ -1,67 +1,102 @@
-# 质量策略
+# Quality policy
 
-## CI 验证
+Quality gates protect behavior before deployment. The repository deliberately separates the fast merge gate from the full production gate.
 
-每次 push 和 PR 触发 CI 验证，包含以下检查：
+## CI model
+
+### Merge gate
+
+`validate-merge` runs for Pull Requests and pushes. It executes the canonical merge validation and a Worker bundle dry-run:
 
 ```bash
 npm ci
-npm run validate:merge    # check + check:version + check:deployment-config + test + security:scan
-npm run check:deploy    # wrangler dry-run bundle
+npm run validate:merge
+npm run check:deploy
 ```
 
-CI 必须在 `main` 和 Pull Request 上通过。
+`validate:merge` covers syntax, version consistency, deployment configuration, migration governance, unit/contract suites, secret scanning, documentation checks, TypeScript type checking, and Markdown links.
 
-## 检查项
+### Production gate
 
-### 代码质量
-- `npm run check` — 语法验证
-- `npm run check:version` — 版本一致性
-- `npm run check:deployment-config` — 部署配置验证
+`validate-deploy` runs on pushes to `main`, scheduled CI, and manual CI. It executes:
 
-### 测试
-- `npm run test:unit` — 运行全部单元测试套件（CI 必需）
-- `npm run test:all` — 运行全部测试套件（包含集成、压力和契约测试）
-- 包含：配置、调度、可靠性、流处理、Token 使用、协议矩阵、集成、压力测试、契约测试、文档契约测试
+```bash
+npm run validate:deploy
+```
 
-### 安全
-- `npm run security:scan` — 密钥扫描（排除 `.dev.vars`、`.env*`、`secrets*.json`、`wrangler.user.jsonc`）
-- 确保仓库中不存在真实凭据
-- 确认 `/health`、`/metrics`、`/v1/models` 均需鉴权
-- 确认响应中无凭据与上游地址（未开 `EXPOSE_UPSTREAM_INFO` 时）
+`validate:deploy` includes `test:all`: the unit suite plus scheduler-stability, integration, stress, Codex, and Claude contracts.
 
-### 部署验证
-- `npm run check:deploy` — Wrangler dry-run bundle
-- Deploy workflow 中的 post-deploy health check
+Automatic production deployment is permitted only when a **push-triggered** `main` CI run succeeds. Scheduled and manually triggered CI runs are test-only. Manual Deploy runs its own full validation before touching production.
 
-## 质量规则
+## Behavioral contracts
 
-### 协议一致性
-- 保持 OpenAI / Anthropic 双协议路径行为一致
-- Native First：跨协议 fallback 默认启用（`PROTOCOL_FALLBACKS` 默认 `{"anthropic:messages":["openai:chat_completions"]}`；设 `disable` 关闭；显式 JSON 覆盖）
-- 协议矩阵测试 + 转换测试 + 架构契约测试断言 Native First 和转换 fallback 行为
-- 契约测试覆盖原生协议行为
+Changes that touch a behavior must preserve or deliberately update the corresponding executable contract.
 
-### 配置安全
-- 节点配置中不含凭据字段（工具会拒绝）
-- `wrangler.jsonc` 保持 `keep_vars: true` 且不含 `vars` 节点
-- 示例配置中的 Token 均为占位符
+High-risk areas include:
 
-### 文档检查
-- README 与 README_EN 功能、边界和配置说明一致
-- 架构图与当前目录逻辑一致
-- 配置示例与当前 schema 一致
-- 内部 Markdown 链接有效（`scripts/link-check.mjs`）
+- protocol and surface routing;
+- Chat Completions ↔ Anthropic Messages fallback;
+- OpenAI Responses Native-Only behavior;
+- streaming first-event commit points;
+- Tier 1 P2C, affinity, heat protection, RPM admission, and 429 recovery;
+- Tier 2/3 selection and circuit state;
+- logical-attempt, dispatch, hedge, and failover budgets;
+- access-group authorization and node credential binding;
+- deployment ordering and rollback;
+- D1 retention and public model-status projection.
 
-### 发布验证
-- `package.json`、`src/config/version.ts`、`CHANGELOG.md` 版本一致（`version.ts` 由 `scripts/generate-version.mjs` 从 `package.json` 生成）
-- ZIP 与 TAR.GZ 均可正常解压
-- `release/SHA256SUMS` 与发布资产一致
+Do not rewrite a contract test merely because a new implementation disagrees with it. First decide whether the intended behavior actually changed.
 
-## 自动化
+## Protocol quality
 
-能由 CI 自动完成的内容，不应继续要求人工勾 checklist。CI 失败时 PR 不能合并。
+The current built-in protocol fallback is exactly:
 
-## 安全更新
+```json
+{
+  "anthropic:messages": ["openai:chat_completions"],
+  "openai:chat_completions": ["anthropic:messages"]
+}
+```
 
-已知安全漏洞的依赖应立即更新。Dependabot 自动创建 PR；安全更新优先于功能开发。
+OpenAI Responses is Native Only. Conversion fallback shares the existing request attempt and wall-clock budget; hedge twins do not cross protocols.
+
+Conversion diagnostics must remain categorical and non-sensitive. Request bodies, prompts, JSON Schemas, credentials, and client tool names must not enter diagnostic logs.
+
+## Reliability quality
+
+Tier 1 heat protection is a bounded shaping refinement, not a second quota system.
+
+- RPM headroom may soften selection before the hard gate.
+- Affinity may decay toward neutral under heat but must not become a standalone penalty.
+- Optional hedge twins may be suppressed when spare capacity is low.
+- Primary eligibility remains controlled by the existing hard concurrency/RPM/cooldown rules.
+- Success rate is not a positive routing reward.
+- The implementation must not claim globally consistent provider quota without a real global coordination mechanism.
+
+## Security gates
+
+`npm run security:scan` must pass. Repository and review rules must prevent live credentials or private data from entering source, examples, logs, or diagnostics.
+
+At minimum:
+
+- node config must reject credential fields;
+- upstream credentials live only in tier-scoped Secrets;
+- gateway client keys use the grouped access-key model;
+- client authorization headers and cookies are never forwarded upstream;
+- HTTPS is the default upstream requirement;
+- `/health` and `/metrics` remain authenticated;
+- sensitive request bodies are not logged.
+
+See [SECURITY.md](../../SECURITY.md).
+
+## Documentation quality
+
+Canonical documentation is part of the contract surface. CI checks structure and links, but review must also check factual agreement with source code and workflows.
+
+Do not maintain two equal README implementations. `README.md` is canonical; compatibility or translated documents must point back to it.
+
+## Release quality
+
+A release is valid only after the intended `main` commit has passed the full production gate and, for deployable changes, the production deployment/verification path has succeeded. Tag and GitHub Release rules are defined in [release-policy.md](release-policy.md).
+
+Do not require custom ZIP/TAR/SHA assets unless the repository actually has a workflow that builds and verifies them. GitHub-generated source archives are not a substitute for a documented custom artifact pipeline.

@@ -1,42 +1,49 @@
-# 贡献指南
+# Contributing
 
-## 快速开始
+ai-gateway favors focused, evidence-backed changes over broad rewrites. Runtime behavior, protocol compatibility, routing, reliability, and deployment semantics are treated as explicit contracts.
+
+## Development setup
 
 ```bash
-git clone https://github.com/fongap/ai-gateway.git && cd ai-gateway
+git clone https://github.com/fongap/ai-gateway.git
+cd ai-gateway
 npm ci
-npm run validate:merge   # syntax + version + config checks + tests + secret scan
-npm run check:deploy  # wrangler dry-run bundle
+npm run validate:merge
+npm run check:deploy
 ```
 
-## 提交 PR
+Use Node.js **>=22.18.0 <23**.
 
-1. 创建分支（`feat/`、`fix/`、`refactor/`、`docs/`、`test/`、`chore/`）
-2. 确保 `npm run validate:merge` 和 `npm run check:deploy` 通过
-3. 使用仓库 Pull Request 模板
-4. 等待 CI 通过后请求 review
+## Pull requests
 
-## 治理规则
+1. Create a focused branch using `feat/`, `fix/`, `refactor/`, `docs/`, `test/`, `ci/`, or `chore/`.
+2. Keep one primary objective per PR.
+3. Add or update regression coverage for behavior changes.
+4. Update the canonical documentation in the same PR when behavior, configuration, deployment, protocol, or operational semantics change.
+5. Run `npm run validate:merge` and `npm run check:deploy`.
+6. Use squash merge after required checks pass.
 
-完整开发治理详见：
+PR descriptions should state the problem, behavior change, verification, compatibility impact, resource impact, and security impact. A refactor must state whether external behavior changed; behavior-preserving refactors must not quietly alter scheduler, protocol, timeout, cooldown, fallback, or configuration semantics.
 
-- 开发治理：[docs/governance/development-policy.md](docs/governance/development-policy.md)
-- 质量要求：[docs/governance/quality-policy.md](docs/governance/quality-policy.md)
-- 依赖策略：[docs/governance/dependency-policy.md](docs/governance/dependency-policy.md)
-- 发布流程：[docs/governance/release-policy.md](docs/governance/release-policy.md)
-- 文档同步：[docs/governance/documentation-policy.md](docs/governance/documentation-policy.md)
+## Documentation responsibilities
 
-## 架构文档
+`README.md` is the canonical project landing page. The documentation tree is English-canonical:
 
-- 系统总览：[docs/architecture/overview.md](docs/architecture/overview.md)
-- 协议模型：[docs/architecture/protocol-model.md](docs/architecture/protocol-model.md)
-- 调度模型：[docs/architecture/routing-model.md](docs/architecture/routing-model.md)
-- 可靠性模型：[docs/architecture/reliability-model.md](docs/architecture/reliability-model.md)
+- [Architecture](docs/architecture/overview.md) — durable design boundaries and invariants.
+- [Operations](docs/operations/configuration.md) — configuration and deployment procedures.
+- [Governance](docs/governance/README.md) — development, quality, dependency, release, and documentation policy.
+- [CHANGELOG.md](CHANGELOG.md) and GitHub Releases — historical changes.
 
-## 运维文档
+Do not create temporary `latest`, `final`, `new`, or version-suffixed copies of long-lived documentation. Update the responsible document directly.
 
-- 配置参考：[docs/operations/configuration.md](docs/operations/configuration.md)
-- 部署指南：[docs/operations/deployment.md](docs/operations/deployment.md)
-- 故障排查：[docs/operations/troubleshooting.md](docs/operations/troubleshooting.md)
-- Provider Discovery：[docs/operations/provider-discovery.md](docs/operations/provider-discovery.md)
-- 公开 Model Status：[docs/operations/public-model-status.md](docs/operations/public-model-status.md)
+## Core governance
+
+- [Development policy](docs/governance/development-policy.md)
+- [Quality policy](docs/governance/quality-policy.md)
+- [Dependency policy](docs/governance/dependency-policy.md)
+- [Release policy](docs/governance/release-policy.md)
+- [Documentation policy](docs/governance/documentation-policy.md)
+
+## Security
+
+Never commit or paste live API keys, bearer tokens, authorization headers, private upstream URLs, request bodies, or user data. Report vulnerabilities through the private process described in [SECURITY.md](SECURITY.md).

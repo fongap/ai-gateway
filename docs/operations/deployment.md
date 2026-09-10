@@ -1,152 +1,148 @@
-# 部署
+# Deployment
 
-ai-gateway 通过 GitHub Actions 部署。推送到 `main` 自动触发部署;在 Actions 页手动运行 Deploy 工作流也会先执行完整验证再部署。部署流程:验证配置、同步 Worker 变量和 Secrets、执行 D1 迁移、发布 Worker、运行线上健康检查。
+Production deployment is driven by GitHub Actions. GitHub repository Variables hold non-sensitive configuration; Secrets hold credentials. Cloudflare is the execution target, not the canonical configuration editor.
 
-配置来源是 GitHub 仓库的 **Variables**（非敏感）和 **Secrets**（凭据）。Cloudflare Dashboard 不是日常配置界面。
+## Production path
 
-## 首次部署
-
-1. 在 GitHub 仓库中，打开 **Settings → Secrets and variables → Actions**
-2. 创建 Cloudflare KV namespace 用于 Tier 1 session affinity，复制其 32 字符 namespace ID
-3. 创建 §2 和 §3 中列出的 Variables 和 Secrets，包括 `TIER1_AFFINITY_KV_ID`；至少配置一组 `GATEWAY_ACCESS_KEY_<GROUP>` 与对应 `GATEWAY_ACCESS_MODELS_<GROUP>`
-4. 推送到 `main`（或从 Actions 标签运行 Deploy 工作流）
-
-部署工作流先运行 **preflight** 检查。任何必需 Variable 或 Secret 缺失时，工作流**失败**并报告确切缺失项。
-
-Deploy workflow 由 CI workflow 的 `workflow_run` 完成事件触发,生产部署必须等待完整验证通过（Merge Gate ≠ Production Gate）。CI 在 push 到 main 时运行两个 job——`validate-merge`（语法/配置/unit/typecheck/strict/security/docs/bundle dry-run）与 `validate-deploy`（unit + scheduler stability + integration + stress + Codex/Claude contract + security + docs）——**两个 job 都成功 = Production Gate**,完整验证每次 push 只执行一次,不在 deploy 工作流内重复。
-
-**触发事件规则**(由 `scripts/deploy-gate-decision.mjs` 决定,契约测试固化):只有 **push 触发的 CI 成功** 才允许自动部署。定时 nightly CI 与手动触发的 CI 仅测试,**永不部署**——gate 显式判断 `workflow_run.event == push`,不做任何 commit message / 时间 / 分支猜测。
-
-```
-CI workflow（push → main）:
-  → job validate-merge（Merge Gate）
-  → job validate-deploy（完整套件）
-
-Nightly CI（schedule）/ 手动 CI（workflow_dispatch）:
-  → 只测试,NO Deploy
-
-Deploy workflow（workflow_run: CI completed, branch main）:
-  → job gate（scripts/deploy-gate-decision.mjs）:
-      CI 触发事件 ≠ push（nightly / 手动 CI）→ 阻断；
-      CI conclusion ≠ success → 阻断（Production Gate）；fork head repo → 阻断；
-      触发 commit 仅改动 **.md / docs/** → 跳过（沿用原 paths-ignore 策略）
-  → job deploy（needs: [gate, manual-validate]）:
-      → Preflight deployment configuration
-      → Validate runtime configuration
-      → Apply D1 migrations（仅当 TOKEN_STATS_D1_ID 已配置；未配置时跳过，不影响部署）
-      → Deploy Worker (atomic code+secrets)
-      → Verify deployed gateway（health check）
-      → Deployment summary（失败且已部署时先执行 Worker 回滚）
-
-手动 Deploy（workflow_dispatch）:
-  → job gate 放行,但绝不绕过 Production Gate:
-  → job manual-validate（统一验证入口: `npm run validate:deploy` + `npm run check:deploy` 干跑 bundle）
-  → 全部通过后 job deploy 才开始（needs.manual-validate.result == 'success'）
+```text
+Pull Request
+    ↓
+validate-merge + Worker dry-run
+    ↓
+squash merge to main
+    ↓
+main CI
+  ├─ validate-merge
+  └─ validate-deploy
+    ↓ both succeed on a push-triggered CI run
+Deploy workflow gate
+    ↓
+preflight configuration
+    ↓
+runtime configuration validation
+    ↓
+D1 migrations (when configured)
+    ↓
+atomic Worker code + secret deployment
+    ↓
+remote gateway verification
+    ↓
+success / automatic Worker rollback on post-deploy failure
 ```
 
-手动路径是唯一在 deploy 工作流内重复完整验证的路径（低频操作）；自动 main-push 路径复用已完成的 CI,验证只执行一次。
+The production gate is stricter than the PR merge gate. A PR can merge after the required merge check; production deployment waits for the full `main` CI result.
 
-任何验证步骤失败都会阻断后续步骤——Worker、Secrets 和 D1 不会被触碰。
-**D1 migration 失败时 Worker 部署不会发生**，不会出现"新代码 + 旧 Schema"的线上状态。
+## Automatic deployment eligibility
 
-部署是原子的：代码和 Secret 在同一次 `wrangler deploy --secrets-file` 操作中更新，确保它们属于同一 Worker version。
+`scripts/deploy-gate-decision.mjs` owns the deployment gate. Automatic deployment is allowed only when:
 
-**D1 迁移在 Worker 部署之前运行**。迁移文件按顺序应用（0001–0008），新增表 `token_usage_totals`、`token_usage_daily`、`token_usage_weekly`，`token_usage_hourly` 现为 7 天保留，冗余主键索引已移除，并记录 cache-token usage。本地部署路径自动执行远端 D1 migrations（当 `TOKEN_STATS_DB` binding 存在时）。迁移失败阻断部署。
+- the completed CI run belongs to this repository rather than a fork;
+- that CI run was triggered by a `push`;
+- its conclusion is `success`;
+- the triggering commit contains a deployable change.
 
-部署顺序由 `scripts/deployment-workflow-contract-test.mjs`（unit 套件内）固化为契约测试，防止再次漂移。
+Scheduled CI and manually triggered CI are test-only and do not automatically deploy.
 
-## GitHub Variables
+A commit that changes only Markdown files and/or `docs/**` is intentionally skipped by the deployment gate. Documentation governance changes therefore do not republish the Worker merely because they reached `main`.
 
-| Variable | 必需 | 说明 |
-|---|---|---|
-| `CLOUDFLARE_ACCOUNT_ID` | 是 | 资源标识符 |
-| `GATEWAY_PUBLIC_BASE_URL` | 是 | `https://` URL（无尾部 `/v1`） |
-| `TOKEN_STATS_D1_ID` | 可选 | D1 数据库 ID |
-| `TIER1_AFFINITY_KV_ID` | Tier 1 配置时必需 | KV namespace ID |
-| `TIER1_NODES_CONFIG_01..10` | 至少一个 tier variable | JSON 数组 |
-| `TIER2_NODES_CONFIG_01..10` | 可选 | 同上 |
-| `TIER3_NODES_CONFIG_01..10` | 可选 | 同上 |
-| `GATEWAY_ACCESS_MODELS_{AIR,PRO,MAX,ULTRA,AGENT}` | 对应 Group Key 已配置时必填 | CSV 模型 allowlist；缺失或空值为 fail-closed，获得 0 个模型 |
-| `MODELS_CONFIG` | 可选 | 模型注册表覆盖 |
-| `POLICIES_CONFIG` | 可选 | Attempt budgets |
-| `DEPLOY_ENABLED` | 仅 Fork | 设为 `true` 启用 |
+## Manual Deploy
 
-## GitHub Secrets
-
-| Secret | 必需 | 说明 |
-|---|---|---|
-| `CLOUDFLARE_API_TOKEN` | 是 | Cloudflare 部署 token |
-| `GATEWAY_ACCESS_KEY_{AIR,PRO,MAX,ULTRA,AGENT}` | 至少一个 Group | 客户端访问密钥；五组彼此独立 |
-| `TIER{1,2,3}_NODES_SECRETS_01..10` | 至少一个 | `{ "node-id": "credential" }`；Tier 必须与节点一致，按 node id 绑定；`01..10` 仅为分片编号，suffix 不要求与 Config shard 对应 |
-
-Production bridge 与 Runtime 均只接受五组 Group Key；未配置任何 Group Key 时部署 preflight / Runtime 均按 fail-closed 处理。
-
-## 节点管理
-
-### 添加新节点
-
-1. 编辑目标 Tier 的任一 `TIER*_NODES_CONFIG_XX` Variable——追加新节点对象
-2. 将 credential 添加到**同一 Tier** 的任一 `TIER*_NODES_SECRETS_XX` Secret；运行时按 node id 绑定，Secret shard suffix 不需要与 Config shard suffix 相同
-3. 推送到 `main`
-
-### 编辑节点
-
-修改包含该节点的 `TIER*_NODES_CONFIG_XX` Variable。URL/模型映射、priority/limits 等。
-
-### 轮换 API Key
-
-编辑同一 Tier 中包含该节点 id 的 `TIER*_NODES_SECRETS_XX` Secret，更新 credential。
-
-### 轮换 Gateway Access Key
-
-编辑目标 Group 的 `GATEWAY_ACCESS_KEY_AIR`、`GATEWAY_ACCESS_KEY_PRO`、`GATEWAY_ACCESS_KEY_MAX`、`GATEWAY_ACCESS_KEY_ULTRA` 或 `GATEWAY_ACCESS_KEY_AGENT` Secret；模型权限由对应 `GATEWAY_ACCESS_MODELS_<GROUP>` Variable 控制。
-
-## 配置检查
+`workflow_dispatch` on the Deploy workflow is allowed, but it is not a validation bypass. The manual path runs:
 
 ```bash
-npm run config:check -- \
-  --tier1 config/tier1-nodes.example.json \
-  --tier2 config/tier2-nodes.example.json \
-  --secrets config/node-secrets.example.json
+npm run validate:deploy
+npm run check:deploy
 ```
 
-## 回滚
+before the deploy job can proceed.
 
-### 自动回滚（post-deploy health check 失败）
+## Required configuration
 
-Deploy 工作流包含自动 Worker-code 回滚。如果 Worker 部署成功但 post-deploy health check 失败，自动运行 `wrangler rollback` 恢复之前版本。
+Core GitHub Variables include:
 
-**回滚范围**：Worker code/version only（包括通过 `--secrets-file` 部署的变量和 Secrets）
-**不回滚**：通过 `wrangler secret put` 等命令手动更新的 Secrets、D1 migrations
+- `CLOUDFLARE_ACCOUNT_ID`
+- `GATEWAY_PUBLIC_BASE_URL`
+- at least one `TIER{1,2,3}_NODES_CONFIG_XX` shard
+- `TIER1_AFFINITY_KV_ID` when Tier 1 affinity is used
+- optional `TOKEN_STATS_D1_ID`
+- corresponding `GATEWAY_ACCESS_MODELS_{AIR,PRO,MAX,ULTRA,AGENT}` values for configured access groups
+- optional `MODELS_CONFIG`, `POLICIES_CONFIG`, and runtime variables
 
-### 手动回滚
+Core GitHub Secrets include:
 
-1. 在 `main` 上 revert commit（或推送恢复之前 Variable/Secret 值的新 commit）
-2. 下次 Deploy 恢复之前的代码和运行时变量
+- `CLOUDFLARE_API_TOKEN`
+- at least one `GATEWAY_ACCESS_KEY_{AIR,PRO,MAX,ULTRA,AGENT}`
+- tier-scoped `TIER{1,2,3}_NODES_SECRETS_01..10` containing `{ "node-id": "credential" }`
 
-## Build Identity / Deployment SHA
+The deployment preflight fails closed on missing required production inputs.
 
-每次 Deploy 注入同一个 SHA 到三处：CI 验证的 commit、部署的 Worker code、`/version` 暴露的 `build` 字段。
+## Node credential binding
 
-- **Release identity** = `version` 字段（semver，来自 `package.json`，经 `scripts/generate-version.mjs` 生成 `src/config/version.ts`）
-- **Deployment identity** = `build` 字段（commit SHA，CI/Deploy 自动注入 `GITHUB_SHA`，不手工维护）
-- 部署 Bridge 通过 `EXTRA_VAR_ALLOW` 白名单透传 `GITHUB_SHA` 到 Worker vars map
-- `/version.build` 在缺值或非法值时回退到 `unknown`，本地 dev 与 pre-deploy probe 不会崩溃
-- 完整审计链：`/version` 的 `build` == Workflow run 的 `DEPLOYED_SHA` == 回滚步骤的 `::notice::Rolling back ... for deployed SHA`
+Config and Secret shards are independent partitions. Runtime binding is by **Tier + node id**, not by matching `_01`, `_02`, and so on.
 
-## D1 迁移
+To add or rotate an upstream key:
 
-所有迁移文件按顺序应用。本地部署路径自动执行远端 D1 migrations（当 `TOKEN_STATS_DB` binding 存在时）。迁移失败阻断部署。
+1. keep the node in the appropriate `TIER*_NODES_CONFIG_XX` Variable;
+2. add/update its credential under the same node id in any Secret shard for the same tier;
+3. let the next production deployment rebuild the runtime configuration.
 
-## Branch Protection
+Do not place credentials in node JSON.
 
-`main` 触发自动部署——必须配置 Rulesets：
+## Gateway access groups
 
-- Require a pull request before merging
-- Require status checks to pass（`validate-merge`，唯一 PR 合并前硬门控）
-- Require linear history
-- Block force push
-- Block branch deletion
-- Allow squash merge
+Client access is grouped:
 
-详见 [github-repository-settings.md](github-repository-settings.md)。
+```text
+GATEWAY_ACCESS_KEY_AIR       + GATEWAY_ACCESS_MODELS_AIR
+GATEWAY_ACCESS_KEY_PRO       + GATEWAY_ACCESS_MODELS_PRO
+GATEWAY_ACCESS_KEY_MAX       + GATEWAY_ACCESS_MODELS_MAX
+GATEWAY_ACCESS_KEY_ULTRA     + GATEWAY_ACCESS_MODELS_ULTRA
+GATEWAY_ACCESS_KEY_AGENT     + GATEWAY_ACCESS_MODELS_AGENT
+```
+
+A configured key with an empty/missing model allowlist is fail-closed and grants zero model access.
+
+## D1 migration ordering
+
+When token-usage D1 is configured, ordered migrations run **before** Worker deployment. A migration failure stops deployment so new code is not intentionally published against an older required schema.
+
+D1 migration is not transactionally rolled back with a Worker rollback. Migration design must therefore remain backward-compatible with the previous Worker version used by automatic rollback.
+
+## Atomic Worker deployment
+
+The production workflow deploys Worker code and the prepared Secret/variable payload in the same Wrangler deployment operation so the resulting Worker version sees the intended configuration set.
+
+The local wrapper `scripts/cloudflare-wrangler.mjs` owns the pinned Wrangler CLI and local binding/migration behavior. `wrangler.user.jsonc` is operator-local and gitignored.
+
+## Verification and rollback
+
+After deployment, the workflow verifies the deployed gateway. If deployment happened but post-deploy verification fails, the workflow attempts to roll back the Worker version and verifies the rolled-back gateway.
+
+Automatic rollback covers the Worker version/configuration represented by the deployment mechanism. It does not undo an already-applied D1 migration.
+
+A failed rollback or failed rollback verification requires operator intervention rather than repeated blind deployment.
+
+## Release identity vs. build identity
+
+`/version` separates:
+
+- `version` — SemVer release/source identity generated from `package.json`;
+- `build` — deployed commit SHA injected by the CI/Deploy path.
+
+The deploy verifier can therefore prove which commit is live without changing the semantic version for every deployment.
+
+## Repository protection
+
+The intended repository settings are documented in [github-repository-settings.md](github-repository-settings.md). In particular, `validate-merge` is the PR-time required check; Deploy is a post-merge production workflow and should not be configured as a PR required check.
+
+## Local/operator checks
+
+Before a manual production action:
+
+```bash
+npm ci
+npm run validate:deploy
+npm run check:deploy
+```
+
+For configuration semantics, see [Configuration](configuration.md). For formal release/tag sequencing, see [Release policy](../governance/release-policy.md).
