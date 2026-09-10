@@ -25,14 +25,11 @@ Use Node.js **>=22.18.0**.
 
 PR descriptions should state the problem, behavior change, verification, compatibility impact, resource impact, security impact, and any measured hot-path impact. A refactor must state whether external behavior changed; behavior-preserving refactors must not quietly alter scheduler, protocol, timeout, cooldown, fallback, or configuration semantics.
 
-For request-hot-path changes, compare `npm run bench` before and after on the same machine and Node.js version. Treat the delta as regression evidence rather than an SLA or cross-machine score; see [benchmark/README.md](benchmark/README.md).
-
 ## Repository ownership
 
 - `src/` — Cloudflare Worker runtime.
 - `tests/` — executable tests, contracts, and test-only helpers.
 - `scripts/` — repository, CI, configuration, installation, deployment, and discovery tooling.
-- `benchmark/` — performance measurements.
 - `migrations/` — ordered D1 schema changes.
 - `docs/` — long-lived architecture, operations, and governance documentation.
 
