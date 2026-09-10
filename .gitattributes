@@ -1,9 +1,9 @@
-* text=auto eol=lf
+* text=auto
+*.sh text eol=lf
 *.ps1 text eol=crlf
-*.png binary
-*.jpg binary
-*.jpeg binary
-*.gif binary
-*.zip binary
-*.gz binary
+*.bat text eol=crlf
 
+# Test and contract scripts are engineering support code rather than Worker runtime.
+# Exclude them from GitHub Linguist language statistics so the repository language
+# breakdown better reflects the implementation under src/.
+scripts/*-test.mjs linguist-detectable=false
