@@ -26,6 +26,28 @@ Dashboard HTML
 
 Public Model Status never feeds Scheduler, Reliability, Transport, Protocol, Conversion, Hedge, Cooldown, or Failover.
 
+## Dashboard display allowlist
+
+`DASHBOARD_MODELS` is an optional non-secret Worker **text variable** that controls which logical models appear in the public dashboard's **模型状态** section.
+
+Example:
+
+```text
+DASHBOARD_MODELS=Code-Ultra,Code-Max,Code-Pro,Ultra,Max,Pro,Air
+```
+
+Rules:
+
+- unset or empty → show the full public model catalog;
+- configured → show only matching public models;
+- matching is case-insensitive and trims whitespace;
+- official logical-model casing is preserved in the UI;
+- unknown names are ignored and never create fake rows;
+- duplicates are removed;
+- the configured CSV order becomes the dashboard display order.
+
+This variable is presentation-only. It does **not** change `/v1/models`, model registration, access-key allowlists, routing, model-family fallback, health decisions, D1 collection, or usage statistics. Existing `MODELS_CONFIG` visibility rules are applied first, so this allowlist cannot re-expose a model already hidden by registry configuration.
+
 ## Status states
 
 | State | Meaning |
@@ -75,6 +97,7 @@ Recent model evidence is loaded as a shared query/cache input for dashboard rend
 
 - `src/runtime/availability.ts` — isolate-local availability projection.
 - `src/runtime/model-status.ts` — public model-state decision logic.
+- `src/dashboard/model-status-view.ts` — dashboard-only display filtering and rendering.
 - `src/observability/token-usage-store.ts` and `src/observability/token-usage-store/` — persisted usage/evidence access.
 - dashboard modules — presentation only.
 

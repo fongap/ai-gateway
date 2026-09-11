@@ -3,8 +3,7 @@
 //
 // Public-safe model status rendering. The model status section on the public
 // dashboard renders the Public Model Catalog — the logical models that
-// exist in the Model Registry and have at least one serving node. Rows are
-// shown in deterministic Logical Model ID order (dictionary sort). No node
+// exist in the Model Registry and have at least one serving node. No node
 // ids, providers, tiers, counts or durations ever leave this module, and no
 // model name or prefix carries any business meaning.
 
@@ -37,14 +36,55 @@ const STATE_TOOLTIP: Record<PublicModelStatusState, string> = {
   down: '当前已知服务路径均不可用',
 };
 
+export type DashboardModelStatusEnvelope = {
+  observed_at: string,
+  models: PublicModelStatusEntry[],
+};
+
+// Optional dashboard-only allowlist. DASHBOARD_MODELS is a comma-separated
+// Worker text variable. It affects only the public model-status rows:
+// routing, authorization, /v1/models, fallback and observability are untouched.
+// Matching is canonical/case-insensitive, display keeps the official logical
+// model id, unknown names are ignored, duplicates are removed, and configured
+// order is preserved. Empty/unset keeps the full public catalog.
+export function filterDashboardModelStatus(status: DashboardModelStatusEnvelope, raw: unknown): DashboardModelStatusEnvelope {
+  const configured = typeof raw === 'string' ? raw.trim() : '';
+  if (!configured) return status;
+
+  const requested: string[] = [];
+  for (const token of configured.split(',')) {
+    const key = normalizeModelKey(token);
+    if (key) requested.push(key);
+  }
+  if (!requested.length) return status;
+
+  const byKey = new Map<string, PublicModelStatusEntry>();
+  for (const model of status.models || []) {
+    const key = normalizeModelKey(model.id);
+    if (key && !byKey.has(key)) byKey.set(key, model);
+  }
+
+  const seen = new Set<string>();
+  const models: PublicModelStatusEntry[] = [];
+  for (const key of requested) {
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const model = byKey.get(key);
+    if (model) models.push(model);
+  }
+
+  return { ...status, models };
+}
+
 // PublicModelStatus wrapper used by the dashboard. `historicalEvidence` is the
 // 7-day retention-window evidence set used to distinguish 无新记录 from
 // 暂无记录; it is optional and defaults to empty (fail-open, never fabricated).
-export function publicModelStatus(nodes: ReadonlyArray<RuntimeNode>, env: Record<string, unknown> | null | undefined, evidence: ReadonlySet<string> = new Set(), now: number = Date.now(), historicalEvidence: ReadonlySet<string> = new Set()) {
-  return getPublicModelStatus(nodes, env, evidence, now, historicalEvidence);
+export function publicModelStatus(nodes: ReadonlyArray<RuntimeNode>, env: Record<string, unknown> | null | undefined, evidence: ReadonlySet<string> = new Set(), now: number = Date.now(), historicalEvidence: ReadonlySet<string> = new Set()): DashboardModelStatusEnvelope {
+  const status = getPublicModelStatus(nodes, env, evidence, now, historicalEvidence);
+  return filterDashboardModelStatus(status, env?.DASHBOARD_MODELS);
 }
 
-// Flat list of { id, status } rows from the status envelope, sorted by id.
+// Flat list of { id, status } rows from the status envelope.
 export function modelStatusRows(status: { models?: PublicModelStatusEntry[] } | null | undefined): PublicModelStatusEntry[] {
   if (!status || !Array.isArray(status.models)) return [];
   return status.models;
