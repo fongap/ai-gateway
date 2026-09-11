@@ -47,8 +47,8 @@ export function tier1ConcurrencyPressure(node: RuntimeNode): number {
   const inFlight = tier1AccountInFlight(node.id);
   if (!Number.isFinite(inFlight) || inFlight <= 0) return 0;
   // No guessed capacity denominator. Pressure rises smoothly with live work:
-  // 1 -> .33, 2 -> .50, 4 -> .67, 6 -> .75. It never blocks a primary.
-  return clamp01(inFlight / (inFlight + 2));
+  // 1 -> .50, 2 -> .67, 3 -> .75, 4 -> .80. It never blocks a primary.
+  return clamp01(inFlight / (inFlight + 1));
 }
 
 export function tier1HeatPressure(node: RuntimeNode, now: number = Date.now()): number {
