@@ -18,9 +18,14 @@
 //     "surfaces": ["chat_completions"],   // WHICH endpoints the node really serves
 //     "base_url": "https://.../v1",       // https required by default
 //     "priority": 10,                     // smaller = higher precedence
-//     "models": { "logical": "upstream" },// empty object = supports all models
-//     "limits": { "concurrency": 1 }
+//     "models": { "logical": "upstream" } // empty object = supports all models
 //   }
+//
+// `limits` is no longer part of the active Node schema. Existing deployments
+// that still carry it are accepted for migration safety, but the value is
+// ignored and a deprecation diagnostic is emitted. Provider capacity is learned
+// from live in-flight pressure, 429/cooldown, health/circuit and latency signals
+// instead of operator-guessed concurrency/RPM ceilings.
 //
 // protocol decides request format, upstream endpoint, auth header, protocol
 // headers, and stream wire format. surfaces decides which client surfaces can
@@ -64,13 +69,10 @@ export const SECRET_SHARD_PATTERN = /^TIER([123])_NODES_SECRETS_(\d{2})$/;
 export const MAX_SHARD_INDEX = 10;
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const FORBIDDEN_NODE_FIELDS = ['token', 'credential', 'api_key', 'apikey', 'authorization', 'password', 'secret'];
-// Fail-fast schema: any field outside this set is a typo/invalid and the node
-// is rejected instead of being silently accepted (or emptied into a wildcard).
+// `limits` remains accepted only as a legacy migration field. It is never
+// projected into active admission semantics.
 const ALLOWED_NODE_FIELDS = new Set(['id', 'provider', 'protocol', 'surfaces', 'base_url', 'priority', 'models', 'limits']);
-const ALLOWED_LIMITS_FIELDS = new Set(['concurrency', 'rpm', 'rpm_mode']);
-// "hard" and "local_hard" are accepted aliases for the same isolate-local
-// best-effort cap; neither represents a global account-wide quota.
-const RPM_MODES = new Set(['soft', 'hard', 'local_hard']);
+const LEGACY_UNBOUNDED_CONCURRENCY = Number.MAX_SAFE_INTEGER;
 // protocol -> which client surfaces the node can expose, and the implicit
 // deprecated default used when `surfaces` is omitted.
 const PROTOCOL_SURFACES = new Map<string, Set<string>>([
@@ -338,12 +340,16 @@ function buildRuntimeNode(rawNode: unknown, tier: NodeTier, credentials: Map<str
     return null;
   }
   // Fail-fast: reject unknown top-level fields (e.g. `prioirty` typo) instead of
-  // silently ignoring them and guessing at intent.
+  // silently ignoring them and guessing at intent. `limits` is the sole legacy
+  // migration exception and is ignored below.
   for (const key of Object.keys(rec)) {
     if (!ALLOWED_NODE_FIELDS.has(key)) {
-      diagnostics.push(`node "${id}": unknown field "${key}" (allowed: ${[...ALLOWED_NODE_FIELDS].join(', ')})`);
+      diagnostics.push(`node "${id}": unknown field "${key}" (allowed: id, provider, protocol, surfaces, base_url, priority, models; legacy limits is ignored)`);
       return null;
     }
+  }
+  if ('limits' in rec) {
+    diagnostics.push(`node "${id}": limits is deprecated and ignored; remove it from the node config`);
   }
 
   const baseUrl = typeof rec.base_url === 'string' ? rec.base_url.trim() : '';
@@ -375,9 +381,6 @@ function buildRuntimeNode(rawNode: unknown, tier: NodeTier, credentials: Map<str
   const priority = parsePriority(rec.priority, id, diagnostics);
   if (priority === null) return null;
 
-  const limits = parseLimits(rec.limits, id, diagnostics);
-  if (limits === null) return null;
-
   const protocol = parseProtocol(rec.protocol, id, diagnostics);
   if (protocol === null) return null;
   const surfaces = parseSurfaces(rec.surfaces, protocol, id, diagnostics);
@@ -395,13 +398,9 @@ function buildRuntimeNode(rawNode: unknown, tier: NodeTier, credentials: Map<str
     credential,
     priority,
     models,
-    limits: {
-      concurrency: limits.concurrency ?? 2,
-      // Soft/hard per-minute request quota; undefined = unlimited.
-      // "local_hard" and "hard" are stored as the internal 'hard' value
-      // (both mean isolate-local best-effort cap, not a global quota).
-      ...(limits.rpm !== undefined ? { rpm: limits.rpm, rpmMode: limits.rpmMode ?? 'hard' } : {}),
-    },
+    // Transitional internal shape only. Runtime schedulers treat concurrency
+    // as soft load and no node-level RPM is produced from config anymore.
+    limits: { concurrency: LEGACY_UNBOUNDED_CONCURRENCY },
   };
 }
 
@@ -453,56 +452,6 @@ function parsePriority(raw: unknown, nodeId: string, diagnostics: string[]): num
     return null;
   }
   return Math.trunc(n);
-}
-
-// concurrency is optional in the parsed result; the caller applies the default
-// with `?? 2` when constructing the Runtime Node.
-function parseLimits(raw: unknown, nodeId: string, diagnostics: string[]): { concurrency?: number, rpm?: number, rpmMode?: 'soft' | 'hard' } | null {
-  const out: { concurrency?: number, rpm?: number, rpmMode?: 'soft' | 'hard' } = {};
-  if (raw === undefined || raw === null) return out;
-  if (typeof raw !== 'object' || Array.isArray(raw)) {
-    diagnostics.push(`node "${nodeId}": limits must be an object { concurrency, rpm }`);
-    return null;
-  }
-  const rec = raw as Record<string, unknown>;
-  for (const key of Object.keys(rec)) {
-    if (!ALLOWED_LIMITS_FIELDS.has(key)) {
-      diagnostics.push(`node "${nodeId}": limits.${key} is not a supported limit (allowed: ${[...ALLOWED_LIMITS_FIELDS].join(', ')})`);
-      return null;
-    }
-  }
-  const positiveInt = (value: unknown): number | null => {
-    const n = typeof value === 'number' ? value : (typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN);
-    return Number.isFinite(n) && n >= 1 ? Math.trunc(n) : null;
-  };
-  if ('concurrency' in rec) {
-    const c = positiveInt(rec.concurrency);
-    if (c === null) {
-      diagnostics.push(`node "${nodeId}": limits.concurrency must be an integer >= 1`);
-      return null;
-    }
-    out.concurrency = c;
-  }
-  if ('rpm' in rec) {
-    const r = positiveInt(rec.rpm);
-    if (r === null) {
-      diagnostics.push(`node "${nodeId}": limits.rpm must be an integer >= 1`);
-      return null;
-    }
-    out.rpm = r;
-    // Configured RPM defaults to hard isolate-local enforcement; `soft` is the
-    // explicit best-effort mode. `hard` and `local_hard` normalize identically.
-    out.rpmMode = 'hard';
-  }
-  if ('rpm_mode' in rec) {
-    const mode = typeof rec.rpm_mode === 'string' ? rec.rpm_mode.trim().toLowerCase() : '';
-    if (!RPM_MODES.has(mode)) {
-      diagnostics.push(`node "${nodeId}": limits.rpm_mode must be "soft", "hard", or "local_hard"`);
-      return null;
-    }
-    out.rpmMode = mode === 'soft' ? 'soft' : 'hard';
-  }
-  return out;
 }
 
 function normalizeModels(models: unknown, nodeId: string, diagnostics: string[]): Record<string, string> | null {
