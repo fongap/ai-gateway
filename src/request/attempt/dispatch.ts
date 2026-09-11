@@ -282,8 +282,17 @@ async function dispatchAttempt(c: AttemptContext): Promise<AttemptOutcome> {
     return { rotate: true, kind: classification.kind };
   }
 
+  // Success response shaping still exposes the client-requested logical model.
+  // For a model-family fallback, pass an attempt-local node view that maps the
+  // client alias to the effective upstream model. This lets the existing stream
+  // rewriter detect the mismatch without mutating shared node configuration.
+  const successNode = effectiveModel === requestedModel
+    ? node
+    : { ...node, models: { ...node.models, [requestedModel]: upstreamModel } };
+  const successContext = successNode === node ? c : { ...c, node: successNode };
+
   return handleSuccess({
-    upstream, c, targetUrl, latencyMs, detach,
+    upstream, c: successContext, targetUrl, latencyMs, detach,
     upstreamWasStreaming: isOpenAIStreamingResponse(upstream),
   });
 }
