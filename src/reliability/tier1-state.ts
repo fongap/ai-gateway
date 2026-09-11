@@ -35,8 +35,13 @@ export const TIER1_5XX_MAX_MS = 300_000;
 // isolate can recover on its own after a key rotation without repeatedly
 // hammering a rejected credential. To force a permanent block, set this to 0.
 export const TIER1_AUTH_DISABLED_COOLDOWN_MS = 3_600_000;
+// Availability-first 429 recovery: without an explicit Retry-After, a key
+// backs off briefly and is re-probed quickly instead of disappearing for
+// multi-minute exponential windows. Explicit Retry-After remains authoritative.
 export const TIER1_429_BASE_MS = 30_000;
-export const TIER1_429_MAX_MS = 1_800_000;
+export const TIER1_429_SECOND_MS = 45_000;
+export const TIER1_429_MAX_MS = 60_000;
+export const TIER1_429_PROBE_GATE_MS = 5_000;
 
 const FAILURE_STATE = Object.freeze({
   NORMAL: 'normal',
@@ -74,6 +79,8 @@ export type Tier1AccountRuntime = {
   accountCooldownUntil: number,
   accountCooldownReason: string | null,
   consecutiveAccountFailures: number,
+  consecutiveRateLimits: number,
+  scopeAmbiguous429: boolean,
   rateLimitRecoveryPending: boolean,
   rateLimitRecoveryUntil: number,
   quotaState: Tier1QuotaState,
@@ -151,6 +158,8 @@ function newAccountRuntime(accountId: string): Tier1AccountRuntime {
     accountCooldownUntil: 0,
     accountCooldownReason: null,
     consecutiveAccountFailures: 0,
+    consecutiveRateLimits: 0,
+    scopeAmbiguous429: false,
     rateLimitRecoveryPending: false,
     rateLimitRecoveryUntil: 0,
     quotaState: 'normal',
@@ -244,6 +253,11 @@ export function rollbackTier1Rpm(accountId: string, now: number = Date.now()): v
   bucket.updatedAt = now;
 }
 
+function recoveryGateMs(rpm: number): number {
+  const interval = Number.isFinite(rpm) && rpm > 0 ? 60_000 / rpm : 0;
+  return Math.max(TIER1_429_PROBE_GATE_MS, interval);
+}
+
 export function claimTier1Slot(node: RuntimeNode, now: number = Date.now(), modelId: string | null = null): boolean {
   const account = getTier1Account(node.id);
   if (account.accountDisabled || account.accountCooldownUntil > now || account.rateLimitRecoveryUntil > now) return false;
@@ -258,18 +272,17 @@ export function claimTier1Slot(node: RuntimeNode, now: number = Date.now(), mode
   if (hardRpm && !noteTier1Rpm(node.id, rpm, now)) return false;
 
   account.inFlight++;
-  // A 429 recovery is scoped exactly like the cooldown that caused it. The
-  // first admitted request after cooldown starts a one-interval recovery gate;
-  // model-scoped 429 never blocks sibling models, while account-scoped 429
-  // intentionally gates the whole account. The shared RPM bucket itself is
-  // never pushed into the future, so unrelated model traffic keeps flowing.
+  // The first real admission after a 429 cooldown is the recovery probe. Gate
+  // the same scope immediately so concurrent requests in this isolate cannot
+  // stampede the key before the probe succeeds or fails. A successful probe
+  // clears the gate immediately in recordTier1Success().
   if (account.rateLimitRecoveryPending) {
     account.rateLimitRecoveryPending = false;
-    account.rateLimitRecoveryUntil = hardRpm ? now + (60_000 / rpm) : 0;
+    account.rateLimitRecoveryUntil = now + recoveryGateMs(rpm);
   }
   if (model?.rateLimitRecoveryPending) {
     model.rateLimitRecoveryPending = false;
-    model.rateLimitRecoveryUntil = hardRpm ? now + (60_000 / rpm) : 0;
+    model.rateLimitRecoveryUntil = now + recoveryGateMs(rpm);
   }
   return true;
 }
@@ -476,7 +489,11 @@ export function classifyTier1Failure(classification: Tier1FailureInput, opts: { 
   if (kind === 'rate_limit') {
     const explicit = retryAfterMs ?? classification?.retryAfterMs ?? 0;
     return {
-      scope: classification?.rateLimitScope === 'account' ? 'account' : 'model',
+      // A runtime node is one credential/key. Providers frequently apply 429
+      // limits at credential scope but do not say so explicitly, therefore an
+      // ambiguous 429 now cools that key/account rather than one logical model.
+      // Explicit model-scoped evidence remains supported.
+      scope: classification?.rateLimitScope === 'model' ? 'model' : 'account',
       action: 'cooldown', counted: false, cooldownMs: explicit,
       backoff: 'rate_limit', reason: kind,
       scopeAmbiguous: !classification?.rateLimitScope,
@@ -498,6 +515,12 @@ function exponential(base: number, max: number, count: number): number {
   return Math.min(max, base * 2 ** Math.max(0, count - 1));
 }
 
+function rateLimitCooldownMs(count: number): number {
+  if (count <= 1) return TIER1_429_BASE_MS;
+  if (count === 2) return TIER1_429_SECOND_MS;
+  return TIER1_429_MAX_MS;
+}
+
 // Apply a light ±10% jitter to an automatically-computed cooldown. This
 // avoids different isolates re-probing the same failing upstream at the
 // exact same instant. Explicit Retry-After values are NOT jittered — only
@@ -510,8 +533,13 @@ function jitter(ms: number): number {
 }
 
 function modelCooldownMs(model: Tier1ModelRuntime, outcome: Tier1Outcome): number {
-  if ((outcome.cooldownMs ?? 0) > 0) return Math.min(outcome.cooldownMs ?? 0, TIER1_COOLDOWN_MAX_MS);
-  if (outcome.backoff === 'rate_limit') return jitter(exponential(TIER1_429_BASE_MS, TIER1_429_MAX_MS, model.consecutiveRateLimits));
+  if ((outcome.cooldownMs ?? 0) > 0) {
+    // Provider Retry-After is authoritative for rate limits, even when longer
+    // than the local availability-first automatic cap.
+    if (outcome.backoff === 'rate_limit') return outcome.cooldownMs ?? 0;
+    return Math.min(outcome.cooldownMs ?? 0, TIER1_COOLDOWN_MAX_MS);
+  }
+  if (outcome.backoff === 'rate_limit') return jitter(rateLimitCooldownMs(model.consecutiveRateLimits));
   if (outcome.backoff === 'timeout') return jitter(exponential(TIER1_TIMEOUT_BASE_MS, TIER1_TIMEOUT_MAX_MS, model.consecutiveFailures));
   if (outcome.backoff === 'server') return jitter(exponential(TIER1_5XX_BASE_MS, TIER1_5XX_MAX_MS, model.consecutiveFailures));
   return jitter(exponential(TIER1_COOLDOWN_DEFAULT_MS, TIER1_COOLDOWN_MAX_MS, model.consecutiveFailures));
@@ -564,13 +592,22 @@ export function applyTier1Outcome(accountId: string, modelId: string, outcome: T
     return;
   }
   if (outcome.scope === 'account') {
+    if (outcome.backoff === 'rate_limit') {
+      account.consecutiveRateLimits++;
+      if (outcome.scopeAmbiguous) account.scopeAmbiguous429 = true;
+      const explicit = outcome.cooldownMs ?? 0;
+      const cooldownMs = explicit > 0
+        ? explicit
+        : jitter(rateLimitCooldownMs(account.consecutiveRateLimits));
+      account.accountCooldownUntil = Math.max(account.accountCooldownUntil, now + cooldownMs);
+      account.accountCooldownReason = outcome.reason;
+      account.rateLimitRecoveryPending = true;
+      account.rateLimitRecoveryUntil = 0;
+      return;
+    }
     account.consecutiveAccountFailures++;
     account.accountCooldownUntil = Math.max(account.accountCooldownUntil, now + (outcome.cooldownMs || TIER1_COOLDOWN_DEFAULT_MS));
     account.accountCooldownReason = outcome.reason;
-    if (outcome.backoff === 'rate_limit') {
-      account.rateLimitRecoveryPending = true;
-      account.rateLimitRecoveryUntil = 0;
-    }
     return;
   }
 
@@ -602,8 +639,23 @@ export function recordTier1Success(accountId: string, modelId: string): void {
   const account = getTier1Account(accountId);
   const model = getTier1Model(accountId, modelId);
   account.consecutiveAccountFailures = 0;
+  account.consecutiveRateLimits = 0;
+  if (account.accountCooldownReason === 'rate_limit') {
+    account.accountCooldownUntil = 0;
+    account.accountCooldownReason = null;
+    account.scopeAmbiguous429 = false;
+    account.rateLimitRecoveryPending = false;
+    account.rateLimitRecoveryUntil = 0;
+  }
   model.consecutiveFailures = 0;
   model.consecutiveRateLimits = 0;
+  if (model.cooldownReason === 'rate_limit') {
+    model.cooldownUntil = 0;
+    model.cooldownReason = null;
+    model.scopeAmbiguous429 = false;
+    model.rateLimitRecoveryPending = false;
+    model.rateLimitRecoveryUntil = 0;
+  }
   if (model.failureState === FAILURE_STATE.HALF_OPEN) {
     model.halfOpenSuccesses++;
     if (model.halfOpenSuccesses >= TIER1_HALF_OPEN_SUCCESS_THRESHOLD) {
@@ -695,6 +747,8 @@ export function snapshotTier1Runtime(accountId: string, modelId: string, now: nu
       : modelDiagnosticState(model, now),
     account_disabled: account?.accountDisabled ?? false,
     account_cooldown_remaining_ms: account && account.accountCooldownUntil > now ? account.accountCooldownUntil - now : 0,
+    account_consecutive_rate_limits: account?.consecutiveRateLimits ?? 0,
+    account_scope_ambiguous_429: account?.scopeAmbiguous429 ?? false,
     in_flight: account?.inFlight ?? 0,
     quota_state: account?.quotaState === 'exhausted_until' && (account?.quotaResetAt ?? 0) <= now
       ? 'normal' : account?.quotaState ?? 'normal',
@@ -726,6 +780,8 @@ export function snapshotTier1AccountRuntime(accountId: string, modelIds: Readonl
     in_flight: account?.inFlight ?? 0,
     account_disabled: account?.accountDisabled ?? false,
     account_cooldown_remaining_ms: account && account.accountCooldownUntil > now ? account.accountCooldownUntil - now : 0,
+    consecutive_rate_limits: account?.consecutiveRateLimits ?? 0,
+    scope_ambiguous_429: account?.scopeAmbiguous429 ?? false,
     models,
   };
 }
