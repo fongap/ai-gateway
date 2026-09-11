@@ -78,10 +78,12 @@ export function recordOutcome(state: LoopState, node: RuntimeNode, classificatio
   const headersMs = c?.headersMs ?? (latencyMs >= 0 ? latencyMs : undefined);
 
   if (node.tier === 'tier-1') {
-    // Tier 1 owns its own failure state machine. Logical-model performance,
-    // timeout/5xx state and 429 state remain keyed by the requested model.
-    // model_missing is different: the provider rejected the resolved upstream
-    // model id, so its short cooldown is keyed by (account, upstream model).
+    // Tier 1 owns its own failure state machine. Logical-model performance and
+    // timeout/5xx state remain keyed by the requested model. Ambiguous 429 is
+    // handled at the affected credential/account scope; an explicit model-scoped
+    // rate limit remains model-local. model_missing is different: the provider
+    // rejected the resolved upstream model id, so its short cooldown is keyed
+    // by (account, upstream model).
     releaseTier1Slot(node.id, c.tier1ReleaseToken);
     if (classification.action === 'neutral') {
       bumpNodeCounters(node.id, { requests: 1 });
