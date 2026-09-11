@@ -24,22 +24,31 @@ Authentication + route/body validation
   ↓
 Request orchestration
   ↓
+Logical-model pass
+  ↓
 Native protocol/surface candidate pool
   ↓
 Tier 1 → Tier 2 → Tier 3
   ↓
-Optional Chat Completions ↔ Anthropic Messages fallback
+Optional Chat Completions ↔ Anthropic Messages fallback for the same model
+  ↓
+If the logical-model pool is exhausted: bounded compatible-model fallback
+  ↓
+At most one re-check round for recovered compatible pools
   ↓
 Protocol-specific response / stream
 ```
 
-OpenAI Chat Completions and Anthropic Messages are Native First. Only after the native pool is exhausted may the configured cross-protocol fallback run. OpenAI Responses is Native Only.
+OpenAI Chat Completions and Anthropic Messages are Native First. Only after the native pool is exhausted may the configured cross-protocol fallback run. OpenAI Responses is Native Only for protocol conversion.
+
+Logical-model fallback is a separate outer orchestration layer. The closed families are `Code-Max ↔ Code-Pro → Code-Ultra`, `Max ↔ Pro → Ultra`, and one-way `Air → Pro → Max → Ultra`. Compatible families are evaluated for at most two rounds; all passes share the original attempt, dispatch, hedge, and wall-clock budgets.
 
 ## Module ownership
 
 ```text
 Model Registry     logical model policy and declared capabilities
 Node config         upstream address, protocol, surfaces, model mapping, limits, credential binding
+Request             native/protocol/model-family fallback orchestration and shared budgets
 Scheduler           which eligible node should receive the next attempt
 Reliability         whether a node/account/model is currently usable and how failures change state
 Transport           how to call the selected upstream endpoint
@@ -51,7 +60,7 @@ Runtime             runtime availability and public read-only projections
 Dashboard           presentation only
 ```
 
-These boundaries are intentional. Transport does not select nodes. Scheduler and Reliability do not parse provider wire events. Provider labels are metadata and known-quirk selectors, not a substitute for model capability declarations.
+These boundaries are intentional. Transport does not select nodes. Scheduler and Reliability do not parse provider wire events. Model-family fallback does not replace node scheduling or reliability state; it only decides which compatible logical model is evaluated next after the current pool is exhausted. Provider labels are metadata and known-quirk selectors, not a substitute for model capability declarations.
 
 ## Current invariants
 
@@ -60,7 +69,13 @@ These boundaries are intentional. Transport does not select nodes. Scheduler and
 - Native Anthropic Messages targets `/v1/messages` upstream.
 - The built-in conversion matrix is only OpenAI Chat Completions ↔ Anthropic Messages.
 - OpenAI Responses does not enter cross-protocol conversion.
-- Native retry and conversion fallback share the same logical-attempt and wall-clock failover budget.
+- `Code-Max` and `Code-Pro` are first-choice interchangeable coding aliases; `Code-Ultra` is the family-level higher fallback.
+- `Max` and `Pro` are first-choice interchangeable general aliases; `Ultra` is the family-level higher fallback.
+- Code aliases never fall back into non-Code aliases.
+- `Air` may fall back upward to `Pro → Max → Ultra`; higher general aliases never fall back down to `Air`.
+- Compatible model families get at most two evaluation rounds; there is no unbounded model loop.
+- Model-shaped 404s remain model-mapping failures and do not trigger model-family fallback.
+- Native retry, protocol fallback, and model-family fallback share the same logical-attempt and wall-clock failover budget.
 - A hedge twin remains in the primary request's protocol and surface.
 - Tier 1 uses Eligibility → soft Affinity → P2C with passive TTFT and bounded heat protection.
 - Tier 2/3 remain separate from Tier 1 adaptive state.
@@ -75,6 +90,7 @@ These boundaries are intentional. Transport does not select nodes. Scheduler and
 - Runtime variable names/defaults: `src/config/runtime-vars.ts`.
 - Node parsing and credential binding: `src/config/nodes.ts` and related config modules.
 - Logical model policy/capabilities: `src/config/registry.ts`.
+- Logical-model fallback policy: `src/request/model-fallback.ts` and its contract tests.
 - Protocol fallback matrix: protocol fallback config/conversion modules and their contract tests.
 - Failure taxonomy: `src/reliability/classify.ts`.
 
