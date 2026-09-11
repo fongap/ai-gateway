@@ -13,8 +13,8 @@
 //      Anthropic Messages / count_tokens)
 //   6. requested model extraction
 //   7. model authorization (visible == callable, key-scoped)
-//   8. gateway config readiness and the (model, protocol, surface)
-//      feasibility check (no candidate -> 404)
+//   8. gateway config readiness and execution-path feasibility
+//      (requested model OR an internal compatible model-family fallback)
 //   9. per-model policy resolution
 //
 // Explicitly NOT responsible for (those live downstream):
@@ -22,6 +22,7 @@
 //   - any node attempt / dispatch / hedge
 //   - stream / non-stream finalization
 //   - cross-protocol fallback orchestration
+//   - model-family fallback orchestration
 //   - budget / attempt accounting
 //
 // The function returns either a terminal `Response` (caller returns
@@ -39,6 +40,7 @@ import { loadAccessKeysConfig } from '../config/access-keys.ts';
 import { collectKnownModels } from '../config/registry.ts';
 import { authorizeModel } from './model-authz.ts';
 import { evaluateRouteFeasibility } from './route-feasibility.ts';
+import { modelFallbackCandidates } from './model-fallback.ts';
 import { detectRoute, normalizePath, acceptsHtml } from './router.ts';
 import { dashboardResponse } from '../dashboard/pages.ts';
 import { corsHeaders, readBodyTextWithLimit, BodyTooLargeError } from '../protocol/http.ts';
@@ -106,11 +108,11 @@ export type PreflightResult = PreflightTerminal | PreflightOk;
  * Run the preflight sequence. Returns a `PreflightResult`.
  *
  *   - On any terminal failure (auth, model authz, config, missing
- *     candidate, count_tokens, etc.) `result.ok === false` and the
+ *     execution path, count_tokens, etc.) `result.ok === false` and the
  *     caller returns `result.response` directly.
  *   - On success, `result.ok === true` and the caller enters the
- *     native tier loop with the carried `requestDescriptor`, `tiers`,
- *     `policy`, and `bodyJson`.
+ *     native / model-family / protocol-fallback orchestration with the carried
+ *     `requestDescriptor`, `tiers`, `policy`, and `bodyJson`.
  */
 export async function preflight(request: Request, env: Record<string, unknown>, ctx: { waitUntil?: Function }): Promise<PreflightResult> {
   const requestId = crypto.randomUUID();
@@ -302,21 +304,40 @@ export async function preflight(request: Request, env: Record<string, unknown>, 
     model: requestedModel,
     ...ROUTE_PROTOCOL_SURFACE[route],
   };
-  // "Native First, not Native Only": a request is routable when EITHER a native
-  // candidate exists OR at least one explicitly configured, supported
-  // cross-protocol fallback has a candidate for the requested model. When
-  // neither holds, the request returns 404 and never reaches the tier loop or
-  // the fallback chain. This restores the pre-refactor feasibility gate that
-  // was lost when the candidate-existence check was extracted into preflight
-  // (the old handler checked native OR fallback before returning 404).
+
+  // Preflight authorizes ONLY the client-requested model. Compatible fallback
+  // aliases are an internal execution detail and must not widen what the key can
+  // request directly. After that authorization succeeds, admit the request when
+  // either the requested alias or one of its closed, compatible family members
+  // has a statically reachable native/protocol-fallback route. Runtime
+  // cooldown/circuit/capacity remains a scheduler concern downstream.
   const feasibility = evaluateRouteFeasibility({
     route, requestedModel, requestDescriptor, tiers, knownModels, env,
   });
-  if (!feasibility.reachable) {
+  let familyReachable = feasibility.reachable;
+  if (!familyReachable) {
+    for (const effectiveModel of modelFallbackCandidates(requestedModel, knownModels)) {
+      if (effectiveModel === requestedModel) continue;
+      const effectiveDescriptor = { ...requestDescriptor, model: effectiveModel };
+      const candidateFeasibility = evaluateRouteFeasibility({
+        route,
+        requestedModel: effectiveModel,
+        requestDescriptor: effectiveDescriptor,
+        tiers,
+        knownModels,
+        env,
+      });
+      if (candidateFeasibility.reachable) {
+        familyReachable = true;
+        break;
+      }
+    }
+  }
+  if (!familyReachable) {
     return {
       ok: false,
       response: gatewayError(request, env, route, 404,
-        `No configured route can serve model "${requestedModel}" for client protocol "${requestDescriptor.protocol}" surface "${requestDescriptor.surface}". No native or configured protocol-fallback candidate is available.`, requestId),
+        `No configured route can serve model "${requestedModel}" for client protocol "${requestDescriptor.protocol}" surface "${requestDescriptor.surface}", including internal compatible model fallback.`, requestId),
     };
   }
 
