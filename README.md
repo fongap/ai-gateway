@@ -34,9 +34,10 @@ With tiered routing, operators can place abundant or lower-cost capacity earlier
 | --- | --- |
 | **Multi-key resilience** | P2C selection, passive TTFT learning, concurrency/RPM shaping, cooldown and heat protection |
 | **Tiered failover** | Route through **Tier 1 → Tier 2 → Tier 3** under one request budget |
+| **Model-family fallback** | Bounded recovery across compatible aliases: `Code-Max ↔ Code-Pro → Code-Ultra`, `Max ↔ Pro → Ultra`, and one-way `Air → Pro → Max → Ultra` |
 | **Multi-provider routing** | Aggregate independent providers, keys, and logical model aliases behind one gateway |
 | **Protocol compatibility** | Native OpenAI Chat, OpenAI Responses, and Anthropic Messages |
-| **Safe fallback** | OpenAI Chat ↔ Anthropic Messages only; **OpenAI Responses is Native Only** |
+| **Safe protocol fallback** | OpenAI Chat ↔ Anthropic Messages only; **OpenAI Responses is Native Only** for protocol conversion |
 | **Streaming & observability** | Protocol-aware first-event guards, guarded SSE, sanitized diagnostics, token-usage aggregation |
 
 Designed for heterogeneous OpenAI-compatible and Anthropic-compatible upstreams, including coding-agent and Claude Code workloads.
@@ -46,16 +47,23 @@ Designed for heterogeneous OpenAI-compatible and Anthropic-compatible upstreams,
 ```mermaid
 flowchart TB
     A[Client] --> B[Auth + Route]
-    B --> C[Native First]
+    B --> C[Logical model pass]
+    C --> D[Native First]
 
-    C --> D["Tier 1 → Tier 2 → Tier 3"]
-    C -. exhausted .-> F["Chat ↔ Messages fallback"]
-    F --> D
+    D --> E["Tier 1 → Tier 2 → Tier 3"]
+    D -. native exhausted .-> F["Chat ↔ Messages fallback"]
+    F --> E
 
-    D --> E[Upstream APIs]
+    E -. model pool exhausted .-> G[Compatible model fallback]
+    F -. exhausted .-> G
+    G -. bounded re-check .-> C
+
+    E --> H[Upstream APIs]
 ```
 
-Native execution always comes first. Cross-protocol fallback shares the same logical-attempt and wall-clock failover budget; hedge twins never cross protocol boundaries.
+Native execution always comes first. Cross-protocol fallback and logical-model family fallback share the same logical-attempt, dispatch, hedge, and wall-clock failover budgets. Compatible model families are evaluated for at most two rounds so capacity that recovers while sibling pools are being tried may be reconsidered once; there is no unbounded model loop.
+
+Code models never fall back into the non-Code family. `Air` may move upward to `Pro → Max → Ultra`, but `Ultra` / `Max` / `Pro` never fall back down to `Air`. A model-shaped 404 remains isolated to the failing model mapping and does not trigger a model-family switch.
 
 Tier 1 is intentionally biased toward **stable capacity, not a single "best" key**. RPM headroom can soften selection before a hard limit, affinity weakens as a key gets hot, and optional hedge twins require spare RPM/concurrency capacity.
 
