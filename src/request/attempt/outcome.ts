@@ -14,7 +14,7 @@ import {
 import {
   releaseTier1Slot,
   applyTier1Outcome, classifyTier1Failure,
-  rollbackTier1Rpm,
+  rollbackTier1Rpm, recordTier1ProviderModelRateLimit,
 } from '../../reliability/tier1-state.ts';
 import { KIND } from '../../reliability/classify.ts';
 import type { FailureClassification, FailureKind } from '../../reliability/classify.ts';
@@ -88,9 +88,13 @@ export function recordOutcome(state: LoopState, node: RuntimeNode, classificatio
     if (classification.action === 'neutral') {
       bumpNodeCounters(node.id, { requests: 1 });
     } else {
+      const upstreamModel = upstreamModelOf(node, state.requestedModel);
+      if (classification.kind === KIND.RATE_LIMIT) {
+        recordTier1ProviderModelRateLimit(node.provider, upstreamModel, node.id);
+      }
       const t1Class = classifyTier1Failure(classification, { retryAfterMs: classification.retryAfterMs || 0 });
       const tier1ModelKey = classification.kind === KIND.MODEL_MISSING
-        ? upstreamModelOf(node, state.requestedModel)
+        ? upstreamModel
         : state.requestedModel;
       applyTier1Outcome(node.id, tier1ModelKey, t1Class);
       bumpNodeCounters(node.id, { requests: 1, failures: 1 });

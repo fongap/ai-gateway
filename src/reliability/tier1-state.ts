@@ -43,6 +43,16 @@ export const TIER1_429_SECOND_MS = 45_000;
 export const TIER1_429_MAX_MS = 60_000;
 export const TIER1_429_PROBE_GATE_MS = 5_000;
 
+// Provider-model heat is a soft ranking signal only. One or two independent
+// key-level 429s keep the current key-rotation behavior unchanged; three or
+// more distinct keys for the same provider-facing model indicate shared
+// capacity pressure and gently demote that cohort without blocking it.
+export const TIER1_PROVIDER_MODEL_429_WINDOW_MS = 90_000;
+export const TIER1_PROVIDER_MODEL_429_MILD_ACCOUNTS = 3;
+export const TIER1_PROVIDER_MODEL_429_STRONG_ACCOUNTS = 4;
+export const TIER1_PROVIDER_MODEL_429_MILD_FACTOR = 1.15;
+export const TIER1_PROVIDER_MODEL_429_STRONG_FACTOR = 1.35;
+
 const FAILURE_STATE = Object.freeze({
   NORMAL: 'normal',
   COOLDOWN: 'cooldown',
@@ -116,6 +126,75 @@ export type Tier1Outcome = {
 };
 
 const accounts = new Map<string, Tier1AccountRuntime>();
+
+type Tier1ProviderModelRateLimitRuntime = {
+  accounts: Map<string, number>,
+};
+
+const providerModelRateLimits = new Map<string, Tier1ProviderModelRateLimitRuntime>();
+
+function providerModelKey(provider: string, upstreamModel: string): string {
+  return `${provider}\u0000${upstreamModel}`;
+}
+
+function pruneProviderModelRateLimits(provider: string, upstreamModel: string, now: number): Tier1ProviderModelRateLimitRuntime | null {
+  const key = providerModelKey(provider, upstreamModel);
+  const runtime = providerModelRateLimits.get(key);
+  if (!runtime) return null;
+  const cutoff = now - TIER1_PROVIDER_MODEL_429_WINDOW_MS;
+  for (const [accountId, observedAt] of runtime.accounts) {
+    if (observedAt <= cutoff) runtime.accounts.delete(accountId);
+  }
+  if (runtime.accounts.size === 0) {
+    providerModelRateLimits.delete(key);
+    return null;
+  }
+  return runtime;
+}
+
+export function recordTier1ProviderModelRateLimit(provider: string, upstreamModel: string, accountId: string, now: number = Date.now()): void {
+  if (!provider || !upstreamModel || !accountId) return;
+  const key = providerModelKey(provider, upstreamModel);
+  const runtime = pruneProviderModelRateLimits(provider, upstreamModel, now)
+    ?? { accounts: new Map<string, number>() };
+  runtime.accounts.set(accountId, now);
+  providerModelRateLimits.set(key, runtime);
+}
+
+export function recordTier1ProviderModelSuccess(provider: string, upstreamModel: string, accountId: string, now: number = Date.now()): void {
+  const runtime = pruneProviderModelRateLimits(provider, upstreamModel, now);
+  if (!runtime) return;
+
+  // A real success is recovery evidence. Remove at most one independent 429
+  // observation: preferably this same account, otherwise the oldest one.
+  if (runtime.accounts.delete(accountId)) {
+    // same key recovered
+  } else {
+    let oldestAccount: string | null = null;
+    let oldestAt = Infinity;
+    for (const [candidateId, observedAt] of runtime.accounts) {
+      if (observedAt < oldestAt) {
+        oldestAt = observedAt;
+        oldestAccount = candidateId;
+      }
+    }
+    if (oldestAccount) runtime.accounts.delete(oldestAccount);
+  }
+  if (runtime.accounts.size === 0) {
+    providerModelRateLimits.delete(providerModelKey(provider, upstreamModel));
+  }
+}
+
+export function tier1ProviderModelRateLimitCount(provider: string, upstreamModel: string, now: number = Date.now()): number {
+  return pruneProviderModelRateLimits(provider, upstreamModel, now)?.accounts.size ?? 0;
+}
+
+export function tier1ProviderModelHeatFactor(provider: string, upstreamModel: string, now: number = Date.now()): number {
+  const count = tier1ProviderModelRateLimitCount(provider, upstreamModel, now);
+  if (count >= TIER1_PROVIDER_MODEL_429_STRONG_ACCOUNTS) return TIER1_PROVIDER_MODEL_429_STRONG_FACTOR;
+  if (count >= TIER1_PROVIDER_MODEL_429_MILD_ACCOUNTS) return TIER1_PROVIDER_MODEL_429_MILD_FACTOR;
+  return 1;
+}
 
 type Tier1RpmBucket = {
   tokens: number,
@@ -446,6 +525,7 @@ export function calculateTier1Score(node: RuntimeNode, modelId: string, candidat
     * loadFactor(node)
     * failureFactor(node.id, modelId)
     * quotaFactor(node.id, now)
+    * tier1ProviderModelHeatFactor(node.provider, tier1UpstreamModelOf(node, modelId), now)
     * affinityFactor
     * explorationFactor(node.id, modelId));
 }
@@ -802,6 +882,7 @@ export function snapshotTier1AccountRuntime(accountId: string, modelIds: Readonl
 export function __resetTier1StateForTests(): void {
   accounts.clear();
   rpmBuckets.clear();
+  providerModelRateLimits.clear();
 }
 
 export const TIER1_FAILURE_STATES = FAILURE_STATE;
