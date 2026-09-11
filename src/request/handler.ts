@@ -4,13 +4,11 @@
 // Main request pipeline.
 //
 //   auth -> route -> body -> validate -> model support check
-//     -> per-tier attempt loop:
-//          recompute eligible candidates (dynamic, no static retry index)
-//          -> attempt node -> classify outcome
-//             - success        return response
-//             - rotate         node rotation within the same tier
-//             - tier exhausted fall back to the next tier
-//             - stop           return immediately (client-side errors)
+//     -> bounded logical-model rounds:
+//          -> native per-tier attempt loop
+//          -> configured cross-protocol fallback for the SAME logical model
+//          -> next compatible logical model when the current model pool is
+//             exhausted
 //
 // Streaming rule: the first-event guard runs BEFORE any streaming Response is
 // returned to the client; after that point transparent failover is forbidden.
@@ -24,6 +22,8 @@ import {
 } from '../scheduler/tier1-affinity.ts';
 import { tier1DeadlineTooSmall } from '../scheduler/tier1-scheduler.ts';
 import { preflight as runPreflight } from './preflight.ts';
+import { evaluateRouteFeasibility } from './route-feasibility.ts';
+import { buildModelFallbackRounds } from './model-fallback.ts';
 import { pickForTier, makeTier1Rng, computeTierCaps, countRemainingDispatchableAttempts } from './tier-loop.ts';
 import { runFallbackChain } from './fallback.ts';
 import { dispatchWithHedge } from './attempt.ts';
@@ -55,6 +55,8 @@ export async function handleRequest(request: Request, env: Record<string, unknow
   //   hedges          — hedge twins launched. Hard-capped by
   //                     MAX_HEDGES_PER_REQUEST; worst case
   //                     maxDispatches = maxAttempts + maxHedgesPerRequest.
+  // All model-family passes share these counters and the same wall-clock
+  // failover budget. Switching models never creates a fresh retry budget.
   const state: LoopContext['state'] = {
     attempted: new Set<string>(), attempts: [], logicalAttempts: 0, dispatches: 0, hedges: 0,
     failureKinds: {}, logger, requestId, maxAttempts: policy.maxAttempts,
@@ -78,36 +80,105 @@ export async function handleRequest(request: Request, env: Record<string, unknow
     knownModels, feasibility,
   };
 
-  // Native tier loop: attempt every eligible node of the client's own
-  // protocol+surface before any cross-protocol fallback.
-  const nativeResult = await runTierLoop(loopCtx, reqDescriptor, null);
-  if (nativeResult) return nativeResult;
+  // Model fallback is a bounded outer loop around the EXISTING scheduler. It
+  // never changes node selection, P2C, affinity, cooldown, hedge, tier order,
+  // protocol conversion, or reliability state machines. Each logical-model
+  // pass gets a fresh request-local attempted set so the same credential can
+  // legitimately serve a different logical model, and the second round can
+  // re-check a model whose cooldown recovered while sibling pools were tried.
+  // The global logicalAttempts / dispatches / hedges / wall-clock budget remain
+  // shared and strictly bounded across every pass.
+  const modelRounds = buildModelFallbackRounds(requestedModel, knownModels);
 
-  // Cross-protocol fallback: when the native pool is exhausted and a
-  // fallback chain is configured for this route, convert the request to each
-  // fallback protocol in order and re-run the tier loop. The loop shares the
-  // SAME state (logicalAttempts, dispatches, hedges, failoverBudget,
-  // requestStartMs) — no fresh budget. Hedge does not cross protocols (the
-  // scheduler's protocol+surface filter already excludes foreign nodes).
-  const fbResult = await runFallbackChain({
-    loopCtx,
-    route,
-    requestedModel,
-    runTierLoop,
-  });
-  if (fbResult) return fbResult;
+  modelRoundsLoop:
+  for (let roundIndex = 0; roundIndex < modelRounds.length; roundIndex++) {
+    const round = modelRounds[roundIndex];
+    for (const effectiveModel of round) {
+      if (state.logicalAttempts >= policy.maxAttempts) break modelRoundsLoop;
+      const remainingBudgetMs = failoverBudgetMs - (Date.now() - requestStartMs);
+      if (remainingBudgetMs <= 0) {
+        state.requestedModel = requestedModel;
+        return buildBudgetExhaustedResponse(request, env, route, requestId, requestedModel, state, exposeUpstreamInfo);
+      }
 
+      const effectiveReqDescriptor = { ...reqDescriptor, model: effectiveModel };
+      const effectiveFeasibility = roundIndex === 0 && effectiveModel === requestedModel
+        ? feasibility
+        : evaluateRouteFeasibility({
+          route,
+          requestedModel: effectiveModel,
+          requestDescriptor: effectiveReqDescriptor,
+          tiers,
+          knownModels,
+          env,
+        });
+
+      // A family member that has no statically reachable route costs no
+      // attempt and does not block later siblings. Runtime cooldown/circuit
+      // availability is still evaluated inside the normal tier loop.
+      if (!effectiveFeasibility.reachable) continue;
+
+      state.attempted = new Set<string>();
+      // Reliability state is keyed to the model actually being routed. The
+      // client-facing requested model remains loopCtx.requestedModel and is
+      // preserved in response bodies; only this request-local reliability key
+      // changes between family passes.
+      state.requestedModel = effectiveModel;
+      const effectiveLoopCtx: LoopContext = { ...loopCtx, feasibility: effectiveFeasibility };
+      const modelMissingBefore = state.failureKinds.model_missing ?? 0;
+
+      if (effectiveModel !== requestedModel || roundIndex > 0) {
+        logger.info(
+          `model-fallback request=${requestId} round=${roundIndex + 1}/${modelRounds.length}`
+          + ` requested=${requestedModel} effective=${effectiveModel}`
+          + ` logical_attempts=${state.logicalAttempts}/${policy.maxAttempts}`,
+        );
+      }
+
+      // Native-first for this logical model.
+      const nativeResult = await runTierLoop(effectiveLoopCtx, effectiveReqDescriptor, null);
+      if (nativeResult) return nativeResult;
+
+      if (state.logicalAttempts >= policy.maxAttempts) break modelRoundsLoop;
+
+      // Then run the existing cross-protocol fallback chain for this SAME
+      // effective logical model. Native + protocol fallback share the same
+      // attempted set for this pass, exactly as before.
+      const fbResult = await runFallbackChain({
+        loopCtx: effectiveLoopCtx,
+        route,
+        requestedModel: effectiveModel,
+        runTierLoop,
+      });
+      if (fbResult) return fbResult;
+
+      // A model-missing 404 is a mapping/capability fact, not transient pool
+      // unavailability. Keep that failure isolated to the (node, model) pair
+      // and do not silently turn it into a different logical model. Model-family
+      // fallback is only the final capacity escape hatch after runtime
+      // availability is exhausted.
+      if ((state.failureKinds.model_missing ?? 0) > modelMissingBefore) {
+        break modelRoundsLoop;
+      }
+    }
+  }
+
+  // Restore the external model identity for the terminal error response. Any
+  // successful streaming response returned above deliberately leaves
+  // state.requestedModel on its effective model so late stream completion /
+  // interruption callbacks update the correct reliability bucket.
+  state.requestedModel = requestedModel;
   return buildExhaustedResponse(request, env, route, requestId, requestedModel, state, tiers, exposeUpstreamInfo, reqDescriptor);
 }
 
 // Run the per-tier attempt loop for a given reqDescriptor. Returns a Response
 // when the request was committed (success, budget exhausted, or client-side
 // stop); returns null when all tiers are exhausted without a response so the
-// caller can fall through to cross-protocol fallback or the exhausted handler.
-// `conversionContext` is null for native dispatches; for cross-protocol
-// fallback it carries the converted outbound body and protocol/surface info.
-// `overrideTierCaps` lets the caller inject pre-computed caps (used by the
-// fallback path which recomputes for the fallback protocol).
+// caller can fall through to cross-protocol fallback or the next compatible
+// logical model. `conversionContext` is null for native dispatches; for
+// cross-protocol fallback it carries the converted outbound body and
+// protocol/surface info. `overrideTierCaps` lets the caller inject pre-computed
+// caps (used by the protocol-fallback path).
 async function runTierLoop(loopCtx: LoopContext, reqDescriptor: RoutableRequest, conversionContext: ConversionContext | null, overrideTierCaps?: Record<number, number> | null): Promise<Response | null> {
   const {
     request, env, ctx, logger, requestId, route, requestedModel,
