@@ -51,6 +51,13 @@ export function filterDashboardModelStatus(status: DashboardModelStatusEnvelope,
   const configured = typeof raw === 'string' ? raw.trim() : '';
   if (!configured) return status;
 
+  const requested: string[] = [];
+  for (const token of configured.split(',')) {
+    const key = normalizeModelKey(token);
+    if (key) requested.push(key);
+  }
+  if (!requested.length) return status;
+
   const byKey = new Map<string, PublicModelStatusEntry>();
   for (const model of status.models || []) {
     const key = normalizeModelKey(model.id);
@@ -59,9 +66,8 @@ export function filterDashboardModelStatus(status: DashboardModelStatusEnvelope,
 
   const seen = new Set<string>();
   const models: PublicModelStatusEntry[] = [];
-  for (const token of configured.split(',')) {
-    const key = normalizeModelKey(token);
-    if (!key || seen.has(key)) continue;
+  for (const key of requested) {
+    if (seen.has(key)) continue;
     seen.add(key);
     const model = byKey.get(key);
     if (model) models.push(model);
