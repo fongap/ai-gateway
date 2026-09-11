@@ -13,7 +13,7 @@
 import { corsHeaders, shouldNotRetryHeaders, trimDiagnostic } from '../protocol/http.ts';
 import { anthropicErrorTypeForStatus } from '../protocol/anthropic.ts';
 import { responsesErrorResponse } from '../protocol/responses/index.ts';
-import { getCooldownRemainingMs, getModelCooldownRemainingMs, getNodeState } from '../reliability/node-state.ts';
+import { getCooldownRemainingMs, getModelCooldownRemainingMs } from '../reliability/node-state.ts';
 import { tier1BlockingWaitMs, tier1HasDeferredCapacity } from '../reliability/tier1-state.ts';
 import { supportsRequest, isHardRpmExhausted, tierHasDeferredCapacity } from '../scheduler/scheduler.ts';
 import { TIER_ORDER } from './router.ts';
@@ -78,7 +78,19 @@ export function buildBudgetExhaustedResponse(request: Request, env: Record<strin
     `Gateway failover budget exhausted after ${state.logicalAttempts} attempt(s).`, requestId, details);
 }
 
-export function buildExhaustedResponse(request: Request, env: Record<string, unknown>, route: string, requestId: string, requestedModel: string, state: LoopState, tiers: Record<number, RuntimeNode[]>, exposeUpstreamInfo: boolean, reqDescriptor: RequestDescriptor, knownModels?: ReadonlySet<string>): Response {
+export function buildExhaustedResponse(
+  request: Request,
+  env: Record<string, unknown>,
+  route: string,
+  requestId: string,
+  requestedModel: string,
+  state: LoopState,
+  tiers: Record<number, RuntimeNode[]>,
+  exposeUpstreamInfo: boolean,
+  reqDescriptor: RequestDescriptor,
+  knownModels?: ReadonlySet<string>,
+  retryableFamilyExhaustion: boolean = false,
+): Response {
   const last = state.attempts[state.attempts.length - 1];
   const nothingAttempted = state.attempts.length === 0;
 
@@ -90,16 +102,11 @@ export function buildExhaustedResponse(request: Request, env: Record<string, unk
   const knownModels_ = knownModels ?? state.knownModels;
 
   // Distinguish WHY no node was available:
-  //   saturated (all candidates busy at concurrency caps or hard-RPM exhausted)
-  //     -> 503, so bursty multi-agent clients back off instead of hammering;
+  //   hard-RPM capacity deferred -> 503, so clients back off;
   //   cooling / circuit open -> 429 + the smallest remaining cooldown;
-  //   real failures -> 502.
-  // Retry-After is the EARLIEST moment any node that serves `requestedModel`
-  // could accept the request again. Only model-serving nodes are considered
-  // (a node cooling for an unrelated model must not inflate the wait), and only
-  // currently-blocking nodes contribute; the min across blocking reasons is
-  // taken so a concurrency-saturated node (frees in ~1s) is not masked by an
-  // unrelated node's long RPM window (e.g. 50s).
+  //   real failures -> terminal status unless a complete model-family sweep
+  //     failed only for transient reasons, in which case 503 asks the client to
+  //     retry the turn instead of stopping for manual intervention.
   const now = Date.now();
   let status: number;
   let message: string;
@@ -129,6 +136,18 @@ export function buildExhaustedResponse(request: Request, env: Record<string, unk
     // dominant upstream failure (and vice versa).
     status = terminalStatus(state.failureKinds) ?? (last?.status === 429 ? 429 : 502);
     message = `All nodes failed for model "${requestedModel}".`;
+
+    // A bounded model-family sweep has already rotated across compatible model
+    // pools before this point. If every observed failure is transient, there is
+    // no reason to hand control back to a human: return retryable 503 so coding
+    // clients may start a fresh turn after a short delay. Hard/config/client
+    // failures remain terminal and keep their original status.
+    if (retryableFamilyExhaustion && status !== 429 && familyFailureSetIsRetryable(state.failureKinds)) {
+      status = 503;
+      message = `Compatible model capacity is temporarily unavailable for "${requestedModel}". Retry shortly.`;
+      retryAfterSec = 1;
+    }
+
     if (status === 429) {
       retryAfterSec = earliestBlockingRetryAfterSec(tiers, reqDescriptor, now, knownModels_);
       // A distributed rate-limiter deny (rate_limit_global) leaves no node
@@ -180,9 +199,8 @@ function earliestBlockingRetryAfterSec(tiers: Record<number, RuntimeNode[]>, req
 // Per-node wait until this (node, requestedModel) pair could serve again.
 // Returns Infinity when the node is healthy & idle (not blocking). Node-level
 // cooldown (429/auth/circuit) wins over the model-scoped cooldown (404). Hard
-// RPM exhaustion is bounded by the remaining minute window; concurrency
-// saturation has no timer so it estimates ~1s (slots free as in-flight
-// requests complete).
+// RPM exhaustion is bounded by the remaining minute window. Concurrency is a
+// soft ranking signal and never contributes a blocking wait.
 function blockingWaitMs(node: RuntimeNode, requestedModel: string, now: number): number {
   if (node.tier === 'tier-1') return tier1BlockingWaitMs(node, requestedModel, now);
   const nodeCd = getCooldownRemainingMs(node.id, now);
@@ -190,8 +208,6 @@ function blockingWaitMs(node: RuntimeNode, requestedModel: string, now: number):
   const modelCd = getModelCooldownRemainingMs(node.id, requestedModel, now);
   if (modelCd > 0) return modelCd;
   if (isHardRpmExhausted(node, now)) return Math.max(1, 60_000 - (now % 60_000));
-  const s = getNodeState(node.id);
-  if (s.activeRequests >= node.limits.concurrency) return 1_000;
   return Infinity;
 }
 
@@ -252,6 +268,33 @@ function extractErrorMessage(text: string | Uint8Array | null | undefined): stri
   } catch {
     return trimDiagnostic(raw, 300);
   }
+}
+
+function familyFailureSetIsRetryable(failureKinds?: Partial<Record<string, number>>): boolean {
+  const observed = Object.entries(failureKinds || {}).filter(([, count]) => (count || 0) > 0);
+  if (observed.length === 0) return false;
+
+  const hardKinds = new Set<string>([
+    FAILURE_KIND.AUTH,
+    FAILURE_KIND.CLIENT,
+    FAILURE_KIND.CLIENT_ABORT,
+    FAILURE_KIND.MODEL_MISSING,
+    FAILURE_KIND.ENDPOINT_NOT_FOUND,
+    FAILURE_KIND.INVALID_BASE_URL,
+    FAILURE_KIND.NON_JSON_BODY,
+  ]);
+  if (observed.some(([kind]) => hardKinds.has(kind))) return false;
+
+  const retryableKinds = new Set<string>([
+    FAILURE_KIND.RATE_LIMIT,
+    FAILURE_KIND.RATE_LIMIT_GLOBAL,
+    FAILURE_KIND.SERVER,
+    FAILURE_KIND.NETWORK,
+    FAILURE_KIND.HEADERS_TIMEOUT,
+    FAILURE_KIND.FIRST_EVENT_TIMEOUT,
+    FAILURE_KIND.STREAM_INTERRUPTED,
+  ]);
+  return observed.some(([kind]) => retryableKinds.has(kind));
 }
 
 // Map the aggregated per-attempt failure kinds to a terminal HTTP status.

@@ -8,8 +8,13 @@
 // UNKNOWN accounts (ttftEwma == null) still get sampled — a small
 // exploration factor gives them a chance without distorting known data.
 //
+// Concurrency is deliberately soft: live in-flight work affects ranking and
+// hedge admission, but an operator-guessed limits.concurrency value never makes
+// a primary candidate ineligible. Hard RPM remains available when explicitly
+// configured.
+//
 // This module touches Tier 1 ONLY. Tier 2 / Tier 3 keep using
-// src/scheduler/scheduler.ts (pickCandidate) unchanged.
+// src/scheduler/scheduler.ts.
 
 import {
   isTier1Eligible, claimTier1Slot, makeTier1ReleaseToken,
@@ -28,6 +33,20 @@ import type { RoutableRequest, PickedCandidate } from '../types/scheduler.ts';
 // fit one more Tier 1 attempt — the shared failover budget stays the real
 // wall-clock cap.
 const CONSERVATIVE_ATTEMPT_COST_MS = 500;
+const SOFT_ONLY_CONCURRENCY = Number.MAX_SAFE_INTEGER;
+
+// tier1-state predates soft-only concurrency and still accepts a RuntimeNode
+// whose concurrency field is used as an admission ceiling and load denominator.
+// Feed it an attempt-local view with an effectively unbounded concurrency so
+// configured limits.concurrency cannot hard-block or double-penalize selection.
+// The real node remains unchanged; live in-flight ranking lives in tier1-heat.
+function withoutHardConcurrency(node: RuntimeNode): RuntimeNode {
+  if (node.limits.concurrency === SOFT_ONLY_CONCURRENCY) return node;
+  return {
+    ...node,
+    limits: { ...node.limits, concurrency: SOFT_ONLY_CONCURRENCY },
+  };
+}
 
 // Remaining deadline too small to fit one more attempt? Tier 1 then yields to
 // the Tier Router immediately instead of burning the budget on a doomed attempt.
@@ -38,14 +57,14 @@ export function tier1DeadlineTooSmall(remainingBudgetMs: number, p99TtftMs?: num
 
 // Pick and claim one Tier 1 candidate, or null when the pool is exhausted.
 // Returns { node, releaseToken, escapedFromAffinity } on success, or
-// { raceLost: true } when the slot was claimed under us (retry-eligible), or
-// null when no eligible candidate remains.
+// { raceLost: true } when the runtime admission state moved under us, or null
+// when no eligible candidate remains.
 //
 //   affinityAccountId  — the session's preferred account (null = cold session)
 //   evaluateAffinity  — whether a successful non-affinity winner may migrate
 //     the stored binding (escape window reached).
 //   excludeId          — skip the hedge primary when picking a twin. A non-null
-//     value also marks hedge selection, where spare-capacity gating applies.
+//     value also marks hedge selection, where soft spare-capacity gating applies.
 export function pickTier1Candidate(tier1Nodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, {
   affinityAccountId = null, evaluateAffinity = false, now = Date.now(),
   excludeId = null, rng = Math.random, knownModels = null,
@@ -67,9 +86,9 @@ export function pickTier1Candidate(tier1Nodes: ReadonlyArray<RuntimeNode>, req: 
     // Lazily move expired cooldowns to HALF_OPEN so a real request can probe
     // recovery — no background probe is ever sent.
     maybeTransitionToHalfOpen(node.id, req.model, now);
-    if (!isTier1Eligible(node, req, now, knownModels)) continue;
-    // Hedge is optional latency work. Do not spend the pool's last visible RPM
-    // or concurrency headroom on a twin; primary selection remains unchanged.
+    if (!isTier1Eligible(withoutHardConcurrency(node), req, now, knownModels)) continue;
+    // Hedge is optional latency work. Keep twins away from already-busy
+    // accounts using soft live-load pressure; primary selection is unaffected.
     if (excludeId && !tier1CanAcceptHedge(node, now)) continue;
     eligible.push(node);
   }
@@ -87,26 +106,27 @@ export function pickTier1Candidate(tier1Nodes: ReadonlyArray<RuntimeNode>, req: 
     tier1AffinityFactor(node.id, affinityAccountId),
     now,
   );
+  const scoreFor = (node: RuntimeNode): number => calculateTier1Score(
+    withoutHardConcurrency(node), req.model, eligible,
+    selectionFactor(node), now,
+  );
 
   if (eligible.length === 1) {
     chosen = eligible[0];
   } else {
     // P2C remains a real two-account comparison even with affinity. When the
     // preferred account is eligible it occupies one sample slot and competes
-    // with one random peer. Heat protection weakens the affinity bonus as RPM
-    // or concurrency pressure rises and softly demotes low-headroom RPM nodes.
+    // with one random peer. Live in-flight heat weakens affinity and softly
+    // demotes busy accounts without ever removing them from the primary pool.
     const { a, b } = sampleTwo(eligible, rng, affinityNode);
-    const scoreA = calculateTier1Score(a, req.model, eligible,
-      selectionFactor(a), now);
-    const scoreB = calculateTier1Score(b, req.model, eligible,
-      selectionFactor(b), now);
+    const scoreA = scoreFor(a);
+    const scoreB = scoreFor(b);
     const p2cWinner = scoreA <= scoreB ? a : b;
     const p2cWinnerScore = Math.min(scoreA, scoreB);
 
     if (affinityNode && affinityNode.id !== p2cWinner.id) {
       // Affinity vs this round's P2C winner only — never a full-pool scan.
-      const affScore = calculateTier1Score(affinityNode, req.model, eligible,
-        selectionFactor(affinityNode), now);
+      const affScore = scoreFor(affinityNode);
       if (evaluateAffinity && affinityShouldEscape(affScore, p2cWinnerScore)) {
         chosen = p2cWinner;
         escapedFromAffinity = true;
@@ -127,10 +147,9 @@ export function pickTier1Candidate(tier1Nodes: ReadonlyArray<RuntimeNode>, req: 
   // selected real request succeeds.
   if (affinityAccountId && !affinityNode) updateAffinity = true;
 
-  if (!claimTier1Slot(chosen, now, req.model)) {
-    // Lost the race for the slot (concurrency/RPM moved under us): report
-    // exhausted for this attempt so the caller re-evaluates. This is NOT a
-    // failure — the account stays eligible for a later attempt.
+  if (!claimTier1Slot(withoutHardConcurrency(chosen), now, req.model)) {
+    // Lost the race for runtime admission (e.g. RPM/recovery probe moved under
+    // us). This is NOT a node failure; the caller re-evaluates the tier.
     return { raceLost: true };
   }
   return {

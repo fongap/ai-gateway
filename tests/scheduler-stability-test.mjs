@@ -4,7 +4,9 @@
 //
 // Covered behaviour (per the Tier 1 refactor spec):
 //   - Eligibility: tier/2/3 excluded; (account,model) disabled filtered;
-//     hard concurrency/RPM filtered; cooldown filtered; model_not_found scope.
+//     cooldown filtered; model_not_found scope. Legacy direct limit primitives
+//     stay covered below, while the production picker treats concurrency as a
+//     soft live-load signal rather than a hard primary-admission ceiling.
 //   - P2C: only samples from the eligible pool; single candidate direct pick;
 //     never performs a full ordering; UNKNOWN gets the exploration factor.
 //   - UNKNOWN: ttftEwma stays null; score uses the known median (or neutral
@@ -16,8 +18,8 @@
 //     sample resets consecutiveOutliers; sampleCount increments every time.
 //   - Meaningful TTFT: failed requests (no meaningful output) do NOT write
 //     any TTFT sample — only recordTier1Ttft does, and only on real output.
-//   - inFlight: claimTier1Slot respects concurrency cap; releaseTier1Slot is
-//     idempotent (once-token).
+//   - inFlight: primary picks may exceed a legacy guessed concurrency value;
+//     releaseTier1Slot remains idempotent (once-token).
 //   - Affinity: soft bias in the score; escape window compares the affinity
 //     account against THIS round's P2C winner only; on a successful escape
 //     the new account is written (no-op without a KV binding).
@@ -104,7 +106,6 @@ await test('Eligibility: hard concurrency and RPM cap are filtered', () => {
   assert.ok(claimTier1Slot(b));
   assert.equal(isTier1Eligible(b, REQ), false, 'concurrency full -> ineligible');
   assert.equal(claimTier1Slot(b), false, 'second claim must fail (rpm + concurrency full)');
-  const tok = makeTier1ReleaseToken('b');
   getTier1Account('b').inFlight = Math.max(0, getTier1Account('b').inFlight - 1);
 });
 
@@ -415,15 +416,16 @@ await test('inFlight: streaming release via token; no double decrement', () => {
   releaseTier1Slot('a', pick2.releaseToken);
 });
 
-await test('inFlight: concurrency cap is respected across many concurrent claims', () => {
+await test('inFlight: guessed concurrency never hard-blocks a primary pick', () => {
   const a = node('a', { concurrency: 1 });
-  const tokens = [];
   const p1 = pickTier1Candidate([a], REQ, new Set());
-  assert.ok(p1 && p1.node);
-  tokens.push(p1.releaseToken);
+  assert.ok(p1?.node);
   const p2 = pickTier1Candidate([a], REQ, new Set());
-  assert.equal(p2, null, 'second pick must be null when at capacity');
-  releaseTier1Slot('a', tokens[0]);
+  assert.ok(p2?.node, 'busy sole node must remain usable despite legacy concurrency=1');
+  assert.equal(getTier1Account('a').inFlight, 2, 'live in-flight count remains observable for soft ranking');
+  releaseTier1Slot('a', p1.releaseToken);
+  releaseTier1Slot('a', p2.releaseToken);
+  assert.equal(getTier1Account('a').inFlight, 0, 'both claims must release cleanly');
 });
 
 // ---- Affinity -------------------------------------------------------------

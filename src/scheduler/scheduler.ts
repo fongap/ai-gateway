@@ -6,13 +6,18 @@
 // There is NO static retry index. Before every attempt the eligible set is
 // recomputed from current node state:
 //   valid config -> protocol matches -> surface supported -> model supported
-//   -> circuit available -> cooldown expired
-//   -> concurrency available -> not already attempted in this request
+//   -> circuit available -> cooldown expired -> not already attempted
 // then the best candidate is picked with a single O(n) pass:
 //   priority ASC -> activeRequests ASC -> health DESC (band) -> first-token
 //   latency preference (TTFT EWMA when measured, header-latency EWMA as
 //   fallback; decisive advantage only) -> lastUsedAt ASC (LRU) -> avg latency
 //   ASC
+//
+// `activeRequests` is a SOFT load signal. The scheduler no longer turns an
+// operator-guessed limits.concurrency value into a hard eligibility gate; a
+// busy node loses to a less-busy peer but remains usable when it is the only
+// healthy capacity left. Existing hard RPM behavior is preserved for operators
+// that explicitly configured it.
 //
 // The LRU tiebreak spreads sequential traffic across equal-priority free keys
 // instead of hammering one node until it rate-limits — 429 prevention rather
@@ -59,7 +64,7 @@ function underRpmCap(node: RuntimeNode, now: number): boolean {
 
 // A HARD rpm cap is a real upstream/account quota: once the isolate-local
 // counter reaches it the node must not be dispatched again this minute.
-// SOFT caps (explicit "rpm_mode": "soft") keep the old best-effort behavior.
+// SOFT caps (explicit "rpm_mode": "soft") keep best-effort behavior.
 export function isHardRpmExhausted(node: RuntimeNode, now: number = Date.now()): boolean {
   const rpm = node.limits.rpm;
   if (!rpm || node.limits.rpmMode === 'soft') return false;
@@ -77,12 +82,14 @@ export function rpmWindowRetryAfterSec(now: number = Date.now()): number {
 // eligibility filter includes protocol + surface, a hedge twin picked through
 // this function is ALWAYS same-protocol and same-surface as its primary.
 //
-// RPM semantics:
+// Concurrency semantics:
+//   activeRequests is ranking-only. A busier node is less preferred but is not
+//   rejected because an operator guessed a concurrency ceiling.
+//
+// RPM semantics are unchanged:
 //   hard (default when limits.rpm is set): an exhausted node is NOT a fallback
-//     candidate — the gateway would knowingly exceed the configured quota
-//     otherwise. When every candidate is exhausted the tier is skipped.
-//   soft ("rpm_mode":"soft"): exhausted nodes remain last-resort candidates so
-//     a lone capped node still serves instead of failing the request.
+//     candidate — the gateway would knowingly exceed the configured quota.
+//   soft ("rpm_mode":"soft"): exhausted nodes remain last-resort candidates.
 //
 //   knownModels (optional) is the Known Model Catalog; it bounds wildcard
 //   nodes so an empty-models node only serves catalog models. The request path
@@ -103,15 +110,14 @@ export function pickCandidate(tierNodes: ReadonlyArray<RuntimeNode>, req: Routab
     // disabling the node for its other models.
     if (isModelCooling(node.id, req.model, now)) continue;
     const s = getNodeState(node.id);
-    if (s.activeRequests >= node.limits.concurrency) continue;
-      if (underRpmCap(node, now)) {
-        // bestState is assigned on every assignment of best (single-writer
-        // invariant of this loop), so the assertion only restates that pair.
-        if (!best || betterThan(s, node, bestState as NodeState, best, req.model, now)) {
-          best = node;
-          bestState = s;
-        }
+    if (underRpmCap(node, now)) {
+      // bestState is assigned on every assignment of best (single-writer
+      // invariant of this loop), so the assertion only restates that pair.
+      if (!best || betterThan(s, node, bestState as NodeState, best, req.model, now)) {
+        best = node;
+        bestState = s;
       }
+    }
     // Only SOFT-capped (or uncapped) nodes may serve past their counter.
     if (!isHardRpmExhausted(node, now)) {
       if (!bestUncapped || betterThan(s, node, bestUncappedState as NodeState, bestUncapped, req.model, now)) {
@@ -125,47 +131,36 @@ export function pickCandidate(tierNodes: ReadonlyArray<RuntimeNode>, req: Routab
   if (!chosen) return null;
   // return PickedCandidate so the caller can distinguish
   // "no eligible candidate" (null) from "slot race lost" ({ raceLost: true }).
-  // Previously the race-loss case returned null, which was indistinguishable
-  // from "no eligible nodes" — the tier loop would move to the next tier
-  // instead of retrying the same tier. Tier 1 already had this right via
-  // { raceLost: true }; now both tiers share the same contract.
+  // Tier 2/3 acquireSlot only arbitrates circuit half-open state now; it no
+  // longer represents an operator-defined concurrency slot.
   if (!acquireSlot(chosen.id, now)) return { raceLost: true };
   return { node: chosen };
 }
 
-// True when this tier could serve the request if it had capacity right now
-// (every candidate busy at its concurrency limit or hard-RPM exhausted). Used
-// to distinguish "saturated" from "cooling down" in client responses.
+// True when this tier could serve the request once an explicitly configured
+// hard RPM window resets. Concurrency is deliberately absent: it is a soft
+// ranking input, never deferred hard capacity.
 export function tierHasDeferredCapacity(tierNodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, now: number = Date.now(), knownModels?: ReadonlySet<string> | null): boolean {
   for (const node of tierNodes) {
     if (attempted.has(node.id)) continue;
     if (!supportsRequest(node, req, knownModels)) continue;
     if (peekAvailability(node.id, now) === 'no') continue;
     if (isModelCooling(node.id, req.model, now)) continue;
-    const s = getNodeState(node.id);
-    if (s.activeRequests >= node.limits.concurrency) return true;
     if (isHardRpmExhausted(node, now)) return true;
   }
   return false;
 }
 
 // DISPATCHABLE capacity: a candidate this tier could truly launch THIS INSTANT.
-// Dispatchability-aware mirror of pickCandidate's gates, used to decide whether
-// a LOWER tier deserves an attempt budget: budget is handed out only when the
-// tier can spend it right now, never for merely-*configured* support that would
-// sit unused while the preferred tier still has usable candidates. Soft-RPM-
-// exhausted nodes DO count as dispatchable — pickCandidate keeps them
-// selectable as last resort, so budget must agree with selection. Deferred
-// capacity (concurrency-saturated / hard-RPM-exhausted) belongs to
-// tierHasDeferredCapacity instead: Retry-After and diagnostics, no budget.
+// Dispatchability-aware mirror of pickCandidate's hard gates, used to decide
+// whether a LOWER tier deserves an attempt budget. Active request count does
+// not remove a node from this set; hard RPM still can.
 export function tierHasDispatchableNode(tierNodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, now: number = Date.now(), knownModels?: ReadonlySet<string> | null): boolean {
   return countDispatchableNodes(tierNodes, req, attempted, now, knownModels) > 0;
 }
 
 // Count candidates that pickCandidate could dispatch right now without
-// claiming their slots.  The request pipeline uses this to divide its
-// remaining wall-clock budget across attempts that can actually happen,
-// rather than across a policy maximum that may be larger than the live pool.
+// claiming their circuit/active-request state.
 export function countDispatchableNodes(tierNodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, now: number = Date.now(), knownModels?: ReadonlySet<string> | null): number {
   let count = 0;
   for (const node of tierNodes) {
@@ -173,7 +168,6 @@ export function countDispatchableNodes(tierNodes: ReadonlyArray<RuntimeNode>, re
     if (!supportsRequest(node, req, knownModels)) continue;
     if (peekAvailability(node.id, now) === 'no') continue;
     if (isModelCooling(node.id, req.model, now)) continue;
-    if (getNodeState(node.id).activeRequests >= node.limits.concurrency) continue;
     if (isHardRpmExhausted(node, now)) continue;
     count++;
   }

@@ -59,11 +59,6 @@ Example OpenAI-compatible node:
   "priority": 10,
   "models": {
     "Code-Max": "upstream-code-model"
-  },
-  "limits": {
-    "concurrency": 3,
-    "rpm": 40,
-    "rpm_mode": "hard"
   }
 }
 ```
@@ -80,9 +75,6 @@ Example Anthropic node:
   "priority": 10,
   "models": {
     "Code-Max": "claude-compatible-model"
-  },
-  "limits": {
-    "concurrency": 2
   }
 }
 ```
@@ -98,9 +90,8 @@ Example Anthropic node:
 - `base_url` must be an absolute HTTPS URL unless insecure HTTP is explicitly enabled.
 - `priority` defaults to `100`; it is used by Tier 2/3 and ignored by Tier 1 P2C.
 - `models` maps logical model name → provider-facing model name. An empty object is the runtime wildcard form, bounded by the gateway's known-model/catalog rules where applicable.
-- allowed `limits` fields are `concurrency`, `rpm`, and `rpm_mode`.
-- `rpm_mode` accepts `hard`, `local_hard`, or `soft`; hard/local_hard are isolate-local best-effort hard shaping, not provider-global quota.
-- unknown node or limits fields are rejected instead of silently ignored.
+- `limits` is retired from active configuration. Existing syntactically-valid `limits` objects are accepted temporarily for migration safety, produce a deprecation diagnostic, and should be removed.
+- unknown active node fields are rejected instead of silently ignored.
 
 Missing `protocol` or `surfaces` can still use deprecated compatibility defaults; operators should declare both explicitly.
 
@@ -166,15 +157,30 @@ Set `PROTOCOL_FALLBACKS=disable` for Native-Only Chat/Messages behavior, or prov
 
 Unsupported conversion routes are configuration errors rather than implicit best-effort conversions.
 
-## Tier 1 RPM and heat protection
+## Runtime capacity and heat protection
 
-Tier 1 hard RPM uses isolate-local smooth token-bucket admission. The runtime also derives a bounded heat signal from current RPM headroom and concurrency:
+Node capacity is no longer defined by guessed `limits.concurrency` or `limits.rpm` values. The gateway reacts to evidence it can actually observe:
 
-- lower RPM headroom can softly increase a candidate's P2C score before the hard gate;
-- session-affinity preference decays toward neutral under heat;
-- optional hedge twins require spare headroom.
+- live in-flight work is a **soft ranking signal**: a busy node is less preferred, but remains usable when healthy peers are unavailable;
+- real 429 responses create bounded cooldown/recovery behavior;
+- repeated provider-model 429 evidence adds bounded soft heat without removing the last usable node;
+- TTFT, affinity and circuit state continue to influence routing and recovery;
+- optional hedge work is suppressed before primary traffic when the pool is already busy.
 
-This behavior has **no additional configuration variables**. The existing node `limits.rpm`, `limits.rpm_mode`, and `limits.concurrency` remain the only inputs. There is no success-rate weight and no dynamic concurrency setting.
+`GATEWAY_KEY_RPM` is separate: it protects gateway access keys and is not a guessed Provider/Node quota.
+
+## Model-family fallback
+
+When compatible logical aliases exist, the final capacity escape hatch is bounded and shares the original request wall-clock budget:
+
+- `Code-Max / Code-Pro / Code-Ultra`: first round reserves `3 / 2 / 1` logical attempts in requested-model preference order;
+- `Max / Pro / Ultra`: the same `3 / 2 / 1` rule;
+- `Air`: `3 / 1 / 1 / 1` across `Air → Pro → Max → Ultra`;
+- the re-check round can only spend unused request budget and never creates an unlimited cycle;
+- `model_missing` remains a mapping/capability fact and does not trigger cross-model fallback;
+- a completed family sweep containing only transient capacity failures returns retryable `503`, allowing coding clients to retry without manual intervention.
+
+Models without a configured compatible sibling keep their existing policy budget and terminal semantics.
 
 ## Policies
 
@@ -192,13 +198,13 @@ This behavior has **no additional configuration variables**. The existing node `
 }
 ```
 
-- `max_attempts` is the request-wide logical-attempt ceiling.
+- `max_attempts` is the request-wide logical-attempt ceiling. Configured model families receive the six-attempt minimum required by the bounded `3/2/1` family contract; unrelated models keep the configured value.
 - `tier_attempts` optionally caps individual tiers.
 - `hedge.enabled`, optional delay/tier fields control reactive hedge policy.
 - `first_event_timeout_ms` can override the global first-event timeout per model/policy.
 - `budget_split` supports the current `even`/`weighted` allocation semantics.
 
-Explicit tier caps are authoritative and must fit within `max_attempts`.
+Explicit tier caps remain authoritative inside each logical-model pass and must fit within their policy definition.
 
 ## Cloudflare bindings and deployment identifiers
 
@@ -213,7 +219,7 @@ Runtime bindings may include:
 
 - `TIER1_AFFINITY` KV — hashed session binding, 30-minute TTL;
 - `TOKEN_STATS_DB` D1 — token-usage persistence and recent public-status evidence;
-- optional `QUOTA_RATE_LIMITER` — additional distributed per-location RPM shaping.
+- optional `QUOTA_RATE_LIMITER` — legacy/optional distributed shaping infrastructure; it is not a source of Provider capacity facts.
 
 None of these should be described as a globally exact provider-account concurrency/quota system.
 

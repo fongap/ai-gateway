@@ -10,7 +10,7 @@
 //                                     prefix and match exactly one node id.
 //                                     Shard suffixes are partitioning only.
 //
-// Node JSON schema:
+// Active Node JSON schema:
 //   {
 //     "id": "nvidia-01",                  // ^[a-z0-9][a-z0-9-]{0,63}$
 //     "provider": "nvidia",               // WHO provides it (label/quirks only)
@@ -18,9 +18,14 @@
 //     "surfaces": ["chat_completions"],   // WHICH endpoints the node really serves
 //     "base_url": "https://.../v1",       // https required by default
 //     "priority": 10,                     // smaller = higher precedence
-//     "models": { "logical": "upstream" },// empty object = supports all models
-//     "limits": { "concurrency": 1 }
+//     "models": { "logical": "upstream" } // empty object = supports all models
 //   }
+//
+// `limits` is retired from active admission. Existing deployments that still
+// carry a syntactically-valid legacy limits object remain serviceable and get a
+// deprecation diagnostic, but concurrency/RPM values no longer control routing.
+// Capacity is learned from live in-flight pressure, 429/cooldown, health/circuit
+// and latency signals instead of operator-guessed ceilings.
 //
 // protocol decides request format, upstream endpoint, auth header, protocol
 // headers, and stream wire format. surfaces decides which client surfaces can
@@ -55,24 +60,15 @@ import type { RuntimeNode, NodeTier } from '../types/node.ts';
 import type { Protocol, Surface } from '../types/protocol.ts';
 
 export const TIER_SHARD_PATTERN = /^TIER([123])_NODES_CONFIG_(\d{2})$/;
-// Credentials are tier-scoped and keyed by node id. Any secret shard in the
-// same tier may provide the credential; config and secret suffixes do not pair.
 export const SECRET_SHARD_PATTERN = /^TIER([123])_NODES_SECRETS_(\d{2})$/;
-// GitHub Actions injects node-config/secret shards through a fixed range
-// (01..10). Any shard index above 10 can never be delivered by the Deploy
-// workflow, so it is a configuration error rather than a silent no-op.
 export const MAX_SHARD_INDEX = 10;
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const FORBIDDEN_NODE_FIELDS = ['token', 'credential', 'api_key', 'apikey', 'authorization', 'password', 'secret'];
-// Fail-fast schema: any field outside this set is a typo/invalid and the node
-// is rejected instead of being silently accepted (or emptied into a wildcard).
+// `limits` is the sole legacy migration field. Unknown top-level fields still
+// fail fast; known legacy limit keys are validated only to catch obvious typos.
 const ALLOWED_NODE_FIELDS = new Set(['id', 'provider', 'protocol', 'surfaces', 'base_url', 'priority', 'models', 'limits']);
 const ALLOWED_LIMITS_FIELDS = new Set(['concurrency', 'rpm', 'rpm_mode']);
-// "hard" and "local_hard" are accepted aliases for the same isolate-local
-// best-effort cap; neither represents a global account-wide quota.
 const RPM_MODES = new Set(['soft', 'hard', 'local_hard']);
-// protocol -> which client surfaces the node can expose, and the implicit
-// deprecated default used when `surfaces` is omitted.
 const PROTOCOL_SURFACES = new Map<string, Set<string>>([
   ['openai', new Set(['chat_completions', 'responses'])],
   ['anthropic', new Set(['messages'])],
@@ -109,8 +105,6 @@ export function loadGatewayConfig(env: Record<string, unknown>): GatewayConfig {
   return cachedResult;
 }
 
-// Strict diagnostics for MODELS_CONFIG / POLICIES_CONFIG plus the cross-reference
-// check that every model's declared policy actually exists. These are FATAL.
 function collectAuxConfigDiagnostics(env: Record<string, unknown>): string[] {
   const diags = [
     ...getModelsConfigDiagnostics(env),
@@ -127,21 +121,13 @@ function collectAuxConfigDiagnostics(env: Record<string, unknown>): string[] {
   return diags;
 }
 
-// Cross-config validation for node model mappings. The Model Registry
-// (MODELS_CONFIG) is OPTIONAL metadata; node mappings are the authoritative
-// source of logical model names. The only cross-check worth running is
-// `visibility: 'internal'` — if a node maps a model explicitly marked
-// internal, the node is still built (the model is requestable) but the
-// operator is notified that the visibility field is effectively a no-op for
-// any node that exposes it. We skip this entirely when MODELS_CONFIG is
-// absent (the common case for free-model deployments).
 function collectNodeModelDiagnostics(nodes: ReadonlyArray<RuntimeNode>, env: Record<string, unknown>): string[] {
   const diags: string[] = [];
   let registry: Record<string, RegistryEntry>;
   try {
     registry = loadModelRegistry(env);
   } catch {
-    return diags; // registry not loadable — nothing to cross-check
+    return diags;
   }
   if (!registry || Object.keys(registry).length === 0) return diags;
   const internalModels = new Set<string>();
@@ -162,21 +148,12 @@ function collectNodeModelDiagnostics(nodes: ReadonlyArray<RuntimeNode>, env: Rec
 
 function buildConfig(env: Record<string, unknown>): GatewayConfig {
   const diagnostics: string[] = [];
-  // Strict aux configs (MODELS_CONFIG / POLICIES_CONFIG). Any structural error
-  // here is FATAL: these configs are all-or-nothing, unlike node entries that
-  // can be excluded. A malformed / unknown-field / invalid-value aux config
-  // makes the gateway 'invalid' (ready=false) instead of guessing at intent.
   const auxDiagnostics = collectAuxConfigDiagnostics(env);
   diagnostics.push(...auxDiagnostics);
-  // PROTOCOL_FALLBACKS: unsupported conversions are FATAL (blocking config),
-  // other parse issues are warnings only.
   const fallbackDiags = getProtocolFallbacksDiagnostics(env);
   for (const msg of fallbackDiags) {
-    if (/is not a supported conversion/i.test(msg)) {
-      auxDiagnostics.push(msg);
-    } else {
-      diagnostics.push(msg);
-    }
+    if (/is not a supported conversion/i.test(msg)) auxDiagnostics.push(msg);
+    else diagnostics.push(msg);
   }
   const accessKeyBound = ['AIR', 'PRO', 'MAX', 'ULTRA', 'AGENT'].some((g) => readEnv(env, `GATEWAY_ACCESS_KEY_${g}`));
 
@@ -202,9 +179,6 @@ function buildConfig(env: Record<string, unknown>): GatewayConfig {
     };
   }
 
-  // Merge credential maps from tier-scoped secret shards. Each shard keeps its
-  // tier metadata (TIER1_NODES_SECRETS_* -> tier-1). Node IDs stay globally
-  // unique, while the shard suffix remains only a partitioning mechanism.
   const credentials = new Map<string, string>();
   const credentialTiers = new Map<string, string>();
   let conflict = false;
@@ -233,13 +207,11 @@ function buildConfig(env: Record<string, unknown>): GatewayConfig {
     }
   }
 
-  // Parse and validate node configs.
   const allowInsecure = getBool(env, 'ALLOW_INSECURE_HTTP_UPSTREAM', false);
   const seenIds = new Map<string, string>();
   const nodes: RuntimeNode[] = [];
   const sortedTierShards = [...tierShards].sort((a, b) => a.tierNumber - b.tierNumber || a.index - b.index);
   for (const shard of sortedTierShards) {
-    // shard tierNumber is validated to 1..3 by the shard pattern match.
     const tier = `tier-${shard.tierNumber}` as NodeTier;
     const parsed = parseJsonVar(env[shard.key] as string, shard.key, diagnostics);
     if (!Array.isArray(parsed)) {
@@ -270,32 +242,17 @@ function buildConfig(env: Record<string, unknown>): GatewayConfig {
     }
   }
 
-  // Cross-config validation: warn if a node maps a logical model not declared in MODELS_CONFIG.
-  const nodeModelDiags = collectNodeModelDiagnostics(nodes, env);
-  diagnostics.push(...nodeModelDiags);
-
-  // Credentials without a matching node are a configuration mistake.
+  diagnostics.push(...collectNodeModelDiagnostics(nodes, env));
   for (const [nodeId] of credentials) {
     if (!seenIds.has(nodeId)) diagnostics.push(`credential "${nodeId}" has no matching node config`);
   }
 
-  // Status semantics (strict, no contradictions):
-  //   unconfigured  key config missing entirely            -> ready=false
-  //   invalid       structural conflict / zero usable / FATAL aux config error -> ready=false, never serve
-  //   degraded      some nodes unusable, >=1 usable, aux configs clean -> ready=true
-  //   ready         all declared nodes usable & aux configs clean -> ready=true
-  // A FATAL aux config error (malformed JSON, unknown field, invalid
-  // max_attempts / tier_attempts, undefined policy reference) is treated like a
-  // structural conflict: it refuses service so the operator must fix it, rather
-  // than silently serving traffic on guessed defaults.
   if (auxDiagnostics.length > 0) status = 'invalid';
   else if (conflict || nodes.length === 0) status = 'invalid';
   else if (nodes.length < nodesDeclared) status = 'degraded';
   else status = 'ready';
   const ready = status === 'ready' || status === 'degraded';
 
-  // Precompute tier groups (priority-sorted) once per isolate; the scheduler
-  // must not re-group or re-sort on the request hot path.
   const tiers: Record<number, RuntimeNode[]> = { 1: [], 2: [], 3: [] };
   for (const node of nodes) tiers[Number(node.tier.slice(5))].push(node);
   for (const list of Object.values(tiers)) list.sort((a, b) => a.priority - b.priority);
@@ -316,7 +273,6 @@ function buildConfig(env: Record<string, unknown>): GatewayConfig {
   };
 }
 
-// Build one Runtime Node or return null with a diagnostic reason.
 function buildRuntimeNode(rawNode: unknown, tier: NodeTier, credentials: Map<string, string>, allowInsecure: boolean, sourceKey: string, diagnostics: string[]): RuntimeNode | null {
   if (!rawNode || typeof rawNode !== 'object' || Array.isArray(rawNode)) {
     diagnostics.push(`${sourceKey}: entry is not a JSON object`);
@@ -337,11 +293,9 @@ function buildRuntimeNode(rawNode: unknown, tier: NodeTier, credentials: Map<str
     diagnostics.push(`node "${id}": forbidden credential field(s) ${forbidden.join(', ')}; credentials belong in TIER{N}_NODES_SECRETS_*`);
     return null;
   }
-  // Fail-fast: reject unknown top-level fields (e.g. `prioirty` typo) instead of
-  // silently ignoring them and guessing at intent.
   for (const key of Object.keys(rec)) {
     if (!ALLOWED_NODE_FIELDS.has(key)) {
-      diagnostics.push(`node "${id}": unknown field "${key}" (allowed: ${[...ALLOWED_NODE_FIELDS].join(', ')})`);
+      diagnostics.push(`node "${id}": unknown field "${key}" (allowed: id, provider, protocol, surfaces, base_url, priority, models; legacy limits is ignored)`);
       return null;
     }
   }
@@ -371,12 +325,11 @@ function buildRuntimeNode(rawNode: unknown, tier: NodeTier, credentials: Map<str
 
   const models = normalizeModels(rec.models, id, diagnostics);
   if (models === null) return null;
-
   const priority = parsePriority(rec.priority, id, diagnostics);
   if (priority === null) return null;
-
-  const limits = parseLimits(rec.limits, id, diagnostics);
-  if (limits === null) return null;
+  const legacyLimits = parseLimits(rec.limits, id, diagnostics);
+  if (legacyLimits === null) return null;
+  if ('limits' in rec) diagnostics.push(`node "${id}": limits is deprecated and ignored; remove it from the node config`);
 
   const protocol = parseProtocol(rec.protocol, id, diagnostics);
   if (protocol === null) return null;
@@ -395,18 +348,17 @@ function buildRuntimeNode(rawNode: unknown, tier: NodeTier, credentials: Map<str
     credential,
     priority,
     models,
+    // Transitional internal shape: legacy values may remain visible to tests /
+    // diagnostics, but no node-level RPM value is projected, so RPM admission
+    // is disabled. Tier 1 primary selection separately ignores concurrency as
+    // a hard gate; Tier 2/3 only use activeRequests as a ranking signal.
     limits: {
-      concurrency: limits.concurrency ?? 2,
-      // Soft/hard per-minute request quota; undefined = unlimited.
-      // "local_hard" and "hard" are stored as the internal 'hard' value
-      // (both mean isolate-local best-effort cap, not a global quota).
-      ...(limits.rpm !== undefined ? { rpm: limits.rpm, rpmMode: limits.rpmMode ?? 'hard' } : {}),
+      concurrency: legacyLimits.concurrency ?? 2,
+      ...(legacyLimits.rpm !== undefined ? { rpmMode: legacyLimits.rpmMode ?? 'hard' } : {}),
     },
   };
 }
 
-// protocol: openai | anthropic. Missing values use the deprecated implicit
-// "openai" default and emit a diagnostic.
 function parseProtocol(raw: unknown, nodeId: string, diagnostics: string[]): Protocol | null {
   if (raw === undefined || raw === null) {
     diagnostics.push(`node "${nodeId}": protocol is implicit and defaults to "openai"; please configure it explicitly`);
@@ -420,8 +372,6 @@ function parseProtocol(raw: unknown, nodeId: string, diagnostics: string[]): Pro
   return value as Protocol;
 }
 
-// surfaces: which endpoints this node really serves. Missing values use the
-// deprecated default for the resolved protocol and emit a diagnostic.
 function parseSurfaces(raw: unknown, protocol: Protocol, nodeId: string, diagnostics: string[]): Surface[] | null {
   if (raw === undefined || raw === null) {
     const def = DEFAULT_SURFACES.get(protocol) as string[];
@@ -455,8 +405,6 @@ function parsePriority(raw: unknown, nodeId: string, diagnostics: string[]): num
   return Math.trunc(n);
 }
 
-// concurrency is optional in the parsed result; the caller applies the default
-// with `?? 2` when constructing the Runtime Node.
 function parseLimits(raw: unknown, nodeId: string, diagnostics: string[]): { concurrency?: number, rpm?: number, rpmMode?: 'soft' | 'hard' } | null {
   const out: { concurrency?: number, rpm?: number, rpmMode?: 'soft' | 'hard' } = {};
   if (raw === undefined || raw === null) return out;
@@ -467,7 +415,7 @@ function parseLimits(raw: unknown, nodeId: string, diagnostics: string[]): { con
   const rec = raw as Record<string, unknown>;
   for (const key of Object.keys(rec)) {
     if (!ALLOWED_LIMITS_FIELDS.has(key)) {
-      diagnostics.push(`node "${nodeId}": limits.${key} is not a supported limit (allowed: ${[...ALLOWED_LIMITS_FIELDS].join(', ')})`);
+      diagnostics.push(`node "${nodeId}": limits.${key} is not a supported legacy limit (allowed: ${[...ALLOWED_LIMITS_FIELDS].join(', ')})`);
       return null;
     }
   }
@@ -490,8 +438,6 @@ function parseLimits(raw: unknown, nodeId: string, diagnostics: string[]): { con
       return null;
     }
     out.rpm = r;
-    // Configured RPM defaults to hard isolate-local enforcement; `soft` is the
-    // explicit best-effort mode. `hard` and `local_hard` normalize identically.
     out.rpmMode = 'hard';
   }
   if ('rpm_mode' in rec) {
@@ -507,11 +453,9 @@ function parseLimits(raw: unknown, nodeId: string, diagnostics: string[]): { con
 
 function normalizeModels(models: unknown, nodeId: string, diagnostics: string[]): Record<string, string> | null {
   const out: Record<string, string> = {};
-  // Missing (`undefined`) => serve every configured logical model.
   if (models === undefined || models === null) return out;
 
   if (Array.isArray(models)) {
-    // A list of model names (logical == upstream). Empty array => wildcard.
     if (models.length === 0) return out;
     for (const m of models) {
       if (typeof m !== 'string' || !m.trim()) {
@@ -523,15 +467,13 @@ function normalizeModels(models: unknown, nodeId: string, diagnostics: string[])
     return out;
   }
 
-  // A scalar, boolean, etc. is an invalid structure, NOT a wildcard: never let
-  // a typo'd/illegal config silently clear the map into "serve everything".
   if (typeof models !== 'object') {
     diagnostics.push(`node "${nodeId}": models must be an object { logical: upstream }`);
     return null;
   }
 
   const keys = Object.keys(models);
-  if (keys.length === 0) return out; // explicit `{}` => wildcard
+  if (keys.length === 0) return out;
 
   for (const key of keys) {
     if (typeof key !== 'string' || !key.trim()) {
@@ -548,8 +490,6 @@ function normalizeModels(models: unknown, nodeId: string, diagnostics: string[])
   return out;
 }
 
-// `indexGroup` selects the capture group that contains the numeric shard
-// suffix; both current shard patterns keep that suffix in group 2.
 export function collectShards(env: Record<string, unknown>, pattern: RegExp, loosePrefix: string, expectedExample: string, indexGroup: number, diagnostics: string[]): Array<{ key: string, index: number, tierNumber: number }> {
   const shards: Array<{ key: string, index: number, tierNumber: number }> = [];
   for (const key of Object.keys(env || {})) {
@@ -567,7 +507,6 @@ export function collectShards(env: Record<string, unknown>, pattern: RegExp, loo
       });
       continue;
     }
-    // Flag malformed sibling names so typos are never silently ignored.
     if (!pattern.test(key) && key.startsWith(loosePrefix)) {
       diagnostics.push(`${key}: malformed shard name (expected ${expectedExample}); ignored`);
     }

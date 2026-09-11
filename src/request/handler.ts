@@ -23,13 +23,15 @@ import {
 import { tier1DeadlineTooSmall } from '../scheduler/tier1-scheduler.ts';
 import { preflight as runPreflight } from './preflight.ts';
 import { evaluateRouteFeasibility } from './route-feasibility.ts';
-import { buildModelFallbackRounds } from './model-fallback.ts';
+import { buildModelFallbackPlan, modelFallbackCandidates } from './model-fallback.ts';
 import { pickForTier, makeTier1Rng, computeTierCaps, countRemainingDispatchableAttempts } from './tier-loop.ts';
 import { runFallbackChain } from './fallback.ts';
 import { dispatchWithHedge } from './attempt.ts';
 import type { LoopContext, ConversionContext } from '../types/request.ts';
 import type { RoutableRequest } from '../types/scheduler.ts';
 import type { RuntimeNode } from '../types/node.ts';
+
+const MODEL_FAMILY_ATTEMPT_BUDGET = 6;
 
 export async function handleRequest(request: Request, env: Record<string, unknown>, ctx: { waitUntil?: Function }): Promise<Response> {
   const logger = getLogger(env);
@@ -48,9 +50,21 @@ export async function handleRequest(request: Request, env: Record<string, unknow
     config, tiers, policy, failoverBudgetMs, knownModels, feasibility,
   } = pre;
 
+  // A name such as Max/Code-Max is not enough by itself to activate family
+  // behavior. At least one compatible sibling alias must actually exist in the
+  // known-model catalog; otherwise the request keeps its legacy attempt budget
+  // and terminal error semantics.
+  const familyFallback = modelFallbackCandidates(requestedModel, knownModels).length > 1;
+  // The 3-2-1 family contract needs six logical attempts. Configured families
+  // get at least that request-wide budget; larger explicit policies are kept.
+  // Requests without a configured sibling keep their policy exactly as before.
+  const requestPolicy = familyFallback && policy.maxAttempts < MODEL_FAMILY_ATTEMPT_BUDGET
+    ? { ...policy, maxAttempts: MODEL_FAMILY_ATTEMPT_BUDGET }
+    : policy;
+
   // Three SEPARATE counters, never one overloaded total:
-  //   logicalAttempts — max_attempts budget; a primary + its optional hedge
-  //                     twin together are ONE logical attempt;
+  //   logicalAttempts — request-wide attempt budget; a primary + its optional
+  //                     hedge twin together are ONE logical attempt;
   //   dispatches      — real upstream requests (pre-dispatch denies excluded);
   //   hedges          — hedge twins launched. Hard-capped by
   //                     MAX_HEDGES_PER_REQUEST; worst case
@@ -59,8 +73,8 @@ export async function handleRequest(request: Request, env: Record<string, unknow
   // failover budget. Switching models never creates a fresh retry budget.
   const state: LoopContext['state'] = {
     attempted: new Set<string>(), attempts: [], logicalAttempts: 0, dispatches: 0, hedges: 0,
-    failureKinds: {}, logger, requestId, maxAttempts: policy.maxAttempts,
-    maxDispatches: policy.maxAttempts + limits.maxHedgesPerRequest,
+    failureKinds: {}, logger, requestId, maxAttempts: requestPolicy.maxAttempts,
+    maxDispatches: requestPolicy.maxAttempts + limits.maxHedgesPerRequest,
     requestedModel,
     nodes: config.nodes,
   };
@@ -75,7 +89,7 @@ export async function handleRequest(request: Request, env: Record<string, unknow
   const loopCtx: LoopContext = {
     request, env, ctx, logger, requestId, route, requestedModel,
     clientWantsStream, fakeStream, bodyJson, limits, exposeUpstreamInfo, state,
-    failoverBudgetMs, requestStartMs, policy, tiers,
+    failoverBudgetMs, requestStartMs, policy: requestPolicy, tiers,
     tier1Affinity, tier1EvaluateAffinity, tier1Rng, tier1Session,
     knownModels, feasibility,
   };
@@ -86,20 +100,32 @@ export async function handleRequest(request: Request, env: Record<string, unknow
   // pass gets a fresh request-local attempted set so the same credential can
   // legitimately serve a different logical model, and the second round can
   // re-check a model whose cooldown recovered while sibling pools were tried.
-  // The global logicalAttempts / dispatches / hedges / wall-clock budget remain
-  // shared and strictly bounded across every pass.
-  const modelRounds = buildModelFallbackRounds(requestedModel, knownModels);
+  //
+  // The first family round reserves 3 -> 2 -> 1 attempts (Air uses 3/1/1/1).
+  // A second-round pass gets at most one attempt and can only spend budget that
+  // round 1 left unused. This prevents the requested alias from consuming the
+  // entire request before its compatible siblings get a turn.
+  const modelPlan = buildModelFallbackPlan(requestedModel, knownModels);
 
   modelRoundsLoop:
-  for (let roundIndex = 0; roundIndex < modelRounds.length; roundIndex++) {
-    const round = modelRounds[roundIndex];
-    for (const effectiveModel of round) {
-      if (state.logicalAttempts >= policy.maxAttempts) break modelRoundsLoop;
+  for (let roundIndex = 0; roundIndex < modelPlan.length; roundIndex++) {
+    const round = modelPlan[roundIndex];
+    for (const pass of round) {
+      if (state.logicalAttempts >= requestPolicy.maxAttempts) break modelRoundsLoop;
       const remainingBudgetMs = failoverBudgetMs - (Date.now() - requestStartMs);
       if (remainingBudgetMs <= 0) {
         state.requestedModel = requestedModel;
         return buildBudgetExhaustedResponse(request, env, route, requestId, requestedModel, state, exposeUpstreamInfo);
       }
+
+      const effectiveModel = pass.model;
+      const passStartAttempts = state.logicalAttempts;
+      const passAttemptCeiling = pass.attemptCap == null
+        ? requestPolicy.maxAttempts
+        : Math.min(requestPolicy.maxAttempts, passStartAttempts + pass.attemptCap);
+      const passPolicy = passAttemptCeiling === requestPolicy.maxAttempts
+        ? requestPolicy
+        : { ...requestPolicy, maxAttempts: passAttemptCeiling };
 
       const effectiveReqDescriptor = { ...reqDescriptor, model: effectiveModel };
       const effectiveFeasibility = roundIndex === 0 && effectiveModel === requestedModel
@@ -124,14 +150,19 @@ export async function handleRequest(request: Request, env: Record<string, unknow
       // preserved in response bodies; only this request-local reliability key
       // changes between family passes.
       state.requestedModel = effectiveModel;
-      const effectiveLoopCtx: LoopContext = { ...loopCtx, feasibility: effectiveFeasibility };
+      const effectiveLoopCtx: LoopContext = {
+        ...loopCtx,
+        feasibility: effectiveFeasibility,
+        policy: passPolicy,
+      };
       const modelMissingBefore = state.failureKinds.model_missing ?? 0;
 
       if (effectiveModel !== requestedModel || roundIndex > 0) {
         logger.info(
-          `model-fallback request=${requestId} round=${roundIndex + 1}/${modelRounds.length}`
+          `model-fallback request=${requestId} round=${roundIndex + 1}/${modelPlan.length}`
           + ` requested=${requestedModel} effective=${effectiveModel}`
-          + ` logical_attempts=${state.logicalAttempts}/${policy.maxAttempts}`,
+          + ` pass_cap=${pass.attemptCap ?? 'policy'}`
+          + ` logical_attempts=${state.logicalAttempts}/${requestPolicy.maxAttempts}`,
         );
       }
 
@@ -139,11 +170,15 @@ export async function handleRequest(request: Request, env: Record<string, unknow
       const nativeResult = await runTierLoop(effectiveLoopCtx, effectiveReqDescriptor, null);
       if (nativeResult) return nativeResult;
 
-      if (state.logicalAttempts >= policy.maxAttempts) break modelRoundsLoop;
+      if (state.logicalAttempts >= requestPolicy.maxAttempts) break modelRoundsLoop;
+      // This model spent its reserved share. Move to its sibling instead of
+      // letting the first alias starve family fallback. If the native path did
+      // not consume the whole share, protocol fallback may use the remainder.
+      if (state.logicalAttempts >= passAttemptCeiling) continue;
 
       // Then run the existing cross-protocol fallback chain for this SAME
-      // effective logical model. Native + protocol fallback share the same
-      // attempted set for this pass, exactly as before.
+      // effective logical model. Native + protocol fallback share this pass's
+      // cap and the request-wide attempt/wall-clock budget.
       const fbResult = await runFallbackChain({
         loopCtx: effectiveLoopCtx,
         route,
@@ -168,7 +203,10 @@ export async function handleRequest(request: Request, env: Record<string, unknow
   // state.requestedModel on its effective model so late stream completion /
   // interruption callbacks update the correct reliability bucket.
   state.requestedModel = requestedModel;
-  return buildExhaustedResponse(request, env, route, requestId, requestedModel, state, tiers, exposeUpstreamInfo, reqDescriptor);
+  return buildExhaustedResponse(
+    request, env, route, requestId, requestedModel, state, tiers,
+    exposeUpstreamInfo, reqDescriptor, knownModels, familyFallback,
+  );
 }
 
 // Run the per-tier attempt loop for a given reqDescriptor. Returns a Response

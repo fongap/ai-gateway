@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Stress / fault-injection tests: hammer the REAL worker.fetch pipeline under
 // bursts and injected faults and assert the reliability invariants hold —
-//   * concurrency is never exceeded, slots never leak
-//   * hard RPM never exceeds the configured cap
+//   * configured concurrency is soft; live slots still release without leaks
+//   * legacy node limits are ignored instead of becoming guessed hard quotas
 //   * cooling storms short-circuit (no wasted upstream calls)
 //   * circuit opens on sustained failure, single-probe half-open recovers
 //   * tier fallback drains the higher tier first
@@ -14,7 +14,7 @@ import worker from '../src/index.ts';
 import { __resetAllStateForTests, getNodeState } from '../src/reliability/node-state.ts';
 import {
   __resetTier1StateForTests, getTier1Account, getTier1Model,
-  tier1AccountInFlight, tier1FailureState, TIER1_FAILURE_STATES,
+  tier1AccountInFlight,
 } from '../src/reliability/tier1-state.ts';
 import { __resetTier1AffinityForTests } from '../src/scheduler/tier1-affinity.ts';
 
@@ -35,7 +35,6 @@ async function test(name, fn) {
   }
 }
 
-// ---- Mock upstream plumbing (same style as integration-test) --------------
 const upstreamCalls = [];
 let routeHandlers = {};
 
@@ -46,14 +45,8 @@ function installMockFetch() {
     if (!handler) throw new Error(`no mock upstream for ${url.hostname}`);
     if (init?.body) upstreamCalls.push({ host: url.hostname });
     const signal = init?.signal;
-    // If the caller aborted before we even dispatched, surface it immediately
-    // (mirrors real fetch semantics: a pre-aborted signal rejects the fetch).
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     const res = handler(reqFor(url, init));
-    // Wire the abort signal into the upstream stream so a mid-stream client
-    // abort actually errors the body the gateway is pumping — without this the
-    // abort never reaches the streaming path and the slot only releases via
-    // the normal completion path (the "fake test" bug).
     if (signal && res.body) {
       const upstream = res.body;
       const onAbort = () => { try { upstream.cancel(); } catch { /* already closed */ } };
@@ -82,7 +75,6 @@ function makeEnv({ tier1, tier2, tier3, secrets, extraEnv } = {}) {
   return {
     GATEWAY_ACCESS_KEY_AIR: ACCESS_KEY,
     GATEWAY_ACCESS_MODELS_AIR: '*',
-    // Deterministic P2C sampling in tests (fixed seed); production never sets it.
     TIER1_SCHEDULER_SEED: 'stress-test',
     ...(tier1 ? { TIER1_NODES_CONFIG_01: JSON.stringify(tier1) } : {}),
     ...(tier2 ? { TIER2_NODES_CONFIG_01: JSON.stringify(tier2) } : {}),
@@ -113,8 +105,6 @@ const okCompletion = { id: 'x', object: 'chat.completion', model: 'up-model',
 
 installMockFetch();
 
-// ---- Invariant helper ------------------------------------------------------
-// After a burst, every touched node must have released its slot and its probe.
 function assertNoLeaks(ids) {
   for (const id of ids) {
     const s = getNodeState(id);
@@ -124,39 +114,36 @@ function assertNoLeaks(ids) {
   }
 }
 
-// ---- S1: concurrency is never exceeded and slots never leak ---------------
-await test('S1 concurrency burst: never exceeds cap, slots released', async () => {
+await test('S1 concurrency burst: configured cap is soft, all requests may run, slots released', async () => {
   resetMock();
   let release;
   const gate = new Promise((r) => { release = r; });
   routeHandlers['c1.example.com'] = async () => { await gate; return jsonUpstream(okCompletion); };
   const env = makeEnv({ tier1: [basicNode('c1', { limits: { concurrency: 1 } })], secrets: { c1: 'k' } });
   const inFlight = Array.from({ length: 6 }, () => worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {}));
-  await new Promise((r) => setTimeout(r, 20)); // let the first claim the slot
-  assert.equal(tier1AccountInFlight('c1'), 1, 'concurrency cap must be enforced');
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(tier1AccountInFlight('c1'), 6,
+    'configured concurrency must not hard-block primary requests');
   release();
   const statuses = await Promise.all(inFlight.map((p) => p.then((r) => r.status)));
-  assert.equal(statuses.filter((s) => s === 200).length, 1, 'exactly one request served');
-  assert.equal(statuses.filter((s) => s === 503).length, 5, 'the rest saturate with 503');
+  assert.equal(statuses.filter((s) => s === 200).length, 6, 'all requests may use the only healthy node');
   assertNoLeaks(['c1']);
 });
 
-// ---- S2: hard RPM never exceeds the configured cap under a burst ----------
-await test('S2 hard RPM burst: never exceeds the cap, excess yields 503', async () => {
+await test('S2 legacy limits.rpm is ignored instead of becoming a guessed hard quota', async () => {
   resetMock();
   routeHandlers['rpm1.example.com'] = () => jsonUpstream(okCompletion);
-  const env = makeEnv({ tier1: [basicNode('rpm1', { limits: { concurrency: 10, rpm: 2 } })], secrets: { rpm1: 'k' } });
+  const env = makeEnv({ tier1: [basicNode('rpm1', { limits: { concurrency: 1, rpm: 2 } })], secrets: { rpm1: 'k' } });
   const statuses = [];
   for (let i = 0; i < 6; i++) {
     statuses.push((await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {})).status);
   }
-  assert.equal(statuses.filter((s) => s === 200).length, 2, 'hard cap of 2 must hold');
-  assert.equal(upstreamCalls.length, 2, 'must not hit upstream past the cap');
-  assert.ok(statuses.slice(2).every((s) => s === 503), 'excess must saturate with 503');
+  assert.equal(statuses.filter((s) => s === 200).length, 6,
+    'legacy limits must not manufacture provider capacity that was never known');
+  assert.equal(upstreamCalls.length, 6, 'all six requests may reach the healthy upstream');
   assertNoLeaks(['rpm1']);
 });
 
-// ---- S3: tier fallback drains tier-1 before tier-2 -------------------------
 await test('S3 tier fallback: drains tier-1 budget, then tier-2 serves', async () => {
   resetMock();
   for (const id of ['t1a', 't1b', 't1c', 't1d']) routeHandlers[`${id}.example.com`] = () => jsonUpstream({}, 503);
@@ -176,7 +163,6 @@ await test('S3 tier fallback: drains tier-1 budget, then tier-2 serves', async (
   assertNoLeaks(['t1a', 't1b', 't1c', 't1d', 't2a']);
 });
 
-// ---- S4: cooling storm short-circuits (no wasted upstream calls) ----------
 await test('S4 429 storm: cooling node short-circuits, no upstream hammering', async () => {
   resetMock();
   routeHandlers['cool1.example.com'] = () => jsonUpstream({ error: { message: 'rl' } }, 429, { 'retry-after': '60' });
@@ -191,7 +177,6 @@ await test('S4 429 storm: cooling node short-circuits, no upstream hammering', a
   assertNoLeaks(['cool1']);
 });
 
-// ---- S5: circuit opens under sustained failure, half-open recovers ---------
 await test('S5 recovery: sustained failure cools, then real half-open requests recover', async () => {
   resetMock();
   let fail = true;
@@ -199,7 +184,7 @@ await test('S5 recovery: sustained failure cools, then real half-open requests r
   const gate = new Promise((r) => { release = r; });
   routeHandlers['cb1.example.com'] = async () => {
     if (fail) return jsonUpstream({}, 503);
-    await gate; // hold the probe in flight so concurrent requests see half-open
+    await gate;
     return jsonUpstream(okCompletion);
   };
   const env = makeEnv({ tier1: [basicNode('cb1', { limits: { concurrency: 1 } })], secrets: { cb1: 'k' } });
@@ -208,35 +193,29 @@ await test('S5 recovery: sustained failure cools, then real half-open requests r
     assert.equal(r.status, 502);
   }
   assert.equal(getTier1Model('cb1', 'general-air').failureState, 'cooldown');
-  // OPEN: short-circuit without hitting upstream.
   const callsBefore = upstreamCalls.length;
   await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.equal(upstreamCalls.length, callsBefore, 'open circuit must not hit upstream');
 
-  // Expire cooldown -> HALF_OPEN. With concurrency=1 and the real recovery
-  // request held on a gate, a burst admits exactly one request.
   getTier1Model('cb1', 'general-air').cooldownUntil = Date.now() - 1;
   fail = false;
   const before = upstreamCalls.length;
   const burst = Array.from({ length: 5 }, () =>
     worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {}).then((r) => r.status));
-  await new Promise((r) => setTimeout(r, 30)); // let non-probe requests resolve (429)
+  await new Promise((r) => setTimeout(r, 30));
   assert.equal(upstreamCalls.length - before, 1, 'exactly one real half-open request may reach upstream');
   assert.equal(getTier1Model('cb1', 'general-air').failureState, 'half_open');
-  // Release the real request: one success is intentionally insufficient.
   release();
   const statuses = await Promise.all(burst);
   assert.equal(statuses.filter((s) => s === 200).length, 1, 'half-open request succeeds');
-  assert.equal(statuses.filter((s) => s === 503).length, 4, 'concurrent requests saturate');
+  assert.equal(statuses.filter((s) => s === 503).length, 4, 'concurrent requests wait for the recovery probe');
   assert.equal(getTier1Model('cb1', 'general-air').failureState, 'half_open');
-  // A second real success returns the model to normal.
   const followUp = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.equal(followUp.status, 200);
   assert.equal(getTier1Model('cb1', 'general-air').failureState, 'normal');
   assertNoLeaks(['cb1']);
 });
 
-// ---- S6: client abort mid-stream releases everything neutrally ------------
 await test('S6 client abort mid-stream: releases slot, no failure penalty', async () => {
   resetMock();
   const ac = new AbortController();
@@ -253,9 +232,6 @@ await test('S6 client abort mid-stream: releases slot, no failure penalty', asyn
   const env = makeEnv({ tier1: [basicNode('ab1')], secrets: { ab1: 'k' } });
   const resPromise = worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }, ACCESS_KEY, { signal: ac.signal }), env, {});
   const res = await resPromise;
-  // Wait for the first streamed chunk to reach the client, THEN abort mid-stream
-  // (before [DONE]). This makes the abort genuinely mid-stream rather than firing
-  // before the guard has even committed the first event.
   const reader = res.body.getReader();
   await reader.read();
   reader.releaseLock();
@@ -269,7 +245,6 @@ await test('S6 client abort mid-stream: releases slot, no failure penalty', asyn
   assertNoLeaks(['ab1']);
 });
 
-// ---- S7: failover budget stops further upstream calls ----------------------
 await test('S7 failover budget: no further upstream after budget spent', async () => {
   resetMock();
   routeHandlers['slow.example.com'] = async () => { await new Promise((r) => setTimeout(r, 1600)); return jsonUpstream({}, 502); };
@@ -287,7 +262,6 @@ await test('S7 failover budget: no further upstream after budget spent', async (
   assertNoLeaks(['slow', 'fast']);
 });
 
-// ---- S8: randomized fault-injection invariant sweep ------------------------
 await test('S8 randomized fault injection: invariants hold across many requests', async () => {
   resetMock();
   const ids = ['f1', 'f2', 'f3'];
@@ -307,7 +281,6 @@ await test('S8 randomized fault injection: invariants hold across many requests'
   const results = await Promise.all(Array.from({ length: 60 }, () =>
     worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {}).then((r) => r.status)));
   assert.ok(results.every((s) => [200, 429, 502, 503, 504].includes(s)), 'only expected terminal statuses');
-  // Every node's slot accounting is balanced and no node is stuck half-open.
   for (const id of ids) {
     const s = getNodeState(id);
     assert.equal(s.activeRequests, 0, `${id} leaked slots`);
@@ -316,7 +289,6 @@ await test('S8 randomized fault injection: invariants hold across many requests'
   }
 });
 
-// ---- S9: one node 429-cooling does not disturb its siblings ---------------
 await test('S9 node isolation: a 429-cooling node leaves siblings serving', async () => {
   resetMock();
   routeHandlers['iso-a.example.com'] = () => jsonUpstream({ error: { message: 'rl' } }, 429, { 'retry-after': '120' });
@@ -326,12 +298,10 @@ await test('S9 node isolation: a 429-cooling node leaves siblings serving', asyn
     tier1: ['iso-a', 'iso-b', 'iso-c'].map((id) => basicNode(id, { limits: { concurrency: 20 } })),
     secrets: { 'iso-a': 'k', 'iso-b': 'k', 'iso-c': 'k' },
   });
-  // First request: iso-a 429s and cools; rotation serves iso-b.
   const first = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.equal(first.status, 200);
   assert.equal(getTier1Account('iso-a').accountCooldownUntil > Date.now(), true, 'iso-a account must be cooling');
   assert.equal(getTier1Model('iso-a', 'general-air').cooldownUntil, 0, 'ambiguous 429 must not create model cooldown');
-  // Burst: iso-a is cooling and must never be hit again; siblings serve all.
   const aCalls = upstreamCalls.filter((c) => c.host === 'iso-a.example.com').length;
   const statuses = await Promise.all(Array.from({ length: 20 }, () =>
     worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {}).then((r) => r.status)));
@@ -341,7 +311,6 @@ await test('S9 node isolation: a 429-cooling node leaves siblings serving', asyn
   assertNoLeaks(['iso-a', 'iso-b', 'iso-c']);
 });
 
-// ---- S10: one cooling model does not disturb its siblings ------------------
 await test('S10 model isolation: a failure-cooldown account leaves siblings serving', async () => {
   resetMock();
   routeHandlers['cir-a.example.com'] = () => jsonUpstream({}, 503);
@@ -374,9 +343,6 @@ await test('S10 model isolation: a failure-cooldown account leaves siblings serv
   assertNoLeaks(['cir-a', 'cir-b', 'cir-c']);
 });
 
-// ---- S11: per-tier attempt budget keeps Tier 2 reachable when Tier 1 is wide ----
-// With max_attempts=5 and Tier 2 dispatchable, the default budget reserves one
-// attempt for Tier 2 and assigns the other four to higher-precedence Tier 1.
 await test('S11 fallback reserve: a wide failing Tier 1 cannot starve Tier 2', async () => {
   resetMock();
   for (const id of ['fb1', 'fb2', 'fb3', 'fb4', 'fb5', 'fb6']) {
@@ -397,10 +363,6 @@ await test('S11 fallback reserve: a wide failing Tier 1 cannot starve Tier 2', a
   assertNoLeaks(['fb1', 'fb2', 'fb3', 'fb4', 'fb5', 'fb6', 'paid']);
 });
 
-// ---- S12: tier_attempts override is honored (explicit per-tier budget) ----
-// POLICIES_CONFIG tier_attempts overrides the computed default per-tier budget.
-// Here Tier 1 is explicitly capped at 2 attempts even though it has 6 nodes, so
-// a healthy Tier 2 is reached without letting Tier 1 eat the whole budget.
 await test('S12 tier_attempts override: caps Tier 1 at 2 so Tier 2 serves', async () => {
   resetMock();
   for (const id of ['nb1', 'nb2', 'nb3', 'nb4', 'nb5', 'nb6']) {
@@ -421,10 +383,6 @@ await test('S12 tier_attempts override: caps Tier 1 at 2 so Tier 2 serves', asyn
   assertNoLeaks(['nb1', 'nb2', 'nb3', 'nb4', 'nb5', 'nb6', 'paid2']);
 });
 
-// ---- S13: per-tier default splits budget fairly, no tier silently starved ----
-// With max_attempts=3 and three schedulable tiers (one node each), the default
-// gives every tier exactly one attempt. The middle tier must be reached (not
-// starved), and Tier 1 (highest priority) must be tried before it.
 await test('S13 per-tier default: each schedulable tier gets a share, middle tier reached', async () => {
   resetMock();
   routeHandlers['fe1.example.com'] = () => jsonUpstream({}, 503);
@@ -445,9 +403,6 @@ await test('S13 per-tier default: each schedulable tier gets a share, middle tie
   assertNoLeaks(['fe1', 'fe2', 'fe3']);
 });
 
-// ---- S14: availability-aware budget — an unusable lower tier gets no budget ----
-// Tier 2's only node is cooling, so it is not dispatchable and receives no
-// budget. With only Tier 1 dispatchable, the shared max_attempts=5 is the cap.
 await test('S14 availability-aware: a cooling Tier 2 node does not consume Tier 1 budget', async () => {
   resetMock();
   for (const id of ['a1', 'a2', 'a3', 'a4', 'a5', 'a6']) {
@@ -459,12 +414,8 @@ await test('S14 availability-aware: a cooling Tier 2 node does not consume Tier 
     tier2: [basicNode('cool2', { limits: { concurrency: 20 } })],
     secrets: { a1: 'k', a2: 'k', a3: 'k', a4: 'k', a5: 'k', a6: 'k', cool2: 'k' },
   });
-  // Warm-up: four Tier-1 attempts from the default per-tier budget, then the
-  // only Tier-2 node answers 429 and cools.
   await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.ok(getNodeState('cool2').cooldownUntil > Date.now(), 'cool2 must be cooling after the warm-up');
-  // Second request: Tier 2 is not dispatchable, so Tier 1 may use the shared
-  // max_attempts budget without any separate Tier-1 ceiling.
   const callsBefore = upstreamCalls.length;
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   const newCalls = upstreamCalls.slice(callsBefore);
@@ -476,15 +427,6 @@ await test('S14 availability-aware: a cooling Tier 2 node does not consume Tier 
   assertNoLeaks(['a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'cool2']);
 });
 
-// ---- S15/S16: max_attempts < schedulable tier count ------------------------
-// When every tier holds an eligible node but the budget is smaller than the
-// number of schedulable tiers, the per-tier budget caps at 1 each and the
-// global `max_attempts` ceiling is the binding constraint. Total attempts must
-// strictly stay <= max_attempts and be spent in Tier precedence (Tier 1 before
-// Tier 2 before Tier 3) — never skipping Tier 2 to reach Tier 3.
-
-// S15: max_attempts=2, three tiers (Tier 2 succeeds) -> Tier 2 reached in order,
-// Tier 3 never touched, total == 2.
 await test('S15 max_attempts=2: Tier precedence order, Tier 2 reached before Tier 3', async () => {
   resetMock();
   routeHandlers['b1.example.com'] = () => jsonUpstream({}, 503);
@@ -507,8 +449,6 @@ await test('S15 max_attempts=2: Tier precedence order, Tier 2 reached before Tie
   assertNoLeaks(['b1', 'b2', 'b3']);
 });
 
-// S16: max_attempts=1, three tiers -> only Tier 1 (highest precedence) gets the
-// single attempt; Tier 2/3 are not reached. Total == 1 == max_attempts.
 await test('S16 max_attempts=1: only the highest-precedence tier is attempted', async () => {
   resetMock();
   routeHandlers['c1.example.com'] = () => jsonUpstream({}, 503);
@@ -522,7 +462,6 @@ await test('S16 max_attempts=1: only the highest-precedence tier is attempted', 
     extraEnv: { POLICIES_CONFIG: '{"default":{"max_attempts":1}}' },
   });
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-  // max_attempts=1 = "try once": Tier 1 fails, budget is spent, no fallback.
   assert.equal(res.status, 502, 'a single attempt is not enough to fall through to a serving tier');
   assert.deepEqual(upstreamCalls.map((c) => c.host), ['c1.example.com'], 'only Tier 1 is attempted');
   assert.equal(upstreamCalls.length, 1, 'total attempts must be exactly 1 (<= max_attempts)');

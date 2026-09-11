@@ -2,15 +2,19 @@
 // Copyright (c) 2026 Fongap Studio
 //
 // Tier 1 heat protection. This layer does not create a new quota system and
-// never turns soft pressure into a primary-request hard block. It only gives
-// P2C a small early signal before the existing concurrency/RPM gates are hit,
-// weakens affinity as an account gets hot, and keeps hedge twins away from
-// accounts with little spare capacity.
+// never turns soft pressure into a primary-request hard block. It gives P2C
+// bounded live-load signals, weakens affinity as an account gets hot, and keeps
+// hedge twins away from already-busy accounts.
+//
+// Operator-supplied limits.concurrency is intentionally NOT used. Free-provider
+// concurrency is often unknown, so active in-flight work is treated as a soft
+// relative pressure signal rather than a guessed hard ceiling.
 
 import { tier1AccountInFlight, tier1RpmUsage } from './tier1-state.ts';
 import type { RuntimeNode } from '../types/node.ts';
 
 export const TIER1_RPM_HEADROOM_MAX_FACTOR = 1.20;
+export const TIER1_INFLIGHT_MAX_FACTOR = 1.25;
 export const TIER1_HEDGE_MAX_RPM_PRESSURE = 0.50;
 export const TIER1_HEDGE_MAX_CONCURRENCY_PRESSURE = 0.75;
 
@@ -40,9 +44,11 @@ export function tier1RpmHeadroomPressure(node: RuntimeNode, now: number = Date.n
 }
 
 export function tier1ConcurrencyPressure(node: RuntimeNode): number {
-  const capacity = node?.limits?.concurrency ?? 0;
-  if (!Number.isFinite(capacity) || capacity <= 0) return 0;
-  return clamp01(tier1AccountInFlight(node.id) / capacity);
+  const inFlight = tier1AccountInFlight(node.id);
+  if (!Number.isFinite(inFlight) || inFlight <= 0) return 0;
+  // No guessed capacity denominator. Pressure rises smoothly with live work:
+  // 1 -> .50, 2 -> .67, 3 -> .75, 4 -> .80. It never blocks a primary.
+  return clamp01(inFlight / (inFlight + 1));
 }
 
 export function tier1HeatPressure(node: RuntimeNode, now: number = Date.now()): number {
@@ -53,11 +59,17 @@ export function tier1HeatPressure(node: RuntimeNode, now: number = Date.now()): 
 }
 
 // A hot account gets at most a 20% score penalty from RPM headroom. The
-// existing loadFactor continues to own concurrency scoring, avoiding double
-// punishment for in-flight pressure.
+// existing hard RPM gate remains authoritative when an operator configured it.
 export function tier1RpmHeadroomFactor(node: RuntimeNode, now: number = Date.now()): number {
   const pressure = tier1RpmHeadroomPressure(node, now);
   return 1 + (TIER1_RPM_HEADROOM_MAX_FACTOR - 1) * pressure;
+}
+
+// Live in-flight work is ranking-only: a busy account can be demoted by at most
+// 25%, but it remains eligible and can still win when peers are worse or absent.
+export function tier1InFlightFactor(node: RuntimeNode): number {
+  const pressure = tier1ConcurrencyPressure(node);
+  return 1 + (TIER1_INFLIGHT_MAX_FACTOR - 1) * pressure;
 }
 
 // Affinity is advisory. At zero heat the existing bias is preserved; as heat
@@ -73,20 +85,22 @@ export function tier1AffinityHeatFactor(
   return baseAffinityFactor + (1 - baseAffinityFactor) * pressure;
 }
 
-// Single multiplier passed into calculateTier1Score. RPM pressure applies to
-// every candidate; affinity decay only affects the bound account.
+// Single multiplier passed into calculateTier1Score. RPM pressure and live
+// in-flight pressure apply to every candidate; affinity decay only affects the
+// bound account. All three are soft ranking effects.
 export function tier1SelectionHeatFactor(
   node: RuntimeNode,
   baseAffinityFactor: number,
   now: number = Date.now(),
 ): number {
   return tier1RpmHeadroomFactor(node, now)
+    * tier1InFlightFactor(node)
     * tier1AffinityHeatFactor(node, baseAffinityFactor, now);
 }
 
 // Hedge twins are optional latency work, so require visible spare capacity.
-// Primary requests remain governed only by the existing eligibility/admission
-// rules and are never rejected by these soft thresholds.
+// Primary requests remain governed only by normal eligibility/admission rules
+// and are never rejected by these soft thresholds.
 export function tier1CanAcceptHedge(node: RuntimeNode, now: number = Date.now()): boolean {
   return tier1RpmHeadroomPressure(node, now) <= TIER1_HEDGE_MAX_RPM_PRESSURE
     && tier1ConcurrencyPressure(node) < TIER1_HEDGE_MAX_CONCURRENCY_PRESSURE;

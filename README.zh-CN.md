@@ -22,7 +22,7 @@ ai-gateway 将异构 AI Provider、API Key 和逻辑模型别名聚合到一个�
 
 ## 为什么选择 ai-gateway
 
-低成本 AI 容量通常分散在不同 Provider 与账户之间，并受到 RPM、并发、额度、延迟和可用性波动的共同约束。ai-gateway 将这些容量视为一个资源池：在可用节点之间分散负载，对热点或受限 Key 进行保护，并在同一请求预算内按配置的 Tier 逐层故障转移，而不是持续追打某一个“最好”的 Key。
+低成本 AI 容量通常分散在不同 Provider 与账户之间，真实 RPM / 并发上限又经常没有公开或会动态变化。ai-gateway 不再依赖人工猜测节点上限，而是根据实时 inFlight、真实 429、Cooldown、TTFT、Circuit 等运行事实调度，在同一请求预算内按 Tier 逐层故障转移。
 
 通过分层路由，可以将更充足或成本更低的容量放在前层承担更多基础流量，同时让更稀缺或高价值的资源保持可用，用于真正需要它们的任务。项目追求的不只是更快的单次选择，而是整个资源池的 **可用性、额度利用率与可预测恢复能力**。
 
@@ -34,9 +34,9 @@ ai-gateway 将异构 AI Provider、API Key 和逻辑模型别名聚合到一个�
 
 | 能力 | 当前行为 |
 | --- | --- |
-| **多 Key 韧性** | P2C、被动 TTFT 学习、并发/RPM 整形、Cooldown 与热点保护 |
+| **多 Key 韧性** | P2C、被动 TTFT 学习、实时 inFlight 软负载、429 Cooldown 与 Provider-Model 热度 |
 | **分层故障转移** | 在同一请求预算内按 **Tier 1 → Tier 2 → Tier 3** 逐层托底 |
-| **模型家族兜底** | 有界互保：`Code-Max ↔ Code-Pro → Code-Ultra`、`Max ↔ Pro → Ultra`，以及单向 `Air → Pro → Max → Ultra` |
+| **模型家族兜底** | 有界互保并预留首轮容量：`Code-Max ↔ Code-Pro → Code-Ultra`、`Max ↔ Pro → Ultra`，以及单向 `Air → Pro → Max → Ultra` |
 | **多 Provider 路由** | 将多个 Provider、API Key 和逻辑模型别名统一到一个网关 |
 | **协议兼容** | 原生支持 OpenAI Chat、OpenAI Responses、Anthropic Messages |
 | **安全协议转换** | 仅 OpenAI Chat ↔ Anthropic Messages；**OpenAI Responses 在协议转换层保持 Native Only** |
@@ -63,11 +63,11 @@ flowchart TB
     E --> H[Upstream APIs]
 ```
 
-始终优先执行原生协议。Protocol fallback 与 logical-model family fallback 共用同一套 logical-attempt、dispatch、hedge 和 wall-clock failover budget；切换模型不会获得新的重试预算。兼容模型家族最多评估两轮，因此前一模型在尝试其他模型期间恢复后可以被重新检查一次，但不会形成无限循环。
+始终优先执行原生协议。Protocol fallback 与 logical-model family fallback 共用同一套 logical-attempt、dispatch、hedge 和 wall-clock failover budget。已配置完整同族模型时，三模型家族首轮按请求优先顺序预留 **3 / 2 / 1** 次；`Air` 按 **3 / 1 / 1 / 1** 单向上浮。第二轮只使用首轮没有花掉的请求预算，不新增无限重试。
 
-Code 家族永远不会转入非 Code 家族。`Air` 可以单向上浮到 `Pro → Max → Ultra`，但 `Ultra / Max / Pro` 不会向下回到 `Air`。模型型 404 仍只隔离对应的模型映射，不触发模型家族切换。
+Code 家族永远不会转入非 Code 家族。`Air` 可以单向上浮到 `Pro → Max → Ultra`，但 `Ultra / Max / Pro` 不会向下回到 `Air`。模型型 404 仍只隔离对应的模型映射，不触发模型家族切换。如果整个模型家族只是因为 429、5xx、网络或超时等临时容量问题全部失败，网关返回可重试 `503`，让 Coding 客户端自行再试，而不是停下来等人工“继续”。
 
-Tier 1 的目标是 **稳定利用整个 Key 池，而不是持续追打某一个“最好”的 Key**。RPM headroom 会在硬上限前逐步降低热点 Key 的选择优势；Affinity 随热点程度衰减；可选 Hedge twin 只有在 RPM / concurrency 仍有余量时才允许触发。
+Tier 1 的目标是 **稳定利用整个 Key 池，而不是持续追打某一个“最好”的 Key**。实时 inFlight 只做软排序：忙的节点少分流，但如果它是最后一个健康节点仍然可以继续使用；真实 429 决定 Cooldown / 恢复，Provider-Model 429 热度做有界软降权，可选 Hedge 会优先让位于主请求。旧 `limits.concurrency` 不再把健康节点硬判为“满”。
 
 ## API Surface
 
@@ -112,7 +112,9 @@ powershell scripts/install.ps1
 
 凭据按 **Tier + node id** 绑定；Config 与 Secret 的 shard suffix 只是独立分片编号，不要求同号对应。Gateway Access 默认 fail-closed：某个 Group Key 已配置但对应模型 allowlist 为空时，该 Key 不获得任何模型访问权限。
 
-完整 Node Schema、Runtime Variables、Protocol Fallback、RPM 行为和 Cloudflare Bindings 见 [Configuration](docs/operations/configuration.md)。
+Node `limits` 已退出主动配置。为避免现有生产配置突然失效，语法正确的旧 `limits` 对象暂时仍可读取并提示弃用，但不再用于定义 Provider 容量；维护配置时应直接删除。
+
+完整 Node Schema、Runtime Variables、Model-Family / Protocol Fallback 与 Cloudflare Bindings 见 [Configuration](docs/operations/configuration.md)。
 
 ## 生产流程
 

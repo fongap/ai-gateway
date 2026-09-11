@@ -5,10 +5,10 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import worker from '../src/index.ts';
-import { __resetAllStateForTests, getNodeState, noteRpmRequest } from '../src/reliability/node-state.ts';
+import { __resetAllStateForTests, getNodeState } from '../src/reliability/node-state.ts';
 import {
   __resetTier1StateForTests, tier1AccountInFlight,
-  getTier1Account, getTier1Model, snapshotTier1Runtime, recordTier1Ttft, tier1RpmUsage,
+  getTier1Account, getTier1Model, snapshotTier1Runtime, recordTier1Ttft,
 } from '../src/reliability/tier1-state.ts';
 import { __resetTier1AffinityForTests } from '../src/scheduler/tier1-affinity.ts';
 import { createMockD1 } from './mock-d1-database.mjs';
@@ -290,271 +290,140 @@ await test('single transient failure has hysteresis and does not immediately coo
   assert.equal(runtime.cooldown_remaining_ms, 0);
 });
 
-await test('concurrency spreads parallel requests across equal nodes', async () => {
+await test('legacy concurrency is soft: limits.concurrency never hard-blocks the only healthy Tier 1 node', async () => {
   resetMock();
-  const ids = ['cc-a', 'cc-b', 'cc-c', 'cc-d'];
-  for (const id of ids) {
-    routeHandlers[`${id}.example.com`] = async () => {
-      await new Promise((r) => setTimeout(r, 30));
-      return jsonUpstream(okCompletion());
-    };
-  }
+  let releaseFirst;
+  const gate = new Promise((resolve) => { releaseFirst = resolve; });
+  let calls = 0;
+  routeHandlers['cap-soft.example.com'] = async () => {
+    calls++;
+    if (calls === 1) await gate;
+    return jsonUpstream(okCompletion());
+  };
   const env = makeEnv({
-    tier1: ids.map((id) => basicNode(id, { limits: { concurrency: 1 } })),
-    secrets: Object.fromEntries(ids.map((id) => [id, 'k'])),
-    extraEnv: { EXPOSE_UPSTREAM_INFO: 'true' },
+    tier1: [basicNode('cap-soft', { limits: { concurrency: 1 } })],
+    secrets: { 'cap-soft': 'k' },
   });
-  const responses = await Promise.all(ids.map(() =>
-    worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {}).then((r) => r.headers.get('x-gateway-node'))));
-  assert.equal(new Set(responses).size, 4, `expected 4 distinct nodes, got ${responses.join(',')}`);
-});
 
-await test('Tier 1 sequential selection has no LRU rotation contract', async () => {
-  resetMock();
-  for (const id of ['lru-a', 'lru-b', 'lru-c']) {
-    routeHandlers[`${id}.example.com`] = () => jsonUpstream(okCompletion());
+  const first = worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  for (let i = 0; i < 100 && upstreamCalls.length < 1; i++) {
+    await new Promise((r) => setTimeout(r, 5));
   }
-  const ids = ['lru-a', 'lru-b', 'lru-c'];
-  const env = makeEnv({
-    tier1: ids.map((id) => basicNode(id)),
-    secrets: Object.fromEntries(ids.map((id) => [id, 'k'])),
-    extraEnv: { EXPOSE_UPSTREAM_INFO: 'true' },
-  });
-  const served = [];
-  for (let i = 0; i < 3; i++) {
-    const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-    assert.equal(res.status, 200);
-    await res.text();
-    served.push(res.headers.get('x-gateway-node'));
-  }
-  assert.ok(served.every((id) => ids.includes(id)));
-});
+  assert.equal(upstreamCalls.length, 1, 'first request reached the upstream and is still in flight');
 
-await test('RPM cap rotates to sibling keys before exhausting a single key', async () => {
-  resetMock();
-  for (const id of ['rpm-a', 'rpm-b']) {
-    routeHandlers[`${id}.example.com`] = () => jsonUpstream(okCompletion());
-  }
-  const env = makeEnv({
-    tier1: [
-      basicNode('rpm-a', { limits: { concurrency: 5, rpm: 1 } }),
-      basicNode('rpm-b', { limits: { concurrency: 5, rpm: 1 } }),
-    ],
-    secrets: { 'rpm-a': 'k', 'rpm-b': 'k' },
-    extraEnv: { EXPOSE_UPSTREAM_INFO: 'true' },
-  });
-  const nodes = [];
-  for (let i = 0; i < 2; i++) {
-    const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-    assert.equal(res.status, 200);
-    nodes.push(res.headers.get('x-gateway-node'));
-  }
-  assert.deepEqual(nodes, ['rpm-a', 'rpm-b']);
-});
-
-await test('RPM soft mode keeps the legacy break-through: a lone capped node still serves', async () => {
-  resetMock();
-  routeHandlers['solo.example.com'] = () => jsonUpstream(okCompletion());
-  const env = makeEnv({
-    tier1: [basicNode('solo', { limits: { concurrency: 5, rpm: 1, rpm_mode: 'soft' } })],
-    secrets: { solo: 'k' },
-  });
-  for (let i = 0; i < 3; i++) {
-    const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-    assert.equal(res.status, 200);
-  }
-});
-
-await test('RPM hard mode never exceeds the configured cap: exhaustion yields 503 at the minute boundary', async () => {
-  resetMock();
-  routeHandlers['hard.example.com'] = () => jsonUpstream(okCompletion());
-  const env = makeEnv({
-    tier1: [basicNode('hard', { limits: { concurrency: 5, rpm: 1 } })],
-    secrets: { hard: 'k' },
-  });
-  const first = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-  assert.equal(first.status, 200);
   const second = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-  assert.equal(second.status, 503);
-  const retryAfter = Number(second.headers.get('retry-after'));
-  assert.ok(retryAfter >= 1 && retryAfter <= 60);
+  assert.equal(second.status, 200);
+  assert.equal(upstreamCalls.length, 2, 'second request is not blocked by legacy concurrency=1');
+
+  releaseFirst();
+  const firstRes = await first;
+  assert.equal(firstRes.status, 200);
+  await firstRes.text();
+});
+
+await test('legacy rpm is ignored: repeated requests never synthesize local RPM exhaustion', async () => {
+  resetMock();
+  routeHandlers['rpm-legacy.example.com'] = () => jsonUpstream(okCompletion());
+  const env = makeEnv({
+    tier1: [basicNode('rpm-legacy', { limits: { concurrency: 1, rpm: 1, rpm_mode: 'hard' } })],
+    secrets: { 'rpm-legacy': 'k' },
+  });
+
+  for (let i = 0; i < 3; i++) {
+    const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+    assert.equal(res.status, 200);
+  }
+  assert.equal(upstreamCalls.length, 3);
+});
+
+await test('legacy QUOTA_RATE_LIMITER binding is not consulted without an active runtime RPM quota', async () => {
+  resetMock();
+  let limiterCalls = 0;
+  const fakeBinding = {
+    limit: async () => {
+      limiterCalls++;
+      return { success: false };
+    },
+  };
+  routeHandlers['legacy-limiter.example.com'] = () => jsonUpstream(okCompletion());
+  const env = makeEnv({
+    tier1: [basicNode('legacy-limiter', { limits: { rpm: 1 } })],
+    secrets: { 'legacy-limiter': 'k' },
+    extraEnv: { QUOTA_RATE_LIMITER: fakeBinding },
+  });
+
+  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  assert.equal(res.status, 200);
+  assert.equal(limiterCalls, 0);
   assert.equal(upstreamCalls.length, 1);
 });
 
-await test('global QUOTA_RATE_LIMITER deny rotates without counting a node failure', async () => {
+await test('legacy limits do not block a healthy Tier 2 fallback', async () => {
   resetMock();
-  routeHandlers['gb-a.example.com'] = () => jsonUpstream(okCompletion());
-  routeHandlers['gb-b.example.com'] = () => jsonUpstream(okCompletion());
-  const fakeBinding = { limit: async ({ key }) => ({ success: key !== 'gb-a' }) };
+  routeHandlers['legacy-t1.example.com'] = () => jsonUpstream({}, 502);
+  routeHandlers['legacy-t2.example.com'] = () => jsonUpstream(okCompletion());
   const env = makeEnv({
-    tier1: [
-      basicNode('gb-a', { limits: { concurrency: 5, rpm: 100 } }),
-      basicNode('gb-b'),
-    ],
-    secrets: { 'gb-a': 'k', 'gb-b': 'k' },
-    extraEnv: { QUOTA_RATE_LIMITER: fakeBinding },
-  });
-  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-  assert.equal(res.status, 200);
-  assert.deepEqual(upstreamCalls.map((c) => c.host), ['gb-b.example.com']);
-  assert.equal(getNodeState('gb-a').totalFailures, 0);
-  assert.equal(tier1RpmUsage('gb-a'), 0);
-});
-
-await test('all nodes denied by distributed limiter returns 429 with a window-based Retry-After', async () => {
-  resetMock();
-  routeHandlers['ga1.example.com'] = () => jsonUpstream(okCompletion());
-  routeHandlers['ga2.example.com'] = () => jsonUpstream(okCompletion());
-  const fakeBinding = { limit: async () => ({ success: false }) };
-  const env = makeEnv({
-    tier1: [basicNode('ga1', { limits: { concurrency: 5, rpm: 100 } }), basicNode('ga2', { limits: { concurrency: 5, rpm: 100 } })],
-    secrets: { ga1: 'k', ga2: 'k' },
-    extraEnv: { QUOTA_RATE_LIMITER: fakeBinding },
-  });
-  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-  assert.equal(res.status, 429);
-  const retryAfter = Number(res.headers.get('retry-after'));
-  assert.ok(retryAfter >= 1 && retryAfter <= 60);
-  assert.deepEqual(upstreamCalls, []);
-});
-
-await test('pre-dispatch denies charge no budget: Tier1 drain continues, Tier2 never entered', async () => {
-  resetMock();
-  const deniedIds = ['db1', 'db2', 'db3', 'db4'];
-  routeHandlers['db-ok.example.com'] = () => jsonUpstream(okCompletion());
-  routeHandlers['t2.example.com'] = () => jsonUpstream(okCompletion());
-  const fakeBinding = { limit: async ({ key }) => ({ success: !deniedIds.includes(key) }) };
-  const env = makeEnv({
-    tier1: [
-      ...deniedIds.map((id) => basicNode(id, { limits: { concurrency: 5, rpm: 100 } })),
-      basicNode('db-ok'),
-    ],
-    tier2: [basicNode('t2')],
-    secrets: Object.fromEntries([...deniedIds, 'db-ok', 't2'].map((id) => [id, 'k'])),
+    tier1: [basicNode('legacy-t1')],
+    tier2: [basicNode('legacy-t2', { limits: { concurrency: 1, rpm: 1, rpm_mode: 'hard' } })],
+    secrets: { 'legacy-t1': 'k', 'legacy-t2': 'k' },
     extraEnv: {
-      QUOTA_RATE_LIMITER: fakeBinding,
       MODELS_CONFIG: JSON.stringify({ 'general-air': { policy: 'fast' } }),
       POLICIES_CONFIG: JSON.stringify({ fast: { max_attempts: 2 } }),
     },
   });
+
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.equal(res.status, 200);
-  assert.deepEqual(upstreamCalls.map((c) => c.host), ['db-ok.example.com']);
-  assert.equal(getNodeState('db1').totalFailures, 0);
-  assert.equal(tier1RpmUsage('db1'), 0);
+  assert.deepEqual(upstreamCalls.map((call) => call.host), [
+    'legacy-t1.example.com',
+    'legacy-t2.example.com',
+  ]);
 });
 
-await test('hard-RPM-exhausted fallback tier is skipped and Tier 1 uses the shared max_attempts budget', async () => {
+await test('busy Tier 2 remains last-resort capacity despite legacy concurrency=1', async () => {
   resetMock();
-  for (let i = 1; i <= 6; i++) routeHandlers[`rp${i}.example.com`] = () => jsonUpstream({}, 502);
-  routeHandlers['rpmex-t2.example.com'] = () => jsonUpstream(okCompletion());
-  noteRpmRequest('rpmex-t2', Date.now());
-  const env = makeEnv({
-    tier1: Array.from({ length: 6 }, (_, i) => basicNode(`rp${i + 1}`)),
-    tier2: [basicNode('rpmex-t2', { limits: { concurrency: 5, rpm: 1 } })],
-    secrets: { rp1: 'k', rp2: 'k', rp3: 'k', rp4: 'k', rp5: 'k', rp6: 'k', 'rpmex-t2': 'k' },
-    extraEnv: {
-      MODELS_CONFIG: JSON.stringify({ 'general-air': { policy: 'fast' } }),
-      POLICIES_CONFIG: JSON.stringify({ fast: { max_attempts: 5 } }),
-    },
-  });
-  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-  assert.equal(res.status, 502);
-  const body = await res.json();
-  assert.equal(body.error.details.attempts, 5, 'Tier 1 may use all five shared attempts');
-  const hosts = upstreamCalls.map((c) => c.host);
-  assert.equal(hosts.length, 5);
-  assert.ok(hosts.every((h) => /^rp[1-6]\.example\.com$/.test(h)));
-  assert.ok(!hosts.includes('rpmex-t2.example.com'));
-});
-
-await test('concurrency-saturated fallback tier is skipped while Tier 1 uses the shared max_attempts budget', async () => {
-  resetMock();
-  let releaseSat;
-  const gate = new Promise((r) => { releaseSat = r; });
-  routeHandlers['sat2.example.com'] = async () => {
-    await gate;
+  let releaseParked;
+  const gate = new Promise((resolve) => { releaseParked = resolve; });
+  let tier2Calls = 0;
+  routeHandlers['busy-t2.example.com'] = async () => {
+    tier2Calls++;
+    if (tier2Calls === 1) await gate;
     return jsonUpstream(okCompletion());
   };
-  for (let i = 1; i <= 6; i++) routeHandlers[`cs${i}.example.com`] = () => jsonUpstream({}, 502);
+  routeHandlers['busy-t1.example.com'] = () => jsonUpstream({}, 502);
+
   const env = makeEnv({
-    tier1: Array.from({ length: 6 }, (_, i) => basicNode(`cs${i + 1}`)),
-    tier2: [basicNode('sat2', {
+    tier1: [basicNode('busy-t1', { models: { 'general-air': 'm' } })],
+    tier2: [basicNode('busy-t2', {
       limits: { concurrency: 1 },
       models: { 'general-air': 'm', 'sat-model': 'm' },
     })],
-    secrets: { cs1: 'k', cs2: 'k', cs3: 'k', cs4: 'k', cs5: 'k', cs6: 'k', sat2: 'k' },
+    secrets: { 'busy-t1': 'k', 'busy-t2': 'k' },
     extraEnv: {
-      MODELS_CONFIG: JSON.stringify({ 'general-air': { policy: 'fast' }, 'sat-model': { policy: 'fast' } }),
-      POLICIES_CONFIG: JSON.stringify({ fast: { max_attempts: 5 } }),
+      EXPOSE_UPSTREAM_INFO: 'true',
+      MODELS_CONFIG: JSON.stringify({
+        'general-air': { policy: 'fast' },
+        'sat-model': { policy: 'fast' },
+      }),
+      POLICIES_CONFIG: JSON.stringify({ fast: { max_attempts: 2 } }),
     },
   });
+
   const parked = worker.fetch(chatRequest({ model: 'sat-model', messages: [] }), env, {});
-  for (let i = 0; i < 100 && !upstreamCalls.some((c) => c.host === 'sat2.example.com'); i++) {
+  for (let i = 0; i < 100 && tier2Calls < 1; i++) {
     await new Promise((r) => setTimeout(r, 5));
   }
-  assert.ok(upstreamCalls.some((c) => c.host === 'sat2.example.com'));
+  assert.equal(tier2Calls, 1, 'first Tier 2 request is parked in flight');
 
-  const baseline = upstreamCalls.length;
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-  assert.equal(res.status, 502);
-  const body = await res.json();
-  assert.equal(body.error.details.attempts, 5, 'Tier 1 may use all five shared attempts');
-  const hosts = upstreamCalls.slice(baseline).map((c) => c.host);
-  assert.equal(hosts.length, 5);
-  assert.ok(hosts.every((h) => /^cs[1-6]\.example\.com$/.test(h)));
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('x-gateway-node'), 'busy-t2');
+  assert.equal(tier2Calls, 2, 'busy Tier 2 node remains usable as the only healthy fallback');
 
-  releaseSat();
+  releaseParked();
   const parkedRes = await parked;
   assert.equal(parkedRes.status, 200);
   await parkedRes.text();
-});
-
-await test('saturation returns 503 with Retry-After instead of bare 429', async () => {
-  resetMock();
-  let release;
-  const gate = new Promise((r) => { release = r; });
-  routeHandlers['cap.example.com'] = async () => {
-    await gate;
-    return jsonUpstream(okCompletion());
-  };
-  const env = makeEnv({
-    tier1: [basicNode('cap', { limits: { concurrency: 1 } })],
-    secrets: { cap: 'k' },
-  });
-  const first = worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-  await new Promise((r) => setTimeout(r, 10));
-  const second = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-  release();
-  assert.equal(await first.then((r) => r.status), 200);
-  assert.equal(second.status, 503);
-  assert.equal(second.headers.get('retry-after'), '1');
-});
-
-await test('Retry-After takes the min across blocking reasons, filtered by model', async () => {
-  resetMock();
-  let release;
-  const gate = new Promise((r) => { release = r; });
-  routeHandlers['cp-fast.example.com'] = async () => { await gate; return jsonUpstream(okCompletion()); };
-  routeHandlers['cp-rpm.example.com'] = () => jsonUpstream(okCompletion());
-  routeHandlers['air-cool.example.com'] = () => jsonUpstream({}, 429, { 'retry-after': '90' });
-  const env = makeEnv({
-    tier1: [
-      { ...basicNode('cp-fast'), models: { 'code-pro': 'up-c' }, limits: { concurrency: 1 } },
-      { ...basicNode('cp-rpm'), models: { 'code-pro': 'up-c2' }, limits: { concurrency: 5, rpm: 1 } },
-      { ...basicNode('air-cool'), models: { 'general-air': 'up-a' } },
-    ],
-    secrets: { 'cp-fast': 'k', 'cp-rpm': 'k', 'air-cool': 'k' },
-  });
-  const hold = worker.fetch(chatRequest({ model: 'code-pro', messages: [] }), env, {});
-  await new Promise((r) => setTimeout(r, 10));
-  await worker.fetch(chatRequest({ model: 'code-pro', messages: [] }), env, {});
-  await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-  const res = await worker.fetch(chatRequest({ model: 'code-pro', messages: [] }), env, {});
-  release();
-  assert.equal(res.status, 503);
-  assert.equal(res.headers.get('retry-after'), '1');
-  await hold;
 });
 
 await test('anthropic-route exhaustion errors are Anthropic-shaped', async () => {

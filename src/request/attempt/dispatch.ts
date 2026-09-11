@@ -121,17 +121,13 @@ async function dispatchAttempt(c: AttemptContext): Promise<AttemptOutcome> {
   }
 
   // ---- Optional distributed rate shaping (Cloudflare Rate Limiting) ---------
-  // isolate-local RPM/concurrency state can only shape traffic per Worker
-  // isolate; several isolates share the same upstream key. Binding a Workers
-  // Rate Limiting binding as QUOTA_RATE_LIMITER adds a distributed (per-Cloudflare
-  // location) fixed-window check before dispatch. NOTE: Cloudflare Rate Limiting
-  // is counted per location, permissive and eventually consistent — it is NOT a
-  // strict global/account quota, and its threshold is fixed at the binding
-  // (limit=N, period=60), so it cannot express a different per-node
-  // limits.rpm value. Treat it as approximate distributed shaping; the local
-  // hard/soft semantics remain the source of truth for exact per-node counts.
+  // This path is active only when a RuntimeNode carries an actual active RPM
+  // quota. Legacy node-config `limits.rpm` is no longer projected by the config
+  // layer, so merely leaving an old limits object in production cannot trigger
+  // this pre-dispatch gate. The binding remains available for explicitly built
+  // runtime quotas/tests and is still approximate per Cloudflare location.
   const rateLimiter = env?.QUOTA_RATE_LIMITER as { limit?: (args: { key: string }) => Promise<{ success?: boolean }> } | null | undefined;
-  if (node.limits.rpmMode === 'hard' && typeof rateLimiter?.limit === 'function') {
+  if (node.limits.rpm && node.limits.rpmMode === 'hard' && typeof rateLimiter?.limit === 'function') {
     try {
       const verdict = await rateLimiter.limit({ key: node.id });
       if (verdict && verdict.success === false) {
@@ -166,7 +162,7 @@ async function dispatchAttempt(c: AttemptContext): Promise<AttemptOutcome> {
       }
     } catch {
       // A broken coordinator must never take the gateway down: proceed and let
-      // the local limits + circuit breaker do their job.
+      // runtime reliability/circuit state handle the request.
     }
   }
 

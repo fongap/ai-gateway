@@ -1,4 +1,4 @@
-﻿[
+[
   {
     "id": "openrouter-01",
     "provider": "openrouter",
@@ -12,8 +12,6 @@
       "general-air": "deepseek/deepseek-chat",
       "code-pro": "qwen/qwen3-coder",
       "code-max": "anthropic/claude-sonnet-4.5"
-    },
-    "limits": { "concurrency": 4, "rpm": 20 }
+    }
   }
 ]
-

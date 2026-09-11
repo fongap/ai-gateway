@@ -20,6 +20,38 @@ import type { Tier, RoutableRequest } from '../types/scheduler.ts';
 import type { RuntimeNode } from '../types/node.ts';
 import type { PolicyConfig } from '../types/policy.ts';
 
+const SOFT_ONLY_CONCURRENCY = Number.MAX_SAFE_INTEGER;
+
+function tier1WithoutHardConcurrency(nodes: ReadonlyArray<RuntimeNode>): RuntimeNode[] {
+  return nodes.map((node) => node.limits.concurrency === SOFT_ONLY_CONCURRENCY
+    ? node
+    : { ...node, limits: { ...node.limits, concurrency: SOFT_ONLY_CONCURRENCY } });
+}
+
+function tier1Dispatchable(
+  nodes: ReadonlyArray<RuntimeNode>,
+  req: RoutableRequest,
+  attempted: Set<string>,
+  now: number,
+  knownModels: ReadonlySet<string>,
+): boolean {
+  return tier1HasDispatchableNode(
+    tier1WithoutHardConcurrency(nodes), req, attempted, now, knownModels,
+  );
+}
+
+function tier1LiveCount(
+  nodes: ReadonlyArray<RuntimeNode>,
+  req: RoutableRequest,
+  attempted: Set<string>,
+  now: number,
+  knownModels: ReadonlySet<string>,
+): number {
+  return tier1CountDispatchableNodes(
+    tier1WithoutHardConcurrency(nodes), req, attempted, now, knownModels,
+  );
+}
+
 export type TierPickResult = {
   node?: RuntimeNode,
   raceLost?: boolean,
@@ -86,8 +118,8 @@ export function makeTier1Rng(env: Record<string, unknown>): () => number {
 
 // Per-tier attempt budget: { tier1, tier2, tier3 } -> max attempts each.
 //   * DISPATCHABLE means a candidate this tier can launch now. Deferred
-//     capacity (saturated / over-quota) feeds Retry-After and diagnostics but
-//     receives no attempt budget.
+//     capacity (cooldown / over-quota) feeds Retry-After and diagnostics but
+//     receives no attempt budget. Guessed concurrency is never a hard gate.
 //   * A tier with no dispatchable candidate for the request descriptor gets 0
 //     budget.
 //   * Explicit `tier_attempts` values are fixed caps. Their configured total is
@@ -104,7 +136,7 @@ export function computeTierCaps(tiers: Record<number, RuntimeNode[]>, reqDescrip
   for (const t of TIER_ORDER) caps[t] = 0;
   const dispatchable = TIER_ORDER.filter((t) =>
     t === 1
-      ? tier1HasDispatchableNode(tiers[t], reqDescriptor, attempted, now, knownModels)
+      ? tier1Dispatchable(tiers[t], reqDescriptor, attempted, now, knownModels)
       : tierHasDispatchableNode(tiers[t], reqDescriptor, attempted, now, knownModels));
   if (dispatchable.length === 0) return caps;
 
@@ -123,7 +155,7 @@ export function computeTierCaps(tiers: Record<number, RuntimeNode[]>, reqDescrip
 
   const liveCount = (tierNumber: number): number => {
     return tierNumber === 1
-      ? tier1CountDispatchableNodes(tiers[tierNumber], reqDescriptor, attempted, now, knownModels)
+      ? tier1LiveCount(tiers[tierNumber], reqDescriptor, attempted, now, knownModels)
       : countDispatchableNodes(tiers[tierNumber], reqDescriptor, attempted, now, knownModels);
   };
 
@@ -195,7 +227,7 @@ export function countRemainingDispatchableAttempts(tiers: Record<number, Runtime
       (tierCaps[tierNumber] ?? 0) - (tierNumber === currentTier ? usedInTier : 0));
     if (capRemaining === 0) continue;
     const live = tierNumber === 1
-      ? tier1CountDispatchableNodes(tiers[tierNumber], reqDescriptor, attempted, now, knownModels)
+      ? tier1LiveCount(tiers[tierNumber], reqDescriptor, attempted, now, knownModels)
       : countDispatchableNodes(tiers[tierNumber], reqDescriptor, attempted, now, knownModels);
     total += Math.min(capRemaining, live);
   }
