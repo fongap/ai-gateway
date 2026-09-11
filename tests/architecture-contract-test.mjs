@@ -169,8 +169,6 @@ await test('Contract 03: Default ON — Anthropic request with only OpenAI nodes
   const env = makeEnv({
     tier1: [openaiChatNode('o1')],
     secrets: { o1: 'k' },
-    // NO PROTOCOL_FALLBACKS — built-in default chain (anthropic:messages ->
-    // openai:chat_completions) is applied silently.
   });
   const res = await worker.fetch(messagesRequest({}), env, {});
   assert.equal(res.status, 200, 'default-on fallback routes Anthropic -> OpenAI');
@@ -310,18 +308,22 @@ await test('Contract 08: Logical attempt != dispatch count', async () => {
 });
 
 // =========================================================================
-// Contract 09 — Pre-dispatch Denial
+// Contract 09 — Retired Node Limits Do Not Gate Primary Traffic
 // =========================================================================
-await test('Contract 09: Pre-dispatch denial does not charge budgets', async () => {
+await test('Contract 09: legacy node limits do not trigger distributed quota admission', async () => {
   resetMock();
-  let cfDenied = false;
-  const mockQuota = { limit: async () => { cfDenied = true; return { success: false }; } };
+  let cfCalls = 0;
+  const mockQuota = { limit: async () => { cfCalls++; return { success: false }; } };
   routeHandlers['an1.example.com'] = () => jsonUpstream(okMessage());
-  const env = makeEnv({ tier1: [anthropicNode('an1', { limits: { concurrency: 1, rpm: 60, rpm_mode: 'hard' } })], secrets: { an1: 'k' }, extraEnv: { QUOTA_RATE_LIMITER: mockQuota } });
+  const env = makeEnv({
+    tier1: [anthropicNode('an1', { limits: { concurrency: 1, rpm: 60, rpm_mode: 'hard' } })],
+    secrets: { an1: 'k' },
+    extraEnv: { QUOTA_RATE_LIMITER: mockQuota },
+  });
   const res = await worker.fetch(messagesRequest({}), env, {});
-  assert.ok(cfDenied, 'CF rate limiter was invoked');
-  assert.equal(upstreamCalls.length, 0, 'no upstream call on pre-dispatch denial');
-  assert.equal(res.status, 429, 'pre-dispatch denial with no more candidates returns 429');
+  assert.equal(cfCalls, 0, 'legacy limits.rpm must not activate distributed provider admission');
+  assert.equal(upstreamCalls.length, 1, 'healthy upstream must still receive the request');
+  assert.equal(res.status, 200, 'legacy guessed limits must not manufacture a capacity failure');
 });
 
 // =========================================================================
