@@ -1,8 +1,6 @@
 #!/usr/bin/env node
-// Syntax-check every JavaScript ES module in src/, scripts/, and tests/.
-// This script ONLY checks .js and .mjs files using `node --check`.
-// TypeScript files (.ts) are validated by `tsc --noEmit` (npm run typecheck),
-// not by this script. Do not add TypeScript syntax checking here.
+// Checks JavaScript ES modules; TypeScript is handled by `npm run typecheck`.
+
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
