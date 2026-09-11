@@ -76,6 +76,7 @@ assert.match(gate, /npm run test:unit/, 'test:gate must include test:unit');
 for (const required of [
   'tests/scheduler-stability-test.mjs',
   'tests/integration-test.mjs',
+  'tests/stress-test.mjs',
   'tests/codex-contract-test.mjs',
   'tests/claude-contract-test.mjs',
 ]) {
@@ -85,8 +86,7 @@ for (const required of [
 
 const all = pkg.scripts?.['test:all'] || '';
 assert.match(all, /npm run test:gate/, 'test:all must include test:gate');
-assert.ok(testRefs(all).includes('tests/stress-test.mjs'), 'test:all must add stress-test.mjs');
-assert.equal(unitRefs.has('tests/stress-test.mjs'), false, 'stress-test.mjs must not be duplicated in run-unit.mjs');
+assert.equal(testRefs(all).length, 0, 'test:all must not duplicate suites already covered by test:gate');
 
 assert.match(pkg.scripts?.['validate:merge'] || '', /npm run test:gate/, 'validate:merge must run the complete deterministic correctness gate');
 assert.match(pkg.scripts?.['validate:deploy'] || '', /npm run test:all/, 'validate:deploy must run test:all');
