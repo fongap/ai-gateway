@@ -1,6 +1,6 @@
 {
   "name": "ai-gateway",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "private": true,
   "description": "AI API gateway on Cloudflare Workers that turns fragmented, failure-prone providers and keys into one stable OpenAI/Anthropic-compatible endpoint — maximizing low-cost capacity through smart routing and tiered failover.",
   "type": "module",
