@@ -22,7 +22,7 @@ ai-gateway aggregates heterogeneous AI providers, API keys, and logical model al
 
 ## Why ai-gateway
 
-Low-cost AI capacity is often fragmented across providers and accounts, constrained by RPM or concurrency limits, and uneven in latency and availability. ai-gateway treats that capacity as a pool: it spreads load across usable resources, protects hot or rate-limited keys, and moves through configured fallback tiers under one request budget instead of relying on a single "best" key.
+Low-cost AI capacity is often fragmented across providers and accounts, constrained by real provider limits that are not always published, and uneven in latency and availability. ai-gateway treats that capacity as a pool: it spreads load across usable resources, reacts to real 429/failure evidence, and moves through configured fallback tiers under one request budget instead of relying on a single "best" key or guessed per-node limits.
 
 With tiered routing, operators can place abundant or lower-cost capacity earlier in the path and keep scarcer or premium resources available for workloads that need them. The goal is not simply to pick the fastest upstream, but to improve **availability, quota utilization, and predictable recovery** across the whole pool.
 
@@ -32,9 +32,9 @@ With tiered routing, operators can place abundant or lower-cost capacity earlier
 
 | Capability | Current behavior |
 | --- | --- |
-| **Multi-key resilience** | P2C selection, passive TTFT learning, concurrency/RPM shaping, cooldown and heat protection |
+| **Multi-key resilience** | P2C selection, passive TTFT learning, live in-flight soft load, 429 cooldown and provider-model heat |
 | **Tiered failover** | Route through **Tier 1 → Tier 2 → Tier 3** under one request budget |
-| **Model-family fallback** | Bounded recovery across compatible aliases: `Code-Max ↔ Code-Pro → Code-Ultra`, `Max ↔ Pro → Ultra`, and one-way `Air → Pro → Max → Ultra` |
+| **Model-family fallback** | Bounded recovery across compatible aliases with reserved first-round capacity: `Code-Max ↔ Code-Pro → Code-Ultra`, `Max ↔ Pro → Ultra`, and one-way `Air → Pro → Max → Ultra` |
 | **Multi-provider routing** | Aggregate independent providers, keys, and logical model aliases behind one gateway |
 | **Protocol compatibility** | Native OpenAI Chat, OpenAI Responses, and Anthropic Messages |
 | **Safe protocol fallback** | OpenAI Chat ↔ Anthropic Messages only; **OpenAI Responses is Native Only** for protocol conversion |
@@ -61,11 +61,11 @@ flowchart TB
     E --> H[Upstream APIs]
 ```
 
-Native execution always comes first. Cross-protocol fallback and logical-model family fallback share the same logical-attempt, dispatch, hedge, and wall-clock failover budgets. Compatible model families are evaluated for at most two rounds so capacity that recovers while sibling pools are being tried may be reconsidered once; there is no unbounded model loop.
+Native execution always comes first. Cross-protocol fallback and logical-model family fallback share the same logical-attempt, dispatch, hedge, and wall-clock failover budgets. Configured three-model families reserve first-round logical attempts as **3 / 2 / 1** in requested-model preference order; `Air` uses **3 / 1 / 1 / 1** across its one-way upward chain. The bounded re-check round can only use request budget left unused by the first round.
 
-Code models never fall back into the non-Code family. `Air` may move upward to `Pro → Max → Ultra`, but `Ultra` / `Max` / `Pro` never fall back down to `Air`. A model-shaped 404 remains isolated to the failing model mapping and does not trigger a model-family switch.
+Code models never fall back into the non-Code family. `Air` may move upward to `Pro → Max → Ultra`, but `Ultra` / `Max` / `Pro` never fall back down to `Air`. A model-shaped 404 remains isolated to the failing model mapping and does not trigger a model-family switch. If a complete family sweep fails only for transient capacity reasons, the gateway returns retryable `503` so coding clients can retry instead of stopping for manual continuation.
 
-Tier 1 is intentionally biased toward **stable capacity, not a single "best" key**. RPM headroom can soften selection before a hard limit, affinity weakens as a key gets hot, and optional hedge twins require spare RPM/concurrency capacity.
+Tier 1 is intentionally biased toward **stable capacity, not a single "best" key**. Live in-flight work is a bounded soft ranking signal, affinity weakens as a key gets busy, real 429s drive cooldown/recovery, provider-model 429 heat can softly demote a hot cohort, and optional hedge work yields before primary traffic. A configured legacy `limits.concurrency` value never hard-blocks the only healthy node.
 
 ## API surface
 
@@ -110,7 +110,9 @@ For production, use the repository-driven workflow in [Deployment](docs/operatio
 
 Credentials bind by **Tier + node id**; Config and Secret shard suffixes are independent partitions. Gateway access is fail-closed: a configured access key with a missing or empty model allowlist grants no model access.
 
-See [Configuration](docs/operations/configuration.md) for the complete node schema, runtime variables, protocol fallback settings, RPM behavior, and Cloudflare bindings.
+Node `limits` are retired from active configuration. Existing syntactically-valid legacy objects are accepted temporarily for migration safety but no longer define provider capacity; remove them from maintained configs.
+
+See [Configuration](docs/operations/configuration.md) for the complete node schema, runtime variables, model-family and protocol fallback settings, and Cloudflare bindings.
 
 ## Production flow
 
