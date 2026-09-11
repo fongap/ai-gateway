@@ -48,11 +48,12 @@ export async function attemptNode(c: AttemptContext): Promise<AttemptOutcome> {
     // a hedge twin still never charges the logical attempt.
     c.state.dispatches++;
     if (!c.hedgedAttempt) c.state.logicalAttempts++;
+    const effectiveModel = c.reqDescriptor.model;
     c.logger.debug(
       `dispatch request=${c.requestId} logical_attempt=${c.state.logicalAttempts}/${c.state.maxAttempts}`
       + ` dispatch=${c.state.dispatches} node=${c.node.id} provider=${c.node.provider}`
       + ` protocol=${c.upstreamProtocol ?? c.node.protocol} surface=${c.surface} tier=${c.node.tier}`
-      + ` model=${c.requestedModel}->${upstreamModelOf(c.node, c.requestedModel)}`
+      + ` model=${c.requestedModel}${effectiveModel !== c.requestedModel ? `=>${effectiveModel}` : ''}->${upstreamModelOf(c.node, effectiveModel)}`
       + ` hedged=${!!(c.hedgedAttempt || c.hedgedWithTwin)} kind=ok status=200`
       + ` headers_ms=${c.headersMs ?? -1}${c.ttftMs !== undefined ? ` ttft_ms=${c.ttftMs}` : ''}`
       + ` latency_ms=${c.attemptStartMs ? Date.now() - c.attemptStartMs : -1}`,
@@ -82,12 +83,13 @@ async function dispatchAttempt(c: AttemptContext): Promise<AttemptOutcome> {
   c.surface = surface;
   const sourceBody = conversionContext ? conversionContext.convertedBody : bodyJson;
 
-  // Native outbound body: the client request is forwarded verbatim to the
-  // upstream of the SAME protocol+surface, with only the model name
-  // substituted. No cross-protocol or cross-surface conversion exists.
-  // Cross-protocol fallback path uses the converted body built by the
-  // conversionContext, with only the upstream model name rewritten.
-  const upstreamModel = node.models[requestedModel] || requestedModel;
+  // `requestedModel` is the client-facing identity and remains stable across
+  // transparent model-family fallback. `reqDescriptor.model` is the effective
+  // logical alias currently being routed. The node mapping MUST use the latter
+  // so a Max request transparently falling back to Pro resolves the Pro
+  // upstream mapping while the response can still be rewritten to Max.
+  const effectiveModel = reqDescriptor.model;
+  const upstreamModel = node.models[effectiveModel] || effectiveModel;
   let outboundObject: Record<string, unknown>;
   if (route === 'openai_chat' && !conversionContext) {
     outboundObject = { ...sourceBody, model: upstreamModel, ...(fakeStream ? { stream: true } : {}) };
@@ -156,7 +158,7 @@ async function dispatchAttempt(c: AttemptContext): Promise<AttemptOutcome> {
           `dispatch request=${requestId} logical_attempt=${state.logicalAttempts + 1}/${state.maxAttempts}`
           + ` dispatch=${state.dispatches} node=${node.id} provider=${node.provider}`
           + ` protocol=${upstreamProtocol} surface=${surface} tier=${node.tier}`
-          + ` model=${requestedModel}->${upstreamModelOf(node, requestedModel)}`
+          + ` model=${requestedModel}${effectiveModel !== requestedModel ? `=>${effectiveModel}` : ''}->${upstreamModelOf(node, effectiveModel)}`
           + ` hedged=false kind=${preDispatchKind} status=429 counted=false (pre-dispatch, no budget charged)`,
         );
         state.attempts.push({ attempt: state.logicalAttempts + 1, dispatch: state.dispatches, node_id: node.id, status: 429, kind: preDispatchKind, hedged: false });
