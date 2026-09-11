@@ -1,34 +1,17 @@
-name: Provider Discovery
+name: Provider Catalog Audit
 
-# Provider Discovery v1.1 — manual observation of Provider
-# capability, surface, and base URL state, plus Runtime-vs-Catalog
-# consistency checks.
-#
-# This workflow is OBSERVATION ONLY. It must never modify Runtime Node
-# configuration, Model Registry configuration, Worker Variables, or
-# Worker Secrets. The boundary:
-#
-#   Runtime Node Config = production fact
-#   Discovery Catalog   = external observation / auxiliary fact
+# Manual audit of Provider catalog snapshots and Runtime-vs-Catalog consistency.
+# This workflow is observation-only: it never mutates Runtime Node config,
+# Model Registry config, Worker Variables, or Worker Secrets.
 #
 # What it does:
-#   1. Reads the previous and current Catalog snapshot (PR-supplied or
-#      persisted on a schedule branch).
-#   2. Normalizes both snapshots (stable sort, secret-stripping, base
-#      URL canonicalization).
-#   3. Computes a semantic diff (added / removed / changed) with
-#      severity tagging (P0..P3).
-#   4. Runs the Runtime consistency check against a sanitized runtime
-#      view committed to the repo.
-#   5. Writes `changes.md` and a JSON artifact, and emits a short
-#      Action Summary.
+#   1. Reads previous/current catalog snapshots.
+#   2. Normalizes snapshots and computes semantic changes.
+#   3. Checks a sanitized Runtime view against the catalog.
+#   4. Writes a report + JSON artifacts + Action Summary.
 #
-# What it does NOT do:
-#   - Send generation requests (POST /v1/chat/completions, /v1/responses,
-#     /v1/messages).
-#   - Modify Runtime Node config, Model Registry, or any Worker binding.
-#   - Persist secrets (Authorization headers, API keys, etc.) in any
-#     output.
+# It does NOT probe providers with generation requests and therefore should not
+# be described as automatic Provider discovery.
 
 on:
   workflow_dispatch:
@@ -53,11 +36,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: provider-discovery
+  group: provider-catalog-audit
   cancel-in-progress: true
 
 jobs:
-  discover:
+  audit:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
@@ -73,7 +56,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Check snapshots and write report
+      - name: Audit snapshots and write report
         env:
           CATALOG_BEFORE: ${{ inputs.catalog_before }}
           CATALOG_AFTER: ${{ inputs.catalog_after }}
@@ -82,21 +65,21 @@ jobs:
           BEFORE="${CATALOG_BEFORE:-scripts/provider-discovery/samples/catalog.example.json}"
           AFTER="${CATALOG_AFTER:-scripts/provider-discovery/samples/catalog.example.json}"
           RUNTIME="${RUNTIME_VIEW:-scripts/provider-discovery/samples/runtime-view.example.json}"
-          mkdir -p "$RUNNER_TEMP/discovery"
+          mkdir -p "$RUNNER_TEMP/provider-catalog-audit"
           node scripts/provider-discovery.mjs check-snapshot "$AFTER"
           node scripts/provider-discovery.mjs diff "$BEFORE" "$AFTER" \
-            --out "$RUNNER_TEMP/discovery/changes.md" \
-            --json-out "$RUNNER_TEMP/discovery/changes.json"
+            --out "$RUNNER_TEMP/provider-catalog-audit/changes.md" \
+            --json-out "$RUNNER_TEMP/provider-catalog-audit/changes.json"
           node scripts/provider-discovery.mjs runtime-check "$AFTER" "$RUNTIME" \
-            --json-out "$RUNNER_TEMP/discovery/runtime-warnings.json" || true
+            --json-out "$RUNNER_TEMP/provider-catalog-audit/runtime-warnings.json" || true
           node scripts/provider-discovery.mjs summary "$AFTER" \
-            > "$RUNNER_TEMP/discovery/summary.txt"
-          cat "$RUNNER_TEMP/discovery/summary.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+            > "$RUNNER_TEMP/provider-catalog-audit/summary.txt"
+          cat "$RUNNER_TEMP/provider-catalog-audit/summary.txt" | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload discovery artifact
+      - name: Upload audit artifact
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
-          name: provider-discovery
-          path: ${{ runner.temp }}/discovery/
+          name: provider-catalog-audit
+          path: ${{ runner.temp }}/provider-catalog-audit/
           if-no-files-found: warn
           retention-days: 14
