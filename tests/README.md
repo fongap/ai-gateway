@@ -12,9 +12,9 @@ tests/
 ├── *-test.mjs                           unit and executable contract suites
 ├── integration-test.mjs                 real Worker pipeline integration suite
 ├── scheduler-stability-test.mjs         deterministic scheduler stability suite
+├── stress-test.mjs                      deterministic reliability/fault-injection invariants
 ├── codex-contract-test.mjs              Codex compatibility contract
 ├── claude-contract-test.mjs             Claude compatibility contract
-├── stress-test.mjs                      stress/reliability load suite
 ├── provider-discovery-ssrf-guard-test.mjs
 └── mock-d1-database.mjs                 shared D1 test helper
 ```
@@ -26,17 +26,19 @@ tests/
 | Command | Purpose |
 | --- | --- |
 | `npm run test:unit` | Run fast suites registered in `tests/run-unit.mjs` |
-| `npm run test:gate` | Deterministic correctness gate: unit + scheduler stability + integration + Codex/Claude contracts |
-| `npm run test:all` | `test:gate` + stress/reliability load coverage |
+| `npm run test:gate` | Complete correctness gate: unit + scheduler stability + integration + reliability/fault injection + Codex/Claude contracts |
+| `npm run test:all` | Alias of the complete correctness gate; retained as the deploy-facing aggregate command |
 | `npm run test:integration` | Run the integration suite |
 | `npm run test:conversion` | Run protocol conversion tests |
 | `npm run validate:merge` | PR/merge correctness validation using `test:gate` |
-| `npm run validate:deploy` | Full production validation using `test:all` |
+| `npm run validate:deploy` | Production revalidation using `test:all` |
 | `npm run check:deploy` | Wrangler Worker bundle dry-run |
 
 ## Gate policy
 
-A correctness regression that can block deployment must be detectable before merge. Therefore scheduler stability, integration, and Codex/Claude compatibility are part of `test:gate` and run in the required PR check. Stress remains an additional deploy/nightly layer.
+A correctness regression that can block deployment must be detectable before merge. Scheduler stability, integration, reliability/fault-injection, and Codex/Claude compatibility therefore all run in the required PR gate.
+
+`stress-test.mjs` is intentionally included before merge because it currently contains deterministic reliability contracts, not a long-running benchmark. If a future load/soak benchmark is introduced, it must live in a separate suite and may run nightly without weakening the PR correctness gate.
 
 Do not add one-shot workflows that rewrite tests or commit test fixes automatically. Temporary repair workflows must not remain in the default branch.
 
@@ -48,8 +50,7 @@ To add a test suite:
 
 1. add `tests/<name>-test.mjs` and make failures exit non-zero;
 2. register it in `UNIT_TESTS` in `tests/run-unit.mjs` when it belongs to the fast unit/contract registry, or add it to the appropriate aggregate package script;
-3. run `npm run test:gate` for deterministic correctness changes;
-4. run `npm run test:all` when stress/reliability behavior is affected;
-5. update the responsible canonical document if the test changes a public or architectural contract.
+3. run `npm run test:gate` for every correctness change;
+4. update the responsible canonical document if the test changes a public or architectural contract.
 
 Tests are executable contracts. Do not weaken a contract merely to make an unrelated implementation change pass.

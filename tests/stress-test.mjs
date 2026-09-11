@@ -329,7 +329,8 @@ await test('S9 node isolation: a 429-cooling node leaves siblings serving', asyn
   // First request: iso-a 429s and cools; rotation serves iso-b.
   const first = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.equal(first.status, 200);
-  assert.equal(getTier1Model('iso-a', 'general-air').cooldownUntil > Date.now(), true, 'iso-a must be cooling');
+  assert.equal(getTier1Account('iso-a').accountCooldownUntil > Date.now(), true, 'iso-a account must be cooling');
+  assert.equal(getTier1Model('iso-a', 'general-air').cooldownUntil, 0, 'ambiguous 429 must not create model cooldown');
   // Burst: iso-a is cooling and must never be hit again; siblings serve all.
   const aCalls = upstreamCalls.filter((c) => c.host === 'iso-a.example.com').length;
   const statuses = await Promise.all(Array.from({ length: 20 }, () =>
