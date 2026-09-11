@@ -65,6 +65,7 @@ TIER1_NODES_CONFIG_01='[
 # FAKE_STREAM_PROTECTION="false"          # default: false
 # ALLOW_INSECURE_HTTP_UPSTREAM="false"    # default: false
 # ANTHROPIC_COUNT_TOKENS_MODE="approximate" # default: approximate
+# DASHBOARD_MODELS="Code-Ultra,Code-Max,Code-Pro,Ultra,Max,Pro,Air" # default: empty (show all public models)
 
 # ============ Protocol Fallback (optional) ============
 # JSON object mapping client route to ordered fallback chains.
