@@ -1,12 +1,12 @@
 name: CI
 
-# Two-tier CI:
-#   validate-merge (required): all deterministic correctness tests + static/repository checks
-#   validate-deploy:           validate-merge coverage + stress/reliability load tests
+# CI policy:
+#   validate-merge (required): complete correctness gate + static/repository checks
+#   validate-deploy:           repeats the same correctness gate before production deployment
 #
-# The PR gate intentionally includes scheduler stability, integration, and
-# Codex/Claude compatibility so a correctness regression cannot first appear
-# only after merge. Stress remains in the post-merge/nightly deploy gate.
+# Scheduler stability, integration, reliability/fault injection, and Codex/Claude
+# compatibility all run before merge. A correctness test must not first execute
+# only after main has already advanced.
 on:
   push:
     branches:
@@ -24,7 +24,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Required CI — every PR must pass the complete deterministic correctness gate.
+  # Required CI — every PR must pass the complete correctness gate.
   validate-merge:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -47,7 +47,9 @@ jobs:
       - name: Dry-run Worker bundle
         run: npm run check:deploy
 
-  # Full CI — push to main, nightly, or manual trigger. Adds stress coverage.
+  # Production/nightly revalidation. Kept as a separate status because deployment
+  # governance consumes it, but it must not contain correctness coverage absent
+  # from validate-merge.
   validate-deploy:
     if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
