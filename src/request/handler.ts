@@ -23,7 +23,7 @@ import {
 import { tier1DeadlineTooSmall } from '../scheduler/tier1-scheduler.ts';
 import { preflight as runPreflight } from './preflight.ts';
 import { evaluateRouteFeasibility } from './route-feasibility.ts';
-import { buildModelFallbackPlan, hasModelFamilyFallback } from './model-fallback.ts';
+import { buildModelFallbackPlan, modelFallbackCandidates } from './model-fallback.ts';
 import { pickForTier, makeTier1Rng, computeTierCaps, countRemainingDispatchableAttempts } from './tier-loop.ts';
 import { runFallbackChain } from './fallback.ts';
 import { dispatchWithHedge } from './attempt.ts';
@@ -50,10 +50,14 @@ export async function handleRequest(request: Request, env: Record<string, unknow
     config, tiers, policy, failoverBudgetMs, knownModels, feasibility,
   } = pre;
 
-  const familyFallback = hasModelFamilyFallback(requestedModel);
-  // The 3-2-1 family contract needs six logical attempts. Family aliases get
-  // at least that request-wide budget; larger explicit policies are preserved.
-  // Non-family models keep their configured policy exactly as before.
+  // A name such as Max/Code-Max is not enough by itself to activate family
+  // behavior. At least one compatible sibling alias must actually exist in the
+  // known-model catalog; otherwise the request keeps its legacy attempt budget
+  // and terminal error semantics.
+  const familyFallback = modelFallbackCandidates(requestedModel, knownModels).length > 1;
+  // The 3-2-1 family contract needs six logical attempts. Configured families
+  // get at least that request-wide budget; larger explicit policies are kept.
+  // Requests without a configured sibling keep their policy exactly as before.
   const requestPolicy = familyFallback && policy.maxAttempts < MODEL_FAMILY_ATTEMPT_BUDGET
     ? { ...policy, maxAttempts: MODEL_FAMILY_ATTEMPT_BUDGET }
     : policy;
