@@ -635,21 +635,34 @@ export function applyTier1Outcome(accountId: string, modelId: string, outcome: T
   }
 }
 
-export function recordTier1Success(accountId: string, modelId: string): void {
+export function recordTier1Success(accountId: string, modelId: string, now: number = Date.now()): void {
   const account = getTier1Account(accountId);
   const model = getTier1Model(accountId, modelId);
   account.consecutiveAccountFailures = 0;
-  account.consecutiveRateLimits = 0;
-  if (account.accountCooldownReason === 'rate_limit') {
+
+  // Only a request admitted after the rate-limit cooldown may declare recovery.
+  // A request that was already in flight when a peer received 429 must not
+  // accidentally cancel the newly-created cooldown when it later succeeds.
+  const accountRecoveryProbe = account.accountCooldownReason === 'rate_limit'
+    && account.accountCooldownUntil <= now
+    && !account.rateLimitRecoveryPending
+    && account.rateLimitRecoveryUntil > 0;
+  if (accountRecoveryProbe) {
+    account.consecutiveRateLimits = 0;
     account.accountCooldownUntil = 0;
     account.accountCooldownReason = null;
     account.scopeAmbiguous429 = false;
     account.rateLimitRecoveryPending = false;
     account.rateLimitRecoveryUntil = 0;
   }
+
   model.consecutiveFailures = 0;
-  model.consecutiveRateLimits = 0;
-  if (model.cooldownReason === 'rate_limit') {
+  const modelRecoveryProbe = model.cooldownReason === 'rate_limit'
+    && model.cooldownUntil <= now
+    && !model.rateLimitRecoveryPending
+    && model.rateLimitRecoveryUntil > 0;
+  if (modelRecoveryProbe) {
+    model.consecutiveRateLimits = 0;
     model.cooldownUntil = 0;
     model.cooldownReason = null;
     model.scopeAmbiguous429 = false;
