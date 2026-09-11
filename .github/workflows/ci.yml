@@ -1,11 +1,12 @@
 name: CI
 
 # Two-tier CI:
-#   validate-merge (required): syntax + config + unit tests + protocol contract + docs + secret scan
-#   validate-deploy:           everything in validate-merge + scheduler-stability + integration + stress + codex/claude contract
+#   validate-merge (required): all deterministic correctness tests + static/repository checks
+#   validate-deploy:           validate-merge coverage + stress/reliability load tests
 #
-# validate-deploy runs on push to main, on nightly, and via manual workflow_dispatch.
-# validate-merge runs on every push and PR — it is the merge gate.
+# The PR gate intentionally includes scheduler stability, integration, and
+# Codex/Claude compatibility so a correctness regression cannot first appear
+# only after merge. Stress remains in the post-merge/nightly deploy gate.
 on:
   push:
     branches:
@@ -23,11 +24,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Required CI — every PR must pass this. Fast feedback loop.
-  # Skips scheduler-stability / integration / stress / benchmark.
+  # Required CI — every PR must pass the complete deterministic correctness gate.
   validate-merge:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -47,7 +47,7 @@ jobs:
       - name: Dry-run Worker bundle
         run: npm run check:deploy
 
-  # Full CI — push to main, nightly, or manual trigger. Includes the slow stuff.
+  # Full CI — push to main, nightly, or manual trigger. Adds stress coverage.
   validate-deploy:
     if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
