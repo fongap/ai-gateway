@@ -629,25 +629,27 @@ await test('404 endpoint not found cools the whole Tier 1 account', async () => 
   assert.notEqual(r2.status, 200);
 });
 
-await test('Retry-After seconds sets model cooldown window', async () => {
+await test('Retry-After seconds sets account cooldown window', async () => {
   resetMock();
   routeHandlers['ra.example.com'] = () => jsonUpstream({}, 429, { 'retry-after': '90' });
   const env = makeEnv({ tier1: [basicNode('ra')], secrets: { ra: 'k' } });
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.equal(res.status, 429);
-  const remaining = getTier1Model('ra', 'general-air').cooldownUntil - Date.now();
+  const remaining = getTier1Account('ra').accountCooldownUntil - Date.now();
   assert.ok(remaining > 80_000 && remaining <= 90_000);
+  assert.equal(getTier1Model('ra', 'general-air').cooldownUntil, 0);
 });
 
-await test('Retry-After HTTP-date sets model cooldown', async () => {
+await test('Retry-After HTTP-date sets account cooldown', async () => {
   resetMock();
   const date = new Date(Date.now() + 45_000).toUTCString();
   routeHandlers['rd.example.com'] = () => jsonUpstream({}, 429, { 'retry-after': date });
   const env = makeEnv({ tier1: [basicNode('rd')], secrets: { rd: 'k' } });
   const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.equal(res.status, 429);
-  const remaining = getTier1Model('rd', 'general-air').cooldownUntil - Date.now();
+  const remaining = getTier1Account('rd').accountCooldownUntil - Date.now();
   assert.ok(remaining > 35_000 && remaining <= 46_000);
+  assert.equal(getTier1Model('rd', 'general-air').cooldownUntil, 0);
 });
 
 await test('all nodes cooling returns 429 with Retry-After header', async () => {
