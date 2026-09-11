@@ -10,11 +10,14 @@
 ### Changed
 
 - **Tier 1 429 Availability-First Recovery**: 无显式 `Retry-After` 时自动 cooldown 收敛为约 `30s → 45s → 60s`；模糊 429 默认按 account/key scope 处理，cooldown 后使用受控真实请求恢复，不再通过更长的本地抑制牺牲整个逻辑模型的可用性。
-- **Shared Budget Across Model Fallback**: model-family fallback 与 native retry、protocol fallback 共用原请求的 `max_attempts`、dispatch ceiling、hedge ceiling 与 `FAILOVER_BUDGET_MS`；切换逻辑模型不会获得新的重试预算。客户端看到的 requested model 保持不变，内部仅切换 effective logical model。
+- **Model-Family Attempt Reservation**: 当请求模型存在已配置的同族 sibling 时，家族请求使用至少 6 次有界 logical-attempt budget；首轮按请求优先顺序保留 `3 → 2 → 1`，`Air` 使用 `3 → 1 → 1 → 1`。第二轮仅消费首轮未用完的请求预算，不为切换模型创建新的无限重试预算。
+- **Observed Capacity over Guessed Node Limits**: Node `limits` 退出主动容量控制。语法正确的旧 `limits` 对象暂时兼容并提示弃用，但 `limits.concurrency` / `limits.rpm` 不再把健康节点硬判为不可用；调度改用实时 inFlight 软排序、真实 429/Cooldown、Provider-Model Heat、TTFT 与 Circuit 等运行事实。
 - **PR Correctness Gate**: scheduler stability、integration、compatibility、reliability / fault-injection 等确定性套件进入 required PR gate，避免正确性问题在 merge 后才首次暴露。
 
 ### Fixed
 
+- **Family Fallback Starvation**: 修复原请求模型可能先耗尽全部 attempt、导致 `Code-Pro` / `Code-Ultra` 等 sibling 实际没有出场机会的问题。
+- **Coding Client Manual-Continue Stall**: 当完整模型家族仅因 429、5xx、network、headers/first-event timeout 或 stream interruption 等临时容量原因全部失败时，返回可重试 `503` + 短 `Retry-After`，避免 Coding/OpenCode 客户端把一次临时容量波动当作终态错误并停下来等待人工“继续”。
 - **Daily Token Totals**: 最近 7 个完整 UTC+8 日桶由保留的 hourly 数据重建，避免跨午夜后旧 daily snapshot 使前一天 Token 总量回退。
 - **Model-Missing Isolation**: model-shaped 404 仍是模型映射/能力事实，仅隔离对应模型映射；不会因为新增 model-family fallback 而被静默改投到另一个逻辑模型。
 
@@ -160,7 +163,7 @@ Scheduling, config-reliability and streaming hardening. No new protocols, provid
 - **P0 — A distributed rate-limiter deny no longer consumes an upstream attempt or a local RPM charge** (from the provisional 1.2.2 code): the attempt is rolled back and the attempt budget is not charged, so a CF-denied free key cannot starve the fallback or exhaust its own RPM on traffic it never sent.
 - **P1 — A pure `rate_limit_global` failure now returns a `Retry-After` at the next fixed-window reset** instead of omitting the header (previously all-CF-denied requests surfaced a bare 429).
 - **P1 — 404s are disambiguated by error body**: a model-shaped 404 stays `model_missing` (model-scoped pair cooldown); an endpoint 404 is a new `endpoint_not_found` (whole-node cooldown), no longer masked as a model-mapping issue.
-- **P0 — Anthropic streaming finalizes on `[DONE]` without `finish_reason`.** Some OpenAI-compatible providers (e.g. free keys) end with only `[DONE]` after the final content delta, never sending an explicit `finish_reason` chunk. The transform previously treated that as an error, so Claude Code saw a half-open stream and emitted `Streaming response ended before any complete data was received. Retrying without streaming.`. A content-producing stream that ends on `[DONE]` is now finalized into a complete `message_stop` lifecycle (missing `finish_reason` maps to `end_turn`); a genuinely empty stream is still rejected. A clean EOF without `[DONE]` and without `finish_reason` remains a failure so node health accounting stays correct.
+- **P0 — Anthropic streaming finalizes on `[DONE]` without `finish_reason`.** Some OpenAI-compatible providers (e.g. free keys) end with only `[DONE]` after the final content delta, never sending an explicit `finish_reason` chunk. The transform previously treated that as an error, so Claude Code saw a half-open stream and emitted `Streaming response ended before any complete data was received. Retrying without streaming.`. A content-producing stream that ends on `[DONE]` is now finalized into a complete `message_stop` lifecycle (missing `finish_reason` maps to `end_turn`); a genuinely empty stream is still rejected. A clean EOF without `[DONE]` and without `finish_reason` remains a failure so node health accounting stays correct。
 
 ### Added
 
@@ -182,7 +185,7 @@ Scheduling-boundary hardening release. No new protocols, providers or features; 
 - **P0 — A wide failing Tier 1 can no longer eat the whole attempt budget.** The per-tier attempt loop previously shared one `maxAttempts` counter across all tiers, so six failing free Tier-1 nodes could consume all 5 attempts and Tier 2 / Tier 3 were never reached. Each lower tier that can still serve the requested model now has a reserved budget (`fallbackReservePerTier`, default 1, configurable via `POLICIES_CONFIG`'s `fallback_reserve_per_tier`; 0 restores the original behavior). Tier 1 is capped at `maxAttempts - reserve`, guaranteeing every capable fallback tier at least one attempt.
 - **P0 — A distributed-rate-limiter deny no longer consumes an upstream attempt or a local RPM charge.** When `QUOTA_RATE_LIMITER` denied a candidate, the attempt never reached an upstream but the code still incremented `totalAttempts` and left the `acquireSlot` RPM reservation in place. A node that was CF-denied on every free key could therefore starve the fallback budget AND exhaust its own per-minute RPM on traffic it never sent. The deny path now rolls back the RPM reservation (`rollbackRpmBucket`) and does not charge the attempt budget — it still marks the node `attempted` so the tier drains via the candidate set rather than the budget.
 - **P1 — `model_missing` (404) cools the (node, model) pair, not the whole node.** A 404 mapping mismatch previously set a node-level cooldown, taking the node's other models (and same-tier siblings) down for 5s. The runtime state now keeps a per-node `modelCooldowns` map; a 404 cools only that `(node, logicalModel)` pair via `recordModelMissing`, leaves node health and the circuit untouched, and `pickCandidate` skips the cooling pair while the same node still serves its other models. The 404 classification carries `modelScoped: true` so the handler routes it to the pair-level path.
-- **P1 — `Retry-After` is now the real earliest availability, filtered by model and blocking reason.** The exhausted-response cooldown scan previously read every node's node-level cooldown regardless of whether it served the requested model, and the saturated case returned the RPM minute window whenever any node was hard-RPM-exhausted — so a concurrency-saturated node (frees in ~1s) could be masked by an unrelated node's 50s RPM window. Retry-After is now the min across all model-serving, currently-blocking nodes (`earliestBlockingRetryAfterSec`): node cooldown → model cooldown → RPM window → ~1s concurrency estimate, and unrelated-model nodes never contribute.
+- **P1 — `Retry-After` is now the real earliest availability, filtered by model and blocking reason.** The exhausted-response cooldown scan previously read every node's node-level cooldown regardless of whether it served the requested model, and the saturated case returned the RPM minute window whenever any node was hard-RPM-exhausted — so a concurrency-saturated node (frees in ~1s) could be masked by an unrelated node's 50s RPM window. Retry-After is now the min across all model-serving, currently-blocking nodes (`earliestBlockingRetryAfterSec`): node cooldown → model cooldown → RPM window → ~1s concurrency estimate, and unrelated-model nodes never contribute。
 
 ### Changed
 
@@ -377,8 +380,7 @@ Breaking release: the node configuration and secret management model was redesig
 - 发布脚本改为从 `package.json` 自动读取版本并同时生成 ZIP、TAR.GZ 与校验值；
 - 增加版本一致性检查、Markdown 本地链接检查和依赖锁文件；
 - 增加 Issue 模板、Pull Request 模板与 Dependabot 配置；
-- 完善中英文 README、Cloudflare GitHub 自动部署说明和运行指标边界说明；
-- Wrangler 固定为 `4.114.0`。
+- 完善中英文 README，并在两版顶部提供语言切换。
 
 ## 5.11.0 - 2026-08-06
 
@@ -389,5 +391,5 @@ Breaking release: the node configuration and secret management model was redesig
 - 缩小首页主标题字号；
 - 保留 OpenAI / Anthropic 双协议、Primary 池与双级 Fallback；
 - 整理为可公开发布的 Wrangler 项目结构；
-- 增加 Windows、Linux 和 macOS 部署脚本、健康检查脚本与开源文档；
+- 增加 Windows、Linux 和 macOS 部署脚本、健康检查脚本、开源文档；
 - 增加中英文双语 README，并在两版顶部提供语言切换。
