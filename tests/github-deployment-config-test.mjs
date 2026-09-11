@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import {
-  loadRuntimeConfig, normalizeRuntimeConfig, validateGatewayRuntime, buildWranglerConfig, withStaleNodeSecretsRemoved,
+  loadRuntimeConfig, normalizeRuntimeConfig, normalizeNodeConfigJsonText, validateGatewayRuntime, buildWranglerConfig, withStaleNodeSecretsRemoved,
   collectVarsFromEnv, collectSecretsFromEnv, buildRuntimeFromEnv, preflight, buildDeploymentSummary,
 } from '../scripts/github-deployment-config.mjs';
 
@@ -72,6 +72,23 @@ function envFixture() {
     GATEWAY_ACCESS_KEY_AIR: 'gw-key',
     TIER1_NODES_SECRETS_01: JSON.stringify({ 'node-a': 'upstream-key' }),
   };
+}
+
+{
+  const repaired = normalizeNodeConfigJsonText('[{"id":"a","models":{"label":"A、B"}}、{"id":"b"}]');
+  assert.equal(repaired, '[{"id":"a","models":{"label":"A、B"}},{"id":"b"}]', 'separator punctuation outside strings becomes comma');
+  assert.equal(normalizeNodeConfigJsonText('[{"id":"a","models":{"x":"y"}、}]'), '[{"id":"a","models":{"x":"y"}}]', 'trailing full-width punctuation before a closer is removed');
+}
+
+{
+  const env = envFixture();
+  env.TIER1_NODES_CONFIG_01 = '[{"id":"node-a","base_url":"https://provider.example.com/v1","models":{"code-pro":"up"}、}]';
+  const built = buildRuntimeFromEnv(env);
+  const c = validateGatewayRuntime(built.runtime);
+  assert.equal(c.ready, true, 'deployment bridge repairs browser/IME full-width punctuation before strict runtime validation');
+  assert.equal(JSON.parse(built.runtime.vars.TIER1_NODES_CONFIG_01)[0].id, 'node-a');
+  const pf = preflight(env);
+  assert.ok(pf.warnings.some((w) => w.includes('full-width JSON punctuation')), 'preflight reports the repaired source variable');
 }
 
 {
