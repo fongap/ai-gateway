@@ -148,15 +148,27 @@ export async function queryTokenSummary(env: Record<string, unknown>, now: numbe
 }
 
 // Daily totals for the homepage activity heatmap.
+//
+// Source-of-truth policy:
+//   * the most recent 7 UTC+8 calendar days are rebuilt from hourly rows;
+//   * older days come from the materialized daily table;
+//   * when the daily table is absent/empty, hourly rows are used for every
+//     retained day available in the requested range.
+//
+// Hourly retention is 7 rolling days. Rebuilding today + the previous six
+// calendar days is therefore safe at every time of day: the oldest overlaid
+// day still starts less than 7 * 24h before `now`. Never overlay the seventh
+// previous calendar day because its early hours may already have been pruned.
 export async function queryTokenDailySeries(env: Record<string, unknown>, startDayIso: string, now: number = Date.now()): Promise<Map<string, DailyWindowRow> | { available: false, error: string } | null> {
   const d1 = tokenStatsD1(env);
   if (!d1) return null;
-  const todayIso = isoDayUtc8(utc8DayStartUtcMs(now));
   const map = new Map<string, DailyWindowRow>();
   let dailyRows: Record<string, unknown>[] = [];
   let dailyTableHasData = false;
 
-  // Try to read from token_usage_daily table first.
+  // Materialized history first. Recent retained days are overlaid below from
+  // hourly, so a stale cron snapshot can never make a just-finished day jump
+  // backwards after midnight.
   try {
     const res = await d1.prepare(
       `SELECT day, input_tokens, output_tokens, total_tokens, requests, usage_reports, usage_missing
@@ -167,12 +179,12 @@ export async function queryTokenDailySeries(env: Record<string, unknown>, startD
     dailyRows = Array.isArray(res?.results) ? res.results : [];
     dailyTableHasData = dailyRows.length > 0;
   } catch (e) {
-    // Table may not exist yet (migration pending) — fall back to hourly.
+    // Table may not exist yet (migration pending). Hourly becomes the only
+    // available source below.
     dailyRows = [];
     dailyTableHasData = false;
   }
 
-  // Populate map from daily table rows.
   for (const r of dailyRows) {
     if (!r || typeof r.day !== 'string') continue;
     map.set(r.day, {
@@ -183,64 +195,51 @@ export async function queryTokenDailySeries(env: Record<string, unknown>, startD
     });
   }
 
-  // If the current UTC+8 day is in range, overlay live hourly data for
-  // "today" to keep the heatmap cell fresh (daily table is only
-  // refreshed by cron).
-  if (todayIso >= startDayIso) {
-    const todayStart = normalizeHour(utc8DayStartUtcMs(now));
-    try {
-      const res = await d1.prepare(
-        `SELECT hour, COALESCE(SUM(total_tokens),0) AS total, COALESCE(SUM(requests),0) AS requests, COALESCE(SUM(usage_reports),0) AS reports, COALESCE(SUM(usage_missing),0) AS missing
-         FROM ${TABLE}
-         WHERE hour >= ?
-         GROUP BY hour`
-      ).bind(todayStart).all();
-      const rows = Array.isArray(res?.results) ? res.results : [];
-      let todayTotal = 0, todayRequests = 0, todayReports = 0, todayMissing = 0;
-      for (const r of rows) {
-        todayTotal += Number(r.total) || 0;
-        todayRequests += Number(r.requests) || 0;
-        todayReports += Number(r.reports) || 0;
-        todayMissing += Number(r.missing) || 0;
-      }
-      if (todayTotal > 0 || todayRequests > 0) {
-        map.set(todayIso, { total: todayTotal, requests: todayRequests, reports: todayReports, missing: todayMissing });
-      }
-    } catch (e) {
-      // Hourly overlay failed; keep daily table value if present.
-    }
-  }
+  // Keep exactly seven FULL UTC+8 calendar days on the hourly truth path:
+  // today plus the previous six days. If daily history is unavailable, query
+  // from the caller's requested start instead and return whatever hourly
+  // retention still contains.
+  const recentStartMs = utc8DayStartUtcMs(now) - 6 * DAY_MS;
+  const recentStartIso = isoDayUtc8(recentStartMs);
+  const hourlyStartDayIso = dailyTableHasData
+    ? (startDayIso > recentStartIso ? startDayIso : recentStartIso)
+    : startDayIso;
+  const hourlyStartUtcMs = Date.parse(`${hourlyStartDayIso}T00:00:00Z`) - DISPLAY_TIMEZONE_OFFSET_MS;
+  const hourlyStart = normalizeHour(hourlyStartUtcMs);
 
-  // If daily table had no data at all (pre-backfill or table missing),
-  // fall back to full hourly derivation for the entire range.
-  if (!dailyTableHasData) {
-    try {
-      const startUtcMs = Date.parse(`${startDayIso}T00:00:00Z`) - DISPLAY_TIMEZONE_OFFSET_MS;
-      const startHour = normalizeHour(startUtcMs);
-      const res = await d1.prepare(
-        `SELECT hour, COALESCE(SUM(total_tokens),0) AS total, COALESCE(SUM(requests),0) AS requests, COALESCE(SUM(usage_reports),0) AS reports, COALESCE(SUM(usage_missing),0) AS missing
-         FROM ${TABLE}
-         WHERE hour >= ?
-         GROUP BY hour`
-      ).bind(startHour).all();
-      const rows = Array.isArray(res?.results) ? res.results : [];
-      for (const r of rows) {
-        if (!r || typeof r.hour !== 'string') continue;
-        const ms = Date.parse(r.hour);
-        if (!Number.isFinite(ms)) continue;
-        const day = new Date(ms + DISPLAY_TIMEZONE_OFFSET_MS).toISOString().slice(0, 10);
-        if (day < startDayIso) continue;
-        // Skip todayIso — it's handled by the live hourly overlay above.
-        if (day === todayIso) continue;
-        const cur = map.get(day) || { total: 0, requests: 0, reports: 0, missing: 0 };
-        map.set(day, {
-          total: cur.total + (Number(r.total) || 0),
-          requests: cur.requests + (Number(r.requests) || 0),
-          reports: cur.reports + (Number(r.reports) || 0),
-          missing: cur.missing + (Number(r.missing) || 0),
-        });
-      }
-    } catch (e) {
+  try {
+    const res = await d1.prepare(
+      `SELECT hour, COALESCE(SUM(total_tokens),0) AS total, COALESCE(SUM(requests),0) AS requests, COALESCE(SUM(usage_reports),0) AS reports, COALESCE(SUM(usage_missing),0) AS missing
+       FROM ${TABLE}
+       WHERE hour >= ?
+       GROUP BY hour`
+    ).bind(hourlyStart).all();
+    const rows = Array.isArray(res?.results) ? res.results : [];
+    const hourlyByDay = new Map<string, DailyWindowRow>();
+
+    for (const r of rows) {
+      if (!r || typeof r.hour !== 'string') continue;
+      const ms = Date.parse(r.hour);
+      if (!Number.isFinite(ms)) continue;
+      const day = isoDayUtc8(ms);
+      if (day < hourlyStartDayIso || day < startDayIso) continue;
+      const cur = hourlyByDay.get(day) || { total: 0, requests: 0, reports: 0, missing: 0 };
+      hourlyByDay.set(day, {
+        total: cur.total + (Number(r.total) || 0),
+        requests: cur.requests + (Number(r.requests) || 0),
+        reports: cur.reports + (Number(r.reports) || 0),
+        missing: cur.missing + (Number(r.missing) || 0),
+      });
+    }
+
+    // Hourly wins for every recent day it can prove. Older materialized rows
+    // stay untouched, and an empty hourly result never fabricates a zero day.
+    for (const [day, value] of hourlyByDay) map.set(day, value);
+  } catch (e) {
+    // With materialized history available, degrade to that snapshot rather
+    // than failing the whole dashboard. Without daily history there is no
+    // trustworthy source left, so preserve the existing fail-open contract.
+    if (!dailyTableHasData) {
       return { available: false, error: `queryTokenDailySeries: ${asMessage(e)}` };
     }
   }
