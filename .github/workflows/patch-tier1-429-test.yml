@@ -1,0 +1,91 @@
+name: Patch Tier1 429 integration expectations
+
+on:
+  push:
+    branches:
+      - fix/tier1-429-integration-expectations
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/tier1-429-integration-expectations
+          fetch-depth: 0
+
+      - name: Update stale Retry-After assertions
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tests/integration-test.mjs')
+          text = path.read_text()
+
+          old_seconds = """await test('Retry-After seconds sets model cooldown window', async () => {
+            resetMock();
+            routeHandlers['ra.example.com'] = () => jsonUpstream({}, 429, { 'retry-after': '90' });
+            const env = makeEnv({ tier1: [basicNode('ra')], secrets: { ra: 'k' } });
+            const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+            assert.equal(res.status, 429);
+            const remaining = getTier1Model('ra', 'general-air').cooldownUntil - Date.now();
+            assert.ok(remaining > 80_000 && remaining <= 90_000);
+          });"""
+          new_seconds = """await test('Retry-After seconds sets account cooldown window', async () => {
+            resetMock();
+            routeHandlers['ra.example.com'] = () => jsonUpstream({}, 429, { 'retry-after': '90' });
+            const env = makeEnv({ tier1: [basicNode('ra')], secrets: { ra: 'k' } });
+            const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+            assert.equal(res.status, 429);
+            const remaining = getTier1Account('ra').accountCooldownUntil - Date.now();
+            assert.ok(remaining > 80_000 && remaining <= 90_000);
+            assert.equal(getTier1Model('ra', 'general-air').cooldownUntil, 0);
+          });"""
+
+          old_date = """await test('Retry-After HTTP-date sets model cooldown', async () => {
+            resetMock();
+            const date = new Date(Date.now() + 45_000).toUTCString();
+            routeHandlers['rd.example.com'] = () => jsonUpstream({}, 429, { 'retry-after': date });
+            const env = makeEnv({ tier1: [basicNode('rd')], secrets: { rd: 'k' } });
+            const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+            assert.equal(res.status, 429);
+            const remaining = getTier1Model('rd', 'general-air').cooldownUntil - Date.now();
+            assert.ok(remaining > 35_000 && remaining <= 46_000);
+          });"""
+          new_date = """await test('Retry-After HTTP-date sets account cooldown', async () => {
+            resetMock();
+            const date = new Date(Date.now() + 45_000).toUTCString();
+            routeHandlers['rd.example.com'] = () => jsonUpstream({}, 429, { 'retry-after': date });
+            const env = makeEnv({ tier1: [basicNode('rd')], secrets: { rd: 'k' } });
+            const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+            assert.equal(res.status, 429);
+            const remaining = getTier1Account('rd').accountCooldownUntil - Date.now();
+            assert.ok(remaining > 35_000 && remaining <= 46_000);
+            assert.equal(getTier1Model('rd', 'general-air').cooldownUntil, 0);
+          });"""
+
+          if old_seconds not in text:
+              raise SystemExit('seconds Retry-After test block not found exactly')
+          if old_date not in text:
+              raise SystemExit('HTTP-date Retry-After test block not found exactly')
+
+          text = text.replace(old_seconds, new_seconds, 1).replace(old_date, new_date, 1)
+          path.write_text(text)
+          PY
+
+      - name: Commit patched test
+        shell: bash
+        run: |
+          if git diff --quiet -- tests/integration-test.mjs; then
+            echo "No patch needed"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tests/integration-test.mjs
+          git commit -m "test: align Retry-After assertions with key cooldown"
+          git push origin HEAD:fix/tier1-429-integration-expectations
