@@ -1,28 +1,7 @@
-/**
- * SPDX-License-Identifier: MIT
- * Copyright (c) 2026 Fongap Studio
- *
- * ai-gateway — aggregate many upstream AI APIs / keys into one stable
- * endpoint on Cloudflare Workers.
- *
- *   many APIs · many keys · many models
- *        ↓
- *   node selection / load spreading (priority + concurrency)
- *   429 isolation with Retry-After cooldowns
- *   Tier 1 affinity/P2C/passive learning, tier fallback, Tier 2/3 circuit recovery
- *   first-event streaming guard
- *        ↓
- *   the client sees a single stable endpoint
- *
- * This file is ONLY the Worker entry: request counting and the top-level
- * error boundary. All logic lives in src/config, src/scheduler,
- * src/reliability, src/protocol, src/stream, src/request, src/observability.
- *
- * State is isolate-local best-effort (Map); no D1/DO on the hot path.
- * Tier 1 affinity uses KV; affinity cache miss can trigger a KV read.
- * D1 is not on the AI request critical scheduling path.
- * D1 is used for statistics persistence and maintenance (scheduled).
- */
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Fongap Studio
+//
+// Worker entrypoint: request accounting, top-level error handling, and scheduled usage maintenance.
 
 import { handleRequest } from './request/handler.ts';
 import { isCountedRoute, gatewayStats, trackClientResponse } from './observability/gateway-stats.ts';
@@ -53,12 +32,7 @@ export default {
     }
   },
 
-  // Periodic maintenance for token usage tables. Triggered by a cron
-  // trigger (configured in wrangler.jsonc). Runs:
-  //   1. Aggregate hourly → daily (idempotent overwrite)
-  //   2. Aggregate daily → weekly (idempotent overwrite)
-  //   3. Retention cleanup for hourly (7d), daily (52w), weekly (52w)
-  // All operations are idempotent and fail-open for the API path.
+  // Periodic token-usage aggregation and retention maintenance.
   async scheduled(_controller: unknown, env: Record<string, unknown>, _ctx: unknown): Promise<void> {
     await maintainUsageStats(env);
   },
