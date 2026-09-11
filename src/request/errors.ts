@@ -17,6 +17,7 @@ import { getCooldownRemainingMs, getModelCooldownRemainingMs } from '../reliabil
 import { tier1BlockingWaitMs, tier1HasDeferredCapacity } from '../reliability/tier1-state.ts';
 import { supportsRequest, isHardRpmExhausted, tierHasDeferredCapacity } from '../scheduler/scheduler.ts';
 import { TIER_ORDER } from './router.ts';
+import { modelFallbackCandidates } from './model-fallback.ts';
 import type { RequestDescriptor, LoopState } from '../types/request.ts';
 import { KIND as FAILURE_KIND } from '../reliability/classify.ts';
 import type { RuntimeNode } from '../types/node.ts';
@@ -139,13 +140,28 @@ export function buildExhaustedResponse(
 
     // A bounded model-family sweep has already rotated across compatible model
     // pools before this point. If every observed failure is transient, there is
-    // no reason to hand control back to a human: return retryable 503 so coding
-    // clients may start a fresh turn after a short delay. Hard/config/client
-    // failures remain terminal and keep their original status.
-    if (retryableFamilyExhaustion && status !== 429 && familyFailureSetIsRetryable(state.failureKinds)) {
+    // no reason to hand control back to a human. Keep the INTERNAL reason as
+    // 429/5xx/timeout in failure_kinds and node reliability state, but present
+    // one retryable 503 capacity envelope to coding clients so they can resume
+    // automatically instead of stopping for manual "continue".
+    if (retryableFamilyExhaustion && familyFailureSetIsRetryable(state.failureKinds)) {
+      const originalStatus = status;
       status = 503;
       message = `Compatible model capacity is temporarily unavailable for "${requestedModel}". Retry shortly.`;
-      retryAfterSec = 1;
+      // Rate-limit exhaustion should not be retried every second. Preserve the
+      // earliest real cooldown across ALL compatible sibling models when it is
+      // available; other transient family failures keep the short retry hint.
+      retryAfterSec = originalStatus === 429
+        ? earliestFamilyBlockingRetryAfterSec(tiers, reqDescriptor, requestedModel, now, knownModels_) ?? 1
+        : 1;
+      state.logger.info('model-family exhaustion mapped to retryable capacity response', {
+        request_id: requestId,
+        requested_model: requestedModel,
+        upstream_status: originalStatus,
+        client_status: status,
+        retry_after_seconds: retryAfterSec,
+        failure_kinds: state.failureKinds,
+      });
     }
 
     if (status === 429) {
@@ -194,6 +210,29 @@ function earliestBlockingRetryAfterSec(tiers: Record<number, RuntimeNode[]>, req
   }
   if (!Number.isFinite(minMs)) return undefined;
   return Math.max(1, Math.ceil(minMs / 1000));
+}
+
+// Family-aware Retry-After. A Code-Ultra request may have just exhausted
+// Code-Ultra + Code-Max + Code-Pro; using only the original alias can over-wait
+// or under-wait. Take the earliest real recovery across every configured
+// compatible sibling while keeping the underlying per-node cooldown reasons
+// untouched for diagnostics and scheduling.
+function earliestFamilyBlockingRetryAfterSec(
+  tiers: Record<number, RuntimeNode[]>,
+  reqDescriptor: RequestDescriptor,
+  requestedModel: string,
+  now: number,
+  knownModels?: ReadonlySet<string>,
+): number | undefined {
+  const models = knownModels
+    ? modelFallbackCandidates(requestedModel, knownModels)
+    : [requestedModel];
+  let minSec = Infinity;
+  for (const model of models) {
+    const wait = earliestBlockingRetryAfterSec(tiers, { ...reqDescriptor, model }, now, knownModels);
+    if (wait !== undefined && wait < minSec) minSec = wait;
+  }
+  return Number.isFinite(minSec) ? minSec : undefined;
 }
 
 // Per-node wait until this (node, requestedModel) pair could serve again.
@@ -274,17 +313,6 @@ function familyFailureSetIsRetryable(failureKinds?: Partial<Record<string, numbe
   const observed = Object.entries(failureKinds || {}).filter(([, count]) => (count || 0) > 0);
   if (observed.length === 0) return false;
 
-  const hardKinds = new Set<string>([
-    FAILURE_KIND.AUTH,
-    FAILURE_KIND.CLIENT,
-    FAILURE_KIND.CLIENT_ABORT,
-    FAILURE_KIND.MODEL_MISSING,
-    FAILURE_KIND.ENDPOINT_NOT_FOUND,
-    FAILURE_KIND.INVALID_BASE_URL,
-    FAILURE_KIND.NON_JSON_BODY,
-  ]);
-  if (observed.some(([kind]) => hardKinds.has(kind))) return false;
-
   const retryableKinds = new Set<string>([
     FAILURE_KIND.RATE_LIMIT,
     FAILURE_KIND.RATE_LIMIT_GLOBAL,
@@ -294,7 +322,10 @@ function familyFailureSetIsRetryable(failureKinds?: Partial<Record<string, numbe
     FAILURE_KIND.FIRST_EVENT_TIMEOUT,
     FAILURE_KIND.STREAM_INTERRUPTED,
   ]);
-  return observed.some(([kind]) => retryableKinds.has(kind));
+  // The contract says EVERY observed family failure must be transient. Unknown
+  // or future failure kinds fail closed here instead of being accidentally
+  // hidden behind a retryable 503 just because one sibling also returned 429.
+  return observed.every(([kind]) => retryableKinds.has(kind));
 }
 
 // Map the aggregated per-attempt failure kinds to a terminal HTTP status.

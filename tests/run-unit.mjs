@@ -20,6 +20,7 @@ const UNIT_TESTS = [
   'tests/tier1-upstream-model-cooldown-test.mjs',
   'tests/tier1-heat-protection-test.mjs',
   'tests/model-family-fallback-test.mjs',
+  'tests/family-rate-limit-retry-test.mjs',
   'tests/stream-completion-test.mjs',
   'tests/token-usage-store-test.mjs',
   'tests/daily-token-overlay-test.mjs',
