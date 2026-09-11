@@ -24,9 +24,9 @@
 //   - Failure: single transient failure does not immediately trip cooldown;
 //     >= FAILURE_THRESHOLD consecutive counted failures do; HALF_OPEN needs
 //     2 successes; 401/403 cools the account; model_not_found short-cools
-//     only the (account, upstream model) pair; 429 defaults to model scope with
-//     scope_ambiguous and respects Retry-After; cooldown never breaks the
-//     "no call against an unexpired cooldown" rule.
+//     only the (account, upstream model) pair; ambiguous 429 defaults to the
+//     key/account scope, respects Retry-After, and uses short availability-first
+//     recovery; cooldown never breaks the "no call against an unexpired cooldown" rule.
 import assert from 'node:assert/strict';
 import {
   __resetTier1StateForTests,
@@ -92,9 +92,8 @@ await test('Eligibility: Tier 2/3 nodes are excluded', () => {
 });
 
 await test('Eligibility: (account,model) disabled filtered; model-scope only', () => {
-  // Node must serve both models to test that disabling m1 does NOT disable m2.
   const a = node('a', { models: { m1: 'up-a', m2: 'up-b' } });
-  getTier1Model('a', 'm1').disabled = true; // ensure runtime exists, then disable
+  getTier1Model('a', 'm1').disabled = true;
   assert.equal(isTier1Eligible(a, REQ), false, 'm1 disabled -> ineligible for m1');
   assert.equal(isTier1Eligible(a, { ...REQ, model: 'm2' }), true, 'm2 still eligible');
   assert.equal(getTier1Account('a').accountDisabled, false);
@@ -102,16 +101,12 @@ await test('Eligibility: (account,model) disabled filtered; model-scope only', (
 
 await test('Eligibility: hard concurrency and RPM cap are filtered', () => {
   const b = node('b', { concurrency: 1, rpm: 1 });
-  assert.ok(claimTier1Slot(b)); // consumes the only slot + RPM token
+  assert.ok(claimTier1Slot(b));
   assert.equal(isTier1Eligible(b, REQ), false, 'concurrency full -> ineligible');
-  // Second claim: must fail (concurrency full AND rpm full).
   assert.equal(claimTier1Slot(b), false, 'second claim must fail (rpm + concurrency full)');
   const tok = makeTier1ReleaseToken('b');
-  // The release token made above is fresh; release the claimed slot manually.
-  // (claimTier1Slot incremented inFlight; release via the account path.)
   getTier1Account('b').inFlight = Math.max(0, getTier1Account('b').inFlight - 1);
 });
-
 
 await test('RPM: smooth admission removes fixed-minute boundary reset', () => {
   const b = node('b', { concurrency: 10, rpm: 40 });
@@ -136,26 +131,26 @@ await test('RPM: rollback restores a pre-dispatch token', () => {
   assert.equal(claimTier1Slot(b, now, 'm1'), true, 'rollback must restore the consumed admission token');
 });
 
-await test('RPM: model-scoped 429 recovery suppresses same-model burst without blocking siblings', () => {
+await test('RPM: explicit model-scoped 429 recovery suppresses same-model burst without blocking siblings', () => {
   const b = node('b', { concurrency: 10, rpm: 40, models: { m1: 'up-1', m2: 'up-2' } });
   const now = 1_000_000;
   assert.equal(claimTier1Slot(b, now, 'm1'), true);
   getTier1Account('b').inFlight--;
-  const outcome = classifyTier1Failure({ kind: 'rate_limit' }, { retryAfterMs: 10_000 });
+  const outcome = classifyTier1Failure({ kind: 'rate_limit', rateLimitScope: 'model' }, { retryAfterMs: 10_000 });
   applyTier1Outcome('b', 'm1', outcome, now);
   assert.equal(isTier1Eligible(b, REQ, now + 9_999), false, 'Retry-After cooldown remains authoritative');
-  assert.equal(isTier1Eligible(b, { ...REQ, model: 'm2' }, now + 1), true, 'model-scoped 429 must not block sibling models');
+  assert.equal(isTier1Eligible(b, { ...REQ, model: 'm2' }, now + 1), true, 'explicit model-scoped 429 must not block sibling models');
   assert.equal(claimTier1Slot(b, now + 1, 'm2'), true, 'sibling model may keep using remaining account RPM capacity');
   getTier1Account('b').inFlight--;
   assert.equal(isTier1Eligible(b, REQ, now + 10_000), true, 'one m1 request may resume at cooldown expiry');
   assert.equal(claimTier1Slot(b, now + 10_000, 'm1'), true);
   getTier1Account('b').inFlight--;
   assert.equal(claimTier1Slot(b, now + 10_000, 'm1'), false, 'same model must not burst immediately after 429 recovery');
-  assert.equal(isTier1Eligible(b, { ...REQ, model: 'm2' }, now + 10_000), true, 'recovery gate remains model-local');
-  assert.equal(claimTier1Slot(b, now + 11_500, 'm1'), true, 'same model resumes after one RPM interval');
+  recordTier1Success('b', 'm1', now + 10_001);
+  assert.equal(isTier1Eligible(b, REQ, now + 10_001), true, 'successful recovery immediately clears the probe gate');
 });
 
-await test('RPM: explicit account-scoped 429 recovery gates the whole account for one interval', () => {
+await test('RPM: explicit account-scoped 429 recovery gates the whole account until probe success', () => {
   const b = node('b', { concurrency: 10, rpm: 40, models: { m1: 'up-1', m2: 'up-2' } });
   const now = 2_000_000;
   assert.equal(claimTier1Slot(b, now, 'm1'), true);
@@ -165,8 +160,9 @@ await test('RPM: explicit account-scoped 429 recovery gates the whole account fo
   assert.equal(isTier1Eligible(b, REQ, now + 10_000), true);
   assert.equal(claimTier1Slot(b, now + 10_000, 'm1'), true);
   getTier1Account('b').inFlight--;
-  assert.equal(isTier1Eligible(b, { ...REQ, model: 'm2' }, now + 10_000), false, 'account-scoped recovery gates sibling models');
-  assert.equal(isTier1Eligible(b, { ...REQ, model: 'm2' }, now + 11_500), true, 'account gate expires after one RPM interval');
+  assert.equal(isTier1Eligible(b, { ...REQ, model: 'm2' }, now + 10_000), false, 'account-scoped recovery gates sibling models during the probe');
+  recordTier1Success('b', 'm1', now + 10_001);
+  assert.equal(isTier1Eligible(b, { ...REQ, model: 'm2' }, now + 10_001), true, 'successful recovery immediately restores the key');
 });
 
 await test('Eligibility: cooldown filtered (no force-call on cooling account)', () => {
@@ -193,7 +189,7 @@ await test('P2C: single eligible -> direct pick', () => {
 
 await test('P2C: only samples from the eligible pool', () => {
   const a = node('a');
-  const b = { ...node('b'), tier: 'tier-2' }; // ineligible
+  const b = { ...node('b'), tier: 'tier-2' };
   for (let i = 0; i < 50; i++) {
     const pick = pickTier1Candidate([a, b], REQ, new Set());
     assert.ok(pick && pick.node);
@@ -213,9 +209,6 @@ await test('P2C: does not perform a full sort; spreads across accounts', () => {
     }
   }
   const seen = Object.entries(counts).filter(([, c]) => c > 0).length;
-  // With pure P2C randomness and equal scores, every node should be hit at
-  // least once across 200 picks. A full-sort would deterministically pick
-  // the same node.
   assert.ok(seen >= 6, `expected most nodes hit, saw ${seen}/8: ${JSON.stringify(counts)}`);
 });
 
@@ -256,15 +249,10 @@ await test('TTFT factor: very slow node gets at most 1.50x penalty', () => {
   const baseline = node('baseline');
   const slow = node('slow');
   recordTier1Ttft('baseline', 'm1', 1000);
-  recordTier1Ttft('slow', 'm1', 100000); // 100x slower
+  recordTier1Ttft('slow', 'm1', 100000);
   const candidates = [baseline, slow];
-  // Slow node's score should be at most 1.50x the baseline's TTFT factor
-  // (all other factors being equal).
   const scoreBase = calculateTier1Score(baseline, 'm1', candidates);
   const scoreSlow = calculateTier1Score(slow, 'm1', candidates);
-  // scoreSlow / scoreBase = ttftFactor_slow / ttftFactor_base
-  // ttftFactor_slow <= 1.50, ttftFactor_base >= 0.85
-  // So ratio <= 1.50 / 0.85 ≈ 1.76
   assert.ok(scoreSlow / scoreBase <= 1.8,
     `slow/baseline ratio (${(scoreSlow / scoreBase).toFixed(3)}) should be bounded`);
 });
@@ -273,13 +261,10 @@ await test('TTFT factor: very fast node gets at most 0.85x bonus', () => {
   const baseline = node('baseline');
   const fast = node('fast');
   recordTier1Ttft('baseline', 'm1', 1000);
-  recordTier1Ttft('fast', 'm1', 1); // 1000x faster
+  recordTier1Ttft('fast', 'm1', 1);
   const candidates = [baseline, fast];
   const scoreBase = calculateTier1Score(baseline, 'm1', candidates);
   const scoreFast = calculateTier1Score(fast, 'm1', candidates);
-  // scoreFast / scoreBase = ttftFactor_fast / ttftFactor_base
-  // ttftFactor_fast >= 0.85, ttftFactor_base <= 1.50
-  // So ratio >= 0.85 / 1.50 ≈ 0.567
   assert.ok(scoreFast / scoreBase >= 0.5,
     `fast/baseline ratio (${(scoreFast / scoreBase).toFixed(3)}) should show bonus`);
 });
@@ -288,25 +273,20 @@ await test('TTFT scoring: unknown node is not penalized (keeps exploration facto
   const known = node('known');
   const unknown = node('unknown');
   recordTier1Ttft('known', 'm1', 1000);
-  // unknown has no TTFT samples
   const candidates = [known, unknown];
   const scoreKnown = calculateTier1Score(known, 'm1', candidates);
   const scoreUnknown = calculateTier1Score(unknown, 'm1', candidates);
-  // Unknown gets explorationFactor=0.9, so it should score LOWER than known
-  // (exploration gives it a chance).
   assert.ok(scoreUnknown < scoreKnown,
     `unknown (${scoreUnknown}) should score lower than known (${scoreKnown}) due to exploration`);
 });
 
 await test('TTFT does not change failure state, cooldown, or consecutiveFailures', () => {
   const a = node('a');
-  // Apply a failure
   applyTier1Outcome('a', 'm1', { action: 'cooldown', counted: true, reason: 'server', backoff: 'server' });
   const m = getTier1Model('a', 'm1');
   const beforeState = m.failureState;
   const beforeFailures = m.consecutiveFailures;
   const beforeCooldown = m.cooldownUntil;
-  // Record TTFT — should NOT change any failure state
   recordTier1Ttft('a', 'm1', 500);
   assert.equal(m.failureState, beforeState, 'failureState unchanged after TTFT');
   assert.equal(m.consecutiveFailures, beforeFailures, 'consecutiveFailures unchanged after TTFT');
@@ -317,7 +297,6 @@ await test('P2C: deadline gate returns null when remaining budget is too small',
   assert.equal(tier1DeadlineTooSmall(100), true);
   assert.equal(tier1DeadlineTooSmall(1_000), false);
   assert.equal(tier1DeadlineTooSmall(60_000), false);
-  // With a known p99, the threshold scales: remaining < p99*3 fails.
   assert.equal(tier1DeadlineTooSmall(5_000, 2_000), true);
   assert.equal(tier1DeadlineTooSmall(10_000, 2_000), false);
 });
@@ -344,10 +323,10 @@ await test('EWMA: first sample assigns directly, no weighted mix against null', 
 
 await test('EWMA: subsequent samples use alpha=0.25; converges', () => {
   const a = node('a');
-  recordTier1Ttft('a', 'm1', 1000); // direct assign
-  recordTier1Ttft('a', 'm1', 1000); // 0.25*1000 + 0.75*1000 = 1000
+  recordTier1Ttft('a', 'm1', 1000);
+  recordTier1Ttft('a', 'm1', 1000);
   assert.equal(getTier1Account('a').models.get('m1').ttftEwma, 1000);
-  recordTier1Ttft('a', 'm1', 500); // 0.25*500 + 0.75*1000 = 875
+  recordTier1Ttft('a', 'm1', 500);
   const e = getTier1Account('a').models.get('m1').ttftEwma;
   assert.ok(Math.abs(e - 875) < 0.001, `expected 875, got ${e}`);
   assert.equal(getTier1Account('a').models.get('m1').sampleCount, 3);
@@ -355,9 +334,7 @@ await test('EWMA: subsequent samples use alpha=0.25; converges', () => {
 
 await test('Outlier: single sample clamped, sampleCount still increments, consecutiveOutliers=1', () => {
   const a = node('a');
-  recordTier1Ttft('a', 'm1', 1000); // EWMA = 1000
-  // 9000 > 1000*4=4000 → outlier. consecutiveOutliers=1 (<2) → clamp the
-  // SAMPLE to 4000, then EWMA = 0.25*4000 + 0.75*1000 = 1750.
+  recordTier1Ttft('a', 'm1', 1000);
   recordTier1Ttft('a', 'm1', 9000);
   const m = getTier1Account('a').models.get('m1');
   assert.equal(m.ttftEwma, 1750, 'clamped sample (4000) blended into EWMA = 1750');
@@ -367,32 +344,24 @@ await test('Outlier: single sample clamped, sampleCount still increments, consec
 
 await test('Outlier: 2 consecutive outliers stop clamping (raw value used)', () => {
   const a = node('a');
-  recordTier1Ttft('a', 'm1', 1000); // EWMA = 1000
-  // First outlier: clamp to 4000. EWMA = 0.25*4000 + 0.75*1000 = 1750.
+  recordTier1Ttft('a', 'm1', 1000);
   recordTier1Ttft('a', 'm1', 9000);
-  // Threshold for next sample: 1750 * 4 = 7000. 9000 > 7000 -> outlier.
-  // consecutiveOutliers would become 2 -> stop clamping, use raw 9000.
-  // EWMA = 0.25*9000 + 0.75*1750 = 2250 + 1312.5 = 3562.5
   recordTier1Ttft('a', 'm1', 9000);
   const m = getTier1Account('a').models.get('m1');
   assert.equal(m.consecutiveOutliers, 2, 'consecutive outliers must reach 2');
-  // EWMA after 2nd raw outlier:
   assert.ok(m.ttftEwma > 3000, `expected EWMA > 3000 after real degradation, got ${m.ttftEwma}`);
 });
 
 await test('Outlier: a non-outlier sample resets consecutiveOutliers to 0', () => {
   const a = node('a');
   recordTier1Ttft('a', 'm1', 1000);
-  recordTier1Ttft('a', 'm1', 9000); // outlier -> consecutiveOutliers=1
-  recordTier1Ttft('a', 'm1', 1000); // back to normal
+  recordTier1Ttft('a', 'm1', 9000);
+  recordTier1Ttft('a', 'm1', 1000);
   assert.equal(getTier1Account('a').models.get('m1').consecutiveOutliers, 0);
 });
 
 await test('Failed requests do NOT produce TTFT samples', () => {
-  // A request that ended in a failure must not have called recordTier1Ttft.
-  // We assert by confirming that the model runtime stays UNKNOWN.
   const a = node('a');
-  // Simulate a failure: only applyTier1Outcome, no recordTier1Ttft.
   applyTier1Outcome('a', 'm1', { action: 'cooldown', cooldownMs: 0, counted: true, reason: 'first_event_timeout', backoff: 'timeout' });
   const m = getTier1Account('a').models.get('m1');
   assert.equal(m.ttftEwma, null);
@@ -436,13 +405,10 @@ await test('inFlight: streaming release via token; no double decrement', () => {
   const pick = pickTier1Candidate([a], REQ, new Set());
   assert.ok(pick && pick.node);
   assert.equal(getTier1Account('a').inFlight, 1);
-  // Simulate: stream starts (slot held) -> stream ends (release token).
   releaseTier1Slot('a', pick.releaseToken);
   assert.equal(getTier1Account('a').inFlight, 0);
-  // Idempotent: a second release with the same token must be a no-op.
   releaseTier1Slot('a', pick.releaseToken);
   assert.equal(getTier1Account('a').inFlight, 0);
-  // A second pick on the same account re-acquires cleanly.
   const pick2 = pickTier1Candidate([a], REQ, new Set());
   assert.ok(pick2 && pick2.node);
   assert.equal(getTier1Account('a').inFlight, 1);
@@ -455,7 +421,6 @@ await test('inFlight: concurrency cap is respected across many concurrent claims
   const p1 = pickTier1Candidate([a], REQ, new Set());
   assert.ok(p1 && p1.node);
   tokens.push(p1.releaseToken);
-  // Second claim must fail (concurrency full).
   const p2 = pickTier1Candidate([a], REQ, new Set());
   assert.equal(p2, null, 'second pick must be null when at capacity');
   releaseTier1Slot('a', tokens[0]);
@@ -491,9 +456,6 @@ await test('Affinity: KV survives an isolate-local cache reset and hashes the se
   assert.equal(puts[0].options.expirationTtl, 1800);
   assert.ok(puts[0].key.startsWith('affinity:v1:'));
   assert.ok(!puts[0].key.includes(sessionId), 'raw session id must not appear in the KV key');
-
-  // Clearing module-local cache/counters represents a new isolate. The
-  // shared KV value remains readable there.
   __resetTier1AffinityForTests();
   assert.equal(await readTier1Affinity(env, sessionId), 'account-a');
 });
@@ -514,7 +476,6 @@ await test('shouldEvaluateAffinity: triggers every N requests or T minutes', () 
     assert.equal(shouldEvaluateAffinity(sid), false, `should not evaluate at request ${i + 1}`);
   }
   assert.equal(shouldEvaluateAffinity(sid), true, 'evaluates at 10th request');
-  // And again at 20th, etc.
   for (let i = 0; i < 9; i++) shouldEvaluateAffinity(sid);
   assert.equal(shouldEvaluateAffinity(sid), true);
 });
@@ -534,20 +495,16 @@ await test('Affinity escape: before the window a faster peer serves without migr
 });
 
 await test('Affinity escape: evaluation window permits a clearly better P2C winner to migrate on success', () => {
-  // Use 4 nodes: after filtering affinity='a', peers=[b, slow, dummy].
-  // rng()=0 → peerIdx = floor(0 * 3) = 0 → peer is 'b'.
-  // slow pushes the baseline up so the escape ratio is reachable.
   const b = node('b');
   const slow = node('slow');
   const a = node('a');
   const dummy = node('dummy');
-  recordTier1Ttft('slow', 'm1', 10000); // moderate — pushes baseline up
-  recordTier1Ttft('a', 'm1', 30000);    // affinity — very slow
-  recordTier1Ttft('b', 'm1', 100);      // peer — very fast
+  recordTier1Ttft('slow', 'm1', 10000);
+  recordTier1Ttft('a', 'm1', 30000);
+  recordTier1Ttft('b', 'm1', 100);
   const pick = pickTier1Candidate([b, slow, a, dummy], REQ, new Set(), {
     affinityAccountId: 'a', evaluateAffinity: true, rng: () => 0,
   });
-  // b's TTFT is 300x better than a's → b wins P2C → escape triggers.
   assert.equal(pick.node.id, 'b');
   assert.equal(pick.updateAffinity, true);
   assert.equal(pick.escapedFromAffinity, true);
@@ -589,8 +546,6 @@ await test('15-account simulation: P2C disperses, avoids cooldowns, explores UNK
   assert.ok(Object.values(counts).filter((count) => count > 0).length >= 8,
     `traffic should disperse across the eligible pool: ${JSON.stringify(counts)}`);
 
-  // A healthy affinity wins its biased pair; sustained real degradation then
-  // makes the evaluation-window P2C peer eligible for escape.
   const affinity = nodes[8];
   const peer = nodes[9];
   let stableHits = 0;
@@ -619,12 +574,9 @@ await test('Failure: 401/403 applies long cooldown, not permanent disable', () =
   const a = node('a', { models: { m1: 'up-a', m2: 'up-b' } });
   applyTier1Outcome('a', 'm1', classifyTier1Failure({ kind: 'auth' }));
   const acct = getTier1Account('a');
-  // Auth failure applies a long cooldown (TIER1_AUTH_DISABLED_COOLDOWN_MS) so
-  // the node can self-recover when the key is rotated. Not permanently disabled.
   assert.equal(acct.accountDisabled, false, 'account is NOT permanently disabled');
   assert.ok(acct.accountCooldownUntil > Date.now(), 'account has a cooldown active');
   assert.equal(acct.accountCooldownReason, 'auth');
-  // Account-scope cooldown makes EVERY model on this account ineligible
   assert.equal(isTier1Eligible(a, REQ), false, 'm1 blocked by account cooldown');
   assert.equal(isTier1Eligible(a, { ...REQ, model: 'm2' }), false, 'm2 also blocked');
 });
@@ -636,14 +588,12 @@ await test('Failure: model_not_found short-cools only the resolved upstream mode
   assert.equal(c.scope, 'upstream_model');
   assert.equal(c.action, 'cooldown');
   applyTier1Outcome('a', 'up-a', c, now);
-
   assert.equal(isTier1Eligible(a, REQ, now), false, 'current upstream mapping is cooling');
   assert.equal(tier1BlockingWaitMs(a, 'm1', now), 5_000, 'cooldown remains short');
   assert.equal(isTier1Eligible(a, { ...REQ, model: 'm2' }, now), true, 'sibling upstream model stays eligible');
   assert.equal(getTier1Account('a').models.get('m1'), undefined,
     'model_missing must not create logical-model reliability state');
   assert.equal(getTier1Account('a').accountDisabled, false, 'account is NOT disabled');
-
   const remapped = { ...a, models: { ...a.models, m1: 'up-new' } };
   assert.equal(isTier1Eligible(remapped, REQ, now), true,
     'new upstream mapping must not inherit the old upstream model cooldown');
@@ -669,31 +619,71 @@ await test('Failure: >= FAILURE_THRESHOLD consecutive counted failures -> COOLDO
   assert.ok(m.cooldownUntil > Date.now());
 });
 
-await test('Failure: 429 -> model scope + scope_ambiguous, respects Retry-After', () => {
-  const a = node('a');
+await test('Failure: ambiguous 429 -> key/account scope and respects Retry-After', () => {
+  const now = Date.now();
+  const a = node('a', { models: { m1: 'up-a', m2: 'up-b' } });
   const c = classifyTier1Failure({ kind: 'rate_limit' }, { retryAfterMs: 10_000 });
-  applyTier1Outcome('a', 'm1', c);
-  const m = getTier1Account('a').models.get('m1');
-  assert.equal(m.failureState, TIER1_FAILURE_STATES.NORMAL, 'a 429 alone does not trip circuit');
-  assert.equal(m.cooldownUntil > Date.now(), true, 'cooldown window set');
-  assert.equal(m.scopeAmbiguous429, true);
-  // The model is filtered by cooldown until expiry.
-  assert.equal(isTier1Eligible(a, REQ), false);
+  assert.equal(c.scope, 'account');
+  assert.equal(c.scopeAmbiguous, true);
+  applyTier1Outcome('a', 'm1', c, now);
+  const acct = getTier1Account('a');
+  assert.equal(acct.accountCooldownUntil, now + 10_000, 'Retry-After remains authoritative');
+  assert.equal(acct.scopeAmbiguous429, true);
+  assert.equal(acct.models.get('m1'), undefined, 'account-scoped 429 need not create model cooldown state');
+  assert.equal(isTier1Eligible(a, REQ, now + 9_999), false);
+  assert.equal(isTier1Eligible(a, { ...REQ, model: 'm2' }, now + 9_999), false, 'same key is cooling for sibling models too');
 });
 
-await test('Failure: repeated ambiguous 429 without Retry-After uses exponential model backoff', () => {
+await test('Failure: repeated ambiguous 429 without Retry-After uses 30s/45s/60s key backoff', () => {
   const now = 1_000_000;
   const c = classifyTier1Failure({ kind: 'rate_limit' }, { retryAfterMs: 0 });
+  const acct = getTier1Account('a');
   applyTier1Outcome('a', 'm1', c, now);
-  const first = getTier1Model('a', 'm1').cooldownUntil - now;
-  getTier1Model('a', 'm1').cooldownUntil = 0;
+  const first = acct.accountCooldownUntil - now;
+  acct.accountCooldownUntil = 0;
   applyTier1Outcome('a', 'm1', c, now);
-  const second = getTier1Model('a', 'm1').cooldownUntil - now;
-  // ±10% cooldown jitter (PR 7) — verify exponential growth within range.
-  assert.ok(first >= 30_000 * 0.9 && first <= 30_000 * 1.1, `first backoff ${first} not in [27000, 33000]`);
-  assert.ok(second >= 60_000 * 0.9 && second <= 60_000 * 1.1, `second backoff ${second} not in [54000, 66000]`);
-  assert.equal(getTier1Model('a', 'm1').scopeAmbiguous429, true);
-  assert.equal(getTier1Account('a').accountCooldownUntil, 0, 'ambiguous 429 must not block other models');
+  const second = acct.accountCooldownUntil - now;
+  acct.accountCooldownUntil = 0;
+  applyTier1Outcome('a', 'm1', c, now);
+  const third = acct.accountCooldownUntil - now;
+  acct.accountCooldownUntil = 0;
+  applyTier1Outcome('a', 'm1', c, now);
+  const fourth = acct.accountCooldownUntil - now;
+  assert.ok(first >= 30_000 * 0.9 && first <= 30_000 * 1.1, `first backoff ${first} not around 30s`);
+  assert.ok(second >= 45_000 * 0.9 && second <= 45_000 * 1.1, `second backoff ${second} not around 45s`);
+  assert.ok(third >= 60_000 * 0.9 && third <= 60_000 * 1.1, `third backoff ${third} not around 60s`);
+  assert.ok(fourth >= 60_000 * 0.9 && fourth <= 60_000 * 1.1, `fourth backoff ${fourth} must stay capped around 60s`);
+  assert.equal(acct.consecutiveRateLimits, 4);
+  assert.equal(acct.scopeAmbiguous429, true);
+});
+
+await test('Failure: pre-existing success cannot cancel an active 429 cooldown', () => {
+  const now = 1_000_000;
+  const c = classifyTier1Failure({ kind: 'rate_limit' }, { retryAfterMs: 30_000 });
+  applyTier1Outcome('a', 'm1', c, now);
+  const acct = getTier1Account('a');
+  const until = acct.accountCooldownUntil;
+  recordTier1Success('a', 'm1', now + 1_000);
+  assert.equal(acct.accountCooldownUntil, until, 'an older in-flight success must not clear the active cooldown');
+  assert.equal(acct.consecutiveRateLimits, 1, 'rate-limit history remains until an admitted recovery succeeds');
+  assert.equal(acct.rateLimitRecoveryPending, true);
+});
+
+await test('Failure: successful 429 recovery resets key backoff and clears probe gate immediately', () => {
+  const now = 1_000_000;
+  const a = node('a', { concurrency: 10, rpm: 40 });
+  const c = classifyTier1Failure({ kind: 'rate_limit' }, { retryAfterMs: 0 });
+  applyTier1Outcome('a', 'm1', c, now);
+  const acct = getTier1Account('a');
+  const recoveryAt = acct.accountCooldownUntil + 1;
+  assert.equal(claimTier1Slot(a, recoveryAt, 'm1'), true, 'first request after cooldown is admitted as recovery probe');
+  assert.ok(acct.rateLimitRecoveryUntil > recoveryAt, 'probe gate is active while the recovery request is unresolved');
+  recordTier1Success('a', 'm1', recoveryAt + 1);
+  releaseTier1Slot('a', makeTier1ReleaseToken('a'));
+  assert.equal(acct.consecutiveRateLimits, 0);
+  assert.equal(acct.rateLimitRecoveryUntil, 0);
+  assert.equal(acct.rateLimitRecoveryPending, false);
+  assert.equal(acct.accountCooldownReason, null);
 });
 
 await test('Failure: timeout and 5xx backoff grow after hysteresis threshold', () => {
@@ -712,16 +702,11 @@ await test('Failure: HALF_OPEN -> one failure reopens to COOLDOWN', () => {
   const a = node('a');
   const c = classifyTier1Failure({ kind: 'first_event_timeout' });
   for (let i = 0; i < 3; i++) applyTier1Outcome('a', 'm1', c);
-  // Force cooldown to be expired and transition to half-open.
   getTier1Account('a').models.get('m1').cooldownUntil = 0;
-  // simulate the lazy transition (would happen in pickTier1Candidate):
-  // use the public path: import maybeTransitionToHalfOpen via a pick.
   const r = pickTier1Candidate([a], REQ, new Set());
   if (r && r.node) releaseTier1Slot(r.node.id, r.releaseToken);
   const m = getTier1Account('a').models.get('m1');
-  // After the lazy transition in pickTier1Candidate, state should be HALF_OPEN.
   assert.equal(m.failureState, TIER1_FAILURE_STATES.HALF_OPEN);
-  // Now a failure from HALF_OPEN must immediately return to COOLDOWN.
   applyTier1Outcome('a', 'm1', c);
   assert.equal(m.failureState, TIER1_FAILURE_STATES.COOLDOWN);
   assert.ok(m.cooldownUntil > Date.now());
@@ -748,10 +733,8 @@ await test('Failure: HALF_OPEN -> 2 successes recover to NORMAL', () => {
   if (r && r.node) releaseTier1Slot(r.node.id, r.releaseToken);
   const m = getTier1Account('a').models.get('m1');
   assert.equal(m.failureState, TIER1_FAILURE_STATES.HALF_OPEN);
-  // First success: halfOpenSuccesses = 1, still half-open.
   recordTier1Success('a', 'm1');
   assert.equal(getTier1Account('a').models.get('m1').failureState, TIER1_FAILURE_STATES.HALF_OPEN);
-  // Second success: recovers to NORMAL.
   recordTier1Success('a', 'm1');
   assert.equal(getTier1Account('a').models.get('m1').failureState, TIER1_FAILURE_STATES.NORMAL);
 });
@@ -760,8 +743,6 @@ await test('Failure: HALF_OPEN -> 2 successes recover to NORMAL', () => {
 
 await test('Diagnostics: snapshot exposes UNKNOWN vs KNOWN clearly', () => {
   const a = node('a');
-  // Touching the account/model lazily creates the runtime so the snapshot
-  // exists. A never-touched account returns null (no telemetry to show).
   getTier1Model('a', 'm1');
   const snap0 = snapshotTier1Runtime('a', 'm1');
   assert.equal(snap0.ttft_ewma_ms, null);
