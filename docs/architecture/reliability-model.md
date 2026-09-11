@@ -6,8 +6,8 @@ ai-gateway separates Tier 1 adaptive account/model state from the Tier 2/3 node-
 
 Tier 1 state is isolate-local and scoped deliberately:
 
-- **Account scope** — in-flight count, account cooldown, rate-limit recovery gate, explicit quota state.
-- **Model scope** — TTFT EWMA, failure/cooldown/half-open state, consecutive rate limits/outliers, recovery gate.
+- **Account scope** — in-flight count, account cooldown, consecutive account-level rate limits, rate-limit recovery gate, explicit quota state.
+- **Model scope** — TTFT EWMA, failure/cooldown/half-open state, explicitly model-scoped rate limits/outliers, recovery gate.
 - **Upstream-model scope** — short cooldown for provider-facing model-missing responses so a logical alias remap does not inherit stale 404 state.
 
 An isolate restart clears this adaptive state. The gateway does not claim provider-wide state consistency.
@@ -25,17 +25,21 @@ Heat protection observes the remaining local headroom and may softly spread sele
 
 ## 429 handling
 
-429 is a capacity signal, not a reason to reward another key permanently.
+429 is a temporary capacity signal. Tier 1 prioritizes keeping logical models available through the remaining credential pool rather than maximizing the length of local suppression after repeated 429s.
 
 Tier 1 behavior:
 
-- honor an explicit `Retry-After` when available;
-- otherwise use bounded exponential backoff with jitter;
-- scope explicit account-level limits to the account;
-- otherwise default ambiguous 429 handling to model scope and record the ambiguity;
-- after cooldown, gate the first recovery admission for one RPM interval at the same scope;
+- honor an explicit `Retry-After` exactly when available;
+- otherwise use a short availability-first automatic backoff with jitter: about `30s -> 45s -> 60s`, capped at `60s`;
+- an ambiguous provider 429 defaults to the account/key scope because a runtime node represents one credential; explicit model-scoped evidence remains model-scoped;
+- a 429 never creates a logical-model-wide cooldown: other keys that serve the same logical model remain eligible;
+- after cooldown, the first real admission is a controlled recovery probe; the same scope is gated immediately to suppress a local recovery stampede;
+- the recovery gate lasts at least 5 seconds or one configured hard-RPM interval, whichever is longer, but a successful probe clears it immediately;
+- a successful recovery resets the corresponding consecutive-429 state and returns the key to normal selection immediately;
 - do not push the shared RPM bucket into the future;
-- rotate to other eligible capacity while the limited scope is blocked.
+- rotate to other eligible capacity while one key/scope is blocked.
+
+When every key serving a logical model is temporarily cooling, the gateway still reports the earliest real `Retry-After`. As soon as the earliest key's cooldown expires, the next real request becomes its controlled recovery probe; there is no multi-minute model-level lockout added on top of key cooldowns.
 
 Success rate is not used as a positive routing reward. Recovery is driven by direct failure/rate-limit evidence and real subsequent requests.
 
@@ -64,13 +68,14 @@ A hedge loser cancelled because its peer already committed is neutral and must n
 
 ## Cooldown and half-open recovery
 
-Tier 1 transient failure state uses conservative recovery rather than active probes.
+Tier 1 transient timeout/server failure state still uses conservative circuit recovery. Rate-limit recovery is intentionally shorter and availability-oriented.
 
 - transient timeout/server failures can accumulate toward cooldown;
-- an expired cooldown transitions to half-open only when a real request next evaluates the node/model;
+- an expired timeout/server cooldown transitions to half-open only when a real request next evaluates the node/model;
 - half-open admits a constrained real probe;
-- repeated successful probes restore normal state;
-- a half-open real failure re-enters cooldown.
+- repeated successful probes restore normal circuit state;
+- a half-open real failure re-enters cooldown;
+- 429 recovery uses its own short key/model rate-limit cooldown and one-probe gate rather than the long transient-failure circuit backoff.
 
 Authentication failures use a long account-scoped cooldown so a rotated credential can recover without permanently disabling the isolate while repeated rejected requests are suppressed.
 
@@ -80,7 +85,7 @@ Authentication failures use a long account-scoped cooldown so a rotated credenti
 
 | Kind | Typical cause | Request action | Failure penalty |
 | --- | --- | --- | --- |
-| `rate_limit` | HTTP 429 | rotate / cooldown | not circuit-counted |
+| `rate_limit` | HTTP 429 | rotate / key-or-explicit-model cooldown | not circuit-counted |
 | `rate_limit_global` | distributed pre-dispatch rate limiter | rotate | not circuit-counted |
 | `auth` | HTTP 401/403 | rotate / credential cooldown | not circuit-counted |
 | `client` | request-invalid 4xx such as 400/413/415/422 and other terminal 4xx | stop | neutral to upstream reliability |
@@ -124,7 +129,7 @@ The design intentionally distinguishes “this credential is temporarily limited
 
 An optional Cloudflare Rate Limiting binding can add distributed per-location fixed-window admission for hard RPM. This is a useful second guard but is still not a strictly global provider-account quota.
 
-Global concurrency coordination is not implemented. Adding Durable Objects or another strong coordination layer requires evidence that the current isolate-local shaping is insufficient and that the extra latency/complexity is justified.
+Global concurrency coordination is not implemented. The availability-first 429 recovery described above remains isolate-local. Adding Durable Objects or another strong coordination layer requires separate evidence that cross-isolate recovery collisions remain material after this bounded cooldown change and that the extra latency/complexity is justified.
 
 ## Observability boundary
 
