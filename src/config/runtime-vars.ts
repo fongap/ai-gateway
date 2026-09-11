@@ -57,6 +57,7 @@ export const RUNTIME_STRING_VARS: RuntimeStringVar[] = [
   { name: 'ANTHROPIC_COUNT_TOKENS_MODE', def: 'approximate' },
   { name: 'LOG_LEVEL', def: 'info' },
   { name: 'PROTOCOL_FALLBACKS', def: '' },
+  { name: 'DASHBOARD_MODELS', def: '' },
 ];
 
 export const RUNTIME_BOOL_VARS: RuntimeBoolVar[] = [
