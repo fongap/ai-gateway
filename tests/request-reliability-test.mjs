@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Request-reliability tests for node runtime state: concurrency slots, cooldowns, circuit
+// Request-reliability tests for node runtime state: live load accounting, cooldowns, circuit
 // breaker transitions, half-open single probe.
 import assert from 'node:assert/strict';
 import {
@@ -370,7 +370,7 @@ await test('hedge defaults: 3000ms delay, 1 hedge per request, overridable', asy
   assert.equal(getLimits({ HEDGE_DELAY_MS: '-5' }).hedgeDelayMs, 0);
 });
 
-await test('dispatchable count reflects the live pool, not the policy maximum', async () => {
+await test('dispatchable count keeps busy nodes as soft capacity', async () => {
   const makeNode = (id) => ({
     id, models: { m: 'upstream' }, priority: 10,
     protocol: 'openai', surfaces: ['chat_completions'],
@@ -381,7 +381,8 @@ await test('dispatchable count reflects the live pool, not the policy maximum', 
   assert.equal(countDispatchableNodes(nodes, req, new Set(), now), 2);
   assert.equal(countDispatchableNodes(nodes, req, new Set(['live-count-a']), now), 1);
   acquireSlot('live-count-b', now);
-  assert.equal(countDispatchableNodes(nodes, req, new Set(), now), 1, 'a saturated node is not live capacity');
+  assert.equal(countDispatchableNodes(nodes, req, new Set(), now), 2,
+    'configured concurrency is ranking-only; a busy node remains dispatchable');
   recordNeutralEnd('live-count-b');
 });
 
