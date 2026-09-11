@@ -1,0 +1,43 @@
+name: Patch PR 173 integration contracts
+
+on:
+  push:
+    branches:
+      - fix/family-fallback-capacity
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, 'apply PR 173 integration contract patch') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: fix/family-fallback-capacity
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22
+
+      - name: Patch integration contracts
+        run: node scripts/patch-pr173-integration.mjs
+
+      - name: Commit patch if needed
+        shell: bash
+        run: |
+          if git diff --quiet -- tests/integration-test.mjs; then
+            echo "No integration patch needed."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tests/integration-test.mjs
+          git commit -m "test: apply PR 173 integration contract patch"
+          git push origin HEAD:fix/family-fallback-capacity
