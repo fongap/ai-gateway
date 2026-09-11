@@ -78,6 +78,43 @@ function assertSize(name, value) {
   }
 }
 
+// Repository Variables are frequently edited through a browser/IME. A single
+// Chinese ideographic/full-width comma outside a JSON string should not block
+// an otherwise-valid production deployment. Repair only these two punctuation
+// characters, only outside quoted strings. If the next non-space token closes
+// the current object/array, the punctuation is an accidental trailing mark and
+// is removed; otherwise it is normalized to an ASCII comma. Text inside JSON
+// strings is never modified.
+export function normalizeNodeConfigJsonText(text) {
+  const source = String(text ?? '');
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i];
+    if (inString) {
+      out += ch;
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      out += ch;
+      continue;
+    }
+    if (ch === '、' || ch === '，') {
+      let j = i + 1;
+      while (j < source.length && /\s/.test(source[j])) j++;
+      if (source[j] !== '}' && source[j] !== ']') out += ',';
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
 export function normalizeRuntimeConfig(raw) {
   const vars = {};
   const secrets = {};
@@ -91,7 +128,8 @@ export function normalizeRuntimeConfig(raw) {
     if (nodeVarMatch && Number(nodeVarMatch[1]) > 10) {
       throw new Error(`vars.${name}: shard index out of range (01..10); ignored`);
     }
-    const value = encodeValue(rawValue, `vars.${name}`);
+    const encoded = encodeValue(rawValue, `vars.${name}`);
+    const value = NODE_VAR.test(name) ? normalizeNodeConfigJsonText(encoded) : encoded;
     assertSize(name, value);
     vars[name] = value;
   }
@@ -186,6 +224,11 @@ export function preflight(env) {
   const tierShards = Object.keys(v.vars).filter((n) => NODE_VAR.test(n)).length;
   const tier1Shards = Object.keys(v.vars).filter((n) => /^TIER1_NODES_CONFIG_(0[1-9]|10)$/.test(n)).length;
   const secretShards = Object.keys(s.secrets).filter((n) => NODE_SECRET.test(n)).length;
+  for (const [name, value] of Object.entries(v.vars)) {
+    if (NODE_VAR.test(name) && normalizeNodeConfigJsonText(value) !== value) {
+      warnings.push(`${name} contains full-width JSON punctuation; deployment will normalize it. Fix the GitHub Variable at source.`);
+    }
+  }
   // Cloudflare Workers imposes a platform limit on the total number of
   // environment variables + bindings. The _01..10 shard namespace is a
   // parser convention, NOT a recommended deployment size. Warn early.
