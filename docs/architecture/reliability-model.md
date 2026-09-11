@@ -9,6 +9,7 @@ Tier 1 state is isolate-local and scoped deliberately:
 - **Account scope** — in-flight count, account cooldown, consecutive account-level rate limits, rate-limit recovery gate, explicit quota state.
 - **Model scope** — TTFT EWMA, failure/cooldown/half-open state, explicitly model-scoped rate limits/outliers, recovery gate.
 - **Upstream-model scope** — short cooldown for provider-facing model-missing responses so a logical alias remap does not inherit stale 404 state.
+- **Provider + upstream-model scope** — short-lived distinct-key 429 evidence used only as a soft ranking signal when several independent credentials hit the same provider-facing model at once.
 
 An isolate restart clears this adaptive state. The gateway does not claim provider-wide state consistency.
 
@@ -33,6 +34,8 @@ Tier 1 behavior:
 - otherwise use a short availability-first automatic backoff with jitter: about `30s -> 45s -> 60s`, capped at `60s`;
 - an ambiguous provider 429 defaults to the account/key scope because a runtime node represents one credential; explicit model-scoped evidence remains model-scoped;
 - a 429 never creates a logical-model-wide cooldown: other keys that serve the same logical model remain eligible;
+- one or two distinct keys hitting 429 do not change provider-model ranking;
+- three or more distinct keys hitting 429 for the same `(provider, upstream model)` within the short evidence window add only a soft cohort penalty; the remaining keys stay eligible;
 - after cooldown, the first real admission is a controlled recovery probe; the same scope is gated immediately to suppress a local recovery stampede;
 - the recovery gate lasts at least 5 seconds or one configured hard-RPM interval, whichever is longer, but a successful probe clears it immediately;
 - a successful recovery resets the corresponding consecutive-429 state and returns the key to normal selection immediately;
@@ -45,14 +48,20 @@ Success rate is not used as a positive routing reward. Recovery is driven by dir
 
 ## Heat protection
 
-`src/reliability/tier1-heat.ts` provides a bounded pre-limit signal used by Tier 1 routing:
+`src/reliability/tier1-heat.ts` and the Tier 1 provider-model signal provide bounded pre-limit ranking inputs:
 
 - RPM headroom score factor: at most `1.20`;
 - affinity bias decays toward neutral as RPM/concurrency heat rises;
 - Tier 1 hedge candidate RPM pressure must be `<= 0.50`;
-- Tier 1 hedge candidate concurrency pressure must be `< 0.75`.
+- Tier 1 hedge candidate concurrency pressure must be `< 0.75`;
+- provider-model 429 evidence window: `90s`;
+- 1–2 distinct rate-limited keys: neutral factor `1.00`;
+- 3 distinct rate-limited keys: mild factor `1.15`;
+- 4+ distinct rate-limited keys: stronger factor `1.35`;
+- repeated 429s from the same key count once in the window;
+- each real success removes at most one recent distinct-key 429 observation, so recovered capacity returns to normal ranking quickly.
 
-These thresholds affect optional selection/hedge behavior. They do not replace the existing hard RPM, concurrency, cooldown, or eligibility gates, and they do not apply a new hard block to a primary request.
+Provider-model heat is keyed by the real provider-facing model, not the gateway logical alias. It never hard-blocks a provider or model and does not change eligibility, attempt budgets, account cooldowns, P2C sampling, TTFT scoring, affinity storage, or Tier 2/3 behavior. If a heated cohort is the only usable capacity, Tier 1 still dispatches to it.
 
 ## Passive TTFT
 
@@ -129,7 +138,7 @@ The design intentionally distinguishes “this credential is temporarily limited
 
 An optional Cloudflare Rate Limiting binding can add distributed per-location fixed-window admission for hard RPM. This is a useful second guard but is still not a strictly global provider-account quota.
 
-Global concurrency coordination is not implemented. The availability-first 429 recovery described above remains isolate-local. Adding Durable Objects or another strong coordination layer requires separate evidence that cross-isolate recovery collisions remain material after this bounded cooldown change and that the extra latency/complexity is justified.
+Global concurrency coordination is not implemented. The availability-first 429 recovery and provider-model heat described above remain isolate-local. Adding Durable Objects or another strong coordination layer requires separate evidence that cross-isolate recovery collisions remain material and that the extra latency/complexity is justified.
 
 ## Observability boundary
 
