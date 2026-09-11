@@ -59,6 +59,28 @@
   `daily` Map by the cell's `date` key. Never use a visual position
   to look up business data.
 
+## Token data freshness contract
+
+The heatmap's business-data source is intentionally split by freshness:
+
+- **Today + previous six UTC+8 calendar days** are rebuilt from
+  `token_usage_hourly` on every dashboard read. Hourly data is the
+  authoritative source while it is retained, so a stale daily cron
+  snapshot cannot make yesterday's Token total drop after midnight.
+- **Older days** come from `token_usage_daily`, the materialized
+  long-lived history used by the 52-week view.
+- The **seventh previous calendar day is not overlaid from hourly**.
+  Hourly retention is a rolling seven-day window, so that day's early
+  hours may already have been pruned and using it could undercount a
+  complete historical day.
+- If the daily table is unavailable or empty, the reader falls back
+  to whatever hourly history is still retained. If the hourly overlay
+  fails while daily history exists, the dashboard degrades to the
+  materialized snapshot instead of failing the whole section.
+
+This boundary keeps the recent window self-healing while preserving
+stable historical totals after hourly retention expires.
+
 ## What they do NOT share
 
 | Concern | `rolling-52-weeks` | `calendar-year` |

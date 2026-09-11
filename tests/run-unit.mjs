@@ -21,6 +21,7 @@ const UNIT_TESTS = [
   'tests/tier1-heat-protection-test.mjs',
   'tests/stream-completion-test.mjs',
   'tests/token-usage-store-test.mjs',
+  'tests/daily-token-overlay-test.mjs',
   'tests/token-usage-test.mjs',
   'tests/protocol-matrix-test.mjs',
   'tests/config-cli-test.mjs',
