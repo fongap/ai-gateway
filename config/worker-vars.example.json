@@ -21,6 +21,7 @@
     }
   },
   "POLICIES_CONFIG": { "default": { "max_attempts": 5 } },
+  "DASHBOARD_MODELS": "Code-Ultra,Code-Max,Code-Pro,Ultra,Max,Pro,Air",
   "PROTOCOL_FALLBACKS": {
     "anthropic:messages": ["openai:chat_completions"],
     "openai:chat_completions": ["anthropic:messages"]
