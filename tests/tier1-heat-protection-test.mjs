@@ -8,6 +8,7 @@
 //   3. a hot affinity account loses its affinity advantage before hard block
 //   4. soft heat never hard-blocks a primary when it is the only candidate
 //   5. hedge selection requires spare RPM/concurrency capacity
+//   6. provider-model 429 heat needs evidence from multiple independent keys
 
 import assert from 'node:assert/strict';
 import { pickTier1Candidate } from '../src/scheduler/tier1-scheduler.ts';
@@ -16,6 +17,11 @@ import {
   claimTier1Slot,
   makeTier1ReleaseToken,
   releaseTier1Slot,
+  recordTier1ProviderModelRateLimit,
+  recordTier1ProviderModelSuccess,
+  tier1ProviderModelRateLimitCount,
+  tier1ProviderModelHeatFactor,
+  TIER1_PROVIDER_MODEL_429_WINDOW_MS,
 } from '../src/reliability/tier1-state.ts';
 import {
   tier1AffinityHeatFactor,
@@ -149,4 +155,80 @@ await test('concurrency pressure also suppresses optional hedge work', () => {
     assert.equal(claimTier1Slot(busy, now, req.model), true);
   }
   assert.equal(tier1CanAcceptHedge(busy, now), false, '3/4 in-flight should reserve capacity for primaries');
+});
+
+await test('one or two independent 429 keys do not demote a provider-model cohort', () => {
+  __resetTier1StateForTests();
+  recordTier1ProviderModelRateLimit('nvidia', 'upstream-code-max', 'nvidia-01', now);
+  recordTier1ProviderModelRateLimit('nvidia', 'upstream-code-max', 'nvidia-01', now + 1_000);
+  recordTier1ProviderModelRateLimit('nvidia', 'upstream-code-max', 'nvidia-02', now + 2_000);
+
+  assert.equal(tier1ProviderModelRateLimitCount('nvidia', 'upstream-code-max', now + 2_000), 2);
+  assert.equal(tier1ProviderModelHeatFactor('nvidia', 'upstream-code-max', now + 2_000), 1);
+});
+
+await test('three and four independent 429 keys apply mild then strong soft heat', () => {
+  __resetTier1StateForTests();
+  for (const [index, id] of ['nvidia-01', 'nvidia-02', 'nvidia-03'].entries()) {
+    recordTier1ProviderModelRateLimit('nvidia', 'upstream-code-max', id, now + index * 1_000);
+  }
+  assert.equal(tier1ProviderModelHeatFactor('nvidia', 'upstream-code-max', now + 3_000), 1.15);
+
+  recordTier1ProviderModelRateLimit('nvidia', 'upstream-code-max', 'nvidia-04', now + 4_000);
+  assert.equal(tier1ProviderModelHeatFactor('nvidia', 'upstream-code-max', now + 4_000), 1.35);
+});
+
+await test('provider-model heat changes ranking but never eligibility', () => {
+  __resetTier1StateForTests();
+  for (const id of ['nvidia-01', 'nvidia-02', 'nvidia-03']) {
+    recordTier1ProviderModelRateLimit('nvidia', 'upstream-code-max', id, now);
+  }
+
+  const hot = node('nvidia-04');
+  const cool = node('sensenova-01', { provider: 'sensenova' });
+  const pick = pickTier1Candidate([hot, cool], req, new Set(), { now, rng: () => 0 });
+  assert.equal(pick?.node?.id, 'sensenova-01', 'equal candidates should prefer the cooler provider-model cohort');
+  releasePick(pick);
+
+  const onlyHot = pickTier1Candidate([hot], req, new Set(), { now, rng: () => 0 });
+  assert.equal(onlyHot?.node?.id, 'nvidia-04', 'soft cohort heat must not hard-block the last usable key');
+  releasePick(onlyHot);
+});
+
+await test('real successes decay provider-model heat one observation at a time', () => {
+  __resetTier1StateForTests();
+  for (const id of ['nvidia-01', 'nvidia-02', 'nvidia-03', 'nvidia-04']) {
+    recordTier1ProviderModelRateLimit('nvidia', 'upstream-code-max', id, now);
+  }
+  assert.equal(tier1ProviderModelHeatFactor('nvidia', 'upstream-code-max', now), 1.35);
+
+  recordTier1ProviderModelSuccess('nvidia', 'upstream-code-max', 'nvidia-05', now + 1_000);
+  assert.equal(tier1ProviderModelRateLimitCount('nvidia', 'upstream-code-max', now + 1_000), 3);
+  assert.equal(tier1ProviderModelHeatFactor('nvidia', 'upstream-code-max', now + 1_000), 1.15);
+
+  recordTier1ProviderModelSuccess('nvidia', 'upstream-code-max', 'nvidia-03', now + 2_000);
+  assert.equal(tier1ProviderModelRateLimitCount('nvidia', 'upstream-code-max', now + 2_000), 2);
+  assert.equal(tier1ProviderModelHeatFactor('nvidia', 'upstream-code-max', now + 2_000), 1);
+});
+
+await test('provider-model heat is isolated by provider and upstream model', () => {
+  __resetTier1StateForTests();
+  for (const id of ['nvidia-01', 'nvidia-02', 'nvidia-03']) {
+    recordTier1ProviderModelRateLimit('nvidia', 'upstream-code-max', id, now);
+  }
+  assert.equal(tier1ProviderModelHeatFactor('nvidia', 'upstream-code-max', now), 1.15);
+  assert.equal(tier1ProviderModelHeatFactor('nvidia', 'other-model', now), 1);
+  assert.equal(tier1ProviderModelHeatFactor('sensenova', 'upstream-code-max', now), 1);
+});
+
+await test('provider-model heat expires after the short evidence window', () => {
+  __resetTier1StateForTests();
+  for (const id of ['nvidia-01', 'nvidia-02', 'nvidia-03']) {
+    recordTier1ProviderModelRateLimit('nvidia', 'upstream-code-max', id, now);
+  }
+  assert.equal(tier1ProviderModelHeatFactor('nvidia', 'upstream-code-max', now), 1.15);
+  assert.equal(
+    tier1ProviderModelHeatFactor('nvidia', 'upstream-code-max', now + TIER1_PROVIDER_MODEL_429_WINDOW_MS + 1),
+    1,
+  );
 });
