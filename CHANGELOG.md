@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.3.3 - 2026-09-12
+
+### Changed
+
+- **Retryable Model-Family Exhaustion**: 完整模型家族在 bounded fallback 后若全部仅出现可恢复故障（429、5xx、network、headers timeout、first-event timeout、stream interrupted），客户端统一收到可重试 `503`，避免 OpenCode 等 Coding 客户端停在人工“继续”。
+- **Family-Aware Retry-After**: 当家族耗尽由 429 主导时，`Retry-After` 取兼容 sibling models 中最早的真实恢复时间；不再机械使用 1 秒重试，避免对仍在 cooldown 的 Key/Provider 反复撞击。
+
+### Fixed
+
+- **429 Cause Preservation**: 对客户端包装为 `503` 只改变外部重试语义；内部 `failure_kinds.rate_limit`、单 Key cooldown、provider-model 429 heat、日志和节点状态仍保留真实 429，不掩盖 Key/额度问题。
+- **Transient Guard Tightening**: model-family 只有在每一种已观察失败都属于明确的可恢复故障时才允许返回 retryable `503`；鉴权、客户端参数、model missing、endpoint/config 错误以及未知失败继续按原错误终止。
+
 ## 1.3.2 - 2026-09-11
 
 ### Added
@@ -159,7 +171,7 @@ Scheduling, config-reliability and streaming hardening. No new protocols, provid
 - **P0 — Streaming no longer corrupts multi-byte UTF-8 across SSE chunks.** `track.js` fed the same stream-stateful `TextDecoder` from two places (rewrite + diagnostic tail), so its internal multi-byte carry was advanced twice per chunk, mangling characters (e.g. CJK) split across chunk boundaries. The rewrite and tail now each use their own decoder。
 - **P0 — A distributed rate-limiter deny no longer consumes an upstream attempt or a local RPM charge** (from the provisional 1.2.2 code): the attempt is rolled back and the attempt budget is not charged, so a CF-denied free key cannot starve the fallback or exhaust its own RPM on traffic it never sent.
 - **P1 — A pure `rate_limit_global` failure now returns a `Retry-After` at the next fixed-window reset** instead of omitting the header (previously all-CF-denied requests surfaced a bare 429).
-- **P1 — 404s are disambiguated by error body**: a model-shaped 404 stays `model_missing` (model-scoped pair cooldown); an endpoint 404 is a new `endpoint_not_found` (whole-node cooldown), no longer masked as a model-mapping issue.
+- **P1 — 404s are disambiguated by error body**: a model-shaped 404 stays `model_missing` (model-scoped pair cooldown); an endpoint 404 is a new `endpoint_not_found` (whole-node cooldown), no longer masked as a model-mapping issue。
 - **P0 — Anthropic streaming finalizes on `[DONE]` without `finish_reason`.** Some OpenAI-compatible providers (e.g. free keys) end with only `[DONE]` after the final content delta, never sending an explicit `finish_reason` chunk. The transform previously treated that as an error, so Claude Code saw a half-open stream and emitted `Streaming response ended before any complete data was received. Retrying without streaming.`. A content-producing stream that ends on `[DONE]` is now finalized into a complete `message_stop` lifecycle (missing `finish_reason` maps to `end_turn`); a genuinely empty stream is still rejected. A clean EOF without `[DONE]` and without `finish_reason` remains a failure so node health accounting stays correct.
 
 ### Added
@@ -358,7 +370,7 @@ Breaking release: the node configuration and secret management model was redesig
 - 配置校验脚本与运行时 Token 解析保持一致，并新增 Fallback URL/凭据校验；
 - 临时 Wrangler 配置改为在项目根目录创建，确保相对入口和 `.dev.vars` 能被正确解析，同时仍会自动清理并排除发布包；
 - 所有 Node 脚本改用 Node 20 全版本兼容的 `fileURLToPath(import.meta.url)`；
-- 更新、重配和关闭 Fallback 前明确显示目标 Worker 并要求确认。
+- 更新、重配和关闭 Fallback 前明确显示目标 Worker并要求确认。
 
 ## 5.13.0 - 2026-08-06
 
