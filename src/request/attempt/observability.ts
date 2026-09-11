@@ -17,6 +17,7 @@ import {
 import {
   releaseTier1Slot,
   recordTier1Ttft, recordTier1Success, applyTier1Outcome, classifyTier1Failure,
+  recordTier1ProviderModelSuccess,
 } from '../../reliability/tier1-state.ts';
 import { classifyStreamInterrupted } from '../../reliability/classify.ts';
 import { writeTier1Affinity } from '../../scheduler/tier1-affinity.ts';
@@ -80,7 +81,9 @@ function scheduleD1TokenPersist(c: AttemptContext, usage: unknown): void {
 // removed entirely from the scheduling path.
 export function recordNodeSuccess(c: AttemptContext, node: RuntimeNode, latencyMs: number): void {
   if (node.tier === 'tier-1') {
-    recordTier1Success(node.id, c.state?.requestedModel);
+    const logicalModel = c.state.requestedModel;
+    recordTier1Success(node.id, logicalModel);
+    recordTier1ProviderModelSuccess(node.provider, upstreamModelOf(node, logicalModel), node.id);
     releaseTier1Slot(node.id, c.tier1ReleaseToken);
     bumpNodeCounters(node.id, { requests: 1, successes: 1 });
     // KV writes happen only for a cold session or an approved migration, and
