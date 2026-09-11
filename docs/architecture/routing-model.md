@@ -12,7 +12,9 @@ OpenAI Chat Completions ↔ Anthropic Messages fallback is evaluated after the n
 
 ## Model Registry and nodes
 
-The Model Registry owns logical model policy and declared capabilities. Runtime nodes own upstream routing facts: provider metadata, base URL, protocol, surfaces, logical→upstream model mapping, priority, limits, and the bound credential.
+The Model Registry owns logical model policy and declared capabilities. Runtime nodes own upstream routing facts: provider metadata, base URL, protocol, surfaces, logical→upstream model mapping, priority, and the bound credential.
+
+Node `limits` are retired from active routing. Existing syntactically-valid legacy `limits` objects are accepted temporarily for migration safety but no longer define Provider capacity and should be removed from maintained configuration.
 
 Credentials bind by **Tier + node id**. `TIER*_NODES_CONFIG_XX` and `TIER*_NODES_SECRETS_XX` suffixes are independent shard numbers; they are not positional pairs.
 
@@ -38,11 +40,15 @@ Air → Pro → Max → Ultra
 
 The most equivalent pairs are therefore `Code-Max ↔ Code-Pro` and `Max ↔ Pro`. `Code-*` never crosses into the non-Code family. `Air` may move upward, but `Ultra` / `Max` / `Pro` never fall back down to `Air`.
 
-Compatible families get at most two evaluation rounds. The second round exists only to re-check a model that may have recovered while sibling pools were being tried. `Air` is excluded from its second round, preserving the one-way-up rule. There is no unbounded cycle.
+For a configured three-model family, the first evaluation round reserves logical attempts as **3 / 2 / 1** in the requested model's fallback order. `Air` uses **3 / 1 / 1 / 1** across its one-way upward chain. Family requests therefore receive at least six request-wide logical attempts when a compatible sibling actually exists. A lone family-shaped alias with no configured sibling keeps its normal policy budget.
 
-Every model pass runs the normal native-first Tier 1 → Tier 2 → Tier 3 path and, when configured, the existing cross-protocol fallback for that same effective model. All passes share the original request's `max_attempts`, dispatch ceiling, hedge ceiling, and `FAILOVER_BUDGET_MS`; switching models never creates fresh retry budget.
+Compatible families still get at most two evaluation rounds. The second round exists only to re-check a model that may have recovered while sibling pools were being tried, is capped to one attempt per pass, and can spend only request budget left unused by the first round. `Air` is excluded from its second round, preserving the one-way-up rule. There is no unbounded cycle.
+
+Every model pass runs the normal native-first Tier 1 → Tier 2 → Tier 3 path and, when configured, the existing cross-protocol fallback for that same effective model. All passes share logical-attempt, dispatch, hedge, and `FAILOVER_BUDGET_MS` ceilings; switching models never creates a fresh wall-clock budget or an unlimited retry loop.
 
 A model-shaped 404 (`model_missing`) is a mapping/capability fact rather than transient capacity exhaustion. It remains isolated to the failing model mapping and does not trigger model-family fallback.
+
+When a complete family sweep fails only for transient reasons such as 429, 5xx, network failure, headers/first-event timeout, or stream interruption, the gateway returns retryable `503` with a short `Retry-After`. Coding clients can then retry the turn instead of stopping for manual continuation. Auth/config/client/model-mapping failures remain terminal.
 
 ## Tier 1: Eligibility → Affinity → P2C
 
@@ -61,7 +67,7 @@ P2C: sample two eligible accounts
    ↓
 compare bounded scores
    ↓
-claim RPM/concurrency slot
+record live inFlight
    ↓
 real upstream request
    ↓
@@ -78,11 +84,10 @@ A Tier 1 node must:
 - match protocol and surface;
 - serve the requested logical model;
 - not be disabled or in an active account/model/upstream-model cooldown;
-- have isolate-local concurrency capacity;
-- have hard-RPM admission capacity when hard RPM is configured;
+- not be blocked by HALF_OPEN single-probe state;
 - not have known exhausted quota state.
 
-Eligibility is a hard gate. Heat protection never makes an otherwise ineligible node eligible.
+A guessed `limits.concurrency` or `limits.rpm` value is not an active eligibility rule. Real runtime evidence decides availability. Heat protection remains ranking-only and never turns a healthy last candidate into an artificial hard failure.
 
 ### Soft session affinity
 
@@ -95,12 +100,11 @@ Affinity is a score bias, not sticky routing. The cold/healthy base factor is `0
 When more than one candidate exists, Tier 1 samples two distinct eligible accounts and chooses the lower score. The score combines bounded factors for:
 
 - passive per-`(account, model)` TTFT;
-- current concurrency load;
+- current live inFlight pressure;
 - half-open recovery state;
-- explicit quota-near-limit state;
+- explicit quota-near-limit state when observed;
 - soft affinity;
 - exploration for unobserved nodes;
-- RPM headroom heat protection;
 - provider + upstream-model multi-key 429 heat.
 
 Success rate is **not** a positive score/reward signal. This avoids concentrating traffic on a currently successful key until it becomes the next rate-limited hotspot.
@@ -113,13 +117,13 @@ Tier 1 does not run background latency probes.
 
 ## Tier 1 heat protection
 
-Heat protection spreads load before a key reaches its hard limit, and softly reacts when several independent credentials hit the same provider-facing model at once, without creating another quota system.
+Heat protection spreads load using facts observed at runtime and softly reacts when several independent credentials hit the same provider-facing model at once, without creating another guessed quota system.
 
-### RPM headroom
+### Live inFlight pressure
 
-Hard-RPM admission uses a tiny smooth token bucket. While a key still has a dispatchable token but its headroom is reduced, selection receives an RPM penalty from `1.0` up to at most `1.20`.
+Current in-flight work is ranking-only. Pressure rises smoothly with live work and contributes a bounded soft score factor. A busier account therefore loses to a comparable idle peer more often, but it remains eligible if healthy and can still serve when alternatives are unavailable.
 
-This is a **soft score effect**. The existing hard RPM gate remains the final admission authority.
+This replaces operator-guessed concurrency ceilings as the primary load signal.
 
 ### Provider-model 429 heat
 
@@ -129,46 +133,47 @@ This signal changes ranking only. It never makes a candidate ineligible, never c
 
 ### Affinity decay
 
-Heat is the maximum of current RPM-headroom pressure and concurrency pressure. As heat rises, the affinity factor moves linearly from `0.85` toward neutral `1.0`.
+As live pressure or observed heat rises, the affinity factor moves from its `0.85` preference toward neutral `1.0`.
 
 Affinity never turns into an independent negative penalty. A hot affinity account merely loses its preference.
 
 ### Hedge spare-capacity gate
 
-A Tier 1 hedge twin is optional latency work. It is allowed only when the candidate has visible spare capacity:
+A Tier 1 hedge twin is optional latency work. It is suppressed before primary traffic when the candidate is already visibly busy or recovering from rate pressure. Primary requests do not use this hedge-only threshold.
 
-- RPM pressure `<= 0.50`;
-- concurrency pressure `< 0.75`.
-
-Primary requests do not use these soft hedge thresholds. If only one eligible primary candidate remains, heat protection does not hard-block it.
+If only one eligible primary candidate remains, heat protection does not hard-block it.
 
 ### What heat protection does not do
 
 It does not add:
 
 - success-rate weighting;
-- dynamic concurrency learning;
+- guessed dynamic concurrency limits;
 - cross-isolate global coordination;
 - new environment variables;
-- new node configuration fields;
-- Tier 2/3 behavior changes.
+- new node capacity fields;
+- hard removal of the last healthy primary candidate.
 
 ## Tier 2 and Tier 3
 
 Tier 2/3 continue to use the existing selector and `node-state.ts` reliability model. Their selection may use priority, active-request load, health/circuit state, cooldown, and latency preference according to the existing scheduler implementation.
 
-They do not read Tier 1 TTFT, Tier 1 affinity, or Tier 1 heat state.
+Active request count is a soft ranking signal here as well; configured legacy concurrency no longer makes a healthy node ineligible.
+
+Tier 2/3 do not read Tier 1 TTFT, Tier 1 affinity, or Tier 1 provider-model heat state.
 
 ## Attempt budget
 
-`max_attempts` is the request-wide logical-attempt ceiling. `tier_attempts` can explicitly cap individual tiers. When a tier has no explicit cap, the current budget-split policy allocates the remaining logical attempts among dispatchable tiers.
+`max_attempts` is normally the request-wide logical-attempt ceiling. `tier_attempts` can explicitly cap individual tiers. When a tier has no explicit cap, the current budget-split policy allocates logical attempts among dispatchable tiers.
+
+Configured model families are the bounded exception: when at least one compatible sibling exists, the family orchestration requires a six-attempt minimum to guarantee its first-round `3 / 2 / 1` contract. This is still one finite request budget, not a fresh budget per model.
 
 `budget_split` supports:
 
 - `even` / `null` — preserve tier priority and give surplus to the first dispatchable unbounded tier;
 - `weighted` — distribute remaining budget among unbounded dispatchable tiers by live candidate count.
 
-Explicit `tier_attempts` wins over budget splitting. The sum of explicit tier caps must not exceed `max_attempts`. Model-family fallback and protocol fallback both consume this same request-wide budget.
+Explicit `tier_attempts` wins over tier budget splitting inside each model pass. The sum of explicit tier caps must not exceed the policy's configured `max_attempts`. Model-family and protocol fallback still share one wall-clock request boundary.
 
 ## Failover budget
 
@@ -182,19 +187,26 @@ Reactive hedge starts one twin when the current logical attempt has not committe
 
 Important semantics:
 
-- the twin is the same logical attempt and does not consume another `max_attempts` slot;
+- the twin is the same logical attempt and does not consume another logical-attempt slot;
 - it does consume a physical dispatch and is bounded by the request dispatch ceiling;
 - the twin uses the same protocol and surface as the primary;
 - the loser cancelled after a peer commit is neutral;
 - a twin's genuine timeout/server failure remains a real failure;
-- Tier 1 twins additionally pass the heat spare-capacity gate.
+- Tier 1 twins additionally pass the soft spare-capacity gate.
 
-## RPM and concurrency
+## Capacity signals
 
-`limits.rpm` defaults to hard shaping. Tier 1 hard RPM is isolate-local smooth admission; when no capacity remains, the node is not dispatchable. `rpm_mode: "soft"` keeps best-effort semantics.
+Node-level `limits.concurrency`, `limits.rpm`, and `limits.rpm_mode` are retired from active capacity control because many providers do not publish stable per-key limits. Existing syntactically-valid legacy objects are accepted during migration but should be deleted.
 
-`limits.concurrency` is isolate-local shaping. Neither value is a claim of globally accurate provider-account quota.
+Active routing instead uses:
 
-When the optional Cloudflare rate-limiting binding is configured, hard-RPM dispatch receives an additional distributed per-location check. It remains approximate rather than a globally consistent account quota.
+- live inFlight pressure for soft load balancing;
+- real 429 responses and `Retry-After` for cooldown/recovery;
+- provider-model multi-key 429 heat;
+- circuit state and counted transient failures;
+- passive TTFT;
+- explicit quota evidence when the runtime can actually observe it.
+
+`GATEWAY_KEY_RPM` remains separate gateway-access protection and does not claim to represent a Provider account quota. Optional Cloudflare rate-limiting infrastructure is likewise not a globally exact Provider-capacity source.
 
 See [Reliability model](reliability-model.md) for cooldown, 429 recovery, and failure accounting.
