@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MIT
 //
-// Docs governance check: validates document structure, naming, and
-// cross-reference integrity. Run as part of `npm run validate:merge`.
+// Validates documentation structure, naming, and cross-reference integrity.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -22,14 +21,11 @@ function check(label, ok, detail = '') {
   }
 }
 
-// --- 8.1 docs directory whitelist ---
 const ALLOWED_DOCS_DIRS = ['architecture', 'governance', 'operations'];
 const docsEntries = fs.readdirSync(path.join(root, 'docs'), { withFileTypes: true });
 const docsDirs = docsEntries.filter(e => e.isDirectory()).map(e => e.name);
 const docsRootMds = docsEntries.filter(e => e.isFile() && e.name.endsWith('.md')).map(e => e.name);
 
-// Allow README.md in docs root (governance/README.md is a subdirectory)
-// but block other .md files directly in docs/
 const unexpectedDocsRoot = docsRootMds.filter(f => f !== 'README.md');
 check(
   'docs/ root has no stray .md files',
@@ -44,7 +40,6 @@ check(
   unexpectedDocsDirs.length ? `unexpected: ${unexpectedDocsDirs.join(', ')}` : '',
 );
 
-// --- 8.2 root directory markdown whitelist ---
 const ALLOWED_ROOT_MDS = ['README.md', 'CONTRIBUTING.md', 'SECURITY.md', 'CHANGELOG.md', 'AGENTS.md', 'CLAUDE.md'];
 const LOCALIZED_README_PATTERN = /^README\.[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*\.md$/;
 const rootEntries = fs.readdirSync(root, { withFileTypes: true });
@@ -57,7 +52,6 @@ check(
   unexpectedRootMds.length ? `unexpected: ${unexpectedRootMds.join(', ')}` : '',
 );
 
-// --- 8.3 file naming: docs/**/*.md must be lowercase-kebab-case.md ---
 function isKebabCase(name) {
   return /^[a-z0-9]+(-[a-z0-9]+)*\.md$/.test(name) || name === 'README.md';
 }
@@ -82,7 +76,6 @@ for (const file of allDocsMd) {
   );
 }
 
-// --- 8.4 forbidden state-like names ---
 const FORBIDDEN_PATTERNS = [/\bfinal\b/i, /\blatest\b/i, /\bnew\b/i, /\btemp\b/i, /\btemporary\b/i, /\bold\b/i, /\bbackup\b/i, /\bv[2-9]\b/i, /\bdraft\b/i, /\bmisc\b/i];
 for (const file of allDocsMd) {
   const name = path.basename(file, '.md');
@@ -99,7 +92,6 @@ for (const file of allDocsMd) {
   }
 }
 
-// --- 8.5 Markdown link validation ---
 const LINK_PATTERN = /!?(?:\[[^\]]*\])\(([^)]+)\)/g;
 const MD_FILES = [
   'README.md',
@@ -131,7 +123,6 @@ check(
   missingLinks.length ? `missing: ${missingLinks.join('; ')}` : '',
 );
 
-// --- 8.6 governance README indexes governance files ---
 const govReadme = path.join(root, 'docs/governance/README.md');
 if (fs.existsSync(govReadme)) {
   const govContent = fs.readFileSync(govReadme, 'utf8');
@@ -146,6 +137,5 @@ if (fs.existsSync(govReadme)) {
   check('governance/README.md exists', false, 'file not found');
 }
 
-// --- Summary ---
 console.log(`\ndocs-check: ${passed} passed, ${failed} failed.`);
 if (failed > 0) process.exit(1);
