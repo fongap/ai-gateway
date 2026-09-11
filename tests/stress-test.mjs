@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Stress / fault-injection tests: hammer the REAL worker.fetch pipeline under
 // bursts and injected faults and assert the reliability invariants hold —
-//   * concurrency is never exceeded, slots never leak
+//   * configured concurrency is soft; live slots still release without leaks
 //   * hard RPM never exceeds the configured cap
 //   * cooling storms short-circuit (no wasted upstream calls)
 //   * circuit opens on sustained failure, single-probe half-open recovers
@@ -124,20 +124,20 @@ function assertNoLeaks(ids) {
   }
 }
 
-// ---- S1: concurrency is never exceeded and slots never leak ---------------
-await test('S1 concurrency burst: never exceeds cap, slots released', async () => {
+// ---- S1: configured concurrency is soft and slots never leak --------------
+await test('S1 concurrency burst: configured cap is soft, all requests may run, slots released', async () => {
   resetMock();
   let release;
   const gate = new Promise((r) => { release = r; });
   routeHandlers['c1.example.com'] = async () => { await gate; return jsonUpstream(okCompletion); };
   const env = makeEnv({ tier1: [basicNode('c1', { limits: { concurrency: 1 } })], secrets: { c1: 'k' } });
   const inFlight = Array.from({ length: 6 }, () => worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {}));
-  await new Promise((r) => setTimeout(r, 20)); // let the first claim the slot
-  assert.equal(tier1AccountInFlight('c1'), 1, 'concurrency cap must be enforced');
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(tier1AccountInFlight('c1'), 6,
+    'configured concurrency must not hard-block primary requests');
   release();
   const statuses = await Promise.all(inFlight.map((p) => p.then((r) => r.status)));
-  assert.equal(statuses.filter((s) => s === 200).length, 1, 'exactly one request served');
-  assert.equal(statuses.filter((s) => s === 503).length, 5, 'the rest saturate with 503');
+  assert.equal(statuses.filter((s) => s === 200).length, 6, 'all requests may use the only healthy node');
   assertNoLeaks(['c1']);
 });
 
@@ -213,21 +213,21 @@ await test('S5 recovery: sustained failure cools, then real half-open requests r
   await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
   assert.equal(upstreamCalls.length, callsBefore, 'open circuit must not hit upstream');
 
-  // Expire cooldown -> HALF_OPEN. With concurrency=1 and the real recovery
-  // request held on a gate, a burst admits exactly one request.
+  // Expire cooldown -> HALF_OPEN. The reliability state itself admits exactly
+  // one recovery probe regardless of the configured concurrency hint.
   getTier1Model('cb1', 'general-air').cooldownUntil = Date.now() - 1;
   fail = false;
   const before = upstreamCalls.length;
   const burst = Array.from({ length: 5 }, () =>
     worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {}).then((r) => r.status));
-  await new Promise((r) => setTimeout(r, 30)); // let non-probe requests resolve (429)
+  await new Promise((r) => setTimeout(r, 30));
   assert.equal(upstreamCalls.length - before, 1, 'exactly one real half-open request may reach upstream');
   assert.equal(getTier1Model('cb1', 'general-air').failureState, 'half_open');
   // Release the real request: one success is intentionally insufficient.
   release();
   const statuses = await Promise.all(burst);
   assert.equal(statuses.filter((s) => s === 200).length, 1, 'half-open request succeeds');
-  assert.equal(statuses.filter((s) => s === 503).length, 4, 'concurrent requests saturate');
+  assert.equal(statuses.filter((s) => s === 503).length, 4, 'concurrent requests wait for the recovery probe');
   assert.equal(getTier1Model('cb1', 'general-air').failureState, 'half_open');
   // A second real success returns the model to normal.
   const followUp = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
