@@ -36,9 +36,10 @@ ai-gateway 将异构 AI Provider、API Key 和逻辑模型别名聚合到一个�
 | --- | --- |
 | **多 Key 韧性** | P2C、被动 TTFT 学习、并发/RPM 整形、Cooldown 与热点保护 |
 | **分层故障转移** | 在同一请求预算内按 **Tier 1 → Tier 2 → Tier 3** 逐层托底 |
+| **模型家族兜底** | 有界互保：`Code-Max ↔ Code-Pro → Code-Ultra`、`Max ↔ Pro → Ultra`，以及单向 `Air → Pro → Max → Ultra` |
 | **多 Provider 路由** | 将多个 Provider、API Key 和逻辑模型别名统一到一个网关 |
 | **协议兼容** | 原生支持 OpenAI Chat、OpenAI Responses、Anthropic Messages |
-| **安全转换** | 仅 OpenAI Chat ↔ Anthropic Messages；**OpenAI Responses 保持 Native Only** |
+| **安全协议转换** | 仅 OpenAI Chat ↔ Anthropic Messages；**OpenAI Responses 在协议转换层保持 Native Only** |
 | **流式与观测** | 协议感知首事件保护、SSE 转发、脱敏诊断、Token Usage 聚合 |
 
 适用于异构 OpenAI-compatible / Anthropic-compatible 上游，包括 Coding Agent 与 Claude Code 场景。
@@ -48,16 +49,23 @@ ai-gateway 将异构 AI Provider、API Key 和逻辑模型别名聚合到一个�
 ```mermaid
 flowchart TB
     A[Client] --> B[Auth + Route]
-    B --> C[Native First]
+    B --> C[Logical model pass]
+    C --> D[Native First]
 
-    C --> D["Tier 1 → Tier 2 → Tier 3"]
-    C -. exhausted .-> F["Chat ↔ Messages fallback"]
-    F --> D
+    D --> E["Tier 1 → Tier 2 → Tier 3"]
+    D -. native exhausted .-> F["Chat ↔ Messages fallback"]
+    F --> E
 
-    D --> E[Upstream APIs]
+    E -. model pool exhausted .-> G[Compatible model fallback]
+    F -. exhausted .-> G
+    G -. bounded re-check .-> C
+
+    E --> H[Upstream APIs]
 ```
 
-始终优先执行原生协议。只有原生候选池耗尽后才进入跨协议 fallback；native retry 与 protocol fallback 共享同一 logical-attempt 和 wall-clock failover budget，Hedge twin 不跨协议。
+始终优先执行原生协议。Protocol fallback 与 logical-model family fallback 共用同一套 logical-attempt、dispatch、hedge 和 wall-clock failover budget；切换模型不会获得新的重试预算。兼容模型家族最多评估两轮，因此前一模型在尝试其他模型期间恢复后可以被重新检查一次，但不会形成无限循环。
+
+Code 家族永远不会转入非 Code 家族。`Air` 可以单向上浮到 `Pro → Max → Ultra`，但 `Ultra / Max / Pro` 不会向下回到 `Air`。模型型 404 仍只隔离对应的模型映射，不触发模型家族切换。
 
 Tier 1 的目标是 **稳定利用整个 Key 池，而不是持续追打某一个“最好”的 Key**。RPM headroom 会在硬上限前逐步降低热点 Key 的选择优势；Affinity 随热点程度衰减；可选 Hedge twin 只有在 RPM / concurrency 仍有余量时才允许触发。
 

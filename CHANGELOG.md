@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.3.2 - 2026-09-11
+
+### Added
+
+- **Bounded Logical-Model Family Fallback**: 新增模型家族级最终兜底，不改现有 Node 调度器。`Code-Max ↔ Code-Pro → Code-Ultra`、`Max ↔ Pro → Ultra`；`Air → Pro → Max → Ultra` 仅允许单向上浮。兼容家族最多评估两轮，使前一模型在尝试 sibling pool 期间恢复后可被重新检查一次，同时禁止无限循环。
+- **Tier 1 Provider-Model 429 Heat**: 当同一 `(provider, upstream model)` 在 90 秒窗口内出现多个独立 Key 的 429 时，仅增加软排序惩罚：1–2 个 Key 中性，3 个为 `1.15`，4+ 为 `1.35`。不改变 eligibility、P2C、单 Key cooldown、TTFT、Affinity、Hedge 或 Tier 2/3。
+
+### Changed
+
+- **Tier 1 429 Availability-First Recovery**: 无显式 `Retry-After` 时自动 cooldown 收敛为约 `30s → 45s → 60s`；模糊 429 默认按 account/key scope 处理，cooldown 后使用受控真实请求恢复，不再通过更长的本地抑制牺牲整个逻辑模型的可用性。
+- **Shared Budget Across Model Fallback**: model-family fallback 与 native retry、protocol fallback 共用原请求的 `max_attempts`、dispatch ceiling、hedge ceiling 与 `FAILOVER_BUDGET_MS`；切换逻辑模型不会获得新的重试预算。客户端看到的 requested model 保持不变，内部仅切换 effective logical model。
+- **PR Correctness Gate**: scheduler stability、integration、compatibility、reliability / fault-injection 等确定性套件进入 required PR gate，避免正确性问题在 merge 后才首次暴露。
+
+### Fixed
+
+- **Daily Token Totals**: 最近 7 个完整 UTC+8 日桶由保留的 hourly 数据重建，避免跨午夜后旧 daily snapshot 使前一天 Token 总量回退。
+- **Model-Missing Isolation**: model-shaped 404 仍是模型映射/能力事实，仅隔离对应模型映射；不会因为新增 model-family fallback 而被静默改投到另一个逻辑模型。
+
 ## 1.3.1 - 2026-09-09
 
 ### Changed
@@ -138,7 +156,7 @@ Scheduling, config-reliability and streaming hardening. No new protocols, provid
 
 ### Fixed
 
-- **P0 — Streaming no longer corrupts multi-byte UTF-8 across SSE chunks.** `track.js` fed the same stream-stateful `TextDecoder` from two places (rewrite + diagnostic tail), so its internal multi-byte carry was advanced twice per chunk, mangling characters (e.g. CJK) split across chunk boundaries. The rewrite and tail now each use their own decoder.
+- **P0 — Streaming no longer corrupts multi-byte UTF-8 across SSE chunks.** `track.js` fed the same stream-stateful `TextDecoder` from two places (rewrite + diagnostic tail), so its internal multi-byte carry was advanced twice per chunk, mangling characters (e.g. CJK) split across chunk boundaries. The rewrite and tail now each use their own decoder。
 - **P0 — A distributed rate-limiter deny no longer consumes an upstream attempt or a local RPM charge** (from the provisional 1.2.2 code): the attempt is rolled back and the attempt budget is not charged, so a CF-denied free key cannot starve the fallback or exhaust its own RPM on traffic it never sent.
 - **P1 — A pure `rate_limit_global` failure now returns a `Retry-After` at the next fixed-window reset** instead of omitting the header (previously all-CF-denied requests surfaced a bare 429).
 - **P1 — 404s are disambiguated by error body**: a model-shaped 404 stays `model_missing` (model-scoped pair cooldown); an endpoint 404 is a new `endpoint_not_found` (whole-node cooldown), no longer masked as a model-mapping issue.

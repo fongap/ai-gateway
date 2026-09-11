@@ -8,7 +8,7 @@ Tier order is fixed:
 Tier 1 → Tier 2 → Tier 3
 ```
 
-OpenAI Chat Completions ↔ Anthropic Messages fallback is evaluated after the native route is exhausted. OpenAI Responses remains Native Only.
+OpenAI Chat Completions ↔ Anthropic Messages fallback is evaluated after the native route is exhausted. OpenAI Responses remains Native Only for protocol conversion.
 
 ## Model Registry and nodes
 
@@ -17,6 +17,32 @@ The Model Registry owns logical model policy and declared capabilities. Runtime 
 Credentials bind by **Tier + node id**. `TIER*_NODES_CONFIG_XX` and `TIER*_NODES_SECRETS_XX` suffixes are independent shard numbers; they are not positional pairs.
 
 `priority` remains meaningful for Tier 2/3. Tier 1 deliberately ignores static priority.
+
+## Logical-model family fallback
+
+Logical-model fallback is a bounded request-orchestration layer around the existing scheduler. It is separate from protocol fallback: protocol fallback changes the wire protocol/surface for the **same** logical model, while model-family fallback changes the logical model while preserving the client route and client-facing requested-model identity.
+
+The closed fallback policy is:
+
+```text
+Code-Ultra → Code-Max → Code-Pro
+Code-Max   → Code-Pro → Code-Ultra
+Code-Pro   → Code-Max → Code-Ultra
+
+Ultra → Max → Pro
+Max   → Pro → Ultra
+Pro   → Max → Ultra
+
+Air → Pro → Max → Ultra
+```
+
+The most equivalent pairs are therefore `Code-Max ↔ Code-Pro` and `Max ↔ Pro`. `Code-*` never crosses into the non-Code family. `Air` may move upward, but `Ultra` / `Max` / `Pro` never fall back down to `Air`.
+
+Compatible families get at most two evaluation rounds. The second round exists only to re-check a model that may have recovered while sibling pools were being tried. `Air` is excluded from its second round, preserving the one-way-up rule. There is no unbounded cycle.
+
+Every model pass runs the normal native-first Tier 1 → Tier 2 → Tier 3 path and, when configured, the existing cross-protocol fallback for that same effective model. All passes share the original request's `max_attempts`, dispatch ceiling, hedge ceiling, and `FAILOVER_BUDGET_MS`; switching models never creates fresh retry budget.
+
+A model-shaped 404 (`model_missing`) is a mapping/capability fact rather than transient capacity exhaustion. It remains isolated to the failing model mapping and does not trigger model-family fallback.
 
 ## Tier 1: Eligibility → Affinity → P2C
 
@@ -74,7 +100,8 @@ When more than one candidate exists, Tier 1 samples two distinct eligible accoun
 - explicit quota-near-limit state;
 - soft affinity;
 - exploration for unobserved nodes;
-- RPM headroom heat protection.
+- RPM headroom heat protection;
+- provider + upstream-model multi-key 429 heat.
 
 Success rate is **not** a positive score/reward signal. This avoids concentrating traffic on a currently successful key until it becomes the next rate-limited hotspot.
 
@@ -86,13 +113,19 @@ Tier 1 does not run background latency probes.
 
 ## Tier 1 heat protection
 
-Heat protection spreads load before a key reaches its hard limit, without creating another quota system.
+Heat protection spreads load before a key reaches its hard limit, and softly reacts when several independent credentials hit the same provider-facing model at once, without creating another quota system.
 
 ### RPM headroom
 
 Hard-RPM admission uses a tiny smooth token bucket. While a key still has a dispatchable token but its headroom is reduced, selection receives an RPM penalty from `1.0` up to at most `1.20`.
 
 This is a **soft score effect**. The existing hard RPM gate remains the final admission authority.
+
+### Provider-model 429 heat
+
+Distinct-key 429 evidence is aggregated isolate-locally by `(provider, upstream model)` over a short 90-second window. One or two affected keys are neutral; three independent keys apply a mild `1.15` score factor and four or more apply `1.35`.
+
+This signal changes ranking only. It never makes a candidate ineligible, never creates a provider-wide cooldown, and never changes the existing key/model 429 cooldown semantics. Real successes decay the evidence one observation at a time so recovered cohorts return to normal ranking quickly.
 
 ### Affinity decay
 
@@ -135,13 +168,13 @@ They do not read Tier 1 TTFT, Tier 1 affinity, or Tier 1 heat state.
 - `even` / `null` — preserve tier priority and give surplus to the first dispatchable unbounded tier;
 - `weighted` — distribute remaining budget among unbounded dispatchable tiers by live candidate count.
 
-Explicit `tier_attempts` wins over budget splitting. The sum of explicit tier caps must not exceed `max_attempts`.
+Explicit `tier_attempts` wins over budget splitting. The sum of explicit tier caps must not exceed `max_attempts`. Model-family fallback and protocol fallback both consume this same request-wide budget.
 
 ## Failover budget
 
 `FAILOVER_BUDGET_MS` limits the entire request wall clock; the current default is **60 seconds**. New attempts stop when the remaining budget cannot safely fit another try.
 
-The budget starts when the gateway receives the request. Protocol fallback does not receive a fresh clock.
+The budget starts when the gateway receives the request. Neither protocol fallback nor model-family fallback receives a fresh clock.
 
 ## Hedge
 
