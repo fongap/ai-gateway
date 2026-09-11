@@ -24,9 +24,9 @@
 //   - Failure: single transient failure does not immediately trip cooldown;
 //     >= FAILURE_THRESHOLD consecutive counted failures do; HALF_OPEN needs
 //     2 successes; 401/403 cools the account; model_not_found short-cools
-//     only the (account, upstream model) pair; 429 defaults to model scope with
-//     scope_ambiguous and respects Retry-After; cooldown never breaks the
-//     "no call against an unexpired cooldown" rule.
+//     only the (account, upstream model) pair; ambiguous 429 defaults to the
+//     key/account scope, respects Retry-After, and uses short availability-first
+//     recovery; cooldown never breaks the "no call against an unexpired cooldown" rule.
 import assert from 'node:assert/strict';
 import {
   __resetTier1StateForTests,
@@ -136,26 +136,26 @@ await test('RPM: rollback restores a pre-dispatch token', () => {
   assert.equal(claimTier1Slot(b, now, 'm1'), true, 'rollback must restore the consumed admission token');
 });
 
-await test('RPM: model-scoped 429 recovery suppresses same-model burst without blocking siblings', () => {
+await test('RPM: explicit model-scoped 429 recovery suppresses same-model burst without blocking siblings', () => {
   const b = node('b', { concurrency: 10, rpm: 40, models: { m1: 'up-1', m2: 'up-2' } });
   const now = 1_000_000;
   assert.equal(claimTier1Slot(b, now, 'm1'), true);
   getTier1Account('b').inFlight--;
-  const outcome = classifyTier1Failure({ kind: 'rate_limit' }, { retryAfterMs: 10_000 });
+  const outcome = classifyTier1Failure({ kind: 'rate_limit', rateLimitScope: 'model' }, { retryAfterMs: 10_000 });
   applyTier1Outcome('b', 'm1', outcome, now);
   assert.equal(isTier1Eligible(b, REQ, now + 9_999), false, 'Retry-After cooldown remains authoritative');
-  assert.equal(isTier1Eligible(b, { ...REQ, model: 'm2' }, now + 1), true, 'model-scoped 429 must not block sibling models');
+  assert.equal(isTier1Eligible(b, { ...REQ, model: 'm2' }, now + 1), true, 'explicit model-scoped 429 must not block sibling models');
   assert.equal(claimTier1Slot(b, now + 1, 'm2'), true, 'sibling model may keep using remaining account RPM capacity');
   getTier1Account('b').inFlight--;
   assert.equal(isTier1Eligible(b, REQ, now + 10_000), true, 'one m1 request may resume at cooldown expiry');
   assert.equal(claimTier1Slot(b, now + 10_000, 'm1'), true);
   getTier1Account('b').inFlight--;
   assert.equal(claimTier1Slot(b, now + 10_000, 'm1'), false, 'same model must not burst immediately after 429 recovery');
-  assert.equal(isTier1Eligible(b, { ...REQ, model: 'm2' }, now + 10_000), true, 'recovery gate remains model-local');
-  assert.equal(claimTier1Slot(b, now + 11_500, 'm1'), true, 'same model resumes after one RPM interval');
+  recordTier1Success('b', 'm1');
+  assert.equal(isTier1Eligible(b, REQ, now + 10_001), true, 'successful recovery immediately clears the probe gate');
 });
 
-await test('RPM: explicit account-scoped 429 recovery gates the whole account for one interval', () => {
+await test('RPM: explicit account-scoped 429 recovery gates the whole account until probe success', () => {
   const b = node('b', { concurrency: 10, rpm: 40, models: { m1: 'up-1', m2: 'up-2' } });
   const now = 2_000_000;
   assert.equal(claimTier1Slot(b, now, 'm1'), true);
@@ -165,8 +165,9 @@ await test('RPM: explicit account-scoped 429 recovery gates the whole account fo
   assert.equal(isTier1Eligible(b, REQ, now + 10_000), true);
   assert.equal(claimTier1Slot(b, now + 10_000, 'm1'), true);
   getTier1Account('b').inFlight--;
-  assert.equal(isTier1Eligible(b, { ...REQ, model: 'm2' }, now + 10_000), false, 'account-scoped recovery gates sibling models');
-  assert.equal(isTier1Eligible(b, { ...REQ, model: 'm2' }, now + 11_500), true, 'account gate expires after one RPM interval');
+  assert.equal(isTier1Eligible(b, { ...REQ, model: 'm2' }, now + 10_000), false, 'account-scoped recovery gates sibling models during the probe');
+  recordTier1Success('b', 'm1');
+  assert.equal(isTier1Eligible(b, { ...REQ, model: 'm2' }, now + 10_001), true, 'successful recovery immediately restores the key');
 });
 
 await test('Eligibility: cooldown filtered (no force-call on cooling account)', () => {
@@ -374,7 +375,7 @@ await test('Outlier: 2 consecutive outliers stop clamping (raw value used)', () 
   // consecutiveOutliers would become 2 -> stop clamping, use raw 9000.
   // EWMA = 0.25*9000 + 0.75*1750 = 2250 + 1312.5 = 3562.5
   recordTier1Ttft('a', 'm1', 9000);
-  const m = getTier1Account('a').models.get('m1');
+  const m = getTier1Account('a', 'm1').models.get('m1');
   assert.equal(m.consecutiveOutliers, 2, 'consecutive outliers must reach 2');
   // EWMA after 2nd raw outlier:
   assert.ok(m.ttftEwma > 3000, `expected EWMA > 3000 after real degradation, got ${m.ttftEwma}`);
@@ -669,31 +670,62 @@ await test('Failure: >= FAILURE_THRESHOLD consecutive counted failures -> COOLDO
   assert.ok(m.cooldownUntil > Date.now());
 });
 
-await test('Failure: 429 -> model scope + scope_ambiguous, respects Retry-After', () => {
-  const a = node('a');
+await test('Failure: ambiguous 429 -> key/account scope and respects Retry-After', () => {
+  const now = Date.now();
+  const a = node('a', { models: { m1: 'up-a', m2: 'up-b' } });
   const c = classifyTier1Failure({ kind: 'rate_limit' }, { retryAfterMs: 10_000 });
-  applyTier1Outcome('a', 'm1', c);
-  const m = getTier1Account('a').models.get('m1');
-  assert.equal(m.failureState, TIER1_FAILURE_STATES.NORMAL, 'a 429 alone does not trip circuit');
-  assert.equal(m.cooldownUntil > Date.now(), true, 'cooldown window set');
-  assert.equal(m.scopeAmbiguous429, true);
-  // The model is filtered by cooldown until expiry.
-  assert.equal(isTier1Eligible(a, REQ), false);
+  assert.equal(c.scope, 'account');
+  assert.equal(c.scopeAmbiguous, true);
+  applyTier1Outcome('a', 'm1', c, now);
+  const acct = getTier1Account('a');
+  assert.equal(acct.accountCooldownUntil, now + 10_000, 'Retry-After remains authoritative');
+  assert.equal(acct.scopeAmbiguous429, true);
+  assert.equal(acct.models.get('m1'), undefined, 'account-scoped 429 need not create model cooldown state');
+  assert.equal(isTier1Eligible(a, REQ, now + 9_999), false);
+  assert.equal(isTier1Eligible(a, { ...REQ, model: 'm2' }, now + 9_999), false, 'same key is cooling for sibling models too');
 });
 
-await test('Failure: repeated ambiguous 429 without Retry-After uses exponential model backoff', () => {
+await test('Failure: repeated ambiguous 429 without Retry-After uses 30s/45s/60s key backoff', () => {
   const now = 1_000_000;
   const c = classifyTier1Failure({ kind: 'rate_limit' }, { retryAfterMs: 0 });
+  const acct = getTier1Account('a');
+
   applyTier1Outcome('a', 'm1', c, now);
-  const first = getTier1Model('a', 'm1').cooldownUntil - now;
-  getTier1Model('a', 'm1').cooldownUntil = 0;
+  const first = acct.accountCooldownUntil - now;
+  acct.accountCooldownUntil = 0;
   applyTier1Outcome('a', 'm1', c, now);
-  const second = getTier1Model('a', 'm1').cooldownUntil - now;
-  // ±10% cooldown jitter (PR 7) — verify exponential growth within range.
-  assert.ok(first >= 30_000 * 0.9 && first <= 30_000 * 1.1, `first backoff ${first} not in [27000, 33000]`);
-  assert.ok(second >= 60_000 * 0.9 && second <= 60_000 * 1.1, `second backoff ${second} not in [54000, 66000]`);
-  assert.equal(getTier1Model('a', 'm1').scopeAmbiguous429, true);
-  assert.equal(getTier1Account('a').accountCooldownUntil, 0, 'ambiguous 429 must not block other models');
+  const second = acct.accountCooldownUntil - now;
+  acct.accountCooldownUntil = 0;
+  applyTier1Outcome('a', 'm1', c, now);
+  const third = acct.accountCooldownUntil - now;
+  acct.accountCooldownUntil = 0;
+  applyTier1Outcome('a', 'm1', c, now);
+  const fourth = acct.accountCooldownUntil - now;
+
+  // ±10% jitter applies only to automatic cooldowns.
+  assert.ok(first >= 30_000 * 0.9 && first <= 30_000 * 1.1, `first backoff ${first} not around 30s`);
+  assert.ok(second >= 45_000 * 0.9 && second <= 45_000 * 1.1, `second backoff ${second} not around 45s`);
+  assert.ok(third >= 60_000 * 0.9 && third <= 60_000 * 1.1, `third backoff ${third} not around 60s`);
+  assert.ok(fourth >= 60_000 * 0.9 && fourth <= 60_000 * 1.1, `fourth backoff ${fourth} must stay capped around 60s`);
+  assert.equal(acct.consecutiveRateLimits, 4);
+  assert.equal(acct.scopeAmbiguous429, true);
+});
+
+await test('Failure: successful 429 recovery resets key backoff and clears probe gate immediately', () => {
+  const now = 1_000_000;
+  const a = node('a', { concurrency: 10, rpm: 40 });
+  const c = classifyTier1Failure({ kind: 'rate_limit' }, { retryAfterMs: 0 });
+  applyTier1Outcome('a', 'm1', c, now);
+  const acct = getTier1Account('a');
+  const recoveryAt = acct.accountCooldownUntil + 1;
+  assert.equal(claimTier1Slot(a, recoveryAt, 'm1'), true, 'first request after cooldown is admitted as recovery probe');
+  assert.ok(acct.rateLimitRecoveryUntil > recoveryAt, 'probe gate is active while the recovery request is unresolved');
+  recordTier1Success('a', 'm1');
+  releaseTier1Slot('a', makeTier1ReleaseToken('a'));
+  assert.equal(acct.consecutiveRateLimits, 0);
+  assert.equal(acct.rateLimitRecoveryUntil, 0);
+  assert.equal(acct.rateLimitRecoveryPending, false);
+  assert.equal(acct.accountCooldownReason, null);
 });
 
 await test('Failure: timeout and 5xx backoff grow after hysteresis threshold', () => {
