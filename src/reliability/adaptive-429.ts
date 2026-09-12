@@ -10,7 +10,8 @@
 // Escalation happens only when a 429 arrives after the previous cooldown has
 // expired (normally the controlled recovery request). Extra 429 responses from
 // requests that were already in flight during the same cooldown do NOT advance
-// the ladder, preventing one burst from jumping straight to a one-hour block.
+// or extend the local ladder, preventing one burst from jumping straight to a
+// long block. An explicit upstream Retry-After may still extend the deadline.
 
 export const ADAPTIVE_429_COOLDOWN_STEPS_MS = Object.freeze([
   15_000,
@@ -68,15 +69,25 @@ export function nextAdaptive429CooldownMs(
   const explicit = Number.isFinite(retryAfterMs) && retryAfterMs > 0 ? Math.round(retryAfterMs) : 0;
   let state = states.get(key);
 
+  if (state && state.cooldownUntil > now) {
+    // Same cooldown window: this is usually an already-in-flight sibling
+    // request finishing late. Do not increase the stage and do not restart
+    // the local timer. Only an explicit provider Retry-After may push the
+    // existing deadline farther out.
+    if (explicit > 0) state.cooldownUntil = Math.max(state.cooldownUntil, now + explicit);
+    state.last429At = now;
+    states.set(key, state);
+    return Math.max(1, state.cooldownUntil - now);
+  }
+
   if (!state) {
     state = { stage: 1, cooldownUntil: 0, last429At: now };
-  } else if (state.cooldownUntil <= now) {
+  } else {
     state.stage = Math.min(state.stage + 1, ADAPTIVE_429_COOLDOWN_STEPS_MS.length);
   }
 
   const adaptive = automaticCooldownMs(state.stage);
-  const requestedUntil = now + Math.max(adaptive, explicit);
-  state.cooldownUntil = Math.max(state.cooldownUntil, requestedUntil);
+  state.cooldownUntil = now + Math.max(adaptive, explicit);
   state.last429At = now;
   states.set(key, state);
   pruneIfNeeded();
