@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.4 - 2026-09-12
+
+### Changed
+
+- **Adaptive 429 Cooldown**: Tier 1 无显式恢复信号时采用 `15s → 30s → 1m → 2m → 5m → 15m → 30m → 60m` 阶梯；只有上一轮 cooldown 到期后的恢复请求仍返回 429 才进入下一档，60 分钟封顶并低频探测，真实恢复成功后立即清零。
+- **Provider + Key Scope**: 自适应 429 状态严格绑定 `(provider, key-slot)`。同 Provider 不同 Key、不同 Provider 下同名 Key 槽位互不影响；不增加任何 Provider 特判，也不把一个 Key 的 429 扩散到整个 Provider 或逻辑模型。原始 credential 不进入状态键或日志。
+- **Burst-Safe Escalation**: cooldown 未结束时，已经在途请求返回的额外 429 不提升阶梯，避免一次并发突发把 Key 直接推到长时间冷却。
+- **Retry-After Floor**: 上游 `Retry-After` 作为最低等待时间；可以延长当前 cooldown，但不能缩短已经学习到的自适应阶梯。
+
 ## 1.3.3 - 2026-09-12
 
 ### Changed
@@ -257,7 +266,7 @@ Reliability + architecture-convergence release. No new protocols, providers or l
 
 ## 6.1.0 - 2026-08-25
 
-Protocol-compatibility release: adds a real OpenAI Responses `/v1/responses` surface and a Provider Capability/Profile layer, without touching the scheduling core. Everything is additive; no breaking changes.
+Protocol-compatibility release: adds a real OpenAI Responses `/v1/responses` surface and a Provider Capability/Profile layer, without touching the scheduling core. Everything is additive; no breaking change.
 
 ### Added
 
@@ -401,5 +410,5 @@ Breaking release: the node configuration and secret management model was redesig
 - 缩小首页主标题字号；
 - 保留 OpenAI / Anthropic 双协议、Primary 池与双级 Fallback；
 - 整理为可公开发布的 Wrangler 项目结构；
-- 增加 Windows、Linux 和 macOS 部署脚本、健康检查脚本与开源文档；
+- 增加 Windows、Linux 和 macOS 部署脚本、健康检查脚本和开源文档；
 - 增加中英文双语 README，并在两版顶部提供语言切换。

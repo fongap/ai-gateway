@@ -16,6 +16,7 @@ import {
   applyTier1Outcome, classifyTier1Failure,
   rollbackTier1Rpm, recordTier1ProviderModelRateLimit,
 } from '../../reliability/tier1-state.ts';
+import { nextAdaptive429CooldownMs } from '../../reliability/adaptive-429.ts';
 import { KIND } from '../../reliability/classify.ts';
 import type { FailureClassification, FailureKind } from '../../reliability/classify.ts';
 import { trimDiagnostic } from '../../protocol/http.ts';
@@ -79,20 +80,26 @@ export function recordOutcome(state: LoopState, node: RuntimeNode, classificatio
 
   if (node.tier === 'tier-1') {
     // Tier 1 owns its own failure state machine. Logical-model performance and
-    // timeout/5xx state remain keyed by the requested model. Ambiguous 429 is
-    // handled at the affected credential/account scope; an explicit model-scoped
-    // rate limit remains model-local. model_missing is different: the provider
-    // rejected the resolved upstream model id, so its short cooldown is keyed
-    // by (account, upstream model).
+    // timeout/5xx state remain keyed by the requested model. 429 cooldown is
+    // different: one runtime node is one configured credential/key, so the
+    // adaptive ladder is bound to (provider, key-slot=node.id), never to the
+    // provider as a whole and never to a logical model. Raw credentials never
+    // enter the state key. model_missing is keyed by the resolved upstream id.
     releaseTier1Slot(node.id, c.tier1ReleaseToken);
     if (classification.action === 'neutral') {
       bumpNodeCounters(node.id, { requests: 1 });
     } else {
       const upstreamModel = upstreamModelOf(node, state.requestedModel);
+      let tier1RetryAfterMs = classification.retryAfterMs || 0;
       if (classification.kind === KIND.RATE_LIMIT) {
         recordTier1ProviderModelRateLimit(node.provider, upstreamModel, node.id);
+        tier1RetryAfterMs = nextAdaptive429CooldownMs(
+          node.provider,
+          node.id,
+          classification.retryAfterMs || 0,
+        );
       }
-      const t1Class = classifyTier1Failure(classification, { retryAfterMs: classification.retryAfterMs || 0 });
+      const t1Class = classifyTier1Failure(classification, { retryAfterMs: tier1RetryAfterMs });
       const tier1ModelKey = classification.kind === KIND.MODEL_MISSING
         ? upstreamModel
         : state.requestedModel;

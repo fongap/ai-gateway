@@ -17,8 +17,9 @@ import {
 import {
   releaseTier1Slot,
   recordTier1Ttft, recordTier1Success, applyTier1Outcome, classifyTier1Failure,
-  recordTier1ProviderModelSuccess,
+  recordTier1ProviderModelSuccess, getTier1Account,
 } from '../../reliability/tier1-state.ts';
+import { clearAdaptive429State } from '../../reliability/adaptive-429.ts';
 import { classifyStreamInterrupted } from '../../reliability/classify.ts';
 import { writeTier1Affinity } from '../../scheduler/tier1-affinity.ts';
 import { recordStreamStart, recordStreamCompleted, recordStreamInterrupted } from '../../observability/gateway-stats.ts';
@@ -83,6 +84,13 @@ export function recordNodeSuccess(c: AttemptContext, node: RuntimeNode, latencyM
   if (node.tier === 'tier-1') {
     const logicalModel = c.state.requestedModel;
     recordTier1Success(node.id, logicalModel);
+    // The Tier 1 state machine only clears consecutiveRateLimits when THIS
+    // success is the admitted post-cooldown recovery request. A success from a
+    // request that was already in flight when a peer hit 429 does not clear it.
+    // Mirror that exact decision into the provider+key adaptive ladder.
+    if (getTier1Account(node.id).consecutiveRateLimits === 0) {
+      clearAdaptive429State(node.provider, node.id);
+    }
     recordTier1ProviderModelSuccess(node.provider, upstreamModelOf(node, logicalModel), node.id);
     releaseTier1Slot(node.id, c.tier1ReleaseToken);
     bumpNodeCounters(node.id, { requests: 1, successes: 1 });

@@ -129,7 +129,9 @@ jobs:
           node scripts/provider-discovery.mjs live \
             --previous "$RUNNER_TEMP/previous-models.json" \
             --out-dir "$RUNNER_TEMP/model-discovery"
-          cat "$RUNNER_TEMP/model-discovery/changes.md" >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p "$RUNNER_TEMP/model-discovery/output"
+          mv "$RUNNER_TEMP/model-discovery/changes.md" "$RUNNER_TEMP/model-discovery/output/modelchangelog.md"
+          cat "$RUNNER_TEMP/model-discovery/output/modelchangelog.md" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload discovery snapshot
         if: always()
