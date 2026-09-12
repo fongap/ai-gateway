@@ -28,6 +28,18 @@ assert.equal(nodes[0].id, 'provider-a-01');
 assert.equal(nodes[0].protocol, 'openai');
 assert.equal(nodes[0].credential, SECRET);
 
+// Discovery must accept the same narrow browser/IME punctuation repair as the
+// deployment bridge. This reproduces the production TIER1_NODES_CONFIG_03
+// failure where an ideographic comma appeared after a nested models object.
+const punctuationEnv = {
+  TIER1_NODES_CONFIG_03: '[{"id":"cfworkers-02","provider":"cfworkers","base_url":"https://api.example.com/v1","models":{"Pro":"upstream"}、}]',
+  TIER1_NODES_SECRETS_03: JSON.stringify({ 'cfworkers-02': SECRET }),
+};
+const punctuationNodes = collectDiscoveryNodes(punctuationEnv);
+assert.equal(punctuationNodes.length, 1);
+assert.equal(punctuationNodes[0].id, 'cfworkers-02');
+assert.equal(punctuationNodes[0].credential, SECRET);
+
 const calls = [];
 const openaiFetch = async (input, init = {}) => {
   const url = new URL(String(input));
