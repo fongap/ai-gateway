@@ -1,44 +1,18 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MIT
 //
-// Provider Discovery CLI (v1.1).
+// Provider / Model Discovery CLI.
 //
-// Local operator tool. Subcommands:
-//
-//   check-snapshot <file>
-//       Validate + normalize a Catalog snapshot; print diagnostics.
-//       Does NOT touch Runtime Node configuration.
-//
-//   diff <before.json> <after.json>
-//       Semantic diff between two Catalog snapshots. Writes a markdown
-//       report to stdout (or --out) plus a JSON artifact (--json-out).
-//
-//   runtime-check <catalog.json> <runtime-view.json>
-//       Run the Runtime consistency check; print warnings sorted by
-//       severity. Does NOT mutate runtime.
-//
-//   summary <catalog.json>
-//       Print a short protocol/surface capability summary suitable for
-//       a GitHub Action Summary step.
-//
-// Design constraints (see provider-discovery-test.mjs for invariant tests):
-//   - Secrets / credentials MUST NEVER appear in any output.
-//   - The CLI never imports src/runtime, src/scheduler, src/transport,
-//     src/request, src/reliability, or src/stream — discovery is
-//     intentionally decoupled from the request hot path.
-//   - The CLI never writes Runtime Node configuration.
-//
-// Exit codes:
-//   0   Success, no P0/P1 issues.
-//   1   Generic failure (bad arguments, missing files).
-//   2   At least one P0 or P1 warning emitted (operator must review).
+// Offline commands keep the original catalog-audit behavior. `live` reads the
+// gateway's configured provider nodes + credentials, calls /v1/models, performs
+// zero-generation-cost surface probes, and writes sanitized before/after model
+// snapshots. No command mutates Runtime Node config, Model Registry, Variables
+// or Secrets.
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import {
-  validateCatalog,
   loadCatalogFile,
   normalizeCatalog,
   normalizeRuntimeView,
@@ -50,6 +24,9 @@ import {
   formatChangesMarkdown,
   formatActionSummary,
   formatJsonReport,
+  scanDiscoveryEnv,
+  diffModelSnapshots,
+  formatDiscoveryMarkdown,
 } from './provider-discovery/index.js';
 
 function die(msg, code = 1) {
@@ -108,7 +85,7 @@ function loadCatalogOrDie(filePath) {
 }
 
 function cmdCheckSnapshot(argv) {
-  const { _: rest, opts } = readArgs(argv);
+  const { _: rest } = readArgs(argv);
   const file = rest[0];
   if (!file) die('usage: provider-discovery.mjs check-snapshot <catalog.json>');
   const { raw, normalized } = loadCatalogOrDie(file);
@@ -136,7 +113,7 @@ function cmdDiff(argv) {
   const md = formatChangesMarkdown({
     diff,
     catalog: after,
-    warnings: [], // runtime warnings are computed in `runtime-check`
+    warnings: [],
     generatedAt: new Date().toISOString(),
   });
   const json = formatJsonReport({
@@ -145,23 +122,9 @@ function cmdDiff(argv) {
     catalog: after,
     generatedAt: new Date().toISOString(),
   });
-  // Markdown report: --out writes to file, otherwise stdout.
-  if (opts.out) {
-    fs.writeFileSync(resolveAgainstCwd(opts.out), md);
-  } else if (!opts['json-out']) {
-    // If neither --out nor --json-out is given, default to markdown on
-    // stdout so the diff is human-readable. When --json-out is given
-    // (with or without --out), markdown is only written via --out.
-    process.stdout.write(md);
-    process.stdout.write('\n');
-  }
-  // JSON artifact: --json-out writes to file, otherwise not emitted to
-  // avoid double-output when no flags are given (markdown is the
-  // default human-readable surface).
-  if (opts['json-out']) {
-    fs.writeFileSync(resolveAgainstCwd(opts['json-out']), json);
-  }
-  // Surface severity counts to stderr for quick scanning.
+  if (opts.out) fs.writeFileSync(resolveAgainstCwd(opts.out), md);
+  else if (!opts['json-out']) process.stdout.write(`${md}\n`);
+  if (opts['json-out']) fs.writeFileSync(resolveAgainstCwd(opts['json-out']), json);
   console.error(`diff summary: added=${sev.added} removed=${sev.removed} P1=${sev.P1} P2=${sev.P2} P3=${sev.P3}`);
 }
 
@@ -173,8 +136,7 @@ function cmdRuntimeCheck(argv) {
   let runtimeView;
   try {
     const text = fs.readFileSync(resolveAgainstCwd(runtimePath), 'utf8');
-    const parsed = JSON.parse(text);
-    runtimeView = normalizeRuntimeView(parsed);
+    runtimeView = normalizeRuntimeView(JSON.parse(text));
   } catch (e) {
     die(`failed to load runtime view: ${e.message}`);
   }
@@ -182,14 +144,10 @@ function cmdRuntimeCheck(argv) {
   const sev = summarizeWarnings(warnings);
   if (opts['json-out']) {
     fs.writeFileSync(resolveAgainstCwd(opts['json-out']), JSON.stringify({ warnings, severity_summary: sev }, null, 2));
+  } else if (warnings.length === 0) {
+    console.log('No runtime consistency warnings.');
   } else {
-    if (warnings.length === 0) {
-      console.log('No runtime consistency warnings.');
-    } else {
-      for (const w of warnings) {
-        console.log(`[${w.severity}] ${w.kind}: ${w.detail}`);
-      }
-    }
+    for (const w of warnings) console.log(`[${w.severity}] ${w.kind}: ${w.detail}`);
     console.error(`runtime summary: P0=${sev.P0} P1=${sev.P1} P2=${sev.P2} P3=${sev.P3}`);
   }
   if (sev.P0 > 0 || sev.P1 > 0) process.exit(2);
@@ -201,13 +159,58 @@ function cmdSummary(argv) {
   if (!file) die('usage: provider-discovery.mjs summary <catalog.json>');
   const { normalized } = loadCatalogOrDie(file);
   const capability = aggregateCatalogCapabilities(normalized);
-  const text = formatActionSummary({
+  process.stdout.write(formatActionSummary({
     diff: { added: [], removed: [], changed: [] },
     warnings: [],
     capability,
     generatedAt: new Date().toISOString(),
-  });
-  process.stdout.write(text);
+  }));
+}
+
+function loadPreviousSnapshot(file) {
+  if (!file) return { schema_version: 1, generated_at: null, nodes: [] };
+  const resolved = resolveAgainstCwd(file);
+  if (!fs.existsSync(resolved)) return { schema_version: 1, generated_at: null, nodes: [] };
+  try {
+    const parsed = JSON.parse(fs.readFileSync(resolved, 'utf8'));
+    return parsed && Array.isArray(parsed.nodes) ? parsed : { schema_version: 1, generated_at: null, nodes: [] };
+  } catch {
+    return { schema_version: 1, generated_at: null, nodes: [] };
+  }
+}
+
+async function cmdLive(argv) {
+  const { opts } = readArgs(argv);
+  const outDir = resolveAgainstCwd(String(opts['out-dir'] || 'model-discovery'));
+  const previous = loadPreviousSnapshot(opts.previous ? String(opts.previous) : '');
+  const allowPrivate = String(process.env.ALLOW_PRIVATE_DISCOVERY || '').trim().toLowerCase() === 'true';
+  const current = await scanDiscoveryEnv(process.env, { allowPrivate });
+  const diff = diffModelSnapshots(previous, current);
+  const markdown = formatDiscoveryMarkdown(previous, current, diff);
+
+  fs.mkdirSync(outDir, { recursive: true });
+  fs.writeFileSync(path.join(outDir, 'previous-models.json'), JSON.stringify(previous, null, 2));
+  fs.writeFileSync(path.join(outDir, 'current-models.json'), JSON.stringify(current, null, 2));
+  fs.writeFileSync(path.join(outDir, 'changes.json'), JSON.stringify(diff, null, 2));
+  fs.writeFileSync(path.join(outDir, 'changes.md'), markdown);
+  fs.writeFileSync(path.join(outDir, 'capabilities.json'), JSON.stringify({
+    generated_at: current.generated_at,
+    nodes: current.nodes.map((n) => ({
+      node_id: n.node_id,
+      provider: n.provider,
+      protocol: n.protocol,
+      status: n.status,
+      capabilities: n.capabilities,
+    })),
+  }, null, 2));
+
+  const ok = current.nodes.filter((n) => n.status === 'ok').length;
+  const failed = current.nodes.length - ok;
+  const added = diff.changes.reduce((n, c) => n + c.added.length, 0);
+  const removed = diff.changes.reduce((n, c) => n + c.removed.length, 0);
+  console.log(`Model Discovery: nodes=${current.nodes.length}, ok=${ok}, failed=${failed}, added=${added}, removed=${removed}`);
+  process.stdout.write(markdown);
+  if (current.nodes.length === 0 || ok === 0) process.exitCode = 2;
 }
 
 const subcommand = process.argv[2];
@@ -225,11 +228,13 @@ switch (subcommand) {
   case 'summary':
     cmdSummary(rest);
     break;
+  case 'live':
+    await cmdLive(rest);
+    break;
   case undefined:
   case '-h':
   case '--help':
-    console.log('Usage: provider-discovery.mjs <check-snapshot|diff|runtime-check|summary> ...');
-    console.log('See scripts/provider-discovery/README.md for details.');
+    console.log('Usage: provider-discovery.mjs <live|check-snapshot|diff|runtime-check|summary> ...');
     break;
   default:
     die(`unknown subcommand: ${subcommand}`);
