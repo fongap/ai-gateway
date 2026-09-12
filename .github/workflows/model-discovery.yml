@@ -108,7 +108,10 @@ jobs:
       - name: Restore previous successful snapshot
         run: |
           mkdir -p "$RUNNER_TEMP/model-discovery-previous"
-          PREV_RUN="$(gh run list --workflow provider-discovery.yml --status success --limit 10 --json databaseId --jq '.[0].databaseId // empty')"
+          PREV_RUN="$(gh run list --workflow model-discovery.yml --status success --limit 10 --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || true)"
+          if [ -z "$PREV_RUN" ]; then
+            PREV_RUN="$(gh run list --workflow provider-discovery.yml --status success --limit 10 --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || true)"
+          fi
           if [ -n "$PREV_RUN" ]; then
             gh run download "$PREV_RUN" -n model-discovery -D "$RUNNER_TEMP/model-discovery-previous" || true
           fi
