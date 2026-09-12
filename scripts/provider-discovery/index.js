@@ -63,3 +63,11 @@ export {
   enforceMaxModelCount,
   DISCOVERY_LIMITS,
 } from './ssrf-guard.js';
+
+export {
+  collectDiscoveryNodes,
+  scanDiscoveryNode,
+  scanDiscoveryEnv,
+  diffModelSnapshots,
+  formatDiscoveryMarkdown,
+} from '../model-discovery/live.js';

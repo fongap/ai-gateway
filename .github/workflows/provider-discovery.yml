@@ -1,48 +1,97 @@
-name: Provider Catalog Audit
+name: Model Discovery
 
-# Manual audit of Provider catalog snapshots and Runtime-vs-Catalog consistency.
-# This workflow is observation-only: it never mutates Runtime Node config,
-# Model Registry config, Worker Variables, or Worker Secrets.
+# Background observation only. Reads the gateway's configured Provider nodes,
+# calls each Provider's /v1/models endpoint, probes OpenAI/Anthropic surface
+# availability with intentionally invalid zero-generation requests, and compares
+# the result with the latest successful discovery snapshot.
 #
-# What it does:
-#   1. Reads previous/current catalog snapshots.
-#   2. Normalizes snapshots and computes semantic changes.
-#   3. Checks a sanitized Runtime view against the catalog.
-#   4. Writes a report + JSON artifacts + Action Summary.
-#
-# It does NOT probe providers with generation requests and therefore should not
-# be described as automatic Provider discovery.
+# It NEVER changes Runtime Node config, Model Registry config, Worker Variables
+# or Worker Secrets. A failed Provider scan is reported as scan_failed and is
+# never interpreted as mass model removal.
 
 on:
   workflow_dispatch:
-    inputs:
-      catalog_before:
-        description: 'Path to previous catalog JSON (optional; defaults to scripts/provider-discovery/samples/catalog.example.json if missing)'
-        required: false
-        type: string
-        default: ''
-      catalog_after:
-        description: 'Path to current catalog JSON (optional; defaults to scripts/provider-discovery/samples/catalog.example.json if missing)'
-        required: false
-        type: string
-        default: ''
-      runtime_view:
-        description: 'Path to runtime view JSON (optional; defaults to scripts/provider-discovery/samples/runtime-view.example.json if missing)'
-        required: false
-        type: string
-        default: ''
+  schedule:
+    - cron: '15 4 * * *'
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
-  group: provider-catalog-audit
+  group: model-discovery
   cancel-in-progress: true
 
 jobs:
-  audit:
+  discover:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ALLOW_PRIVATE_DISCOVERY: ${{ vars.ALLOW_PRIVATE_DISCOVERY }}
+
+      TIER1_NODES_CONFIG_01: ${{ vars.TIER1_NODES_CONFIG_01 }}
+      TIER1_NODES_CONFIG_02: ${{ vars.TIER1_NODES_CONFIG_02 }}
+      TIER1_NODES_CONFIG_03: ${{ vars.TIER1_NODES_CONFIG_03 }}
+      TIER1_NODES_CONFIG_04: ${{ vars.TIER1_NODES_CONFIG_04 }}
+      TIER1_NODES_CONFIG_05: ${{ vars.TIER1_NODES_CONFIG_05 }}
+      TIER1_NODES_CONFIG_06: ${{ vars.TIER1_NODES_CONFIG_06 }}
+      TIER1_NODES_CONFIG_07: ${{ vars.TIER1_NODES_CONFIG_07 }}
+      TIER1_NODES_CONFIG_08: ${{ vars.TIER1_NODES_CONFIG_08 }}
+      TIER1_NODES_CONFIG_09: ${{ vars.TIER1_NODES_CONFIG_09 }}
+      TIER1_NODES_CONFIG_10: ${{ vars.TIER1_NODES_CONFIG_10 }}
+      TIER2_NODES_CONFIG_01: ${{ vars.TIER2_NODES_CONFIG_01 }}
+      TIER2_NODES_CONFIG_02: ${{ vars.TIER2_NODES_CONFIG_02 }}
+      TIER2_NODES_CONFIG_03: ${{ vars.TIER2_NODES_CONFIG_03 }}
+      TIER2_NODES_CONFIG_04: ${{ vars.TIER2_NODES_CONFIG_04 }}
+      TIER2_NODES_CONFIG_05: ${{ vars.TIER2_NODES_CONFIG_05 }}
+      TIER2_NODES_CONFIG_06: ${{ vars.TIER2_NODES_CONFIG_06 }}
+      TIER2_NODES_CONFIG_07: ${{ vars.TIER2_NODES_CONFIG_07 }}
+      TIER2_NODES_CONFIG_08: ${{ vars.TIER2_NODES_CONFIG_08 }}
+      TIER2_NODES_CONFIG_09: ${{ vars.TIER2_NODES_CONFIG_09 }}
+      TIER2_NODES_CONFIG_10: ${{ vars.TIER2_NODES_CONFIG_10 }}
+      TIER3_NODES_CONFIG_01: ${{ vars.TIER3_NODES_CONFIG_01 }}
+      TIER3_NODES_CONFIG_02: ${{ vars.TIER3_NODES_CONFIG_02 }}
+      TIER3_NODES_CONFIG_03: ${{ vars.TIER3_NODES_CONFIG_03 }}
+      TIER3_NODES_CONFIG_04: ${{ vars.TIER3_NODES_CONFIG_04 }}
+      TIER3_NODES_CONFIG_05: ${{ vars.TIER3_NODES_CONFIG_05 }}
+      TIER3_NODES_CONFIG_06: ${{ vars.TIER3_NODES_CONFIG_06 }}
+      TIER3_NODES_CONFIG_07: ${{ vars.TIER3_NODES_CONFIG_07 }}
+      TIER3_NODES_CONFIG_08: ${{ vars.TIER3_NODES_CONFIG_08 }}
+      TIER3_NODES_CONFIG_09: ${{ vars.TIER3_NODES_CONFIG_09 }}
+      TIER3_NODES_CONFIG_10: ${{ vars.TIER3_NODES_CONFIG_10 }}
+
+      TIER1_NODES_SECRETS_01: ${{ secrets.TIER1_NODES_SECRETS_01 }}
+      TIER1_NODES_SECRETS_02: ${{ secrets.TIER1_NODES_SECRETS_02 }}
+      TIER1_NODES_SECRETS_03: ${{ secrets.TIER1_NODES_SECRETS_03 }}
+      TIER1_NODES_SECRETS_04: ${{ secrets.TIER1_NODES_SECRETS_04 }}
+      TIER1_NODES_SECRETS_05: ${{ secrets.TIER1_NODES_SECRETS_05 }}
+      TIER1_NODES_SECRETS_06: ${{ secrets.TIER1_NODES_SECRETS_06 }}
+      TIER1_NODES_SECRETS_07: ${{ secrets.TIER1_NODES_SECRETS_07 }}
+      TIER1_NODES_SECRETS_08: ${{ secrets.TIER1_NODES_SECRETS_08 }}
+      TIER1_NODES_SECRETS_09: ${{ secrets.TIER1_NODES_SECRETS_09 }}
+      TIER1_NODES_SECRETS_10: ${{ secrets.TIER1_NODES_SECRETS_10 }}
+      TIER2_NODES_SECRETS_01: ${{ secrets.TIER2_NODES_SECRETS_01 }}
+      TIER2_NODES_SECRETS_02: ${{ secrets.TIER2_NODES_SECRETS_02 }}
+      TIER2_NODES_SECRETS_03: ${{ secrets.TIER2_NODES_SECRETS_03 }}
+      TIER2_NODES_SECRETS_04: ${{ secrets.TIER2_NODES_SECRETS_04 }}
+      TIER2_NODES_SECRETS_05: ${{ secrets.TIER2_NODES_SECRETS_05 }}
+      TIER2_NODES_SECRETS_06: ${{ secrets.TIER2_NODES_SECRETS_06 }}
+      TIER2_NODES_SECRETS_07: ${{ secrets.TIER2_NODES_SECRETS_07 }}
+      TIER2_NODES_SECRETS_08: ${{ secrets.TIER2_NODES_SECRETS_08 }}
+      TIER2_NODES_SECRETS_09: ${{ secrets.TIER2_NODES_SECRETS_09 }}
+      TIER2_NODES_SECRETS_10: ${{ secrets.TIER2_NODES_SECRETS_10 }}
+      TIER3_NODES_SECRETS_01: ${{ secrets.TIER3_NODES_SECRETS_01 }}
+      TIER3_NODES_SECRETS_02: ${{ secrets.TIER3_NODES_SECRETS_02 }}
+      TIER3_NODES_SECRETS_03: ${{ secrets.TIER3_NODES_SECRETS_03 }}
+      TIER3_NODES_SECRETS_04: ${{ secrets.TIER3_NODES_SECRETS_04 }}
+      TIER3_NODES_SECRETS_05: ${{ secrets.TIER3_NODES_SECRETS_05 }}
+      TIER3_NODES_SECRETS_06: ${{ secrets.TIER3_NODES_SECRETS_06 }}
+      TIER3_NODES_SECRETS_07: ${{ secrets.TIER3_NODES_SECRETS_07 }}
+      TIER3_NODES_SECRETS_08: ${{ secrets.TIER3_NODES_SECRETS_08 }}
+      TIER3_NODES_SECRETS_09: ${{ secrets.TIER3_NODES_SECRETS_09 }}
+      TIER3_NODES_SECRETS_10: ${{ secrets.TIER3_NODES_SECRETS_10 }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -56,30 +105,34 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Audit snapshots and write report
-        env:
-          CATALOG_BEFORE: ${{ inputs.catalog_before }}
-          CATALOG_AFTER: ${{ inputs.catalog_after }}
-          RUNTIME_VIEW: ${{ inputs.runtime_view }}
+      - name: Restore previous successful snapshot
         run: |
-          BEFORE="${CATALOG_BEFORE:-scripts/provider-discovery/samples/catalog.example.json}"
-          AFTER="${CATALOG_AFTER:-scripts/provider-discovery/samples/catalog.example.json}"
-          RUNTIME="${RUNTIME_VIEW:-scripts/provider-discovery/samples/runtime-view.example.json}"
-          mkdir -p "$RUNNER_TEMP/provider-catalog-audit"
-          node scripts/provider-discovery.mjs check-snapshot "$AFTER"
-          node scripts/provider-discovery.mjs diff "$BEFORE" "$AFTER" \
-            --out "$RUNNER_TEMP/provider-catalog-audit/changes.md" \
-            --json-out "$RUNNER_TEMP/provider-catalog-audit/changes.json"
-          node scripts/provider-discovery.mjs runtime-check "$AFTER" "$RUNTIME" \
-            --json-out "$RUNNER_TEMP/provider-catalog-audit/runtime-warnings.json" || true
-          node scripts/provider-discovery.mjs summary "$AFTER" \
-            > "$RUNNER_TEMP/provider-catalog-audit/summary.txt"
-          cat "$RUNNER_TEMP/provider-catalog-audit/summary.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+          mkdir -p "$RUNNER_TEMP/model-discovery-previous"
+          PREV_RUN="$(gh run list --workflow provider-discovery.yml --status success --limit 10 --json databaseId --jq '.[0].databaseId // empty')"
+          if [ -n "$PREV_RUN" ]; then
+            gh run download "$PREV_RUN" -n model-discovery -D "$RUNNER_TEMP/model-discovery-previous" || true
+          fi
+          PREV_FILE="$(find "$RUNNER_TEMP/model-discovery-previous" -name current-models.json -print -quit 2>/dev/null || true)"
+          if [ -n "$PREV_FILE" ]; then
+            cp "$PREV_FILE" "$RUNNER_TEMP/previous-models.json"
+            echo "Previous model snapshot restored from run $PREV_RUN."
+          else
+            echo '{"schema_version":1,"generated_at":null,"nodes":[]}' > "$RUNNER_TEMP/previous-models.json"
+            echo "No previous Model Discovery snapshot found; this run will establish the baseline."
+          fi
 
-      - name: Upload audit artifact
+      - name: Discover models
+        run: |
+          node scripts/provider-discovery.mjs live \
+            --previous "$RUNNER_TEMP/previous-models.json" \
+            --out-dir "$RUNNER_TEMP/model-discovery"
+          cat "$RUNNER_TEMP/model-discovery/changes.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload discovery snapshot
+        if: always()
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
-          name: provider-catalog-audit
-          path: ${{ runner.temp }}/provider-catalog-audit/
+          name: model-discovery
+          path: ${{ runner.temp }}/model-discovery/
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 30
