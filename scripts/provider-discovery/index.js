@@ -70,4 +70,4 @@ export {
   scanDiscoveryEnv,
   diffModelSnapshots,
   formatDiscoveryMarkdown,
-} from './live.js';
+} from '../model-discovery/live.js';
