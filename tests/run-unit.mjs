@@ -30,6 +30,7 @@ const UNIT_TESTS = [
   'tests/docs-contract-test.mjs',
   'tests/provider-discovery-test.mjs',
   'tests/provider-discovery-ssrf-guard-test.mjs',
+  'tests/model-discovery-live-test.mjs',
   'tests/model-status-test.mjs',
   'tests/dashboard-model-filter-test.mjs',
   'tests/model-status-window-contract-test.mjs',
