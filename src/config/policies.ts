@@ -10,12 +10,11 @@
 // Built-in policies (always present, user config merges on top):
 //   default        - balanced: maxAttempts=5, hedge enabled for Tier 1 only
 //   fast           - speed-first: maxAttempts=1, hedge disabled
-//   stable         - reliability: maxAttempts=5, hedge enabled for Tier 1 only
 //   long-reasoning - extended first-event: maxAttempts=3, hedge disabled, firstEventTimeoutMs=60000
 //
 // Hedging is controlled per policy: hedge.enabled must be true for hedging to
-// activate. default and stable enable hedge for the tiers listed in
-// hedge.tiers (currently ['tier1']); fast and long-reasoning disable it.
+// activate. default enables hedge for the tiers listed in hedge.tiers
+// (currently ['tier1']); fast and long-reasoning disable it.
 // Custom policies may specify any subset of tier1/tier2/tier3 via
 // hedge.tiers; tiers not listed never launch hedge twins.
 //
@@ -35,8 +34,8 @@ const ALLOWED_FIELDS = new Set(['max_attempts', 'tier_attempts', 'hedge', 'first
 type HedgePolicy = { enabled?: boolean, delayMs?: number, tiers?: Array<'tier1' | 'tier2' | 'tier3'> } | null;
 type TierAttempts = { tier1?: number, tier2?: number, tier3?: number } | null;
 
-// Built-in policies are the single source of truth. default and stable enable
-// hedging for Tier 1 only; fast and long-reasoning disable it.
+// Built-in policies are the single source of truth. default enables hedging
+// for Tier 1 only; fast and long-reasoning disable it.
 const BUILTIN_POLICIES: Record<string, PolicyConfig> = Object.freeze({
   default: {
     maxAttempts: 5,
@@ -49,13 +48,6 @@ const BUILTIN_POLICIES: Record<string, PolicyConfig> = Object.freeze({
     maxAttempts: 1,
     tierAttempts: null,
     hedge: { enabled: false },
-    firstEventTimeoutMs: null,
-    budgetSplit: null,
-  },
-  stable: {
-    maxAttempts: 5,
-    tierAttempts: null,
-    hedge: { enabled: true, tiers: ['tier1'] },
     firstEventTimeoutMs: null,
     budgetSplit: null,
   },
