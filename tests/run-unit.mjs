@@ -1,9 +1,6 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
-//
-// Ordered unit/contract suite runner. Every executable test lives under tests/;
-// repository tooling remains under scripts/.
 
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -22,6 +19,7 @@ const UNIT_TESTS = [
   'tests/tier1-heat-protection-test.mjs',
   'tests/model-family-fallback-test.mjs',
   'tests/family-rate-limit-retry-test.mjs',
+  'tests/reliability-invariants-test.mjs',
   'tests/stream-completion-test.mjs',
   'tests/token-usage-store-test.mjs',
   'tests/daily-token-overlay-test.mjs',
@@ -68,9 +66,8 @@ let passed = 0;
 for (const rel of UNIT_TESTS) {
   const abs = join(root, rel);
   const result = spawnSync(process.execPath, [abs], { stdio: 'inherit', cwd: root });
-  if (result.status === 0) {
-    passed++;
-  } else {
+  if (result.status === 0) passed++;
+  else {
     failed++;
     console.error(`\n[runner] FAILED: ${rel} (exit ${result.status})\n`);
   }
