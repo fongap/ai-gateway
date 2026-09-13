@@ -23,6 +23,7 @@ import {
 import { tier1DeadlineTooSmall } from '../scheduler/tier1-scheduler.ts';
 import { preflight as runPreflight } from './preflight.ts';
 import { evaluateRouteFeasibility } from './route-feasibility.ts';
+import { filterVisibleModels } from './model-authz.ts';
 import { buildModelFallbackPlan } from './model-fallback.ts';
 import { pickForTier, makeTier1Rng, computeTierCaps, countRemainingDispatchableAttempts } from './tier-loop.ts';
 import { runFallbackChain } from './fallback.ts';
@@ -49,12 +50,17 @@ export async function handleRequest(request: Request, env: Record<string, unknow
   } = pre;
 
   const requestPolicy = policy;
+  // Internal model fallback is still authorization-sensitive. A key may only
+  // fall back among models it could have requested directly; Visible ==
+  // Callable remains true even for transparent family fallback.
+  const callableModels = new Set(filterVisibleModels(knownModels, pre.authResult));
+
   // Model-family fallback shares the configured policy budget. Build the plan
-  // before deriving terminal semantics so max_attempts=1 does not pretend a
-  // sibling sweep happened merely because compatible aliases exist globally.
+  // from the current key's callable catalog so a low-scope key cannot silently
+  // consume a higher-scope sibling model.
   const modelPlan = buildModelFallbackPlan(
     requestedModel,
-    knownModels,
+    callableModels,
     requestPolicy.maxAttempts,
   );
   const familyModels = new Set(
@@ -91,7 +97,7 @@ export async function handleRequest(request: Request, env: Record<string, unknow
     clientWantsStream, fakeStream, bodyJson, limits, exposeUpstreamInfo, state,
     failoverBudgetMs, requestStartMs, policy: requestPolicy, tiers,
     tier1Affinity, tier1EvaluateAffinity, tier1Rng, tier1Session,
-    knownModels, feasibility,
+    knownModels: callableModels, feasibility,
   };
 
   // Model fallback is a bounded outer loop around the EXISTING scheduler. It
@@ -135,7 +141,7 @@ export async function handleRequest(request: Request, env: Record<string, unknow
           requestedModel: effectiveModel,
           requestDescriptor: effectiveReqDescriptor,
           tiers,
-          knownModels,
+          knownModels: callableModels,
           env,
         });
 
@@ -155,7 +161,6 @@ export async function handleRequest(request: Request, env: Record<string, unknow
         feasibility: effectiveFeasibility,
         policy: passPolicy,
       };
-      const modelMissingBefore = state.failureKinds.model_missing ?? 0;
 
       if (effectiveModel !== requestedModel || roundIndex > 0) {
         logger.info(
@@ -187,14 +192,10 @@ export async function handleRequest(request: Request, env: Record<string, unknow
       });
       if (fbResult) return fbResult;
 
-      // A model-missing 404 is a mapping/capability fact, not transient pool
-      // unavailability. Keep that failure isolated to the (node, model) pair
-      // and do not silently turn it into a different logical model. Model-family
-      // fallback is only the final capacity escape hatch after runtime
-      // availability is exhausted.
-      if ((state.failureKinds.model_missing ?? 0) > modelMissingBefore) {
-        break modelRoundsLoop;
-      }
+      // A model_missing response is scoped to the concrete (node, upstream
+      // model) mapping by the reliability layer. It therefore must not prove
+      // that sibling logical models are unavailable. Continue the bounded
+      // family plan and let each sibling's own feasibility/runtime state decide.
     }
   }
 
@@ -205,7 +206,7 @@ export async function handleRequest(request: Request, env: Record<string, unknow
   state.requestedModel = requestedModel;
   return buildExhaustedResponse(
     request, env, route, requestId, requestedModel, state, tiers,
-    exposeUpstreamInfo, reqDescriptor, knownModels, familyFallback,
+    exposeUpstreamInfo, reqDescriptor, callableModels, familyFallback,
   );
 }
 
