@@ -31,8 +31,6 @@ import type { LoopContext, ConversionContext } from '../types/request.ts';
 import type { RoutableRequest } from '../types/scheduler.ts';
 import type { RuntimeNode } from '../types/node.ts';
 
-const MODEL_FAMILY_ATTEMPT_BUDGET = 6;
-
 export async function handleRequest(request: Request, env: Record<string, unknown>, ctx: { waitUntil?: Function }): Promise<Response> {
   const logger = getLogger(env);
   const pre = await runPreflight(request, env, ctx);
@@ -52,15 +50,11 @@ export async function handleRequest(request: Request, env: Record<string, unknow
 
   // A name such as Max/Code-Max is not enough by itself to activate family
   // behavior. At least one compatible sibling alias must actually exist in the
-  // known-model catalog; otherwise the request keeps its legacy attempt budget
-  // and terminal error semantics.
+  // known-model catalog; otherwise the request keeps its legacy terminal
+  // semantics. Model-family fallback never increases the configured policy
+  // budget: max_attempts is the request-wide hard ceiling.
   const familyFallback = modelFallbackCandidates(requestedModel, knownModels).length > 1;
-  // The 3-2-1 family contract needs six logical attempts. Configured families
-  // get at least that request-wide budget; larger explicit policies are kept.
-  // Requests without a configured sibling keep their policy exactly as before.
-  const requestPolicy = familyFallback && policy.maxAttempts < MODEL_FAMILY_ATTEMPT_BUDGET
-    ? { ...policy, maxAttempts: MODEL_FAMILY_ATTEMPT_BUDGET }
-    : policy;
+  const requestPolicy = policy;
 
   // Three SEPARATE counters, never one overloaded total:
   //   logicalAttempts — request-wide attempt budget; a primary + its optional
@@ -101,11 +95,16 @@ export async function handleRequest(request: Request, env: Record<string, unknow
   // legitimately serve a different logical model, and the second round can
   // re-check a model whose cooldown recovered while sibling pools were tried.
   //
-  // The first family round reserves 3 -> 2 -> 1 attempts (Air uses 3/1/1/1).
-  // A second-round pass gets at most one attempt and can only spend budget that
-  // round 1 left unused. This prevents the requested alias from consuming the
-  // entire request before its compatible siblings get a turn.
-  const modelPlan = buildModelFallbackPlan(requestedModel, knownModels);
+  // Family allocation is derived from the configured max_attempts. Small
+  // budgets widen across compatible siblings first; larger budgets deepen the
+  // requested model toward the established 3/2/1 preference. A re-check pass
+  // gets at most one attempt per eligible family member and can only spend
+  // request budget that earlier passes left unused.
+  const modelPlan = buildModelFallbackPlan(
+    requestedModel,
+    knownModels,
+    requestPolicy.maxAttempts,
+  );
 
   modelRoundsLoop:
   for (let roundIndex = 0; roundIndex < modelPlan.length; roundIndex++) {
@@ -252,9 +251,12 @@ async function runTierLoop(loopCtx: LoopContext, reqDescriptor: RoutableRequest,
       });
       if (!pick) break;
       if (pick.raceLost) {
-        // raceLost means the best candidate's slot was claimed by a concurrent
-        // request. Exclude it and retry within the same tier — there may be
-        // other eligible nodes. Bounded by cap (shared logical attempt budget).
+        // A concurrent request claimed the candidate after selection. Exclude
+        // that exact node from this tier pass and re-evaluate without charging
+        // a logical attempt. Missing identity would make progress unverifiable,
+        // so fail closed for this tier instead of spinning on the same pick.
+        if (!pick.raceLostNodeId) break;
+        raceLostIds.add(pick.raceLostNodeId);
         continue;
       }
       // raceLost is guarded above, so the picker always returned a node
