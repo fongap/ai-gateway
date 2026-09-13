@@ -65,9 +65,9 @@ flowchart TB
 
 始终优先执行原生协议。Protocol fallback 与 logical-model family fallback 共用同一套 logical-attempt、dispatch、hedge 和 wall-clock failover budget。已配置完整同族模型时，三模型家族首轮按请求优先顺序预留 **3 / 2 / 1** 次；`Air` 按 **3 / 1 / 1 / 1** 单向上浮。第二轮只使用首轮没有花掉的请求预算，不新增无限重试。
 
-Code 家族永远不会转入非 Code 家族。`Air` 可以单向上浮到 `Pro → Max → Ultra`，但 `Ultra / Max / Pro` 不会向下回到 `Air`。模型型 404 仍只隔离对应的模型映射，不触发模型家族切换。如果整个模型家族只是因为 429、5xx、网络或超时等临时容量问题全部失败，网关返回可重试 `503`，让 Coding 客户端自行再试，而不是停下来等人工“继续”。
+Code 家族永远不会转入非 Code 家族。`Air` 可以单向上浮到 `Pro → Max → Ultra`，但 `Ultra / Max / Pro` 不会向下回到 `Air`。模型型 404 仍只隔离发生问题的节点/模型映射；在同一鉴权模型范围和请求预算内，可继续尝试已授权的兼容同族模型。如果整个模型家族只是因为 429、5xx、网络或超时等临时容量问题全部失败，网关返回可重试 `503`，让 Coding 客户端自行再试，而不是停下来等人工“继续”。
 
-Tier 1 的目标是 **稳定利用整个 Key 池，而不是持续追打某一个“最好”的 Key**。实时 inFlight 只做软排序：忙的节点少分流，但如果它是最后一个健康节点仍然可以继续使用；真实 429 决定 Cooldown / 恢复，Provider-Model 429 热度做有界软降权，可选 Hedge 会优先让位于主请求。旧 `limits.concurrency` 不再把健康节点硬判为“满”。
+Tier 1 的目标是 **稳定利用整个 Key 池，而不是持续追打某一个“最好”的 Key**。实时 inFlight 只做软排序：忙的节点少分流，但如果它是最后一个健康节点仍然可以继续使用；真实 429 决定 Cooldown / 恢复，Provider-Model 429 热度做有界软降权，可选 Hedge 会优先让位于主请求。Node `limits` 已不再参与运行时准入。
 
 ## API Surface
 
@@ -112,7 +112,7 @@ powershell scripts/install.ps1
 
 凭据按 **Tier + node id** 绑定；Config 与 Secret 的 shard suffix 只是独立分片编号，不要求同号对应。Gateway Access 默认 fail-closed：某个 Group Key 已配置但对应模型 allowlist 为空时，该 Key 不获得任何模型访问权限。
 
-Node `limits` 已退出主动配置。为避免现有生产配置突然失效，语法正确的旧 `limits` 对象暂时仍可读取并提示弃用，但不再用于定义 Provider 容量；维护配置时应直接删除。
+Node `limits` 已不在现行 Schema 中，配置后会被拒绝。运行时容量改由实时 inFlight、429/Cooldown、Circuit 与延迟等事实信号判断，不再依赖人工填写的节点上限。
 
 完整 Node Schema、Runtime Variables、Model-Family / Protocol Fallback 与 Cloudflare Bindings 见 [Configuration](docs/operations/configuration.md)。
 

@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
 //
-// Request orchestration types. Canonical source for the request pipeline,
-// consumed by the scheduler and request layers. Shapes mirror what the
-// request layer actually passes through handleRequest → runTierLoop →
-// dispatchWithHedge → attemptNode (src/types/domain.d.ts has been deleted —
-// see docs/governance/typescript-migration.md).
+// Request orchestration types shared by the request and scheduler layers.
+// Shapes mirror the handleRequest → runTierLoop → dispatchWithHedge → attemptNode pipeline.
 
 import type { Protocol, Surface } from './protocol.ts';
 import type { RuntimeNode } from './node.ts';
@@ -82,7 +79,7 @@ export type LoopState = {
   maxDispatches: number,
   requestedModel: string,
   nodes: ReadonlyArray<RuntimeNode>,
-  /** Legacy alias carried by some call sites; preflight computes it once. */
+  /** Preflight-computed known-model catalog shared by downstream call sites. */
   knownModels?: ReadonlySet<string>,
   tier1ExhaustionReason?: string,
 };

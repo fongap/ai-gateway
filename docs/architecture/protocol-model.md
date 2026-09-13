@@ -1,6 +1,6 @@
 # Protocol model
 
-ai-gateway supports two protocol families: OpenAI and Anthropic. Protocol is an explicit node property; a provider label does not select a protocol or imply a surface.
+ai-gateway supports two protocol families: OpenAI and Anthropic. Runtime routing uses normalized `protocol` + `surfaces`; provider labels are metadata only. Omitted transport fields keep the established defaults: `openai` + `chat_completions`, or `messages` when `protocol: anthropic` is explicit.
 
 ## Native surfaces
 
@@ -11,7 +11,7 @@ ai-gateway supports two protocol families: OpenAI and Anthropic. Protocol is an 
 | `/v1/messages` | Anthropic Messages | `/v1/messages` |
 | `/v1/messages/count_tokens` | Anthropic-compatible local utility | local approximate count unless disabled |
 
-Nodes declare `protocol` and `surfaces`; scheduling filters on protocol + surface + model before selecting a node.
+Every runtime node carries normalized `protocol` and `surfaces`; scheduling filters on protocol + surface + model before selecting a node.
 
 ## Native First
 
