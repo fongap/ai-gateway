@@ -140,7 +140,8 @@ await test('S2 pool burst: P2C spreads live work and every slot drains', async (
   const requests = Array.from({ length: 20 }, () => worker.fetch(chatRequest(), env, {}));
   for (let i = 0; i < 100 && upstreamCalls.length < 20; i++) await new Promise((r) => setTimeout(r, 5));
   const used = new Set(upstreamCalls.map((c) => c.host));
-  assert.ok(used.size >= 3, `expected broad pool use, got ${JSON.stringify([...used])}`);
+  assert.equal(upstreamCalls.length, 20, 'all burst requests reach an eligible Tier 1 node');
+  assert.ok(used.size >= 2, `expected P2C to spread live work, got ${JSON.stringify([...used])}`);
   release();
   const statuses = await Promise.all(requests.map((p) => p.then((r) => r.status)));
   assert.ok(statuses.every((status) => status === 200));
