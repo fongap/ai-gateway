@@ -381,11 +381,6 @@ function maybeCleanup(now: number): void {
       deleted++;
     }
   }
-  // Prune RPM buckets that belong to a previous minute.
-  const minute = currentMinute(now);
-  for (const [id, bucket] of rpmBuckets) {
-    if (bucket.minute !== minute) rpmBuckets.delete(id);
-  }
 }
 
 export function getCooldownRemainingMs(nodeId: string, now: number = Date.now()): number {

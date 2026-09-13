@@ -349,34 +349,16 @@ await test('hedge twin picks the same-surface node: responses-only nodes are exc
   assert.equal(getNodeState('h-twin').totalSuccesses, 1);
 });
 
-await test('legacy node config (no protocol/surfaces) still serves chat with deprecated defaults', async () => {
+await test('node config without protocol/surfaces is rejected instead of inferred', async () => {
   resetMock();
-  routeHandlers['legacy.example.com'] = () => jsonUpstream(okCompletion());
   const legacyNode = { id: 'legacy-01', provider: 'nvidia', base_url: 'https://legacy.example.com/v1', priority: 10, models: { max: 'up-model' } };
   const env = makeEnv({ tier1: [legacyNode], secrets: { 'legacy-01': 'k' } });
   const health = await worker.fetch(new Request('https://gateway.example.com/health', { headers: { authorization: `Bearer ${ACCESS_KEY}` } }), env, {});
-  assert.equal(health.status, 200);
+  assert.equal(health.status, 503);
   const healthBody = await health.json();
-  assert.equal(healthBody.status, 'ready');
-  assert.ok(healthBody.diagnostics.some((d) => d.includes('legacy-01') && d.includes('protocol is implicit')));
-  assert.ok(healthBody.diagnostics.some((d) => d.includes('legacy-01') && d.includes('surfaces is implicit')));
-  const res = await worker.fetch(chatRequest({}), env, {});
-  assert.equal(res.status, 200);
-  assert.equal(upstreamCalls[0].path, '/v1/chat/completions');
-  assert.deepEqual(healthBody.nodes_protocol, undefined);
-});
-
-await test('legacy anthropic-labeled node defaults to openai protocol (explicit migration path exists)', async () => {
-  resetMock();
-  routeHandlers['old-an.example.com'] = () => jsonUpstream(okCompletion());
-  const legacyNode = { id: 'old-an', provider: 'anthropic', base_url: 'https://old-an.example.com/v1', models: { max: 'up-model' } };
-  const env = makeEnv({ tier1: [legacyNode], secrets: { 'old-an': 'k' }, extraEnv: { PROTOCOL_FALLBACKS: 'disable' } });
-  const res = await worker.fetch(chatRequest({}), env, {});
-  assert.equal(res.status, 200);
-  assert.equal(upstreamCalls[0].path, '/v1/chat/completions');
-  resetMock();
-  const messagesRes = await worker.fetch(messagesRequest({}), env, {});
-  assert.equal(messagesRes.status, 404);
+  assert.equal(healthBody.status, 'invalid');
+  assert.ok(healthBody.diagnostics.some((d) => d.includes('legacy-01') && d.includes('protocol is required')));
+  assert.deepEqual(upstreamCalls, []);
 });
 
 await test('explicit protocol=anthropic node unlocks the native messages surface', async () => {

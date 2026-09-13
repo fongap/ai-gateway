@@ -308,22 +308,18 @@ await test('Contract 08: Logical attempt != dispatch count', async () => {
 });
 
 // =========================================================================
-// Contract 09 — Retired Node Limits Do Not Gate Primary Traffic
+// Contract 09 — Removed Node Limits Fail Closed
 // =========================================================================
-await test('Contract 09: legacy node limits do not trigger distributed quota admission', async () => {
+await test('Contract 09: removed node limits are rejected instead of influencing admission', async () => {
   resetMock();
-  let cfCalls = 0;
-  const mockQuota = { limit: async () => { cfCalls++; return { success: false }; } };
   routeHandlers['an1.example.com'] = () => jsonUpstream(okMessage());
   const env = makeEnv({
     tier1: [anthropicNode('an1', { limits: { concurrency: 1, rpm: 60, rpm_mode: 'hard' } })],
     secrets: { an1: 'k' },
-    extraEnv: { QUOTA_RATE_LIMITER: mockQuota },
   });
   const res = await worker.fetch(messagesRequest({}), env, {});
-  assert.equal(cfCalls, 0, 'legacy limits.rpm must not activate distributed provider admission');
-  assert.equal(upstreamCalls.length, 1, 'healthy upstream must still receive the request');
-  assert.equal(res.status, 200, 'legacy guessed limits must not manufacture a capacity failure');
+  assert.equal(res.status, 503, 'removed limits field makes runtime configuration invalid');
+  assert.equal(upstreamCalls.length, 0, 'invalid legacy config must never reach upstream');
 });
 
 // =========================================================================
@@ -353,7 +349,9 @@ await test('Contract 12: Model Missing Isolation (per node-model pair)', async (
   routeHandlers['an1.example.com'] = async (req) => { const body = await req.json(); if (body.model === 'up-max') return jsonUpstream({ error: { message: 'Model not found' } }, 404); return jsonUpstream(okMessage()); };
   const env = makeEnv({ tier1: [anthropicNode('an1', { models: { 'Code-Max': 'up-max', 'Code-Pro': 'up-pro' } })], secrets: { an1: 'k' }, extraEnv: { MODELS_CONFIG: JSON.stringify({ 'Code-Max': { policy: 'default' }, 'Code-Pro': { policy: 'default' } }) } });
   const res1 = await worker.fetch(messagesRequest({ model: 'Code-Max' }), env, {});
-  assert.ok(res1.status >= 400, 'Code-Max 404 from upstream -> gateway error (exhausted or client error)');
+  assert.equal(res1.status, 200, 'Code-Max mapping 404 may fall back to compatible Code-Pro');
+  const body1 = await res1.json();
+  assert.equal(body1.model, 'Code-Max', 'transparent family fallback preserves requested model identity');
   const res2 = await worker.fetch(messagesRequest({ model: 'Code-Pro' }), env, {});
   assert.equal(res2.status, 200, 'Code-Pro must still be served after Code-Max 404 on same node');
 });

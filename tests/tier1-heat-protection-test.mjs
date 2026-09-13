@@ -8,7 +8,7 @@ import {
   tier1ProviderModelRateLimitCount, tier1ProviderModelHeatFactor,
   TIER1_PROVIDER_MODEL_429_WINDOW_MS,
 } from '../src/reliability/tier1-state.ts';
-import { tier1AffinityHeatFactor, tier1CanAcceptHedge, tier1ConcurrencyPressure } from '../src/reliability/tier1-heat.ts';
+import { tier1AffinityHeatFactor, tier1CanAcceptHedge, tier1ConcurrencyPressure, tier1SelectionHeatFactor } from '../src/reliability/tier1-heat.ts';
 
 const now = 1_800_000_000_000;
 const req = { model: 'Code-Max', protocol: 'openai', surface: 'chat_completions' };
@@ -17,7 +17,7 @@ function releasePick(pick){ if(pick?.node&&pick?.releaseToken) releaseTier1Slot(
 async function test(name,fn){try{await fn();console.log(`ok - ${name}`)}catch(e){console.error(`not ok - ${name}`);console.error(e?.stack||e);process.exitCode=1}}
 
 await test('cold accounts preserve affinity preference',()=>{__resetTier1StateForTests();const a=node('a'),b=node('b');const p=pickTier1Candidate([a,b],req,new Set(),{affinityAccountId:'a',now,rng:()=>0});assert.equal(p?.node?.id,'a');releasePick(p)});
-await test('live in-flight heat weakens affinity and favors cooler peer',()=>{__resetTier1StateForTests();const a=node('a'),b=node('b');for(let i=0;i<3;i++)assert.equal(claimTier1Slot(a,now,req.model),true);assert.equal(tier1ConcurrencyPressure(a),0.75);assert.equal(tier1AffinityHeatFactor(a,0.85),0.9625);const p=pickTier1Candidate([a,b],req,new Set(),{affinityAccountId:'a',now,rng:()=>0,evaluateAffinity:true});assert.equal(p?.node?.id,'b');releasePick(p)});
+await test('live in-flight heat weakens affinity without becoming a hard gate',()=>{__resetTier1StateForTests();const a=node('a');for(let i=0;i<3;i++)assert.equal(claimTier1Slot(a,now,req.model),true);assert.equal(tier1ConcurrencyPressure(a),0.75);assert.equal(tier1AffinityHeatFactor(a,0.85),0.9625);assert.ok(tier1SelectionHeatFactor(a,0.85)>1);const p=pickTier1Candidate([a],req,new Set(),{affinityAccountId:'a',now,rng:()=>0,evaluateAffinity:true});assert.equal(p?.node?.id,'a');releasePick(p)});
 await test('soft load never hard-blocks the only primary candidate',()=>{__resetTier1StateForTests();const a=node('a');for(let i=0;i<4;i++)assert.equal(claimTier1Slot(a,now,req.model),true);const p=pickTier1Candidate([a],req,new Set(),{now});assert.equal(p?.node?.id,'a');releasePick(p)});
 await test('optional hedge is suppressed at 0.75 live pressure',()=>{__resetTier1StateForTests();const busy=node('busy');for(let i=0;i<3;i++)assert.equal(claimTier1Slot(busy,now,req.model),true);assert.equal(tier1CanAcceptHedge(busy),false)});
 await test('optional hedge uses an idle peer',()=>{__resetTier1StateForTests();const primary=node('primary'),idle=node('idle');assert.equal(tier1CanAcceptHedge(idle),true);const p=pickTier1Candidate([primary,idle],req,new Set(),{excludeId:'primary',now,rng:()=>0});assert.equal(p?.node?.id,'idle');releasePick(p)});
