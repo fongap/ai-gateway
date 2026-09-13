@@ -252,22 +252,25 @@ await test('removed limits field is a hard schema error and never reaches upstre
   assert.equal(upstreamCalls.length, 0);
 });
 
-await test('protocol and surfaces are mandatory; no implicit legacy defaults remain', async () => {
-  const invalid = {
+await test('production-style node config without protocol/surfaces remains routable', async () => {
+  routeHandlers['implicit.example.com'] = () => jsonResponse(okChat('implicit-ok'));
+  const implicit = {
     id: 'implicit', provider: 'mock', base_url: 'https://implicit.example.com/v1',
     models: { 'general-air': 'up-model' },
   };
-  const env = makeEnv({ tier1: [invalid], secrets: { implicit: 'k' } });
+  const env = makeEnv({ tier1: [implicit], secrets: { implicit: 'k' } });
   const health = await worker.fetch(new Request('https://gateway.example.com/health', {
     headers: { authorization: `Bearer ${ACCESS_KEY}` },
   }), env, {});
-  assert.equal(health.status, 503);
+  assert.equal(health.status, 200);
   const body = await health.json();
-  assert.equal(body.status, 'invalid');
-  assert.ok(body.diagnostics.some((d) => d.includes('protocol is required')));
+  assert.equal(body.status, 'ready');
+  assert.ok(body.diagnostics.some((d) => d.includes('protocol is implicit')));
+  assert.ok(body.diagnostics.some((d) => d.includes('surfaces is implicit')));
   const res = await worker.fetch(chatRequest(), env, {});
-  assert.equal(res.status, 404);
-  assert.equal(upstreamCalls.length, 0);
+  assert.equal(res.status, 200);
+  assert.equal(upstreamCalls.length, 1);
+  assert.equal(upstreamCalls[0].path, '/v1/chat/completions');
 });
 
 // ---- Native routing / failover --------------------------------------------

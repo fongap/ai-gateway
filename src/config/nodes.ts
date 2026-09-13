@@ -395,7 +395,7 @@ function normalizeModels(models: unknown, nodeId: string, diagnostics: string[])
     if (models.length === 0) return out;
     for (const m of models) {
       if (typeof m !== 'string' || !m.trim()) {
-        diagnostics.push(`${sourceKey}: node id "${nodeId}" models array entries must be non-empty strings`);
+        diagnostics.push(`node "${nodeId}": models array entries must be non-empty strings`);
         return null;
       }
       out[m.trim()] = m.trim();

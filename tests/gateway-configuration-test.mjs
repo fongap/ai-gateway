@@ -136,16 +136,23 @@ test('explicit protocol + surfaces build cleanly with no diagnostics', () => {
   assert.deepEqual(cfg.nodes[0].surfaces, ['chat_completions']);
 });
 
-test('protocol and surfaces are required; implicit legacy defaults are rejected', () => {
-  const missingBoth = { id: 'old-01', provider: 'nvidia', base_url: 'https://old.example.com/v1', models: {} };
-  const a = loadGatewayConfig(makeEnv({ tier1: [missingBoth], secrets: { 'old-01': 'x' } }));
-  assert.equal(a.status, 'invalid');
-  assert.ok(a.diagnostics.some((d) => d.includes('protocol is required')));
+test('nodes without protocol/surfaces keep the established transport defaults', () => {
+  const legacy = { id: 'old-01', provider: 'nvidia', base_url: 'https://old.example.com/v1', models: {} };
+  const cfg = loadGatewayConfig(makeEnv({ tier1: [legacy], secrets: { 'old-01': 'x' } }));
+  assert.equal(cfg.status, 'ready');
+  assert.equal(cfg.ready, true);
+  assert.equal(cfg.nodes.length, 1);
+  assert.equal(cfg.nodes[0].protocol, 'openai');
+  assert.deepEqual(cfg.nodes[0].surfaces, ['chat_completions']);
+  assert.ok(cfg.diagnostics.some((d) => d.includes('old-01') && d.includes('protocol is implicit')));
+  assert.ok(cfg.diagnostics.some((d) => d.includes('old-01') && d.includes('surfaces is implicit')));
+});
 
-  const missingSurface = { id: 'an-01', provider: 'anthropic', protocol: 'anthropic', base_url: 'https://an.example.com', models: {} };
-  const b = loadGatewayConfig(makeEnv({ tier1: [missingSurface], secrets: { 'an-01': 'x' } }));
-  assert.equal(b.status, 'invalid');
-  assert.ok(b.diagnostics.some((d) => d.includes('surfaces is required')));
+test('anthropic protocol without surfaces defaults to messages', () => {
+  const nodeWithoutSurface = { id: 'an-01', provider: 'anthropic', protocol: 'anthropic', base_url: 'https://an.example.com', models: {} };
+  const cfg = loadGatewayConfig(makeEnv({ tier1: [nodeWithoutSurface], secrets: { 'an-01': 'x' } }));
+  assert.equal(cfg.status, 'ready');
+  assert.deepEqual(cfg.nodes[0].surfaces, ['messages']);
 });
 
 test('invalid protocol value is rejected with a named diagnostic', () => {
