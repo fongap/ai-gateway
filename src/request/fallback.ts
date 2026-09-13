@@ -7,10 +7,10 @@
 // for the single source of truth):
 //   * Anthropic Messages -> OpenAI Chat Completions
 //   * OpenAI Chat Completions -> Anthropic Messages
-// A conversion is only available when PROTOCOL_FALLBACKS is configured for
-// the client route. There is no implicit cross-protocol fallback, no
-// OpenAI Responses -> Chat direction, and no Gemini conversion.
-// OpenAI Responses is native-only (no fallback to other protocols).
+// Fallback follows the resolved PROTOCOL_FALLBACKS policy, including the
+// built-in bidirectional Chat/Messages default when the variable is unset.
+// OpenAI Responses is native-only (no fallback to other protocols), and there
+// is no Gemini conversion.
 //
 // Contract:
 //   * Native-first: the native tier loop runs first and only when it
@@ -180,7 +180,7 @@ export async function runFallbackChain({ loopCtx, route, requestedModel, runTier
       env,
       route,
       502,
-      'Configured protocol fallback cannot safely represent this request.',
+      'Configured protocol fallback cannot represent this request.',
       requestId,
       {
         requested_model: requestedModel,
