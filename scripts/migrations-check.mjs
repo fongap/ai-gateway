@@ -15,6 +15,7 @@ const root = path.resolve(here, '..');
 const migDir = path.join(root, 'migrations');
 
 const FILENAME_RE = /^(\d{3,})_([a-z0-9_]+)\.sql$/;
+const CREATE_RE = /\bCREATE\s+(?:TABLE|INDEX|UNIQUE\s+INDEX)\b/gi;
 
 const DESTRUCTIVE_ALLOWLIST = new Set([
   '0007_drop_redundant_usage_indexes.sql',
@@ -46,21 +47,20 @@ function checkMonotonicAndUnique(files) {
   }
 }
 
+export function assertIdempotentCreateStatements(sql, file = 'migration.sql') {
+  for (const match of sql.matchAll(CREATE_RE)) {
+    const offset = match.index ?? 0;
+    const after = sql.slice(offset, offset + 240).toUpperCase();
+    assert.ok(
+      /\bIF\s+NOT\s+EXISTS\b/.test(after),
+      `${file}: every CREATE must use IF NOT EXISTS so re-applies are no-ops (D1 has no migrations table)`,
+    );
+  }
+}
+
 function checkIdempotent(files) {
-  // Scan every individual CREATE occurrence. The previous implementation used
-  // indexOf(stmt), which repeatedly inspected the first CREATE of the same type
-  // and could miss a later non-idempotent CREATE in the same migration.
-  const createRe = /\bCREATE\s+(?:TABLE|INDEX|UNIQUE\s+INDEX)\b/gi;
   for (const file of files) {
-    const sql = fs.readFileSync(path.join(migDir, file), 'utf8');
-    for (const match of sql.matchAll(createRe)) {
-      const offset = match.index ?? 0;
-      const after = sql.slice(offset, offset + 240).toUpperCase();
-      assert.ok(
-        /\bIF\s+NOT\s+EXISTS\b/.test(after),
-        `${file}: every CREATE must use IF NOT EXISTS so re-applies are no-ops (D1 has no migrations table)`,
-      );
-    }
+    assertIdempotentCreateStatements(fs.readFileSync(path.join(migDir, file), 'utf8'), file);
   }
 }
 
