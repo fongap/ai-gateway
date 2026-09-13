@@ -349,16 +349,20 @@ await test('hedge twin picks the same-surface node: responses-only nodes are exc
   assert.equal(getNodeState('h-twin').totalSuccesses, 1);
 });
 
-await test('node config without protocol/surfaces is rejected instead of inferred', async () => {
+await test('node config without protocol/surfaces serves chat with established defaults', async () => {
   resetMock();
+  routeHandlers['legacy.example.com'] = () => jsonUpstream(okCompletion());
   const legacyNode = { id: 'legacy-01', provider: 'nvidia', base_url: 'https://legacy.example.com/v1', priority: 10, models: { max: 'up-model' } };
   const env = makeEnv({ tier1: [legacyNode], secrets: { 'legacy-01': 'k' } });
   const health = await worker.fetch(new Request('https://gateway.example.com/health', { headers: { authorization: `Bearer ${ACCESS_KEY}` } }), env, {});
-  assert.equal(health.status, 503);
+  assert.equal(health.status, 200);
   const healthBody = await health.json();
-  assert.equal(healthBody.status, 'invalid');
-  assert.ok(healthBody.diagnostics.some((d) => d.includes('legacy-01') && d.includes('protocol is required')));
-  assert.deepEqual(upstreamCalls, []);
+  assert.equal(healthBody.status, 'ready');
+  assert.ok(healthBody.diagnostics.some((d) => d.includes('legacy-01') && d.includes('protocol is implicit')));
+  assert.ok(healthBody.diagnostics.some((d) => d.includes('legacy-01') && d.includes('surfaces is implicit')));
+  const res = await worker.fetch(chatRequest({}), env, {});
+  assert.equal(res.status, 200);
+  assert.equal(upstreamCalls[0].path, '/v1/chat/completions');
 });
 
 await test('explicit protocol=anthropic node unlocks the native messages surface', async () => {

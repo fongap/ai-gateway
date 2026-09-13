@@ -31,8 +31,8 @@
 // provider is metadata only (dashboard / metrics / diagnostics / quirks) and
 // never influences transport.
 //
-// `protocol` and `surfaces` are required. There are no implicit transport
-// defaults: an ambiguous node is invalid configuration.
+// Missing `protocol` or `surfaces` keeps the long-standing defaults so existing
+// node configuration remains serviceable. Explicit values are still validated.
 //
 // Tier is derived ONLY from the variable prefix. The node JSON must not carry
 // a tier field; a tier field is rejected as invalid configuration.
@@ -65,6 +65,10 @@ const ALLOWED_NODE_FIELDS = new Set(['id', 'provider', 'protocol', 'surfaces', '
 const PROTOCOL_SURFACES = new Map<string, Set<string>>([
   ['openai', new Set(['chat_completions', 'responses'])],
   ['anthropic', new Set(['messages'])],
+]);
+const DEFAULT_SURFACES = new Map<Protocol, Surface[]>([
+  ['openai', ['chat_completions']],
+  ['anthropic', ['messages']],
 ]);
 
 export type ConfigStatus = 'unconfigured' | 'invalid' | 'degraded' | 'ready';
@@ -339,8 +343,8 @@ function buildRuntimeNode(rawNode: unknown, tier: NodeTier, credentials: Map<str
 
 function parseProtocol(raw: unknown, nodeId: string, diagnostics: string[]): Protocol | null {
   if (raw === undefined || raw === null) {
-    diagnostics.push(`node "${nodeId}": protocol is required`);
-    return null;
+    diagnostics.push(`node "${nodeId}": protocol is implicit and defaults to "openai"`);
+    return 'openai';
   }
   const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
   if (!PROTOCOL_SURFACES.has(value)) {
@@ -352,8 +356,9 @@ function parseProtocol(raw: unknown, nodeId: string, diagnostics: string[]): Pro
 
 function parseSurfaces(raw: unknown, protocol: Protocol, nodeId: string, diagnostics: string[]): Surface[] | null {
   if (raw === undefined || raw === null) {
-    diagnostics.push(`node "${nodeId}": surfaces is required`);
-    return null;
+    const defaults = DEFAULT_SURFACES.get(protocol) as Surface[];
+    diagnostics.push(`node "${nodeId}": surfaces is implicit and defaults to [${defaults.map((s) => `"${s}"`).join(', ')}]`);
+    return defaults.slice();
   }
   if (!Array.isArray(raw) || raw.length === 0) {
     diagnostics.push(`node "${nodeId}": surfaces must be a non-empty array`);
