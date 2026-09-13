@@ -72,7 +72,7 @@ export function pickTier1Candidate(tier1Nodes: ReadonlyArray<RuntimeNode>, req: 
     if (!isTier1Eligible(node, req, now, knownModels)) continue;
     // Hedge is optional latency work. Keep twins away from already-busy
     // accounts using soft live-load pressure; primary selection is unaffected.
-    if (excludeId && !tier1CanAcceptHedge(node, now)) continue;
+    if (excludeId && !tier1CanAcceptHedge(node)) continue;
     eligible.push(node);
   }
   if (eligible.length === 0) return null;
@@ -87,7 +87,6 @@ export function pickTier1Candidate(tier1Nodes: ReadonlyArray<RuntimeNode>, req: 
   const selectionFactor = (node: RuntimeNode): number => tier1SelectionHeatFactor(
     node,
     tier1AffinityFactor(node.id, affinityAccountId),
-    now,
   );
   const scoreFor = (node: RuntimeNode): number => calculateTier1Score(
     node, req.model, eligible,
