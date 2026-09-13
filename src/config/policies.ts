@@ -24,6 +24,7 @@
 // instead of silently falling back to defaults. The parse is cached per isolate.
 
 import { readEnv } from './env.ts';
+import { getLimits } from './timeouts.ts';
 import type { PolicyConfig } from '../types/policy.ts';
 
 const MIN_ATTEMPTS = 1;
@@ -122,6 +123,9 @@ function analyzePolicies(env: Record<string, unknown>): { policies: Record<strin
         const tierAttemptsValid = errors.length === tierErrorsBefore;
         const hedge = cfg.hedge === undefined ? (base?.hedge ?? null) : parseHedge(cfg.hedge, key, errors);
         const firstEventTimeoutMs = cfg.first_event_timeout_ms === undefined ? (base?.firstEventTimeoutMs ?? null) : parseFirstEventTimeoutMs(cfg.first_event_timeout_ms, key, errors);
+        if (firstEventTimeoutMs !== null && firstEventTimeoutMs > getLimits(env).failoverBudgetMs) {
+          errors.push(`POLICIES_CONFIG: "${key}": first_event_timeout_ms (${firstEventTimeoutMs}) exceeds FAILOVER_BUDGET_MS (${getLimits(env).failoverBudgetMs})`);
+        }
         const budgetSplit = cfg.budget_split === undefined ? (base?.budgetSplit ?? null) : parseBudgetSplit(cfg.budget_split, key, errors);
         let attempts: number;
         let maxAttemptsValid = true;
@@ -175,7 +179,7 @@ function parseHedge(value: unknown, policyName: string, errors: string[]): Hedge
     return null;
   }
   const rec = value as Record<string, unknown>;
-  const out: { enabled?: boolean, delayMs?: number, tiers?: Array<'tier1' | 'tier2' | 'tier3'> } = {};
+  const out: { enabled?: boolean, delayMs?: number, tiers?: Array<'tier1' | 'tier2' | 'tier3'> } = { enabled: true };
   if (rec.enabled !== undefined) {
     if (typeof rec.enabled !== 'boolean') {
       errors.push(`POLICIES_CONFIG: "${policyName}": hedge.enabled must be a boolean`);

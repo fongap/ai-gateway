@@ -8,10 +8,9 @@
 // primary, the shared logical-attempt deadline, and the winner/loser
 // lifecycle including abort of the losing side.
 //
-// Hedging is EXPLICIT OPT-IN: hedge.enabled must be true for hedging to
-// activate. The default and stable built-in policies enable hedging for
-// Tier 1 only. fast and long-reasoning keep hedging disabled. Operators
-// can override via POLICIES_CONFIG.
+// A hedge object enables hedging by default; hedge.enabled=false disables it.
+// The default and stable built-ins hedge Tier 1 only, while fast and
+// long-reasoning explicitly disable it.
 
 import { pickCandidate } from '../../scheduler/scheduler.ts';
 import { pickTier1Candidate } from '../../scheduler/tier1-scheduler.ts';
@@ -43,11 +42,10 @@ const sleepMs = (ms: number): Promise<void> => new Promise((resolve) => setTimeo
 // overload caveat.
 export async function dispatchWithHedge(args: AttemptContext, tierNodes: ReadonlyArray<RuntimeNode>): Promise<AttemptOutcome> {
   // Resolve effective hedge config: policy.hedge (per-model) overrides
-  // the global env defaults. Hedging is EXPLICIT OPT-IN: hedge.enabled must
-  // be true for hedging to activate. default and stable enable hedging for
-  // Tier 1 only; fast and long-reasoning keep it disabled.
+  // global env defaults. The presence of a hedge object enables it unless the
+  // operator explicitly sets enabled=false.
   const hedgePolicy = args.policy?.hedge ?? null;
-  if (!hedgePolicy || hedgePolicy.enabled !== true) return attemptNode(args);
+  if (!hedgePolicy || hedgePolicy.enabled === false) return attemptNode(args);
   const tierKey: 'tier1' | 'tier2' | 'tier3' = `tier${args.tierNumber}`;
   if (hedgePolicy.tiers && !hedgePolicy.tiers.includes(tierKey)) return attemptNode(args);
   const hedgeDelayMs = hedgePolicy.delayMs ?? args.limits.hedgeDelayMs;

@@ -13,11 +13,9 @@
 //   fallback; decisive advantage only) -> lastUsedAt ASC (LRU) -> avg latency
 //   ASC
 //
-// `activeRequests` is a SOFT load signal. The scheduler no longer turns an
-// operator-guessed limits.concurrency value into a hard eligibility gate; a
-// busy node loses to a less-busy peer but remains usable when it is the only
-// healthy capacity left. Existing hard RPM behavior is preserved for operators
-// that explicitly configured it.
+// `activeRequests` is a SOFT load signal. There is no configured node-level
+// concurrency or RPM admission ceiling; a busy node loses to a less-busy peer
+// but remains usable when it is the only healthy capacity left.
 //
 // The LRU tiebreak spreads sequential traffic across equal-priority free keys
 // instead of hammering one node until it rate-limits — 429 prevention rather
@@ -35,7 +33,7 @@
 // explicit request descriptor; no scheduler call ever crosses the boundary
 // on its own.
 
-import { peekAvailability, acquireSlot, getNodeState, rpmUsage, isModelCooling, getModelPerf } from '../reliability/node-state.ts';
+import { peekAvailability, acquireSlot, getNodeState, isModelCooling, getModelPerf } from '../reliability/node-state.ts';
 import { servesModel } from '../config/registry.ts';
 import type { RuntimeNode } from '../types/node.ts';
 import type { RoutableRequest, PickedCandidate } from '../types/scheduler.ts';
@@ -56,26 +54,6 @@ export function supportsRequest(node: RuntimeNode, req: RoutableRequest, knownMo
   return servesModel(node, req.model, knownModels);
 }
 
-function underRpmCap(node: RuntimeNode, now: number): boolean {
-  const rpm = node.limits.rpm;
-  if (!rpm) return true;
-  return rpmUsage(node.id, now) < rpm;
-}
-
-// A HARD rpm cap is a real upstream/account quota: once the isolate-local
-// counter reaches it the node must not be dispatched again this minute.
-// SOFT caps (explicit "rpm_mode": "soft") keep best-effort behavior.
-export function isHardRpmExhausted(node: RuntimeNode, now: number = Date.now()): boolean {
-  const rpm = node.limits.rpm;
-  if (!rpm || node.limits.rpmMode === 'soft') return false;
-  return rpmUsage(node.id, now) >= rpm;
-}
-
-// Seconds until the current RPM minute window resets (for Retry-After).
-export function rpmWindowRetryAfterSec(now: number = Date.now()): number {
-  return Math.max(1, Math.ceil((60_000 - (now % 60_000)) / 1000));
-}
-
 // Pick and claim the best eligible node from one tier, or return null.
 // `req` is the request descriptor { model, protocol, surface }; `attempted`
 // is the request-scoped Set of node ids that already failed. Because the
@@ -86,19 +64,12 @@ export function rpmWindowRetryAfterSec(now: number = Date.now()): number {
 //   activeRequests is ranking-only. A busier node is less preferred but is not
 //   rejected because an operator guessed a concurrency ceiling.
 //
-// RPM semantics are unchanged:
-//   hard (default when limits.rpm is set): an exhausted node is NOT a fallback
-//     candidate — the gateway would knowingly exceed the configured quota.
-//   soft ("rpm_mode":"soft"): exhausted nodes remain last-resort candidates.
-//
 //   knownModels (optional) is the Known Model Catalog; it bounds wildcard
 //   nodes so an empty-models node only serves catalog models. The request path
 //   always passes it (defense in depth on top of the preflight authz gate).
 export function pickCandidate(tierNodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, now: number = Date.now(), excludeId: string | null = null, knownModels?: ReadonlySet<string> | null, excludeIds?: ReadonlySet<string> | null): PickedCandidate | null {
   let best: RuntimeNode | null = null;
   let bestState: NodeState | null = null;
-  let bestUncapped: RuntimeNode | null = null;
-  let bestUncappedState: NodeState | null = null;
 
   for (const node of tierNodes) {
     if (node.id === excludeId) continue;
@@ -110,24 +81,15 @@ export function pickCandidate(tierNodes: ReadonlyArray<RuntimeNode>, req: Routab
     // disabling the node for its other models.
     if (isModelCooling(node.id, req.model, now)) continue;
     const s = getNodeState(node.id);
-    if (underRpmCap(node, now)) {
-      // bestState is assigned on every assignment of best (single-writer
-      // invariant of this loop), so the assertion only restates that pair.
-      if (!best || betterThan(s, node, bestState as NodeState, best, req.model, now)) {
-        best = node;
-        bestState = s;
-      }
-    }
-    // Only SOFT-capped (or uncapped) nodes may serve past their counter.
-    if (!isHardRpmExhausted(node, now)) {
-      if (!bestUncapped || betterThan(s, node, bestUncappedState as NodeState, bestUncapped, req.model, now)) {
-        bestUncapped = node;
-        bestUncappedState = s;
-      }
+    // bestState is assigned on every assignment of best (single-writer
+    // invariant of this loop), so the assertion only restates that pair.
+    if (!best || betterThan(s, node, bestState as NodeState, best, req.model, now)) {
+      best = node;
+      bestState = s;
     }
   }
 
-  const chosen = best || bestUncapped;
+  const chosen = best;
   if (!chosen) return null;
   // Return the chosen id when runtime admission moves after selection. The
   // request tier loop excludes that exact candidate and re-evaluates without
@@ -140,17 +102,6 @@ export function pickCandidate(tierNodes: ReadonlyArray<RuntimeNode>, req: Routab
 // True when this tier could serve the request once an explicitly configured
 // hard RPM window resets. Concurrency is deliberately absent: it is a soft
 // ranking input, never deferred hard capacity.
-export function tierHasDeferredCapacity(tierNodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, now: number = Date.now(), knownModels?: ReadonlySet<string> | null): boolean {
-  for (const node of tierNodes) {
-    if (attempted.has(node.id)) continue;
-    if (!supportsRequest(node, req, knownModels)) continue;
-    if (peekAvailability(node.id, now) === 'no') continue;
-    if (isModelCooling(node.id, req.model, now)) continue;
-    if (isHardRpmExhausted(node, now)) return true;
-  }
-  return false;
-}
-
 // DISPATCHABLE capacity: a candidate this tier could truly launch THIS INSTANT.
 // Dispatchability-aware mirror of pickCandidate's hard gates, used to decide
 // whether a LOWER tier deserves an attempt budget. Active request count does
@@ -168,7 +119,6 @@ export function countDispatchableNodes(tierNodes: ReadonlyArray<RuntimeNode>, re
     if (!supportsRequest(node, req, knownModels)) continue;
     if (peekAvailability(node.id, now) === 'no') continue;
     if (isModelCooling(node.id, req.model, now)) continue;
-    if (isHardRpmExhausted(node, now)) continue;
     count++;
   }
   return count;

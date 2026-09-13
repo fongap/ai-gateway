@@ -8,10 +8,8 @@
 // UNKNOWN accounts (ttftEwma == null) still get sampled — a small
 // exploration factor gives them a chance without distorting known data.
 //
-// Concurrency is deliberately soft: live in-flight work affects ranking and
-// hedge admission, but an operator-guessed limits.concurrency value never makes
-// a primary candidate ineligible. Hard RPM remains available when explicitly
-// configured.
+// Live in-flight work is a soft ranking/hedge-admission signal only. There is
+// no configured node concurrency or RPM admission ceiling.
 //
 // This module touches Tier 1 ONLY. Tier 2 / Tier 3 keep using
 // src/scheduler/scheduler.ts.
@@ -33,21 +31,6 @@ import type { RoutableRequest, PickedCandidate } from '../types/scheduler.ts';
 // fit one more Tier 1 attempt — the shared failover budget stays the real
 // wall-clock cap.
 const CONSERVATIVE_ATTEMPT_COST_MS = 500;
-const SOFT_ONLY_CONCURRENCY = Number.MAX_SAFE_INTEGER;
-
-// tier1-state predates soft-only concurrency and still accepts a RuntimeNode
-// whose concurrency field is used as an admission ceiling and load denominator.
-// Feed it an attempt-local view with an effectively unbounded concurrency so
-// configured limits.concurrency cannot hard-block or double-penalize selection.
-// The real node remains unchanged; live in-flight ranking lives in tier1-heat.
-function withoutHardConcurrency(node: RuntimeNode): RuntimeNode {
-  if (node.limits.concurrency === SOFT_ONLY_CONCURRENCY) return node;
-  return {
-    ...node,
-    limits: { ...node.limits, concurrency: SOFT_ONLY_CONCURRENCY },
-  };
-}
-
 // Remaining deadline too small to fit one more attempt? Tier 1 then yields to
 // the Tier Router immediately instead of burning the budget on a doomed attempt.
 export function tier1DeadlineTooSmall(remainingBudgetMs: number, p99TtftMs?: number | null): boolean {
@@ -86,7 +69,7 @@ export function pickTier1Candidate(tier1Nodes: ReadonlyArray<RuntimeNode>, req: 
     // Lazily move expired cooldowns to HALF_OPEN so a real request can probe
     // recovery — no background probe is ever sent.
     maybeTransitionToHalfOpen(node.id, req.model, now);
-    if (!isTier1Eligible(withoutHardConcurrency(node), req, now, knownModels)) continue;
+    if (!isTier1Eligible(node, req, now, knownModels)) continue;
     // Hedge is optional latency work. Keep twins away from already-busy
     // accounts using soft live-load pressure; primary selection is unaffected.
     if (excludeId && !tier1CanAcceptHedge(node, now)) continue;
@@ -107,7 +90,7 @@ export function pickTier1Candidate(tier1Nodes: ReadonlyArray<RuntimeNode>, req: 
     now,
   );
   const scoreFor = (node: RuntimeNode): number => calculateTier1Score(
-    withoutHardConcurrency(node), req.model, eligible,
+    node, req.model, eligible,
     selectionFactor(node), now,
   );
 
@@ -147,7 +130,7 @@ export function pickTier1Candidate(tier1Nodes: ReadonlyArray<RuntimeNode>, req: 
   // selected real request succeeds.
   if (affinityAccountId && !affinityNode) updateAffinity = true;
 
-  if (!claimTier1Slot(withoutHardConcurrency(chosen), now, req.model)) {
+  if (!claimTier1Slot(chosen, now, req.model)) {
     // Lost the race for runtime admission (for example a recovery probe moved
     // under us). This is not a node failure. Return the chosen identity so the
     // caller can exclude it for this tier pass and make guaranteed progress.

@@ -49,49 +49,6 @@ const STALE_FAILURE_MS = 300_000; // consecutive failures older than 5 min idle 
 const MODEL_MISSING_COOLDOWN_MS = 5_000; // (node,model) cooldown for a 404 mapping mismatch
 const MODEL_PERF_MAX = 16; // per-node model perf entries before LRU eviction
 
-// Per-node per-minute request counters (current UTC minute bucket only).
-// Feeds limits.rpm shaping: in hard mode (the default when rpm is configured)
-// an exhausted node is not dispatched this minute; in soft mode it remains a
-// last-resort fallback. The counter is isolate-local and never a global quota.
-const rpmBuckets = new Map<string, { minute: number, count: number }>(); // nodeId -> { minute, count }
-
-function currentMinute(now: number): number {
-  return Math.floor(now / 60_000);
-}
-
-export function noteRpmRequest(nodeId: string, now: number): void {
-  const minute = currentMinute(now);
-  const bucket = rpmBuckets.get(nodeId);
-  if (!bucket || bucket.minute !== minute) {
-    rpmBuckets.set(nodeId, { minute, count: 1 });
-    return;
-  }
-  bucket.count++;
-}
-// eslint-disable-next-line
-// Requests already issued by this node within the current minute.
-export function rpmUsage(nodeId: string, now: number = Date.now()): number {
-  const bucket = rpmBuckets.get(nodeId);
-  if (!bucket || bucket.minute !== currentMinute(now)) return 0;
-  return bucket.count;
-}
-
-// Roll back a per-minute RPM reservation when an attempt NEVER reached an
-// upstream (distributed rate limiter denied, invalid base URL, etc.). Called
-// alongside recordNeutralEnd in those pre-dispatch paths so the isolate-local
-// RPM counter does not charge a node for traffic it never sent. Post-dispatch
-// neutral ends (client abort mid-stream, 200-with-non-json-body) must NOT call
-// this: the upstream was contacted and the RPM charge is legitimate.
-// If the minute window has rolled over since the reservation was made, the old
-// bucket is already gone (or will be pruned) and there is nothing to roll back
-// in the current window — the reservation aged out naturally.
-export function rollbackRpmBucket(nodeId: string, now: number = Date.now()): void {
-  const bucket = rpmBuckets.get(nodeId);
-  if (bucket && bucket.minute === currentMinute(now)) {
-    bucket.count = Math.max(0, bucket.count - 1);
-  }
-}
-
 const nodeState = new Map<string, NodeState>();
 let lastCleanup = 0;
 
@@ -168,7 +125,6 @@ export function acquireSlot(nodeId: string, now: number = Date.now()): boolean {
   s.activeRequests++;
   s.totalRequests++;
   s.lastUsedAt = now;
-  noteRpmRequest(nodeId, now);
   maybeCleanup(now);
   return true;
 }

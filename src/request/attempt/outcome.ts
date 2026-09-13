@@ -8,13 +8,13 @@
 // pre-dispatch neutral ends, and the single per-dispatch completion log.
 
 import {
-  recordNeutralEnd, rollbackRpmBucket, recordModelMissing,
+  recordNeutralEnd, recordModelMissing,
   applyHealthPenalty, recordFailure, bumpNodeCounters,
 } from '../../reliability/node-state.ts';
 import {
   releaseTier1Slot,
   applyTier1Outcome, classifyTier1Failure,
-  rollbackTier1Rpm, recordTier1ProviderModelRateLimit,
+  recordTier1ProviderModelRateLimit,
 } from '../../reliability/tier1-state.ts';
 import { nextAdaptive429CooldownMs } from '../../reliability/adaptive-429.ts';
 import { KIND } from '../../reliability/classify.ts';
@@ -35,16 +35,9 @@ export function rotateWithNeutralEnd(state: LoopState, node: RuntimeNode, reason
   }
   if (node.tier === 'tier-1') {
     releaseTier1Slot(node.id, c.tier1ReleaseToken);
-    if (preDispatch) rollbackTier1Rpm(node.id);
-    else bumpNodeCounters(node.id, { requests: 1 });
+    if (!preDispatch) bumpNodeCounters(node.id, { requests: 1 });
   } else {
     recordNeutralEnd(node.id);
-    // Pre-dispatch neutrals also never touched the network, so the RPM reservation
-    // acquireSlot made must be returned to the bucket — otherwise a structurally
-    // broken node silently burns its own per-minute RPM quota on traffic it never
-    // sent. Post-dispatch neutrals (200-with-non-json) keep the charge: the
-    // upstream WAS contacted.
-    if (preDispatch) rollbackRpmBucket(node.id);
   }
   noteFailure(state, reason);
   state.logger.info(

@@ -10,9 +10,9 @@
 // success.ts; the hedge race lives in hedge.ts.
 
 import { attemptHeadersTimeoutMs, attemptBudgetSliceMs } from '../../config/timeouts.ts';
-import { recordNeutralEnd, rollbackRpmBucket, bumpNodeCounters } from '../../reliability/node-state.ts';
-import { releaseTier1Slot, rollbackTier1Rpm } from '../../reliability/tier1-state.ts';
-import { classifyUpstreamStatus, classifyNetworkError, classifyClientAbort, classifyPreDispatchRateLimit, classifyPreDispatchInvalidBaseUrl, classifyHedgeRaceLoss } from '../../reliability/classify.ts';
+import { recordNeutralEnd, bumpNodeCounters } from '../../reliability/node-state.ts';
+import { releaseTier1Slot } from '../../reliability/tier1-state.ts';
+import { classifyUpstreamStatus, classifyNetworkError, classifyClientAbort, classifyPreDispatchInvalidBaseUrl, classifyHedgeRaceLoss } from '../../reliability/classify.ts';
 import { buildTargetUrl, safeReadErrorBody } from '../../protocol/http.ts';
 import { isOpenAIStreamingResponse, withUsageStreamOptions } from '../../protocol/openai.ts';
 import { resolveUpstreamPath, buildUpstreamHeadersFor } from '../../transport/index.ts';
@@ -20,7 +20,7 @@ import { streamUsageSupported } from '../../config/provider-quirks.ts';
 import { gatewayError, buildClientErrorResponse } from '../errors.ts';
 import { upstreamModelOf } from '../response-helpers.ts';
 import { handleSuccess } from './success.ts';
-import { recordOutcome, rotateWithNeutralEnd, noteFailure } from './outcome.ts';
+import { recordOutcome, rotateWithNeutralEnd } from './outcome.ts';
 import type { AttemptContext, AttemptOutcome } from '../../types/request.ts';
 
 const DIAGNOSTIC_BYTES = 4096;
@@ -41,7 +41,7 @@ const DIAGNOSTIC_BYTES = 4096;
 export async function attemptNode(c: AttemptContext): Promise<AttemptOutcome> {
   const outcome = await dispatchAttempt(c);
   if (outcome.budgetCharged === undefined) outcome.budgetCharged = true;
-  if (outcome.response?.status === 200) {
+  if (outcome.response?.ok) {
     // Successful dispatches never pass through recordOutcome, so charge them
     // here — exactly once, like every failure/neutral path. A committed
     // response reached an upstream, so it always charges the dispatch count;
@@ -54,7 +54,7 @@ export async function attemptNode(c: AttemptContext): Promise<AttemptOutcome> {
       + ` dispatch=${c.state.dispatches} node=${c.node.id} provider=${c.node.provider}`
       + ` protocol=${c.upstreamProtocol ?? c.node.protocol} surface=${c.surface} tier=${c.node.tier}`
       + ` model=${c.requestedModel}${effectiveModel !== c.requestedModel ? `=>${effectiveModel}` : ''}->${upstreamModelOf(c.node, effectiveModel)}`
-      + ` hedged=${!!(c.hedgedAttempt || c.hedgedWithTwin)} kind=ok status=200`
+      + ` hedged=${!!(c.hedgedAttempt || c.hedgedWithTwin)} kind=ok status=${outcome.response.status}`
       + ` headers_ms=${c.headersMs ?? -1}${c.ttftMs !== undefined ? ` ttft_ms=${c.ttftMs}` : ''}`
       + ` latency_ms=${c.attemptStartMs ? Date.now() - c.attemptStartMs : -1}`,
     );
@@ -118,52 +118,6 @@ async function dispatchAttempt(c: AttemptContext): Promise<AttemptOutcome> {
     targetUrl = buildTargetUrl(node.baseUrl, resolveUpstreamPath(upstreamProtocol, surface));
   } catch {
     return rotateWithNeutralEnd(state, node, classifyPreDispatchInvalidBaseUrl().kind, c, true);
-  }
-
-  // ---- Optional distributed rate shaping (Cloudflare Rate Limiting) ---------
-  // This path is active only when a RuntimeNode carries an actual active RPM
-  // quota. Legacy node-config `limits.rpm` is no longer projected by the config
-  // layer, so merely leaving an old limits object in production cannot trigger
-  // this pre-dispatch gate. The binding remains available for explicitly built
-  // runtime quotas/tests and is still approximate per Cloudflare location.
-  const rateLimiter = env?.QUOTA_RATE_LIMITER as { limit?: (args: { key: string }) => Promise<{ success?: boolean }> } | null | undefined;
-  if (node.limits.rpm && node.limits.rpmMode === 'hard' && typeof rateLimiter?.limit === 'function') {
-    try {
-      const verdict = await rateLimiter.limit({ key: node.id });
-      if (verdict && verdict.success === false) {
-        // Distributed-limit denied: the request never reached an upstream, so
-        // it must NOT consume any failover budget — neither the shared attempt
-        // budget (maxAttempts) nor this tier's own attempt slot — otherwise a
-        // run of CF-denied keys starves same-tier healthy candidates and every
-        // fallback tier without ever contacting a provider. It also must not
-        // charge the node's local RPM: release the slot AND roll back the RPM
-        // reservation acquireSlot just made. Mark the node attempted so it is
-        // not re-picked this request; the tier drains via `attempted` rather
-        // than the budgets.
-        state.attempted.add(node.id);
-        if (node.tier === 'tier-1') {
-          releaseTier1Slot(node.id, c.tier1ReleaseToken);
-          rollbackTier1Rpm(node.id);
-        } else {
-          recordNeutralEnd(node.id);
-          rollbackRpmBucket(node.id);
-        }
-        const preDispatchKind = classifyPreDispatchRateLimit().kind;
-        noteFailure(state, preDispatchKind);
-        state.logger.info(
-          `dispatch request=${requestId} logical_attempt=${state.logicalAttempts + 1}/${state.maxAttempts}`
-          + ` dispatch=${state.dispatches} node=${node.id} provider=${node.provider}`
-          + ` protocol=${upstreamProtocol} surface=${surface} tier=${node.tier}`
-          + ` model=${requestedModel}${effectiveModel !== requestedModel ? `=>${effectiveModel}` : ''}->${upstreamModelOf(node, effectiveModel)}`
-          + ` hedged=false kind=${preDispatchKind} status=429 counted=false (pre-dispatch, no budget charged)`,
-        );
-        state.attempts.push({ attempt: state.logicalAttempts + 1, dispatch: state.dispatches, node_id: node.id, status: 429, kind: preDispatchKind, hedged: false });
-        return { rotate: true, budgetCharged: false };
-      }
-    } catch {
-      // A broken coordinator must never take the gateway down: proceed and let
-      // runtime reliability/circuit state handle the request.
-    }
   }
 
   // Protocol-aware upstream headers: OpenAI nodes authenticate with

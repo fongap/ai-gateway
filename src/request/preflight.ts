@@ -38,7 +38,7 @@ import { gatewayError } from './errors.ts';
 import { authorize } from './auth.ts';
 import { loadAccessKeysConfig } from '../config/access-keys.ts';
 import { collectKnownModels } from '../config/registry.ts';
-import { authorizeModel } from './model-authz.ts';
+import { authorizeModel, filterVisibleModels } from './model-authz.ts';
 import { evaluateRouteFeasibility } from './route-feasibility.ts';
 import { modelFallbackCandidates } from './model-fallback.ts';
 import { detectRoute, normalizePath, acceptsHtml } from './router.ts';
@@ -284,6 +284,11 @@ export async function preflight(request: Request, env: Record<string, unknown>, 
     };
   }
 
+  // The scheduler/fallback catalog is key-scoped as well: internal model-family
+  // fallback may only use models this key is itself allowed to call. This keeps
+  // visible == callable across the entire request, not just at the entry gate.
+  const callableModels = new Set(filterVisibleModels(knownModels, authResult));
+
   // ---- Candidate pool ----
   const config = loadGatewayConfig(env);
   if (!config.ready) {
@@ -305,18 +310,16 @@ export async function preflight(request: Request, env: Record<string, unknown>, 
     ...ROUTE_PROTOCOL_SURFACE[route],
   };
 
-  // Preflight authorizes ONLY the client-requested model. Compatible fallback
-  // aliases are an internal execution detail and must not widen what the key can
-  // request directly. After that authorization succeeds, admit the request when
-  // either the requested alias or one of its closed, compatible family members
-  // has a statically reachable native/protocol-fallback route. Runtime
-  // cooldown/circuit/capacity remains a scheduler concern downstream.
+  // Preflight and internal fallback share the same key-scoped callable catalog.
+  // A family member outside the current key's model allowlist is not a candidate,
+  // even when it exists globally. Runtime cooldown/circuit/capacity remains a
+  // scheduler concern downstream.
   const feasibility = evaluateRouteFeasibility({
-    route, requestedModel, requestDescriptor, tiers, knownModels, env,
+    route, requestedModel, requestDescriptor, tiers, knownModels: callableModels, env,
   });
   let familyReachable = feasibility.reachable;
   if (!familyReachable) {
-    for (const effectiveModel of modelFallbackCandidates(requestedModel, knownModels)) {
+    for (const effectiveModel of modelFallbackCandidates(requestedModel, callableModels)) {
       if (effectiveModel === requestedModel) continue;
       const effectiveDescriptor = { ...requestDescriptor, model: effectiveModel };
       const candidateFeasibility = evaluateRouteFeasibility({
@@ -324,7 +327,7 @@ export async function preflight(request: Request, env: Record<string, unknown>, 
         requestedModel: effectiveModel,
         requestDescriptor: effectiveDescriptor,
         tiers,
-        knownModels,
+        knownModels: callableModels,
         env,
       });
       if (candidateFeasibility.reachable) {
@@ -363,7 +366,7 @@ export async function preflight(request: Request, env: Record<string, unknown>, 
     tiers,
     policy,
     failoverBudgetMs,
-    knownModels,
+    knownModels: callableModels,
     feasibility,
   };
 }

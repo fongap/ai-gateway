@@ -51,8 +51,9 @@ import type { AttemptContext, AttemptOutcome } from '../../types/request.ts';
 // so a node that streams lifecycle events before dying can still fail over.
 // Defined by the Anthropic transport (src/transport/anthropic.ts) — the two
 // protocol families deliberately do NOT share a first-real-output judgment.
-// OpenAI Chat Tier 1 uses its meaningful-output predicate while Tier 2/3 keep
-// the original parseable-event boundary. Responses uses response.*.delta.
+// OpenAI Chat uses the same meaningful-output predicate in every tier; a
+// role-only / empty delta never closes the transparent-failover boundary.
+// Responses uses response.*.delta.
 
 export async function handleSuccess(s: {
   upstream: Response,
@@ -97,15 +98,13 @@ export async function handleSuccess(s: {
       // commits only when genuine model output is observed:
       //   anthropic messages -> native content deltas (transport predicate)
       //   openai responses   -> response.*.delta events (transport predicate)
-      //   openai chat tier1  -> meaningful text/reasoning/tool delta (so a
-      //     role-only or empty delta does NOT close the boundary and is NOT
-      //     recorded as passive TTFT — Tier 1 learns only from real output)
-      //   openai chat tier2/3 -> any parseable non-error event (original rule,
-      //     unchanged — Tier 2/3 are not redesigned here)
+      //   openai chat -> meaningful text/reasoning/tool delta in EVERY tier;
+      //     role-only or empty deltas do not close the boundary. Tier 1 still
+      //     remains the only tier that learns passive TTFT in tier1-state.
       const isRealOutput = surface === 'messages'
         ? isAnthropicNativeRealOutput
         : surface === 'responses' ? isResponsesRealOutput
-        : (surface === 'chat_completions' && node.tier === 'tier-1') ? isOpenAIChatRealOutput
+        : surface === 'chat_completions' ? isOpenAIChatRealOutput
         : undefined;
       guarded = await ensureFirstSseEvent(upstream, firstEventTimeout, request.signal, isRealOutput);
     } catch (e) {
@@ -448,7 +447,9 @@ export async function handleSuccess(s: {
     try {
       data = JSON.parse(text);
     } catch {
-      return rotateWithNeutralEnd(state, node, classifyNonJsonBody().kind, c);
+      const classification = classifyNonJsonBody();
+      recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: text });
+      return { rotate: true, kind: classification.kind };
     }
     if (data && typeof data === 'object' && data.error) {
       // Provider returned 200 with an embedded error: treat as a real failure

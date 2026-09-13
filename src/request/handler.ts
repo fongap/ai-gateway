@@ -155,7 +155,6 @@ export async function handleRequest(request: Request, env: Record<string, unknow
         feasibility: effectiveFeasibility,
         policy: passPolicy,
       };
-      const modelMissingBefore = state.failureKinds.model_missing ?? 0;
 
       if (effectiveModel !== requestedModel || roundIndex > 0) {
         logger.info(
@@ -187,14 +186,6 @@ export async function handleRequest(request: Request, env: Record<string, unknow
       });
       if (fbResult) return fbResult;
 
-      // A model-missing 404 is a mapping/capability fact, not transient pool
-      // unavailability. Keep that failure isolated to the (node, model) pair
-      // and do not silently turn it into a different logical model. Model-family
-      // fallback is only the final capacity escape hatch after runtime
-      // availability is exhausted.
-      if ((state.failureKinds.model_missing ?? 0) > modelMissingBefore) {
-        break modelRoundsLoop;
-      }
     }
   }
 

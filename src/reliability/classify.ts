@@ -41,8 +41,8 @@ export const KIND = {
   // close, missing completion marker). Counted=true so the circuit breaker
   // sees it; Tier 1 gets a 60s cooldown via applyHealthPenalty.
   STREAM_INTERRUPTED: 'stream_interrupted',
-  // An HTTP 200 response whose body was not parseable as the expected JSON
-  // shape. Neutral end (the upstream WAS contacted), no circuit penalty.
+  // HTTP 200 with a body that violates the expected JSON protocol. This is
+  // an upstream/proxy failure, not a client-success neutral.
   NON_JSON_BODY: 'upstream_200_non_json_body',
   // A hedge twin (or the primary) that lost the race and was aborted after
   // its peer committed. Neutral — no rotation, no penalty, no budget charge.
@@ -150,16 +150,6 @@ export function classifyClientAbort(): FailureClassification {
 // truth, every consumer imports from this module, and the type system catches
 // drift.
 
-// Distributed rate-limiter binding denied the request before dispatch.
-// Rotate (so a same-tier healthy node gets a chance on the same logical
-// attempt), but do NOT charge the failover budget — the request never
-// touched a provider, so consuming max_attempts / budget_ms would let a
-// stream of CF-denied keys starve healthy candidates and every fallback tier
-// without ever contacting a provider.
-export function classifyPreDispatchRateLimit(): FailureClassification {
-  return { kind: KIND.RATE_LIMIT_GLOBAL, action: 'rotate', cooldownMs: 0, counted: false };
-}
-
 // The node's base_url is structurally invalid (unparseable URL, wrong
 // scheme, etc.). Rotate, do NOT charge the budget, do NOT feed the circuit
 // (a misconfigured node is an operator problem, not a provider health
@@ -169,10 +159,11 @@ export function classifyPreDispatchInvalidBaseUrl(): FailureClassification {
 }
 
 // The upstream returned HTTP 200 with a body that could not be parsed as
-// the expected JSON shape. Neutral end (the upstream WAS contacted, so do
-// not roll back the RPM slot), no circuit penalty, no cooldown.
+// the expected protocol JSON. Rotate, apply a short node cooldown, and count it
+// as a transient failure so a persistent WAF/proxy HTML response can open the
+// circuit instead of being selected again on every new client request.
 export function classifyNonJsonBody(): FailureClassification {
-  return { kind: KIND.NON_JSON_BODY, action: 'neutral', cooldownMs: 0, counted: false };
+  return { kind: KIND.NON_JSON_BODY, action: 'rotate', cooldownMs: 5_000, counted: true };
 }
 
 // The stream was interrupted mid-generation (TTL expiry, peer close, missing

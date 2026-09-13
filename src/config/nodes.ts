@@ -21,11 +21,9 @@
 //     "models": { "logical": "upstream" } // empty object = supports all models
 //   }
 //
-// `limits` is retired from active admission. Existing deployments that still
-// carry a syntactically-valid legacy limits object remain serviceable and get a
-// deprecation diagnostic, but concurrency/RPM values no longer control routing.
-// Capacity is learned from live in-flight pressure, 429/cooldown, health/circuit
-// and latency signals instead of operator-guessed ceilings.
+// Node-level limits are intentionally absent. Capacity is learned from live
+// in-flight pressure, 429/cooldown, health/circuit and latency signals rather
+// than operator-guessed concurrency/RPM ceilings.
 //
 // protocol decides request format, upstream endpoint, auth header, protocol
 // headers, and stream wire format. surfaces decides which client surfaces can
@@ -33,9 +31,8 @@
 // provider is metadata only (dashboard / metrics / diagnostics / quirks) and
 // never influences transport.
 //
-// Missing `protocol` or `surfaces` is accepted with deprecated defaults and a
-// diagnostic so existing configuration remains serviceable while operators
-// make those fields explicit.
+// `protocol` and `surfaces` are required. There are no implicit transport
+// defaults: an ambiguous node is invalid configuration.
 //
 // Tier is derived ONLY from the variable prefix. The node JSON must not carry
 // a tier field; a tier field is rejected as invalid configuration.
@@ -64,18 +61,10 @@ export const SECRET_SHARD_PATTERN = /^TIER([123])_NODES_SECRETS_(\d{2})$/;
 export const MAX_SHARD_INDEX = 10;
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const FORBIDDEN_NODE_FIELDS = ['token', 'credential', 'api_key', 'apikey', 'authorization', 'password', 'secret'];
-// `limits` is the sole legacy migration field. Unknown top-level fields still
-// fail fast; known legacy limit keys are validated only to catch obvious typos.
-const ALLOWED_NODE_FIELDS = new Set(['id', 'provider', 'protocol', 'surfaces', 'base_url', 'priority', 'models', 'limits']);
-const ALLOWED_LIMITS_FIELDS = new Set(['concurrency', 'rpm', 'rpm_mode']);
-const RPM_MODES = new Set(['soft', 'hard', 'local_hard']);
+const ALLOWED_NODE_FIELDS = new Set(['id', 'provider', 'protocol', 'surfaces', 'base_url', 'priority', 'models']);
 const PROTOCOL_SURFACES = new Map<string, Set<string>>([
   ['openai', new Set(['chat_completions', 'responses'])],
   ['anthropic', new Set(['messages'])],
-]);
-const DEFAULT_SURFACES = new Map<Protocol, string[]>([
-  ['openai', ['chat_completions']],
-  ['anthropic', ['messages']],
 ]);
 
 export type ConfigStatus = 'unconfigured' | 'invalid' | 'degraded' | 'ready';
@@ -295,7 +284,7 @@ function buildRuntimeNode(rawNode: unknown, tier: NodeTier, credentials: Map<str
   }
   for (const key of Object.keys(rec)) {
     if (!ALLOWED_NODE_FIELDS.has(key)) {
-      diagnostics.push(`node "${id}": unknown field "${key}" (allowed: id, provider, protocol, surfaces, base_url, priority, models; legacy limits is ignored)`);
+      diagnostics.push(`node "${id}": unknown field "${key}" (allowed: id, provider, protocol, surfaces, base_url, priority, models)`);
       return null;
     }
   }
@@ -327,9 +316,6 @@ function buildRuntimeNode(rawNode: unknown, tier: NodeTier, credentials: Map<str
   if (models === null) return null;
   const priority = parsePriority(rec.priority, id, diagnostics);
   if (priority === null) return null;
-  const legacyLimits = parseLimits(rec.limits, id, diagnostics);
-  if (legacyLimits === null) return null;
-  if ('limits' in rec) diagnostics.push(`node "${id}": limits is deprecated and ignored; remove it from the node config`);
 
   const protocol = parseProtocol(rec.protocol, id, diagnostics);
   if (protocol === null) return null;
@@ -348,21 +334,13 @@ function buildRuntimeNode(rawNode: unknown, tier: NodeTier, credentials: Map<str
     credential,
     priority,
     models,
-    // Transitional internal shape: legacy values may remain visible to tests /
-    // diagnostics, but no node-level RPM value is projected, so RPM admission
-    // is disabled. Tier 1 primary selection separately ignores concurrency as
-    // a hard gate; Tier 2/3 only use activeRequests as a ranking signal.
-    limits: {
-      concurrency: legacyLimits.concurrency ?? 2,
-      ...(legacyLimits.rpm !== undefined ? { rpmMode: legacyLimits.rpmMode ?? 'hard' } : {}),
-    },
   };
 }
 
 function parseProtocol(raw: unknown, nodeId: string, diagnostics: string[]): Protocol | null {
   if (raw === undefined || raw === null) {
-    diagnostics.push(`node "${nodeId}": protocol is implicit and defaults to "openai"; please configure it explicitly`);
-    return 'openai';
+    diagnostics.push(`node "${nodeId}": protocol is required`);
+    return null;
   }
   const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
   if (!PROTOCOL_SURFACES.has(value)) {
@@ -374,9 +352,8 @@ function parseProtocol(raw: unknown, nodeId: string, diagnostics: string[]): Pro
 
 function parseSurfaces(raw: unknown, protocol: Protocol, nodeId: string, diagnostics: string[]): Surface[] | null {
   if (raw === undefined || raw === null) {
-    const def = DEFAULT_SURFACES.get(protocol) as string[];
-    diagnostics.push(`node "${nodeId}": surfaces is implicit and defaults to [${def.map((s) => `"${s}"`).join(', ')}]; please configure it explicitly`);
-    return def.slice() as Surface[];
+    diagnostics.push(`node "${nodeId}": surfaces is required`);
+    return null;
   }
   if (!Array.isArray(raw) || raw.length === 0) {
     diagnostics.push(`node "${nodeId}": surfaces must be a non-empty array`);
@@ -403,52 +380,6 @@ function parsePriority(raw: unknown, nodeId: string, diagnostics: string[]): num
     return null;
   }
   return Math.trunc(n);
-}
-
-function parseLimits(raw: unknown, nodeId: string, diagnostics: string[]): { concurrency?: number, rpm?: number, rpmMode?: 'soft' | 'hard' } | null {
-  const out: { concurrency?: number, rpm?: number, rpmMode?: 'soft' | 'hard' } = {};
-  if (raw === undefined || raw === null) return out;
-  if (typeof raw !== 'object' || Array.isArray(raw)) {
-    diagnostics.push(`node "${nodeId}": limits must be an object { concurrency, rpm }`);
-    return null;
-  }
-  const rec = raw as Record<string, unknown>;
-  for (const key of Object.keys(rec)) {
-    if (!ALLOWED_LIMITS_FIELDS.has(key)) {
-      diagnostics.push(`node "${nodeId}": limits.${key} is not a supported legacy limit (allowed: ${[...ALLOWED_LIMITS_FIELDS].join(', ')})`);
-      return null;
-    }
-  }
-  const positiveInt = (value: unknown): number | null => {
-    const n = typeof value === 'number' ? value : (typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN);
-    return Number.isFinite(n) && n >= 1 ? Math.trunc(n) : null;
-  };
-  if ('concurrency' in rec) {
-    const c = positiveInt(rec.concurrency);
-    if (c === null) {
-      diagnostics.push(`node "${nodeId}": limits.concurrency must be an integer >= 1`);
-      return null;
-    }
-    out.concurrency = c;
-  }
-  if ('rpm' in rec) {
-    const r = positiveInt(rec.rpm);
-    if (r === null) {
-      diagnostics.push(`node "${nodeId}": limits.rpm must be an integer >= 1`);
-      return null;
-    }
-    out.rpm = r;
-    out.rpmMode = 'hard';
-  }
-  if ('rpm_mode' in rec) {
-    const mode = typeof rec.rpm_mode === 'string' ? rec.rpm_mode.trim().toLowerCase() : '';
-    if (!RPM_MODES.has(mode)) {
-      diagnostics.push(`node "${nodeId}": limits.rpm_mode must be "soft", "hard", or "local_hard"`);
-      return null;
-    }
-    out.rpmMode = mode === 'soft' ? 'soft' : 'hard';
-  }
-  return out;
 }
 
 function normalizeModels(models: unknown, nodeId: string, diagnostics: string[]): Record<string, string> | null {
