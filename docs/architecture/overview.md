@@ -41,13 +41,13 @@ Protocol-specific response / stream
 
 OpenAI Chat Completions and Anthropic Messages are Native First. Only after the native pool is exhausted may the configured cross-protocol fallback run. OpenAI Responses is Native Only for protocol conversion.
 
-Logical-model fallback is a separate outer orchestration layer. The closed families are `Code-Max ↔ Code-Pro → Code-Ultra`, `Max ↔ Pro → Ultra`, and one-way `Air → Pro → Max → Ultra`. Compatible families are evaluated for at most two rounds; all passes share the original attempt, dispatch, hedge, and wall-clock budgets.
+Logical-model fallback is a separate outer orchestration layer. The closed families are `Code-Max ↔ Code-Pro → Code-Ultra`, `Max ↔ Pro → Ultra`, and one-way `Air → Pro → Max → Ultra`. Compatible families are evaluated for at most two rounds; all passes share the original attempt, dispatch, hedge, and wall-clock budgets. `max_attempts` remains the request-wide hard ceiling and is never enlarged by family fallback.
 
 ## Module ownership
 
 ```text
 Model Registry     logical model policy and declared capabilities
-Node config         upstream address, protocol, surfaces, model mapping, limits, credential binding
+Node config         upstream address, protocol, surfaces, model mapping, priority, credential binding
 Request             native/protocol/model-family fallback orchestration and shared budgets
 Scheduler           which eligible node should receive the next attempt
 Reliability         whether a node/account/model is currently usable and how failures change state
@@ -74,6 +74,7 @@ These boundaries are intentional. Transport does not select nodes. Scheduler and
 - Code aliases never fall back into non-Code aliases.
 - `Air` may fall back upward to `Pro → Max → Ultra`; higher general aliases never fall back down to `Air`.
 - Compatible model families get at most two evaluation rounds; there is no unbounded model loop.
+- `max_attempts` is the request-wide hard ceiling; model-family fallback never enlarges it internally.
 - Model-shaped 404s remain model-mapping failures and do not trigger model-family fallback.
 - Native retry, protocol fallback, and model-family fallback share the same logical-attempt and wall-clock failover budget.
 - A hedge twin remains in the primary request's protocol and surface.
@@ -102,7 +103,7 @@ D1 and KV are deliberately outside the critical scheduling decision path where p
 
 - `TIER1_AFFINITY` KV: short-lived session binding, 30-minute TTL.
 - Token-usage D1: persisted usage aggregation and recent public-status evidence.
-- Tier 1 TTFT, in-flight, cooldown, RPM bucket, half-open state: isolate-local memory.
+- Tier 1 TTFT, in-flight, cooldown, adaptive 429/heat, half-open state: isolate-local memory.
 - Tier 2/3 health/circuit/concurrency state: isolate-local memory.
 
 The gateway does not claim cross-PoP globally accurate concurrency or provider-account quota from these local states.

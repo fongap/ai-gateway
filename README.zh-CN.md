@@ -36,7 +36,7 @@ ai-gateway 将异构 AI Provider、API Key 和逻辑模型别名聚合到一个�
 | --- | --- |
 | **多 Key 韧性** | P2C、被动 TTFT 学习、实时 inFlight 软负载、429 Cooldown 与 Provider-Model 热度 |
 | **分层故障转移** | 在同一请求预算内按 **Tier 1 → Tier 2 → Tier 3** 逐层托底 |
-| **模型家族兜底** | 有界互保并预留首轮容量：`Code-Max ↔ Code-Pro → Code-Ultra`、`Max ↔ Pro → Ultra`，以及单向 `Air → Pro → Max → Ultra` |
+| **模型家族兜底** | 在同一请求级 `max_attempts` 硬上限内有界互保：`Code-Max ↔ Code-Pro → Code-Ultra`、`Max ↔ Pro → Ultra`，以及单向 `Air → Pro → Max → Ultra` |
 | **多 Provider 路由** | 将多个 Provider、API Key 和逻辑模型别名统一到一个网关 |
 | **协议兼容** | 原生支持 OpenAI Chat、OpenAI Responses、Anthropic Messages |
 | **安全协议转换** | 仅 OpenAI Chat ↔ Anthropic Messages；**OpenAI Responses 在协议转换层保持 Native Only** |
@@ -63,11 +63,11 @@ flowchart TB
     E --> H[Upstream APIs]
 ```
 
-始终优先执行原生协议。Protocol fallback 与 logical-model family fallback 共用同一套 logical-attempt、dispatch、hedge 和 wall-clock failover budget。已配置完整同族模型时，三模型家族首轮按请求优先顺序预留 **3 / 2 / 1** 次；`Air` 按 **3 / 1 / 1 / 1** 单向上浮。第二轮只使用首轮没有花掉的请求预算，不新增无限重试。
+始终优先执行原生协议。Protocol fallback 与 logical-model family fallback 共用同一套 logical-attempt、dispatch、hedge 和 wall-clock failover budget，模型家族兜底不会抬高配置的 `max_attempts`。三模型家族会随请求预算从 1 到 6 次按 `1 → 1/1 → 1/1/1 → 2/1/1 → 3/1/1 → 3/2/1` 先扩宽再加深；`Air` 同样受硬上限约束，在 6 次预算时达到 `3/1/1/1`。第二轮只使用首轮没有花掉的请求预算，不新增无限重试。
 
 Code 家族永远不会转入非 Code 家族。`Air` 可以单向上浮到 `Pro → Max → Ultra`，但 `Ultra / Max / Pro` 不会向下回到 `Air`。模型型 404 仍只隔离发生问题的节点/模型映射；在同一鉴权模型范围和请求预算内，可继续尝试已授权的兼容同族模型。如果整个模型家族只是因为 429、5xx、网络或超时等临时容量问题全部失败，网关返回可重试 `503`，让 Coding 客户端自行再试，而不是停下来等人工“继续”。
 
-Tier 1 的目标是 **稳定利用整个 Key 池，而不是持续追打某一个“最好”的 Key**。实时 inFlight 只做软排序：忙的节点少分流，但如果它是最后一个健康节点仍然可以继续使用；真实 429 决定 Cooldown / 恢复，Provider-Model 429 热度做有界软降权，可选 Hedge 会优先让位于主请求。Node `limits` 已不再参与运行时准入。
+Tier 1 的目标是 **稳定利用整个 Key 池，而不是持续追打某一个“最好”的 Key**。实时 inFlight 只做软排序：忙的节点少分流，但如果它是最后一个健康节点仍然可以继续使用；真实 429 决定 Cooldown / 恢复，Provider-Model 429 热度做有界软降权，可选 Hedge 会优先让位于主请求。Node `limits` 已不在现行 Schema 中，配置后会被拒绝。
 
 ## API Surface
 

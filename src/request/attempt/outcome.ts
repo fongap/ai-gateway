@@ -16,7 +16,7 @@ import {
   applyTier1Outcome, classifyTier1Failure,
   recordTier1ProviderModelRateLimit,
 } from '../../reliability/tier1-state.ts';
-import { nextAdaptive429CooldownMs } from '../../reliability/adaptive-429.ts';
+import { nextAdaptive429CooldownMs, snapshotAdaptive429State } from '../../reliability/adaptive-429.ts';
 import { KIND } from '../../reliability/classify.ts';
 import type { FailureClassification, FailureKind } from '../../reliability/classify.ts';
 import { trimDiagnostic } from '../../protocol/http.ts';
@@ -70,6 +70,8 @@ export function recordOutcome(state: LoopState, node: RuntimeNode, classificatio
   if (!c?.hedgedAttempt) state.logicalAttempts++;
   const hedged = !!(c?.hedgedAttempt || c?.hedgedWithTwin);
   const headersMs = c?.headersMs ?? (latencyMs >= 0 ? latencyMs : undefined);
+  let tier1RateLimitStage: number | null = null;
+  let tier1RateLimitCooldownMs: number | null = null;
 
   if (node.tier === 'tier-1') {
     // Tier 1 owns its own failure state machine. Logical-model performance and
@@ -91,6 +93,9 @@ export function recordOutcome(state: LoopState, node: RuntimeNode, classificatio
           node.id,
           classification.retryAfterMs || 0,
         );
+        const adaptive429 = snapshotAdaptive429State(node.provider, node.id);
+        tier1RateLimitStage = adaptive429.stage;
+        tier1RateLimitCooldownMs = adaptive429.cooldown_remaining_ms;
       }
       const t1Class = classifyTier1Failure(classification, { retryAfterMs: tier1RetryAfterMs });
       const tier1ModelKey = classification.kind === KIND.MODEL_MISSING
@@ -120,6 +125,7 @@ export function recordOutcome(state: LoopState, node: RuntimeNode, classificatio
     + ` hedged=${hedged} kind=${classification.kind} status=${status} counted=${classification.counted}`
     + ` headers_ms=${headersMs ?? -1}${ttftWaitMs !== undefined ? ` ttft_wait_ms=${ttftWaitMs}` : ''}`
     + ` latency_ms=${latencyMs}`
+    + `${tier1RateLimitStage !== null ? ` rate_limit_stage=${tier1RateLimitStage} rate_limit_cooldown_ms=${tier1RateLimitCooldownMs ?? -1}` : ''}`
     + `${diagnostic && c?.exposeUpstreamInfo ? ` detail=${trimDiagnostic(diagnostic, 200)}` : ''}`,
   );
 
@@ -131,6 +137,8 @@ export function recordOutcome(state: LoopState, node: RuntimeNode, classificatio
   if (headersMs !== undefined && headersMs >= 0) record.headers_ms = headersMs;
   if (ttftWaitMs !== undefined && ttftWaitMs >= 0) record.ttft_wait_ms = ttftWaitMs;
   if (latencyMs >= 0) record.latency_ms = latencyMs;
+  if (tier1RateLimitStage !== null) record.rate_limit_stage = tier1RateLimitStage;
+  if (tier1RateLimitCooldownMs !== null) record.rate_limit_cooldown_ms = tier1RateLimitCooldownMs;
   if (c?.exposeUpstreamInfo && diagnostic) record.detail = trimDiagnostic(diagnostic, 300);
   state.attempts.push(record);
 }

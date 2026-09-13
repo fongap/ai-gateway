@@ -14,7 +14,7 @@ OpenAI Chat Completions ↔ Anthropic Messages fallback is evaluated after the n
 
 The Model Registry owns logical model policy and declared capabilities. Runtime nodes own upstream routing facts: provider metadata, base URL, protocol, surfaces, logical→upstream model mapping, priority, and the bound credential.
 
-Node `limits` are retired from active routing. Existing syntactically-valid legacy `limits` objects are accepted temporarily for migration safety but no longer define Provider capacity and should be removed from maintained configuration.
+Node `limits` are not part of the active schema. A node config that still contains `limits` is rejected; Provider capacity comes from observed runtime signals rather than operator-supplied ceilings.
 
 Credentials bind by **Tier + node id**. `TIER*_NODES_CONFIG_XX` and `TIER*_NODES_SECRETS_XX` suffixes are independent shard numbers; they are not positional pairs.
 
@@ -40,7 +40,18 @@ Air → Pro → Max → Ultra
 
 The most equivalent pairs are therefore `Code-Max ↔ Code-Pro` and `Max ↔ Pro`. `Code-*` never crosses into the non-Code family. `Air` may move upward, but `Ultra` / `Max` / `Pro` never fall back down to `Air`.
 
-For a configured three-model family, the first evaluation round reserves logical attempts as **3 / 2 / 1** in the requested model's fallback order. `Air` uses **3 / 1 / 1 / 1** across its one-way upward chain. Family requests therefore receive at least six request-wide logical attempts when a compatible sibling actually exists. A lone family-shaped alias with no configured sibling keeps its normal policy budget.
+`max_attempts` remains the request-wide hard ceiling and family planning never raises it. For a configured three-model family, first-round allocation widens before it deepens:
+
+```text
+max_attempts=1  requested only
+max_attempts=2  requested + first sibling
+max_attempts=3  1 / 1 / 1
+max_attempts=4  2 / 1 / 1
+max_attempts=5  3 / 1 / 1
+max_attempts>=6 3 / 2 / 1, then bounded re-checks only from unused budget
+```
+
+`Air` follows the same hard ceiling across its one-way chain and reaches `3 / 1 / 1 / 1` when six attempts are available. A lone family-shaped alias with no configured sibling keeps its normal policy budget.
 
 Compatible families still get at most two evaluation rounds. The second round exists only to re-check a model that may have recovered while sibling pools were being tried, is capped to one attempt per pass, and can spend only request budget left unused by the first round. `Air` is excluded from its second round, preserving the one-way-up rule. There is no unbounded cycle.
 
@@ -87,7 +98,7 @@ A Tier 1 node must:
 - not be blocked by HALF_OPEN single-probe state;
 - not have known exhausted quota state.
 
-A guessed `limits.concurrency` or `limits.rpm` value is not an active eligibility rule. Real runtime evidence decides availability. Heat protection remains ranking-only and never turns a healthy last candidate into an artificial hard failure.
+Node configs cannot declare `limits.concurrency` or `limits.rpm`; those fields are outside the active schema. Real runtime evidence decides availability. Heat protection remains ranking-only and never turns a healthy last candidate into an artificial hard failure.
 
 ### Soft session affinity
 
@@ -158,15 +169,15 @@ It does not add:
 
 Tier 2/3 continue to use the existing selector and `node-state.ts` reliability model. Their selection may use priority, active-request load, health/circuit state, cooldown, and latency preference according to the existing scheduler implementation.
 
-Active request count is a soft ranking signal here as well; configured legacy concurrency no longer makes a healthy node ineligible.
+Active request count is a soft ranking signal here as well; there is no configured node-level concurrency or RPM admission gate.
 
 Tier 2/3 do not read Tier 1 TTFT, Tier 1 affinity, or Tier 1 provider-model heat state.
 
 ## Attempt budget
 
-`max_attempts` is normally the request-wide logical-attempt ceiling. `tier_attempts` can explicitly cap individual tiers. When a tier has no explicit cap, the current budget-split policy allocates logical attempts among dispatchable tiers.
+`max_attempts` is the request-wide logical-attempt ceiling. `tier_attempts` can explicitly cap individual tiers. When a tier has no explicit cap, the current budget-split policy allocates logical attempts among dispatchable tiers.
 
-Configured model families are the bounded exception: when at least one compatible sibling exists, the family orchestration requires a six-attempt minimum to guarantee its first-round `3 / 2 / 1` contract. This is still one finite request budget, not a fresh budget per model.
+Model-family planning is not an exception to `max_attempts`: it distributes the configured request budget across compatible models. A six-attempt budget is the first point where a three-member family can realize the full `3 / 2 / 1` first-round preference; smaller budgets use the widening sequence above.
 
 `budget_split` supports:
 
@@ -196,7 +207,7 @@ Important semantics:
 
 ## Capacity signals
 
-Node-level `limits.concurrency`, `limits.rpm`, and `limits.rpm_mode` are retired from active capacity control because many providers do not publish stable per-key limits. Existing syntactically-valid legacy objects are accepted during migration but should be deleted.
+Node-level `limits.concurrency`, `limits.rpm`, and `limits.rpm_mode` are retired from capacity control because many providers do not publish stable per-key limits. Any node containing those retired fields is rejected by the current schema; there is no migration-time runtime interpretation.
 
 Active routing instead uses:
 

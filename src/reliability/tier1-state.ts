@@ -35,12 +35,9 @@ export const TIER1_5XX_MAX_MS = 300_000;
 // isolate can recover on its own after a key rotation without repeatedly
 // hammering a rejected credential. To force a permanent block, set this to 0.
 export const TIER1_AUTH_DISABLED_COOLDOWN_MS = 3_600_000;
-// Availability-first 429 recovery: without an explicit Retry-After, a key
-// backs off briefly and is re-probed quickly instead of disappearing for
-// multi-minute exponential windows. Explicit Retry-After remains authoritative.
-export const TIER1_429_BASE_MS = 30_000;
-export const TIER1_429_SECOND_MS = 45_000;
-export const TIER1_429_MAX_MS = 60_000;
+// 429 cooldown duration is owned exclusively by adaptive-429.ts. This module
+// stores the supplied deadline and controls the post-cooldown recovery probe;
+// it must never invent a second rate-limit ladder.
 export const TIER1_429_PROBE_GATE_MS = 5_000;
 
 // Provider-model heat is a soft ranking signal only. One or two independent
@@ -493,7 +490,8 @@ export function classifyTier1Failure(classification: Tier1FailureInput, opts: { 
       // A runtime node is one credential/key. Providers frequently apply 429
       // limits at credential scope but do not say so explicitly, therefore an
       // ambiguous 429 now cools that key/account rather than one logical model.
-      // Explicit model-scoped evidence remains supported.
+      // Explicit model-scoped evidence remains supported. Cooldown duration is
+      // supplied by adaptive-429.ts; this classifier does not invent a fallback.
       scope: classification?.rateLimitScope === 'model' ? 'model' : 'account',
       action: 'cooldown', counted: false, cooldownMs: explicit,
       backoff: 'rate_limit', reason: kind,
@@ -516,16 +514,8 @@ function exponential(base: number, max: number, count: number): number {
   return Math.min(max, base * 2 ** Math.max(0, count - 1));
 }
 
-function rateLimitCooldownMs(count: number): number {
-  if (count <= 1) return TIER1_429_BASE_MS;
-  if (count === 2) return TIER1_429_SECOND_MS;
-  return TIER1_429_MAX_MS;
-}
-
-// Apply a light ±10% jitter to an automatically-computed cooldown. This
-// avoids different isolates re-probing the same failing upstream at the
-// exact same instant. Explicit Retry-After values are NOT jittered — only
-// auto-computed backoffs are.
+// Apply a light ±10% jitter to automatically-computed transient backoffs.
+// 429 duration is never computed here; adaptive-429.ts supplies it explicitly.
 const JITTER_FACTOR = 0.1;
 function jitter(ms: number): number {
   if (ms <= 0) return ms;
@@ -534,13 +524,10 @@ function jitter(ms: number): number {
 }
 
 function modelCooldownMs(model: Tier1ModelRuntime, outcome: Tier1Outcome): number {
+  if (outcome.backoff === 'rate_limit') return Math.max(0, outcome.cooldownMs ?? 0);
   if ((outcome.cooldownMs ?? 0) > 0) {
-    // Provider Retry-After is authoritative for rate limits, even when longer
-    // than the local availability-first automatic cap.
-    if (outcome.backoff === 'rate_limit') return outcome.cooldownMs ?? 0;
     return Math.min(outcome.cooldownMs ?? 0, TIER1_COOLDOWN_MAX_MS);
   }
-  if (outcome.backoff === 'rate_limit') return jitter(rateLimitCooldownMs(model.consecutiveRateLimits));
   if (outcome.backoff === 'timeout') return jitter(exponential(TIER1_TIMEOUT_BASE_MS, TIER1_TIMEOUT_MAX_MS, model.consecutiveFailures));
   if (outcome.backoff === 'server') return jitter(exponential(TIER1_5XX_BASE_MS, TIER1_5XX_MAX_MS, model.consecutiveFailures));
   return jitter(exponential(TIER1_COOLDOWN_DEFAULT_MS, TIER1_COOLDOWN_MAX_MS, model.consecutiveFailures));
@@ -594,12 +581,13 @@ export function applyTier1Outcome(accountId: string, modelId: string, outcome: T
   }
   if (outcome.scope === 'account') {
     if (outcome.backoff === 'rate_limit') {
+      const cooldownMs = Math.max(0, outcome.cooldownMs ?? 0);
+      // The request layer must resolve the adaptive provider+key cooldown first.
+      // A missing duration is treated as an invalid/no-op rate-limit outcome so
+      // Tier 1 cannot silently reintroduce an independent fallback ladder.
+      if (cooldownMs <= 0) return;
       account.consecutiveRateLimits++;
       if (outcome.scopeAmbiguous) account.scopeAmbiguous429 = true;
-      const explicit = outcome.cooldownMs ?? 0;
-      const cooldownMs = explicit > 0
-        ? explicit
-        : jitter(rateLimitCooldownMs(account.consecutiveRateLimits));
       account.accountCooldownUntil = Math.max(account.accountCooldownUntil, now + cooldownMs);
       account.accountCooldownReason = outcome.reason;
       account.rateLimitRecoveryPending = true;
@@ -612,15 +600,16 @@ export function applyTier1Outcome(accountId: string, modelId: string, outcome: T
     return;
   }
 
+  const rateLimited = outcome.backoff === 'rate_limit';
+  if (rateLimited && (outcome.cooldownMs ?? 0) <= 0) return;
   const model = getTier1Model(accountId, modelId);
   if (outcome.scopeAmbiguous) model.scopeAmbiguous429 = true;
-  if (outcome.backoff === 'rate_limit') model.consecutiveRateLimits++;
+  if (rateLimited) model.consecutiveRateLimits++;
   else model.consecutiveRateLimits = 0;
   if (outcome.counted) model.consecutiveFailures++;
 
   const halfOpenFailure = model.failureState === FAILURE_STATE.HALF_OPEN;
   const thresholdReached = outcome.counted === true && model.consecutiveFailures >= TIER1_FAILURE_THRESHOLD;
-  const rateLimited = outcome.backoff === 'rate_limit';
   if (halfOpenFailure || thresholdReached || rateLimited || (outcome.cooldownMs ?? 0) > 0) {
     const cooldownMs = modelCooldownMs(model, outcome);
     model.cooldownUntil = now + cooldownMs;

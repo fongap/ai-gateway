@@ -34,7 +34,7 @@ With tiered routing, operators can place abundant or lower-cost capacity earlier
 | --- | --- |
 | **Multi-key resilience** | P2C selection, passive TTFT learning, live in-flight soft load, 429 cooldown and provider-model heat |
 | **Tiered failover** | Route through **Tier 1 → Tier 2 → Tier 3** under one request budget |
-| **Model-family fallback** | Bounded recovery across compatible aliases with reserved first-round capacity: `Code-Max ↔ Code-Pro → Code-Ultra`, `Max ↔ Pro → Ultra`, and one-way `Air → Pro → Max → Ultra` |
+| **Model-family fallback** | Bounded recovery across compatible aliases under the same request-wide `max_attempts`: `Code-Max ↔ Code-Pro → Code-Ultra`, `Max ↔ Pro → Ultra`, and one-way `Air → Pro → Max → Ultra` |
 | **Multi-provider routing** | Aggregate independent providers, keys, and logical model aliases behind one gateway |
 | **Protocol compatibility** | Native OpenAI Chat, OpenAI Responses, and Anthropic Messages |
 | **Safe protocol fallback** | OpenAI Chat ↔ Anthropic Messages only; **OpenAI Responses is Native Only** for protocol conversion |
@@ -61,11 +61,11 @@ flowchart TB
     E --> H[Upstream APIs]
 ```
 
-Native execution always comes first. Cross-protocol fallback and logical-model family fallback share the same logical-attempt, dispatch, hedge, and wall-clock failover budgets. Configured three-model families reserve first-round logical attempts as **3 / 2 / 1** in requested-model preference order; `Air` uses **3 / 1 / 1 / 1** across its one-way upward chain. The bounded re-check round can only use request budget left unused by the first round.
+Native execution always comes first. Cross-protocol fallback and logical-model family fallback share the same logical-attempt, dispatch, hedge, and wall-clock failover budgets. Model-family fallback never raises the configured `max_attempts`. The first round widens before it deepens: a three-model family progresses `1 → 1/1 → 1/1/1 → 2/1/1 → 3/1/1 → 3/2/1` as the request budget grows from one to six attempts; `Air` follows the same hard ceiling and reaches `3/1/1/1` at six attempts. The bounded re-check round can only use request budget left unused by the first round.
 
 Code models never fall back into the non-Code family. `Air` may move upward to `Pro → Max → Ultra`, but `Ultra` / `Max` / `Pro` never fall back down to `Air`. A model-shaped 404 remains isolated to the failing node/model mapping; within the same authenticated family scope and request budget, fallback may continue to an authorized compatible sibling. If a complete family sweep fails only for transient capacity reasons, the gateway returns retryable `503` so coding clients can retry instead of stopping for manual continuation.
 
-Tier 1 is intentionally biased toward **stable capacity, not a single "best" key**. Live in-flight work is a bounded soft ranking signal, affinity weakens as a key gets busy, real 429s drive cooldown/recovery, provider-model 429 heat can softly demote a hot cohort, and optional hedge work yields before primary traffic. Node-level `limits` are no longer runtime admission controls.
+Tier 1 is intentionally biased toward **stable capacity, not a single "best" key**. Live in-flight work is a bounded soft ranking signal, affinity weakens as a key gets busy, real 429s drive cooldown/recovery, provider-model 429 heat can softly demote a hot cohort, and optional hedge work yields before primary traffic. Node `limits` are not part of the active schema and are rejected.
 
 ## API surface
 
