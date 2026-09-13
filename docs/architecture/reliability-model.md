@@ -16,7 +16,7 @@ An isolate restart clears this adaptive state. The gateway does not claim provid
 
 ## Capacity signals
 
-Provider capacity is learned from observed runtime evidence. Node configuration has no `limits`, node RPM, or configured concurrency ceiling. A node that still contains the removed `limits` field is invalid configuration and is rejected rather than interpreted.
+Provider capacity is learned from observed runtime evidence. The runtime has no node `limits`, node RPM, or configured concurrency ceiling. The removed `limits` field is a hard schema boundary: any node that still contains it is invalid configuration and is rejected rather than interpreted.
 
 Routing uses signals the gateway can actually observe:
 
