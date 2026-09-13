@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // Cross-module invariants for the v1.3.5 reliability convergence.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import worker from '../src/index.ts';
 import { loadPoliciesConfig } from '../src/config/policies.ts';
 import { __resetAllStateForTests } from '../src/reliability/node-state.ts';
@@ -116,6 +117,29 @@ function node(id, model, upstreamModel = `up-${model.toLowerCase()}`) {
   assert.equal(policies.custom.hedge?.enabled, true);
   assert.equal(policies.custom.hedge?.delayMs, 1500);
   assert.equal(policies.disabled.hedge?.enabled, false);
+}
+
+// Tier 1 429 duration has exactly one owner. adaptive-429.ts computes the
+// provider+key cooldown; tier1-state.ts stores that supplied duration and owns
+// only recovery-state transitions. This prevents a second 30/45/60 ladder from
+// silently diverging from the adaptive ladder.
+{
+  const tier1StateSource = readFileSync(new URL('../src/reliability/tier1-state.ts', import.meta.url), 'utf8');
+  const outcomeSource = readFileSync(new URL('../src/request/attempt/outcome.ts', import.meta.url), 'utf8');
+  for (const retired of ['TIER1_429_BASE_MS', 'TIER1_429_SECOND_MS', 'TIER1_429_MAX_MS', 'rateLimitCooldownMs']) {
+    assert.equal(tier1StateSource.includes(retired), false, `tier1-state must not retain retired 429 duration owner ${retired}`);
+  }
+  assert.match(
+    tier1StateSource,
+    /outcome\.backoff === 'rate_limit'\) return Math\.max\(0, outcome\.cooldownMs \?\? 0\)/,
+    'tier1-state must consume the supplied adaptive 429 duration directly',
+  );
+  assert.match(outcomeSource, /nextAdaptive429CooldownMs\(/,
+    'request outcome handling must resolve adaptive 429 cooldown before Tier 1 state update');
+  assert.match(outcomeSource, /snapshotAdaptive429State\(/,
+    '429 observability must read the same adaptive state that owns cooldown duration');
+  assert.match(outcomeSource, /rate_limit_stage=/,
+    'Tier 1 429 dispatch logs must expose adaptive recovery stage for production validation');
 }
 
 console.log('reliability convergence invariants passed.');

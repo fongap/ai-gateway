@@ -143,6 +143,50 @@ assert.match(
 passed++;
 console.log('ok - routing-model.md matches the unified Tier attempt budget');
 
+// Current node schema rejects retired limits, and model-family fallback must
+// never enlarge the operator-configured request budget.
+assert.match(
+  routingText,
+  /Node `limits` are not part of the active schema/,
+  'routing-model.md must state the current hard node-schema boundary',
+);
+assert.doesNotMatch(
+  routingText,
+  /accepted temporarily for migration|accepted during migration|legacy `limits` objects are accepted/i,
+  'routing-model.md must not claim retired limits remain migration-compatible',
+);
+assert.match(
+  routingText,
+  /`max_attempts` remains the request-wide hard ceiling/,
+  'routing-model.md must state that model-family fallback cannot enlarge max_attempts',
+);
+assert.doesNotMatch(
+  routingText,
+  /requires a six-attempt minimum|receive at least six request-wide logical attempts/i,
+  'routing-model.md must not claim family fallback automatically raises max_attempts to six',
+);
+passed++;
+console.log('ok - routing-model.md matches strict limits schema and hard family attempt ceiling');
+
+const overviewText = readDoc('docs/architecture/overview.md');
+assert.doesNotMatch(
+  overviewText,
+  /model mapping, limits, credential binding/,
+  'overview.md must not list retired node limits as Node config ownership',
+);
+assert.doesNotMatch(
+  overviewText,
+  /Tier 1[^\n]*RPM bucket/,
+  'overview.md must not describe the retired node-RPM capacity model',
+);
+assert.match(
+  overviewText,
+  /`max_attempts`[^\n]*request-wide hard ceiling/,
+  'overview.md must preserve the model-family hard budget invariant',
+);
+passed++;
+console.log('ok - overview.md matches current node capacity and family budget boundaries');
+
 for (const file of DOCS) {
   const text = readDoc(file);
   for (const { pattern, message } of FORBIDDEN) {
