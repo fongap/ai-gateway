@@ -65,7 +65,7 @@ flowchart TB
 
 始终优先执行原生协议。Protocol fallback 与 logical-model family fallback 共用同一套 logical-attempt、dispatch、hedge 和 wall-clock failover budget。已配置完整同族模型时，三模型家族首轮按请求优先顺序预留 **3 / 2 / 1** 次；`Air` 按 **3 / 1 / 1 / 1** 单向上浮。第二轮只使用首轮没有花掉的请求预算，不新增无限重试。
 
-Code 家族永远不会转入非 Code 家族。`Air` 可以单向上浮到 `Pro → Max → Ultra`，但 `Ultra / Max / Pro` 不会向下回到 `Air`。模型型 404 仍只隔离对应的模型映射，不触发模型家族切换。如果整个模型家族只是因为 429、5xx、网络或超时等临时容量问题全部失败，网关返回可重试 `503`，让 Coding 客户端自行再试，而不是停下来等人工“继续”。
+Code 家族永远不会转入非 Code 家族。`Air` 可以单向上浮到 `Pro → Max → Ultra`，但 `Ultra / Max / Pro` 不会向下回到 `Air`。模型型 404 仍只隔离发生问题的节点/模型映射；在同一鉴权模型范围和请求预算内，可继续尝试已授权的兼容同族模型。如果整个模型家族只是因为 429、5xx、网络或超时等临时容量问题全部失败，网关返回可重试 `503`，让 Coding 客户端自行再试，而不是停下来等人工“继续”。
 
 Tier 1 的目标是 **稳定利用整个 Key 池，而不是持续追打某一个“最好”的 Key**。实时 inFlight 只做软排序：忙的节点少分流，但如果它是最后一个健康节点仍然可以继续使用；真实 429 决定 Cooldown / 恢复，Provider-Model 429 热度做有界软降权，可选 Hedge 会优先让位于主请求。Node `limits` 已不再参与运行时准入。
 
