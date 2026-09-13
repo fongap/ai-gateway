@@ -1,4 +1,4 @@
-name: Reliability Convergence 1.3.5 Pass 4
+name: Reliability Convergence Cleanup
 
 on:
   push:
@@ -19,21 +19,40 @@ jobs:
         with:
           ref: fix/reliability-convergence-1.3.5
           fetch-depth: 0
-      - name: Apply exact-once lease repair
+
+      - name: Final convergence cleanup
         run: |
-          python3 scripts/reliability-convergence-135-pass4.py
-          python3 scripts/reliability-convergence-135-pass4b.py
-      - name: Remove one-time repair files
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('tests/architecture-contract-test.mjs')
+          s = p.read_text(encoding='utf-8')
+          old = """  const res = await worker.fetch(messagesRequest({}), env, {});\n  assert.equal(res.status, 503, 'removed limits field makes runtime configuration invalid');\n  assert.equal(upstreamCalls.length, 0, 'invalid legacy config must never reach upstream');\n"""
+          new = """  const health = await worker.fetch(new Request('https://gateway.example.com/health', { headers: { authorization: `Bearer ${ACCESS_KEY}` } }), env, {});\n  assert.equal(health.status, 503, 'health must expose invalid runtime configuration');\n  const healthBody = await health.json();\n  assert.equal(healthBody.status, 'invalid');\n  assert.ok(healthBody.diagnostics.some((d) => d.includes('unknown field \\\"limits\\\"')));\n  const res = await worker.fetch(messagesRequest({}), env, {});\n  assert.equal(res.status, 404, 'invalid node is excluded, so the model route is unavailable');\n  assert.equal(upstreamCalls.length, 0, 'invalid legacy config must never reach upstream');\n"""
+          if s.count(old) != 1:
+              raise SystemExit('Contract 09 source drift')
+          s = s.replace(old, new, 1)
+
+          # Direct scheduler fixtures are RuntimeNode-shaped test data, not
+          # configuration. Remove the retired field there too so tests describe
+          # only the current architecture.
+          s = s.replace(", limits: { concurrency: 1, rpm: 0, rpmMode: 'hard' }", "")
+          p.write_text(s, encoding='utf-8')
+          PY
+
+          rm -f scripts/reliability-convergence-135-pass4.py
+          rm -f scripts/reliability-convergence-135-pass4b.py
+          rm -f .github/workflows/reliability-convergence-135-pass4.yml
+
+      - name: Validate cleanup
         run: |
-          rm scripts/reliability-convergence-135-pass4.py
-          rm scripts/reliability-convergence-135-pass4b.py
-          rm .github/workflows/reliability-convergence-135-pass4.yml
-      - name: Validate patch formatting
-        run: git diff --check
-      - name: Commit repair
+          git diff --check
+          node tests/architecture-contract-test.mjs
+
+      - name: Commit cleanup
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "fix: finalize reliability convergence invariants"
+          git commit -m "test: finalize strict reliability contracts"
           git push origin HEAD:fix/reliability-convergence-1.3.5
