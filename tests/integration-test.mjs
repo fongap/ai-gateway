@@ -395,7 +395,6 @@ await test('busy Tier 2 remains last-resort capacity despite legacy concurrency=
   const env = makeEnv({
     tier1: [basicNode('busy-t1', { models: { 'general-air': 'm' } })],
     tier2: [basicNode('busy-t2', {
-      limits: { concurrency: 1 },
       models: { 'general-air': 'm', 'sat-model': 'm' },
     })],
     secrets: { 'busy-t1': 'k', 'busy-t2': 'k' },

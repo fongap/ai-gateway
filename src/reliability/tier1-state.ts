@@ -374,12 +374,6 @@ export function effectiveTier1Ttft(accountId: string, modelId: string, candidate
   return known.length ? median(known) : TIER1_NEUTRAL_TTFT_MS;
 }
 
-function loadFactor(node: RuntimeNode): number {
-  const capacity = node.limits?.concurrency;
-  if (!capacity) return 1;
-  return 1 + 0.5 * Math.min(1, tier1AccountInFlight(node.id) / capacity);
-}
-
 function failureFactor(accountId: string, modelId: string): number {
   return getTier1ModelPerf(accountId, modelId)?.failureState === FAILURE_STATE.HALF_OPEN
     ? TIER1_HALF_OPEN_SCORE_PENALTY : 1;
@@ -450,7 +444,6 @@ export function calculateTier1Score(node: RuntimeNode, modelId: string, candidat
   return Math.max(1,
     TIER1_SCORE_BASE
     * ttftFactor(node.id, modelId, candidates)
-    * loadFactor(node)
     * failureFactor(node.id, modelId)
     * quotaFactor(node.id, now)
     * tier1ProviderModelHeatFactor(node.provider, tier1UpstreamModelOf(node, modelId), now)
@@ -704,11 +697,6 @@ export function tier1BlockingWaitMs(node: RuntimeNode, modelId: string, now: num
   if (model && model.cooldownUntil > now) return model.cooldownUntil - now;
   if (model && model.rateLimitRecoveryUntil > now) return model.rateLimitRecoveryUntil - now;
   if (model?.failureState === FAILURE_STATE.HALF_OPEN && account.inFlight > 0) return 1_000;
-  if (node.limits.rpm && node.limits.rpmMode !== 'soft') {
-    const rpmWait = tier1RpmWaitMs(node.id, node.limits.rpm, now);
-    if (rpmWait > 0) return rpmWait;
-  }
-  if (account.inFlight >= node.limits.concurrency) return 1_000;
   return Infinity;
 }
 
@@ -724,9 +712,6 @@ export function tier1HasDeferredCapacity(nodes: ReadonlyArray<RuntimeNode>, req:
     if (modelBlocked(model, now)) continue;
     if ((model?.rateLimitRecoveryUntil ?? 0) > now) return true;
     if (model?.failureState === FAILURE_STATE.HALF_OPEN && account.inFlight > 0) return true;
-    if (account.inFlight >= node.limits.concurrency) return true;
-    if (node.limits.rpm && node.limits.rpmMode !== 'soft'
-      && tier1RpmWaitMs(node.id, node.limits.rpm, now) > 0) return true;
   }
   return false;
 }
@@ -809,7 +794,6 @@ export function snapshotTier1AccountRuntime(accountId: string, modelIds: Readonl
 
 export function __resetTier1StateForTests(): void {
   accounts.clear();
-  rpmBuckets.clear();
   providerModelRateLimits.clear();
 }
 

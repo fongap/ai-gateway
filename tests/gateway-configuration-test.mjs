@@ -107,39 +107,23 @@ test('unknown top-level field (prioirty typo) is rejected', () => {
   assert.ok(cfg.diagnostics.some((d) => d.includes('prioirty')), `expected unknown-field diagnostic, got ${cfg.diagnostics}`);
 });
 
-test('unknown limits field (concurency typo) is rejected', () => {
-  const cfg = loadGatewayConfig(makeEnv({ tier1: [node('b', { limits: { concurency: 2 } })], secrets: { b: 'x' } }));
+test('removed limits field is rejected as unknown configuration', () => {
+  const cfg = loadGatewayConfig(makeEnv({ tier1: [node('b', { limits: { concurrency: 2 } })], secrets: { b: 'x' } }));
   assert.equal(cfg.nodes.length, 0);
-  assert.ok(cfg.diagnostics.some((d) => d.includes('concurency')), `expected limits diagnostic, got ${cfg.diagnostics}`);
+  assert.ok(cfg.diagnostics.some((d) => d.includes('unknown field "limits"')), `expected strict-schema diagnostic, got ${cfg.diagnostics}`);
 });
 
-test('invalid priority / concurrency / rpm are rejected with a named diagnostic', () => {
-  const priority = loadGatewayConfig(makeEnv({ tier1: [node('p', { priority: -1 })], secrets: { p: 'x' } }));
-  assert.equal(priority.nodes.length, 0);
-  assert.ok(priority.diagnostics.some((d) => d.includes('priority')));
-  const concurrency = loadGatewayConfig(makeEnv({ tier1: [node('c', { limits: { concurrency: 0 } })], secrets: { c: 'x' } }));
-  assert.equal(concurrency.nodes.length, 0);
-  assert.ok(concurrency.diagnostics.some((d) => d.includes('concurrency')));
-  const rpm = loadGatewayConfig(makeEnv({ tier1: [node('r', { limits: { rpm: 'abc' } })], secrets: { r: 'x' } }));
-  assert.equal(rpm.nodes.length, 0);
-  assert.ok(rpm.diagnostics.some((d) => d.includes('rpm')));
+test('invalid priority is rejected with a named diagnostic', () => {
+  const cfg = loadGatewayConfig(makeEnv({ tier1: [node('p', { priority: -1 })], secrets: { p: 'x' } }));
+  assert.equal(cfg.nodes.length, 0);
+  assert.ok(cfg.diagnostics.some((d) => d.includes('priority')));
 });
 
-test('rpm_mode defaults to hard when rpm is set; soft is opt-in; invalid rejected', () => {
-  const def = loadGatewayConfig(makeEnv({ tier1: [node('d', { limits: { rpm: 10 } })], secrets: { d: 'x' } }));
-  assert.equal(def.nodes[0].limits.rpmMode, 'hard');
-  const soft = loadGatewayConfig(makeEnv({ tier1: [node('s', { limits: { rpm: 10, rpm_mode: 'soft' } })], secrets: { s: 'x' } }));
-  assert.equal(soft.nodes[0].limits.rpmMode, 'soft');
-  const bad = loadGatewayConfig(makeEnv({ tier1: [node('b', { limits: { rpm: 10, rpm_mode: 'unlimited' } })], secrets: { b: 'x' } }));
-  assert.equal(bad.nodes.length, 0);
-  assert.ok(bad.diagnostics.some((d) => d.includes('rpm_mode')));
-});
-
-test('valid priority defaults to 100 and concurrency to 2', () => {
+test('priority defaults to 100 with no node capacity fields', () => {
   const cfg = loadGatewayConfig(makeEnv({ tier1: [node('ok')], secrets: { ok: 'x' } }));
   assert.equal(cfg.status, 'ready');
   assert.equal(cfg.nodes[0].priority, 100);
-  assert.equal(cfg.nodes[0].limits.concurrency, 2);
+  assert.equal('limits' in cfg.nodes[0], false);
 });
 
 // ---- protocol / surfaces schema --------------------------------------------
@@ -152,25 +136,16 @@ test('explicit protocol + surfaces build cleanly with no diagnostics', () => {
   assert.deepEqual(cfg.nodes[0].surfaces, ['chat_completions']);
 });
 
-test('legacy nodes without protocol/surfaces still build (deprecated defaults, NOT invalid)', () => {
-  const legacy = { id: 'old-01', provider: 'nvidia', base_url: 'https://old.example.com/v1', models: {} };
-  const cfg = loadGatewayConfig(makeEnv({ tier1: [legacy], secrets: { 'old-01': 'x' } }));
-  assert.equal(cfg.status, 'ready', 'a legacy node must NOT invalidate the gateway');
-  assert.equal(cfg.ready, true);
-  assert.equal(cfg.nodes.length, 1);
-  assert.equal(cfg.nodes[0].protocol, 'openai', 'missing protocol defaults to openai');
-  assert.deepEqual(cfg.nodes[0].surfaces, ['chat_completions'], 'missing surfaces defaults to chat_completions');
-  assert.ok(cfg.diagnostics.some((d) => d.includes('old-01') && d.includes('protocol is implicit and defaults to "openai"')),
-    `expected a protocol deprecation diagnostic, got ${cfg.diagnostics}`);
-  assert.ok(cfg.diagnostics.some((d) => d.includes('old-01') && d.includes('surfaces is implicit and defaults to ["chat_completions"]')),
-    `expected a surfaces deprecation diagnostic, got ${cfg.diagnostics}`);
-});
+test('protocol and surfaces are required; implicit legacy defaults are rejected', () => {
+  const missingBoth = { id: 'old-01', provider: 'nvidia', base_url: 'https://old.example.com/v1', models: {} };
+  const a = loadGatewayConfig(makeEnv({ tier1: [missingBoth], secrets: { 'old-01': 'x' } }));
+  assert.equal(a.status, 'invalid');
+  assert.ok(a.diagnostics.some((d) => d.includes('protocol is required')));
 
-test('anthropic protocol nodes default to the messages surface', () => {
-  const legacy = { id: 'an-01', provider: 'anthropic', protocol: 'anthropic', base_url: 'https://an.example.com', models: {} };
-  const cfg = loadGatewayConfig(makeEnv({ tier1: [legacy], secrets: { 'an-01': 'x' } }));
-  assert.equal(cfg.status, 'ready');
-  assert.deepEqual(cfg.nodes[0].surfaces, ['messages']);
+  const missingSurface = { id: 'an-01', provider: 'anthropic', protocol: 'anthropic', base_url: 'https://an.example.com', models: {} };
+  const b = loadGatewayConfig(makeEnv({ tier1: [missingSurface], secrets: { 'an-01': 'x' } }));
+  assert.equal(b.status, 'invalid');
+  assert.ok(b.diagnostics.some((d) => d.includes('surfaces is required')));
 });
 
 test('invalid protocol value is rejected with a named diagnostic', () => {

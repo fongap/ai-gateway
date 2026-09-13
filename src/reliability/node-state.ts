@@ -425,6 +425,5 @@ export function hasBeenObserved(nodeId: string): boolean {
 // Test hook: wipe all isolate-local state between test cases.
 export function __resetAllStateForTests(): void {
   nodeState.clear();
-  rpmBuckets.clear();
   lastCleanup = 0;
 }

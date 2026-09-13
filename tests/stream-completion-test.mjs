@@ -239,7 +239,6 @@ await test('Tier 1 inFlight remains claimed until stream idle timeout and releas
   __resetTier1StateForTests();
   const node = {
     id: 'idle-account',
-    limits: { concurrency: 1, rpm: 100, rpmMode: 'hard' },
   };
   assert.equal(claimTier1Slot(node), true);
   const token = makeTier1ReleaseToken(node.id);
