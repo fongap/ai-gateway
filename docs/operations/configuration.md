@@ -90,10 +90,10 @@ Example Anthropic node:
 - `base_url` must be an absolute HTTPS URL unless insecure HTTP is explicitly enabled.
 - `priority` defaults to `100`; it is used by Tier 2/3 and ignored by Tier 1 P2C.
 - `models` maps logical model name → provider-facing model name. An empty object is the runtime wildcard form, bounded by the gateway's known-model/catalog rules where applicable.
-- `limits` is retired from active configuration. Existing syntactically-valid `limits` objects are accepted temporarily for migration safety, produce a deprecation diagnostic, and should be removed. They are not the production source of node RPM/concurrency capacity.
+- `limits` is not part of the active node schema and is rejected if present. Provider capacity is learned from runtime evidence rather than configured node RPM/concurrency ceilings.
 - unknown active node fields are rejected instead of silently ignored.
 
-Missing `protocol` or `surfaces` can still use deprecated compatibility defaults; operators should declare both explicitly.
+When omitted, `protocol` defaults to `openai`; `surfaces` defaults to `chat_completions` for OpenAI and `messages` for an explicit Anthropic protocol. Explicit fields are still recommended when a node serves a non-default surface such as OpenAI Responses.
 
 ## Credential shards
 
@@ -192,7 +192,7 @@ Additional rules:
 - `Max / Pro / Ultra` stay inside the general family;
 - `Air` moves only upward through `Air → Pro → Max → Ultra` and never falls back down to Air after moving upward;
 - the re-check round never creates a fresh attempt or wall-clock budget;
-- `model_missing` remains a mapping/capability fact and does not trigger cross-model fallback;
+- `model_missing` remains a mapping/capability fact for the failing node/model pair, but the request may continue to an authorized compatible sibling within the same bounded family budget;
 - a completed family sweep containing only transient capacity failures returns retryable `503`, allowing coding clients to retry without manual intervention.
 
 Models without a configured compatible sibling keep their existing policy budget and terminal semantics.
