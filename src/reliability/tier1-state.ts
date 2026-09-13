@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
 //
-// Isolate-local adaptive state for Tier 1 only. Performance is learned from
-// real requests at (account, model) scope. Tier 2/3 continue to use
-// node-state.ts and never read this module.
+// Isolate-local adaptive state for Tier 1. Capacity is learned from real
+// traffic: live in-flight pressure, passive TTFT, failures, adaptive 429
+// cooldown/recovery and explicit provider quota signals. There is no static
+// per-node RPM/concurrency admission and no legacy 30/45/60 rate-limit ladder.
 
 import { servesModel } from '../config/registry.ts';
 import type { RuntimeNode } from '../types/node.ts';
@@ -14,15 +15,12 @@ export const TIER1_OUTLIER_MULTIPLIER = 4;
 export const TIER1_OUTLIER_CONSECUTIVE_THRESHOLD = 2;
 export const TIER1_EXPLORATION_FACTOR = 0.9;
 export const TIER1_HALF_OPEN_SCORE_PENALTY = 1.4;
-export const TIER1_NEUTRAL_TTFT_MS = 800; // scheduling fallback, never stored as an observation
-export const TIER1_AFFINITY_FACTOR = 0.85; // one factor: the registry has no logical model tiers
-
-// TTFT scoring: bounded multiplicative demotion (not raw score base).
+export const TIER1_NEUTRAL_TTFT_MS = 800;
+export const TIER1_AFFINITY_FACTOR = 0.85;
 export const TIER1_SCORE_BASE = 1000;
 export const TIER1_TTFT_WEIGHT = 0.25;
-export const TIER1_TTFT_FACTOR_MIN = 0.85; // fast nodes get at most 0.85x
-export const TIER1_TTFT_FACTOR_MAX = 1.50; // slow nodes get at most 1.50x
-
+export const TIER1_TTFT_FACTOR_MIN = 0.85;
+export const TIER1_TTFT_FACTOR_MAX = 1.50;
 export const TIER1_FAILURE_THRESHOLD = 3;
 export const TIER1_HALF_OPEN_SUCCESS_THRESHOLD = 2;
 export const TIER1_COOLDOWN_DEFAULT_MS = 30_000;
@@ -31,22 +29,10 @@ export const TIER1_TIMEOUT_BASE_MS = 5_000;
 export const TIER1_TIMEOUT_MAX_MS = 120_000;
 export const TIER1_5XX_BASE_MS = 1_000;
 export const TIER1_5XX_MAX_MS = 300_000;
-// Auth (401/403) is account-scoped and intentionally long-lived so the same
-// isolate can recover on its own after a key rotation without repeatedly
-// hammering a rejected credential. To force a permanent block, set this to 0.
 export const TIER1_AUTH_DISABLED_COOLDOWN_MS = 3_600_000;
-// Availability-first 429 recovery: without an explicit Retry-After, a key
-// backs off briefly and is re-probed quickly instead of disappearing for
-// multi-minute exponential windows. Explicit Retry-After remains authoritative.
-export const TIER1_429_BASE_MS = 30_000;
-export const TIER1_429_SECOND_MS = 45_000;
-export const TIER1_429_MAX_MS = 60_000;
 export const TIER1_429_PROBE_GATE_MS = 5_000;
+export const TIER1_429_FALLBACK_MS = 15_000;
 
-// Provider-model heat is a soft ranking signal only. One or two independent
-// key-level 429s keep the current key-rotation behavior unchanged; three or
-// more distinct keys for the same provider-facing model indicate shared
-// capacity pressure and gently demote that cohort without blocking it.
 export const TIER1_PROVIDER_MODEL_429_WINDOW_MS = 90_000;
 export const TIER1_PROVIDER_MODEL_429_MILD_ACCOUNTS = 3;
 export const TIER1_PROVIDER_MODEL_429_STRONG_ACCOUNTS = 4;
@@ -95,18 +81,12 @@ export type Tier1AccountRuntime = {
   rateLimitRecoveryUntil: number,
   quotaState: Tier1QuotaState,
   quotaResetAt: number,
-  // model_missing is about the provider-facing model id, not the gateway's
-  // logical alias. Keep that short cooldown separate from logical-model
-  // performance/circuit state so remapping Code-Max does not inherit stale 404s.
   upstreamModelCooldowns: Map<string, number>,
   models: Map<string, Tier1ModelRuntime>,
 };
 
 export type Tier1ReleaseToken = { accountId: string, released: boolean };
 
-/** Failure-kind classification input consumed from the reliability layer.
- * `kind` is an open string: stream-layer kinds (e.g. 'stream_interrupted')
- * also flow through here, carrying the stream-layer `streamReason`. */
 export type Tier1FailureInput = {
   kind?: string,
   cooldownMs?: number,
@@ -126,11 +106,7 @@ export type Tier1Outcome = {
 };
 
 const accounts = new Map<string, Tier1AccountRuntime>();
-
-type Tier1ProviderModelRateLimitRuntime = {
-  accounts: Map<string, number>,
-};
-
+type Tier1ProviderModelRateLimitRuntime = { accounts: Map<string, number> };
 const providerModelRateLimits = new Map<string, Tier1ProviderModelRateLimitRuntime>();
 
 function providerModelKey(provider: string, upstreamModel: string): string {
@@ -164,12 +140,7 @@ export function recordTier1ProviderModelRateLimit(provider: string, upstreamMode
 export function recordTier1ProviderModelSuccess(provider: string, upstreamModel: string, accountId: string, now: number = Date.now()): void {
   const runtime = pruneProviderModelRateLimits(provider, upstreamModel, now);
   if (!runtime) return;
-
-  // A real success is recovery evidence. Remove at most one independent 429
-  // observation: preferably this same account, otherwise the oldest one.
-  if (runtime.accounts.delete(accountId)) {
-    // same key recovered
-  } else {
+  if (!runtime.accounts.delete(accountId)) {
     let oldestAccount: string | null = null;
     let oldestAt = Infinity;
     for (const [candidateId, observedAt] of runtime.accounts) {
@@ -180,9 +151,7 @@ export function recordTier1ProviderModelSuccess(provider: string, upstreamModel:
     }
     if (oldestAccount) runtime.accounts.delete(oldestAccount);
   }
-  if (runtime.accounts.size === 0) {
-    providerModelRateLimits.delete(providerModelKey(provider, upstreamModel));
-  }
+  if (runtime.accounts.size === 0) providerModelRateLimits.delete(providerModelKey(provider, upstreamModel));
 }
 
 export function tier1ProviderModelRateLimitCount(provider: string, upstreamModel: string, now: number = Date.now()): number {
@@ -195,19 +164,6 @@ export function tier1ProviderModelHeatFactor(provider: string, upstreamModel: st
   if (count >= TIER1_PROVIDER_MODEL_429_MILD_ACCOUNTS) return TIER1_PROVIDER_MODEL_429_MILD_FACTOR;
   return 1;
 }
-
-type Tier1RpmBucket = {
-  tokens: number,
-  updatedAt: number,
-  rpm: number,
-};
-
-// Tier 1 hard-RPM admission is intentionally isolate-local. A capacity of at
-// most two tokens permits one small burst while continuous refill removes the
-// fixed-minute boundary spike. No new configuration surface is introduced:
-// node.limits.rpm remains the single rate input.
-const TIER1_RPM_BURST_TOKENS = 2;
-const rpmBuckets = new Map<string, Tier1RpmBucket>();
 
 function newModelRuntime(): Tier1ModelRuntime {
   return {
@@ -284,59 +240,6 @@ function upstreamModelCooldownRemainingMs(account: Tier1AccountRuntime, node: Ru
   return until > now ? until - now : 0;
 }
 
-function tier1RpmCapacity(rpm: number): number {
-  return Math.max(1, Math.min(TIER1_RPM_BURST_TOKENS, Math.floor(rpm)));
-}
-
-function refilledTier1RpmTokens(bucket: Tier1RpmBucket, now: number): number {
-  const capacity = tier1RpmCapacity(bucket.rpm);
-  const elapsed = Math.max(0, now - bucket.updatedAt);
-  return Math.min(capacity, bucket.tokens + elapsed * (bucket.rpm / 60_000));
-}
-
-export function tier1RpmWaitMs(accountId: string, rpm: number, now: number = Date.now()): number {
-  if (!Number.isFinite(rpm) || rpm <= 0) return 0;
-  const bucket = rpmBuckets.get(accountId);
-  if (!bucket || bucket.rpm !== rpm) return 0;
-  const tokens = refilledTier1RpmTokens(bucket, now);
-  if (tokens >= 1) return 0;
-  return Math.max(1, Math.ceil((1 - tokens) * (60_000 / rpm)));
-}
-
-function noteTier1Rpm(accountId: string, rpm: number, now: number): boolean {
-  if (!Number.isFinite(rpm) || rpm <= 0) return true;
-  const capacity = tier1RpmCapacity(rpm);
-  const previous = rpmBuckets.get(accountId);
-  const tokens = !previous || previous.rpm !== rpm
-    ? capacity
-    : refilledTier1RpmTokens(previous, now);
-  if (tokens < 1) return false;
-  rpmBuckets.set(accountId, { tokens: Math.max(0, tokens - 1), updatedAt: now, rpm });
-  return true;
-}
-
-// Compatibility diagnostic: this is the current token deficit in the smooth
-// admission bucket, not a fixed-calendar-minute request counter.
-export function tier1RpmUsage(accountId: string, now: number = Date.now()): number {
-  const bucket = rpmBuckets.get(accountId);
-  if (!bucket) return 0;
-  return Math.max(0, tier1RpmCapacity(bucket.rpm) - refilledTier1RpmTokens(bucket, now));
-}
-
-export function rollbackTier1Rpm(accountId: string, now: number = Date.now()): void {
-  const bucket = rpmBuckets.get(accountId);
-  if (!bucket) return;
-  const capacity = tier1RpmCapacity(bucket.rpm);
-  const tokens = refilledTier1RpmTokens(bucket, now);
-  bucket.tokens = Math.min(capacity, tokens + 1);
-  bucket.updatedAt = now;
-}
-
-function recoveryGateMs(rpm: number): number {
-  const interval = Number.isFinite(rpm) && rpm > 0 ? 60_000 / rpm : 0;
-  return Math.max(TIER1_429_PROBE_GATE_MS, interval);
-}
-
 export function claimTier1Slot(node: RuntimeNode, now: number = Date.now(), modelId: string | null = null): boolean {
   const account = getTier1Account(node.id);
   if (account.accountDisabled || account.accountCooldownUntil > now || account.rateLimitRecoveryUntil > now) return false;
@@ -344,24 +247,16 @@ export function claimTier1Slot(node: RuntimeNode, now: number = Date.now(), mode
   if (modelId && upstreamModelCooldownRemainingMs(account, node, modelId, now) > 0) return false;
   if ((model?.rateLimitRecoveryUntil ?? 0) > now) return false;
   if (model?.failureState === FAILURE_STATE.HALF_OPEN && account.inFlight > 0) return false;
-  if (account.inFlight >= node.limits.concurrency) return false;
-
-  const rpm = node.limits.rpm ?? 0;
-  const hardRpm = rpm > 0 && node.limits.rpmMode !== 'soft';
-  if (hardRpm && !noteTier1Rpm(node.id, rpm, now)) return false;
+  if (account.quotaState === 'exhausted_until' && account.quotaResetAt > now) return false;
 
   account.inFlight++;
-  // The first real admission after a 429 cooldown is the recovery probe. Gate
-  // the same scope immediately so concurrent requests in this isolate cannot
-  // stampede the key before the probe succeeds or fails. A successful probe
-  // clears the gate immediately in recordTier1Success().
   if (account.rateLimitRecoveryPending) {
     account.rateLimitRecoveryPending = false;
-    account.rateLimitRecoveryUntil = now + recoveryGateMs(rpm);
+    account.rateLimitRecoveryUntil = now + TIER1_429_PROBE_GATE_MS;
   }
   if (model?.rateLimitRecoveryPending) {
     model.rateLimitRecoveryPending = false;
-    model.rateLimitRecoveryUntil = now + recoveryGateMs(rpm);
+    model.rateLimitRecoveryUntil = now + TIER1_429_PROBE_GATE_MS;
   }
   return true;
 }
@@ -379,28 +274,22 @@ export function releaseTier1Slot(accountId: string, token: Tier1ReleaseToken | n
 }
 
 function modelBlocked(model: Tier1ModelRuntime | null | undefined, now: number): boolean {
-  return model?.disabled || (model?.cooldownUntil ?? 0) > now;
+  return Boolean(model?.disabled || (model?.cooldownUntil ?? 0) > now);
 }
 
-// Read-only eligibility filter. Missing runtime state means UNKNOWN, not bad.
-// `knownModels` (the Known Model Catalog) bounds wildcard nodes: an
-// empty-models node serves only catalog models, never an arbitrary string.
 export function isTier1Eligible(node: RuntimeNode, req: RoutableRequest, now: number = Date.now(), knownModels?: ReadonlySet<string> | null): boolean {
   if (!node || node.tier !== 'tier-1') return false;
   if (node.protocol !== req.protocol) return false;
-  if (!Array.isArray(node.surfaces) || !node.surfaces.includes(req.surface)) return false;
+  if (!node.surfaces.includes(req.surface)) return false;
   if (!servesModel(node, req.model, knownModels)) return false;
   const account = accounts.get(node.id);
   if (!account) return true;
   if (account.accountDisabled || account.accountCooldownUntil > now || account.rateLimitRecoveryUntil > now) return false;
+  if (account.quotaState === 'exhausted_until' && account.quotaResetAt > now) return false;
   if (upstreamModelCooldownRemainingMs(account, node, req.model, now) > 0) return false;
   const model = account.models.get(req.model);
   if (modelBlocked(model, now) || (model?.rateLimitRecoveryUntil ?? 0) > now) return false;
   if (model?.failureState === FAILURE_STATE.HALF_OPEN && account.inFlight > 0) return false;
-  if (account.inFlight >= node.limits.concurrency) return false;
-  if (node.limits.rpm && node.limits.rpmMode !== 'soft'
-    && tier1RpmWaitMs(node.id, node.limits.rpm, now) > 0) return false;
-  if (account.quotaState === 'exhausted_until' && account.quotaResetAt > now) return false;
   return true;
 }
 
@@ -429,9 +318,7 @@ export function tier1HasDispatchableNode(nodes: ReadonlyArray<RuntimeNode>, req:
 function median(values: ReadonlyArray<number>): number {
   const ordered = [...values].sort((a, b) => a - b);
   const middle = Math.floor(ordered.length / 2);
-  return ordered.length % 2
-    ? ordered[middle]
-    : (ordered[middle - 1] + ordered[middle]) / 2;
+  return ordered.length % 2 ? ordered[middle] : (ordered[middle - 1] + ordered[middle]) / 2;
 }
 
 export function effectiveTier1Ttft(accountId: string, modelId: string, candidates: ReadonlyArray<RuntimeNode>): number {
@@ -446,10 +333,13 @@ export function effectiveTier1Ttft(accountId: string, modelId: string, candidate
   return known.length ? median(known) : TIER1_NEUTRAL_TTFT_MS;
 }
 
+// Soft pressure only. 1/2/3/4 in-flight requests correspond to normalized
+// pressures of 0.50/0.67/0.75/0.80, bounded to a maximum 25% score penalty.
 function loadFactor(node: RuntimeNode): number {
-  const capacity = node.limits?.concurrency;
-  if (!capacity) return 1;
-  return 1 + 0.5 * Math.min(1, tier1AccountInFlight(node.id) / capacity);
+  const inFlight = tier1AccountInFlight(node.id);
+  if (inFlight <= 0) return 1;
+  const pressure = inFlight / (inFlight + 1);
+  return 1 + 0.25 * pressure;
 }
 
 function failureFactor(accountId: string, modelId: string): number {
@@ -465,57 +355,24 @@ function quotaFactor(accountId: string, now: number): number {
 
 function explorationFactor(accountId: string, modelId: string): number {
   const metric = getTier1ModelPerf(accountId, modelId);
-  return !metric || metric.ttftEwma == null || metric.sampleCount === 0
-    ? TIER1_EXPLORATION_FACTOR : 1;
+  return !metric || metric.ttftEwma == null || metric.sampleCount === 0 ? TIER1_EXPLORATION_FACTOR : 1;
 }
 
-// Candidate-pool TTFT baseline: median of all known ttftEwma values in the
-// eligible pool. Used to compute a relative ratio — never persisted.
-function tier1TtftBaseline(
-  modelId: string,
-  candidates: ReadonlyArray<RuntimeNode>,
-): number {
+function tier1TtftBaseline(modelId: string, candidates: ReadonlyArray<RuntimeNode>): number {
   const known: number[] = [];
   for (const candidate of candidates ?? []) {
     const metric = getTier1ModelPerf(candidate.id, modelId);
-    if (
-      metric?.ttftEwma != null
-      && metric.sampleCount > 0
-      && Number.isFinite(metric.ttftEwma)
-    ) {
-      known.push(metric.ttftEwma);
-    }
+    if (metric?.ttftEwma != null && metric.sampleCount > 0 && Number.isFinite(metric.ttftEwma)) known.push(metric.ttftEwma);
   }
   return known.length ? median(known) : TIER1_NEUTRAL_TTFT_MS;
 }
 
-// TTFT factor: bounded multiplicative demotion. A node whose ttftEwma is at
-// the pool baseline scores 1.0; faster nodes get a bonus (down to
-// TIER1_TTFT_FACTOR_MIN = 0.85); slower nodes get a penalty (up to
-// TIER1_TTFT_FACTOR_MAX = 1.50). Nodes with no samples return 1.0 (no
-// demotion — they keep the exploration factor instead).
-function ttftFactor(
-  accountId: string,
-  modelId: string,
-  candidates: ReadonlyArray<RuntimeNode>,
-): number {
+function ttftFactor(accountId: string, modelId: string, candidates: ReadonlyArray<RuntimeNode>): number {
   const metric = getTier1ModelPerf(accountId, modelId);
-  if (
-    !metric
-    || metric.ttftEwma == null
-    || metric.sampleCount === 0
-  ) {
-    return 1; // no demotion — explorationFactor handles unknown nodes
-  }
+  if (!metric || metric.ttftEwma == null || metric.sampleCount === 0) return 1;
   const baseline = tier1TtftBaseline(modelId, candidates);
   const ratio = metric.ttftEwma / Math.max(1, baseline);
-  return Math.min(
-    TIER1_TTFT_FACTOR_MAX,
-    Math.max(
-      TIER1_TTFT_FACTOR_MIN,
-      1 + TIER1_TTFT_WEIGHT * (ratio - 1),
-    ),
-  );
+  return Math.min(TIER1_TTFT_FACTOR_MAX, Math.max(TIER1_TTFT_FACTOR_MIN, 1 + TIER1_TTFT_WEIGHT * (ratio - 1)));
 }
 
 export function calculateTier1Score(node: RuntimeNode, modelId: string, candidates: ReadonlyArray<RuntimeNode>, affinityFactor: number = 1, now: number = Date.now()): number {
@@ -545,8 +402,7 @@ export function recordTier1Ttft(accountId: string, modelId: string, observedMs: 
     } else {
       model.consecutiveOutliers = 0;
     }
-    model.ttftEwma = TIER1_EWMA_ALPHA * effectiveSample
-      + (1 - TIER1_EWMA_ALPHA) * model.ttftEwma;
+    model.ttftEwma = TIER1_EWMA_ALPHA * effectiveSample + (1 - TIER1_EWMA_ALPHA) * model.ttftEwma;
   }
   model.sampleCount++;
   model.lastObservedAt = now;
@@ -558,10 +414,7 @@ export function classifyTier1Failure(classification: Tier1FailureInput, opts: { 
   const kind = classification?.kind;
   if (kind === 'auth') return { scope: 'account', action: 'disable', reason: kind };
   if (kind === 'model_missing') {
-    return {
-      scope: 'upstream_model', action: 'cooldown', counted: false,
-      cooldownMs: classification?.cooldownMs || 5_000, reason: kind,
-    };
+    return { scope: 'upstream_model', action: 'cooldown', counted: false, cooldownMs: classification?.cooldownMs || 5_000, reason: kind };
   }
   if (kind === 'endpoint_not_found') {
     return { scope: 'account', action: 'cooldown', counted: false, cooldownMs: classification?.cooldownMs || 5_000, reason: kind };
@@ -569,25 +422,20 @@ export function classifyTier1Failure(classification: Tier1FailureInput, opts: { 
   if (kind === 'rate_limit') {
     const explicit = retryAfterMs ?? classification?.retryAfterMs ?? 0;
     return {
-      // A runtime node is one credential/key. Providers frequently apply 429
-      // limits at credential scope but do not say so explicitly, therefore an
-      // ambiguous 429 now cools that key/account rather than one logical model.
-      // Explicit model-scoped evidence remains supported.
       scope: classification?.rateLimitScope === 'model' ? 'model' : 'account',
-      action: 'cooldown', counted: false, cooldownMs: explicit,
-      backoff: 'rate_limit', reason: kind,
+      action: 'cooldown',
+      counted: false,
+      cooldownMs: explicit,
+      backoff: 'rate_limit',
+      reason: kind,
       scopeAmbiguous: !classification?.rateLimitScope,
     };
   }
-  if (kind === 'client' || kind === 'client_abort') {
-    return { scope: 'none', action: 'neutral', counted: false, cooldownMs: 0, reason: kind };
-  }
+  if (kind === 'client' || kind === 'client_abort') return { scope: 'none', action: 'neutral', counted: false, cooldownMs: 0, reason: kind };
   if (kind === 'headers_timeout' || kind === 'first_event_timeout' || kind === 'network' || kind === 'stream_interrupted') {
     return { scope: 'model', action: 'cooldown', counted: true, cooldownMs: 0, backoff: 'timeout', reason: kind };
   }
-  if (kind === 'server') {
-    return { scope: 'model', action: 'cooldown', counted: true, cooldownMs: 0, backoff: 'server', reason: kind };
-  }
+  if (kind === 'server') return { scope: 'model', action: 'cooldown', counted: true, cooldownMs: 0, backoff: 'server', reason: kind };
   return { scope: 'model', action: 'cooldown', counted: true, cooldownMs: 0, backoff: 'default', reason: kind || 'unknown' };
 }
 
@@ -595,16 +443,6 @@ function exponential(base: number, max: number, count: number): number {
   return Math.min(max, base * 2 ** Math.max(0, count - 1));
 }
 
-function rateLimitCooldownMs(count: number): number {
-  if (count <= 1) return TIER1_429_BASE_MS;
-  if (count === 2) return TIER1_429_SECOND_MS;
-  return TIER1_429_MAX_MS;
-}
-
-// Apply a light ±10% jitter to an automatically-computed cooldown. This
-// avoids different isolates re-probing the same failing upstream at the
-// exact same instant. Explicit Retry-After values are NOT jittered — only
-// auto-computed backoffs are.
 const JITTER_FACTOR = 0.1;
 function jitter(ms: number): number {
   if (ms <= 0) return ms;
@@ -614,12 +452,10 @@ function jitter(ms: number): number {
 
 function modelCooldownMs(model: Tier1ModelRuntime, outcome: Tier1Outcome): number {
   if ((outcome.cooldownMs ?? 0) > 0) {
-    // Provider Retry-After is authoritative for rate limits, even when longer
-    // than the local availability-first automatic cap.
     if (outcome.backoff === 'rate_limit') return outcome.cooldownMs ?? 0;
     return Math.min(outcome.cooldownMs ?? 0, TIER1_COOLDOWN_MAX_MS);
   }
-  if (outcome.backoff === 'rate_limit') return jitter(rateLimitCooldownMs(model.consecutiveRateLimits));
+  if (outcome.backoff === 'rate_limit') return TIER1_429_FALLBACK_MS;
   if (outcome.backoff === 'timeout') return jitter(exponential(TIER1_TIMEOUT_BASE_MS, TIER1_TIMEOUT_MAX_MS, model.consecutiveFailures));
   if (outcome.backoff === 'server') return jitter(exponential(TIER1_5XX_BASE_MS, TIER1_5XX_MAX_MS, model.consecutiveFailures));
   return jitter(exponential(TIER1_COOLDOWN_DEFAULT_MS, TIER1_COOLDOWN_MAX_MS, model.consecutiveFailures));
@@ -633,17 +469,12 @@ export function applyTier1Outcome(accountId: string, modelId: string, outcome: T
     const cooldownMs = Math.min(Math.max(0, outcome.cooldownMs ?? 0), TIER1_COOLDOWN_MAX_MS);
     if (cooldownMs > 0) {
       const until = now + cooldownMs;
-      account.upstreamModelCooldowns.set(
-        modelId,
-        Math.max(account.upstreamModelCooldowns.get(modelId) ?? 0, until),
-      );
+      account.upstreamModelCooldowns.set(modelId, Math.max(account.upstreamModelCooldowns.get(modelId) ?? 0, until));
     }
     return;
   }
 
   if (outcome.action === 'disable') {
-    // Auth is the only Tier 1 disable-class outcome. It is converted to a long
-    // account cooldown so rotated credentials self-recover without isolate restart.
     const ms = outcome.reason === 'auth' ? TIER1_AUTH_DISABLED_COOLDOWN_MS : 0;
     if (ms > 0) {
       if (outcome.scope === 'account') {
@@ -659,7 +490,6 @@ export function applyTier1Outcome(accountId: string, modelId: string, outcome: T
       }
       return;
     }
-    // Legacy permanent-disable path (cooldown = 0 means operator wants hard disable).
     if (outcome.scope === 'account') {
       account.accountDisabled = true;
       account.accountCooldownReason = outcome.reason;
@@ -671,14 +501,12 @@ export function applyTier1Outcome(accountId: string, modelId: string, outcome: T
     }
     return;
   }
+
   if (outcome.scope === 'account') {
     if (outcome.backoff === 'rate_limit') {
       account.consecutiveRateLimits++;
       if (outcome.scopeAmbiguous) account.scopeAmbiguous429 = true;
-      const explicit = outcome.cooldownMs ?? 0;
-      const cooldownMs = explicit > 0
-        ? explicit
-        : jitter(rateLimitCooldownMs(account.consecutiveRateLimits));
+      const cooldownMs = (outcome.cooldownMs ?? 0) > 0 ? outcome.cooldownMs! : TIER1_429_FALLBACK_MS;
       account.accountCooldownUntil = Math.max(account.accountCooldownUntil, now + cooldownMs);
       account.accountCooldownReason = outcome.reason;
       account.rateLimitRecoveryPending = true;
@@ -720,9 +548,6 @@ export function recordTier1Success(accountId: string, modelId: string, now: numb
   const model = getTier1Model(accountId, modelId);
   account.consecutiveAccountFailures = 0;
 
-  // Only a request admitted after the rate-limit cooldown may declare recovery.
-  // A request that was already in flight when a peer received 429 must not
-  // accidentally cancel the newly-created cooldown when it later succeeds.
   const accountRecoveryProbe = account.accountCooldownReason === 'rate_limit'
     && account.accountCooldownUntil <= now
     && !account.rateLimitRecoveryPending
@@ -769,41 +594,34 @@ export function tier1BlockingWaitMs(node: RuntimeNode, modelId: string, now: num
   if (!account || account.accountDisabled) return Infinity;
   if (account.accountCooldownUntil > now) return account.accountCooldownUntil - now;
   if (account.rateLimitRecoveryUntil > now) return account.rateLimitRecoveryUntil - now;
-  const upstreamModelWait = upstreamModelCooldownRemainingMs(account, node, modelId, now);
-  if (upstreamModelWait > 0) return upstreamModelWait;
+  const upstreamWait = upstreamModelCooldownRemainingMs(account, node, modelId, now);
+  if (upstreamWait > 0) return upstreamWait;
   const model = account.models.get(modelId);
   if (model?.disabled) return Infinity;
   if (model && model.cooldownUntil > now) return model.cooldownUntil - now;
   if (model && model.rateLimitRecoveryUntil > now) return model.rateLimitRecoveryUntil - now;
   if (model?.failureState === FAILURE_STATE.HALF_OPEN && account.inFlight > 0) return 1_000;
-  if (node.limits.rpm && node.limits.rpmMode !== 'soft') {
-    const rpmWait = tier1RpmWaitMs(node.id, node.limits.rpm, now);
-    if (rpmWait > 0) return rpmWait;
-  }
-  if (account.inFlight >= node.limits.concurrency) return 1_000;
+  if (account.quotaState === 'exhausted_until' && account.quotaResetAt > now) return account.quotaResetAt - now;
   return Infinity;
 }
 
 export function tier1HasDeferredCapacity(nodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, now: number = Date.now(), knownModels?: ReadonlySet<string> | null): boolean {
   for (const node of nodes ?? []) {
     if (attempted.has(node.id) || node.tier !== 'tier-1') continue;
-    if (node.protocol !== req.protocol || !node.surfaces?.includes(req.surface) || !servesModel(node, req.model, knownModels)) continue;
+    if (node.protocol !== req.protocol || !node.surfaces.includes(req.surface) || !servesModel(node, req.model, knownModels)) continue;
     const account = accounts.get(node.id);
-    if (!account || account.accountDisabled || account.accountCooldownUntil > now) continue;
-    if (account.rateLimitRecoveryUntil > now) return true;
+    if (!account || account.accountDisabled) continue;
+    if (account.accountCooldownUntil > now || account.rateLimitRecoveryUntil > now) return true;
+    if (account.quotaState === 'exhausted_until' && account.quotaResetAt > now) return true;
     if (upstreamModelCooldownRemainingMs(account, node, req.model, now) > 0) continue;
     const model = account.models.get(req.model);
-    if (modelBlocked(model, now)) continue;
-    if ((model?.rateLimitRecoveryUntil ?? 0) > now) return true;
+    if (model?.disabled) continue;
+    if ((model?.cooldownUntil ?? 0) > now || (model?.rateLimitRecoveryUntil ?? 0) > now) return true;
     if (model?.failureState === FAILURE_STATE.HALF_OPEN && account.inFlight > 0) return true;
-    if (account.inFlight >= node.limits.concurrency) return true;
-    if (node.limits.rpm && node.limits.rpmMode !== 'soft'
-      && tier1RpmWaitMs(node.id, node.limits.rpm, now) > 0) return true;
   }
   return false;
 }
 
-// Only explicit, comparable provider data may call this interface.
 export function recordTier1QuotaSignal(accountId: string, signal: { remainingRatio?: number, resetAtMs?: number } = {}, now: number = Date.now()): boolean {
   const { remainingRatio, resetAtMs = 0 } = signal;
   if (typeof remainingRatio !== 'number' || !Number.isFinite(remainingRatio) || remainingRatio < 0 || remainingRatio > 1) return false;
@@ -843,8 +661,7 @@ export function snapshotTier1Runtime(accountId: string, modelId: string, now: nu
     account_consecutive_rate_limits: account?.consecutiveRateLimits ?? 0,
     account_scope_ambiguous_429: account?.scopeAmbiguous429 ?? false,
     in_flight: account?.inFlight ?? 0,
-    quota_state: account?.quotaState === 'exhausted_until' && (account?.quotaResetAt ?? 0) <= now
-      ? 'normal' : account?.quotaState ?? 'normal',
+    quota_state: account?.quotaState === 'exhausted_until' && (account?.quotaResetAt ?? 0) <= now ? 'normal' : account?.quotaState ?? 'normal',
     quota_reset_at: account && account.quotaResetAt > now ? new Date(account.quotaResetAt).toISOString() : null,
     failure_state: model?.failureState ?? FAILURE_STATE.NORMAL,
     consecutive_failures: model?.consecutiveFailures ?? 0,
@@ -868,7 +685,7 @@ export function snapshotTier1AccountRuntime(accountId: string, modelIds: Readonl
   return {
     state: account?.accountDisabled ? 'disabled'
       : account && account.accountCooldownUntil > now ? 'cooldown'
-      : models.some((m) => m.state === 'observed_healthy') ? 'observed_healthy'
+      : models.some((model) => model.state === 'observed_healthy') ? 'observed_healthy'
       : account ? 'unknown' : 'configured',
     in_flight: account?.inFlight ?? 0,
     account_disabled: account?.accountDisabled ?? false,
@@ -881,7 +698,6 @@ export function snapshotTier1AccountRuntime(accountId: string, modelIds: Readonl
 
 export function __resetTier1StateForTests(): void {
   accounts.clear();
-  rpmBuckets.clear();
   providerModelRateLimits.clear();
 }
 
