@@ -2,28 +2,11 @@
 // Copyright (c) 2026 Fongap Studio
 //
 // POLICIES_CONFIG: policy name -> { max_attempts, tier_attempts?, hedge? }. Optional.
-// `max_attempts` bounds total LOGICAL attempts per request across ALL tiers
-// (valid range 1-8). `tier_attempts` optionally overrides the per-tier
-// attempt budget (see tier-loop.ts computeTierCaps for the distribution rules).
-// Tier order is fixed (tier-1 -> tier-2 -> tier-3, hard precedence).
-//
-// Built-in policies (always present, user config merges on top):
-//   default        - balanced: maxAttempts=5, hedge enabled for Tier 1 only
-//   fast           - speed-first: maxAttempts=1, hedge disabled
-//   stable         - reliability: maxAttempts=5, hedge enabled for Tier 1 only
-//   long-reasoning - extended first-event: maxAttempts=3, hedge disabled, firstEventTimeoutMs=60000
-//
-// Hedging is controlled per policy: hedge.enabled must be true for hedging to
-// activate. default and stable enable hedge for the tiers listed in
-// hedge.tiers (currently ['tier1']); fast and long-reasoning disable it.
-// Custom policies may specify any subset of tier1/tier2/tier3 via
-// hedge.tiers; tiers not listed never launch hedge twins.
-//
-// Like the node config, POLICIES_CONFIG is strict: malformed JSON, unknown
-// fields, invalid max_attempts, and invalid tier_attempts produce diagnostics
-// instead of silently falling back to defaults. The parse is cached per isolate.
+// `max_attempts` is the request-wide logical-attempt ceiling. Tier order is
+// fixed (tier-1 -> tier-2 -> tier-3).
 
 import { readEnv } from './env.ts';
+import { getLimits } from './timeouts.ts';
 import type { PolicyConfig } from '../types/policy.ts';
 
 const MIN_ATTEMPTS = 1;
@@ -34,8 +17,6 @@ const ALLOWED_FIELDS = new Set(['max_attempts', 'tier_attempts', 'hedge', 'first
 type HedgePolicy = { enabled?: boolean, delayMs?: number, tiers?: Array<'tier1' | 'tier2' | 'tier3'> } | null;
 type TierAttempts = { tier1?: number, tier2?: number, tier3?: number } | null;
 
-// Built-in policies are the single source of truth. default and stable enable
-// hedging for Tier 1 only; fast and long-reasoning disable it.
 const BUILTIN_POLICIES: Record<string, PolicyConfig> = Object.freeze({
   default: {
     maxAttempts: 5,
@@ -62,9 +43,6 @@ const BUILTIN_POLICIES: Record<string, PolicyConfig> = Object.freeze({
     maxAttempts: 3,
     tierAttempts: null,
     hedge: { enabled: false },
-    // Keep the built-in inside the default 60s whole-request failover budget.
-    // Operators that need a longer first-event wait can override this policy
-    // only together with a larger FAILOVER_BUDGET_MS.
     firstEventTimeoutMs: 60_000,
     budgetSplit: null,
   },
@@ -85,10 +63,8 @@ function analyzePolicies(env: Record<string, unknown>): { policies: Record<strin
   if (cachedEnv === env && cached) return cached;
   cachedEnv = env;
   const raw = readEnv(env, 'POLICIES_CONFIG');
+  const failoverBudgetMs = getLimits(env).failoverBudgetMs;
   const errors: string[] = [];
-  // Start with built-ins; user config merges on top (override) — partial override:
-  // explicitly declared fields override; absent fields inherit from the built-in
-  // (or null for custom names).
   const policies: Record<string, PolicyConfig> = { ...BUILTIN_POLICIES };
   if (raw) {
     let parsed: unknown;
@@ -121,7 +97,18 @@ function analyzePolicies(env: Record<string, unknown>): { policies: Record<strin
         const tierAttempts = cfg.tier_attempts === undefined ? (base?.tierAttempts ?? null) : parseTierAttempts(cfg.tier_attempts, key, errors);
         const tierAttemptsValid = errors.length === tierErrorsBefore;
         const hedge = cfg.hedge === undefined ? (base?.hedge ?? null) : parseHedge(cfg.hedge, key, errors);
-        const firstEventTimeoutMs = cfg.first_event_timeout_ms === undefined ? (base?.firstEventTimeoutMs ?? null) : parseFirstEventTimeoutMs(cfg.first_event_timeout_ms, key, errors);
+        const firstEventTimeoutMs = cfg.first_event_timeout_ms === undefined
+          ? (base?.firstEventTimeoutMs ?? null)
+          : parseFirstEventTimeoutMs(cfg.first_event_timeout_ms, key, errors);
+        if (
+          cfg.first_event_timeout_ms !== undefined
+          && firstEventTimeoutMs !== null
+          && firstEventTimeoutMs > failoverBudgetMs
+        ) {
+          errors.push(
+            `POLICIES_CONFIG: "${key}": first_event_timeout_ms (${firstEventTimeoutMs}) exceeds FAILOVER_BUDGET_MS (${failoverBudgetMs})`,
+          );
+        }
         const budgetSplit = cfg.budget_split === undefined ? (base?.budgetSplit ?? null) : parseBudgetSplit(cfg.budget_split, key, errors);
         let attempts: number;
         let maxAttemptsValid = true;
@@ -160,14 +147,8 @@ function analyzePolicies(env: Record<string, unknown>): { policies: Record<strin
   return cached;
 }
 
-// Parse an optional hedge policy: { enabled?, delay_ms?, tiers? }.
-//   enabled   — boolean (default true); false disables hedging for this policy.
-//   delay_ms  — integer >= 0; overrides HEDGE_DELAY_MS for this policy.
-//   tiers     — array of "tier1"/"tier2"/"tier3"; if present, only those
-//               tiers may launch hedge twins. Absent = all tiers.
-// When the field is absent entirely (user config omits hedge), null is returned.
-// null means "no hedge for this policy". Built-in policies always declare hedge
-// explicitly. Custom policies without an explicit hedge have no hedge.
+// An explicit hedge object means hedging is enabled unless enabled:false is
+// written. Omitting the entire hedge field means the policy has no hedge.
 function parseHedge(value: unknown, policyName: string, errors: string[]): HedgePolicy {
   if (value === undefined || value === null) return null;
   if (typeof value !== 'object' || Array.isArray(value)) {
@@ -175,7 +156,7 @@ function parseHedge(value: unknown, policyName: string, errors: string[]): Hedge
     return null;
   }
   const rec = value as Record<string, unknown>;
-  const out: { enabled?: boolean, delayMs?: number, tiers?: Array<'tier1' | 'tier2' | 'tier3'> } = {};
+  const out: { enabled?: boolean, delayMs?: number, tiers?: Array<'tier1' | 'tier2' | 'tier3'> } = { enabled: true };
   if (rec.enabled !== undefined) {
     if (typeof rec.enabled !== 'boolean') {
       errors.push(`POLICIES_CONFIG: "${policyName}": hedge.enabled must be a boolean`);
@@ -184,8 +165,6 @@ function parseHedge(value: unknown, policyName: string, errors: string[]): Hedge
     }
   }
   if (rec.delay_ms !== undefined) {
-    // `typeof` leads the guard for the same narrowing/rejection reason as
-    // max_attempts above.
     if (typeof rec.delay_ms !== 'number' || !Number.isInteger(rec.delay_ms) || rec.delay_ms < 0) {
       errors.push(`POLICIES_CONFIG: "${policyName}": hedge.delay_ms must be a non-negative integer`);
     } else {
@@ -199,13 +178,9 @@ function parseHedge(value: unknown, policyName: string, errors: string[]): Hedge
       out.tiers = rec.tiers;
     }
   }
-  return Object.keys(out).length ? out : null;
+  return out;
 }
 
-// Parse an optional per-tier attempt budget object: { tier1, tier2, tier3 }.
-// Each value must be an integer in [0, MAX_ATTEMPTS]; 0 explicitly disables a
-// tier. Non-integers (null included), out-of-range values and unknown keys
-// produce diagnostics instead of being clamped or truncated.
 function parseTierAttempts(value: unknown, policyName: string, errors: string[]): TierAttempts {
   if (value === undefined || value === null) return null;
   if (typeof value !== 'object' || Array.isArray(value)) {
@@ -229,7 +204,6 @@ function parseTierAttempts(value: unknown, policyName: string, errors: string[])
   return any ? out : null;
 }
 
-// Parse an optional first-event timeout override in milliseconds.
 function parseFirstEventTimeoutMs(value: unknown, policyName: string, errors: string[]): number | null {
   if (value === undefined || value === null) return null;
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 5_000 || value > 600_000) {
@@ -239,9 +213,6 @@ function parseFirstEventTimeoutMs(value: unknown, policyName: string, errors: st
   return value;
 }
 
-// `budget_split` controls only budget that remains after explicit
-// `tier_attempts` are reserved. `even` keeps Tier precedence; `weighted`
-// distributes adjustable budget by live dispatchable node count.
 function parseBudgetSplit(value: unknown, policyName: string, errors: string[]): 'even' | 'weighted' | null {
   if (value === undefined || value === null) return null;
   if (value === 'even' || value === 'weighted') return value;
