@@ -65,7 +65,7 @@ Native execution always comes first. Cross-protocol fallback and logical-model f
 
 Code models never fall back into the non-Code family. `Air` may move upward to `Pro → Max → Ultra`, but `Ultra` / `Max` / `Pro` never fall back down to `Air`. A model-shaped 404 remains isolated to the failing model mapping and does not trigger a model-family switch. If a complete family sweep fails only for transient capacity reasons, the gateway returns retryable `503` so coding clients can retry instead of stopping for manual continuation.
 
-Tier 1 is intentionally biased toward **stable capacity, not a single "best" key**. Live in-flight work is a bounded soft ranking signal, affinity weakens as a key gets busy, real 429s drive cooldown/recovery, provider-model 429 heat can softly demote a hot cohort, and optional hedge work yields before primary traffic. A configured legacy `limits.concurrency` value never hard-blocks the only healthy node.
+Tier 1 is intentionally biased toward **stable capacity, not a single "best" key**. Live in-flight work is a bounded soft ranking signal, affinity weakens as a key gets busy, real 429s drive cooldown/recovery, provider-model 429 heat can softly demote a hot cohort, and optional hedge work yields before primary traffic. Node-level `limits` are no longer runtime admission controls.
 
 ## API surface
 
@@ -110,7 +110,7 @@ For production, use the repository-driven workflow in [Deployment](docs/operatio
 
 Credentials bind by **Tier + node id**; Config and Secret shard suffixes are independent partitions. Gateway access is fail-closed: a configured access key with a missing or empty model allowlist grants no model access.
 
-Node `limits` are retired from active configuration. Existing syntactically-valid legacy objects are accepted temporarily for migration safety but no longer define provider capacity; remove them from maintained configs.
+Node `limits` are not part of the active schema and are rejected. Runtime capacity is learned from live in-flight pressure, 429/cooldown, circuit state, and latency signals instead of operator-guessed per-node ceilings.
 
 See [Configuration](docs/operations/configuration.md) for the complete node schema, runtime variables, model-family and protocol fallback settings, and Cloudflare bindings.
 
