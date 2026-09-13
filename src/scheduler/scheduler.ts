@@ -50,7 +50,7 @@ export function supportsRequest(node: RuntimeNode, req: RoutableRequest, knownMo
   if (node.protocol !== req.protocol) return false;
   if (!Array.isArray(node.surfaces) || !node.surfaces.includes(req.surface)) return false;
   // Empty models map = wildcard. The catalog narrows wildcard to known models;
-  // without a catalog (standalone tests) the legacy permissive form is kept.
+  // without a catalog, standalone callers keep the wildcard behavior.
   return servesModel(node, req.model, knownModels);
 }
 
@@ -99,13 +99,9 @@ export function pickCandidate(tierNodes: ReadonlyArray<RuntimeNode>, req: Routab
   return { node: chosen };
 }
 
-// True when this tier could serve the request once an explicitly configured
-// hard RPM window resets. Concurrency is deliberately absent: it is a soft
-// ranking input, never deferred hard capacity.
-// DISPATCHABLE capacity: a candidate this tier could truly launch THIS INSTANT.
-// Dispatchability-aware mirror of pickCandidate's hard gates, used to decide
-// whether a LOWER tier deserves an attempt budget. Active request count does
-// not remove a node from this set; hard RPM still can.
+// True when this tier has a candidate that passes the same hard eligibility
+// gates used by pickCandidate. Active request count remains a soft ranking
+// signal and does not remove a node from this set.
 export function tierHasDispatchableNode(tierNodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, now: number = Date.now(), knownModels?: ReadonlySet<string> | null): boolean {
   return countDispatchableNodes(tierNodes, req, attempted, now, knownModels) > 0;
 }
