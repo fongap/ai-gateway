@@ -38,6 +38,8 @@ async function test(name, fn) {
   }
 }
 
+// ---- Mock upstream ---------------------------------------------------------
+
 const upstreamCalls = [];
 let routeHandlers = {};
 
@@ -216,6 +218,8 @@ function hangUntilAbort() {
   });
 }
 
+// ---- Strict configuration / auth ------------------------------------------
+
 await test('missing gateway key returns 401 without upstream traffic', async () => {
   routeHandlers['auth.example.com'] = () => jsonResponse(okChat());
   const env = makeEnv({ tier1: [openaiNode('auth')], secrets: { auth: 'k' } });
@@ -265,6 +269,8 @@ await test('protocol and surfaces are mandatory; no implicit legacy defaults rem
   assert.equal(res.status, 404);
   assert.equal(upstreamCalls.length, 0);
 });
+
+// ---- Native routing / failover --------------------------------------------
 
 await test('OpenAI Chat native success rewrites model identity and hides topology by default', async () => {
   routeHandlers['native.example.com'] = () => jsonResponse(okChat('native-ok'));
@@ -323,7 +329,10 @@ await test('legacy QUOTA_RATE_LIMITER binding is not provider admission policy',
   let limiterCalls = 0;
   const binding = { limit: async () => { limiterCalls++; return { success: false }; } };
   routeHandlers['quota.example.com'] = () => jsonResponse(okChat());
-  const env = makeEnv({ tier1: [openaiNode('quota')], secrets: { quota: 'k' }, extraEnv: { QUOTA_RATE_LIMITER: binding } });
+  const env = makeEnv({
+    tier1: [openaiNode('quota')], secrets: { quota: 'k' },
+    extraEnv: { QUOTA_RATE_LIMITER: binding },
+  });
   const res = await worker.fetch(chatRequest(), env, {});
   assert.equal(res.status, 200);
   assert.equal(limiterCalls, 0);
@@ -373,6 +382,8 @@ await test('busy Tier 2 remains last-resort capacity when it is the only healthy
   assert.equal(parkedRes.status, 200);
   await parkedRes.text();
 });
+
+// ---- Failure scoping -------------------------------------------------------
 
 await test('429 cools one key and rotates to another same-tier key before lower tiers', async () => {
   routeHandlers['rl-a.example.com'] = () => jsonResponse({}, 429, { 'retry-after': '30' });
@@ -426,18 +437,26 @@ await test('client-class 400 stops immediately instead of rotating', async () =>
   routeHandlers['bad-b.example.com'] = () => jsonResponse(okChat());
   recordTier1Ttft('bad-a', 'general-air', 50);
   recordTier1Ttft('bad-b', 'general-air', 2_000);
-  const env = makeEnv({ tier1: [openaiNode('bad-a'), openaiNode('bad-b')], secrets: { 'bad-a': 'a', 'bad-b': 'b' } });
+  const env = makeEnv({
+    tier1: [openaiNode('bad-a'), openaiNode('bad-b')],
+    secrets: { 'bad-a': 'a', 'bad-b': 'b' },
+  });
   const res = await worker.fetch(chatRequest(), env, {});
   assert.equal(res.status, 400);
   assert.equal(upstreamCalls.length, 1);
 });
 
 await test('HTTP 200 with non-JSON garbage rotates and penalizes the bad node', async () => {
-  routeHandlers['html-a.example.com'] = () => new Response('<html>proxy error</html>', { status: 200, headers: { 'content-type': 'text/html' } });
+  routeHandlers['html-a.example.com'] = () => new Response('<html>proxy error</html>', {
+    status: 200, headers: { 'content-type': 'text/html' },
+  });
   routeHandlers['html-b.example.com'] = () => jsonResponse(okChat('healthy'));
   recordTier1Ttft('html-a', 'general-air', 50);
   recordTier1Ttft('html-b', 'general-air', 2_000);
-  const env = makeEnv({ tier1: [openaiNode('html-a'), openaiNode('html-b')], secrets: { 'html-a': 'a', 'html-b': 'b' } });
+  const env = makeEnv({
+    tier1: [openaiNode('html-a'), openaiNode('html-b')],
+    secrets: { 'html-a': 'a', 'html-b': 'b' },
+  });
   const res = await worker.fetch(chatRequest(), env, {});
   assert.equal(res.status, 200);
   assert.deepEqual(upstreamCalls.map((c) => c.host), ['html-a.example.com', 'html-b.example.com']);
@@ -449,18 +468,30 @@ await test('HTTP 200 JSON error envelope also rotates to healthy capacity', asyn
   routeHandlers['jsonerr-b.example.com'] = () => jsonResponse(okChat('healthy'));
   recordTier1Ttft('jsonerr-a', 'general-air', 50);
   recordTier1Ttft('jsonerr-b', 'general-air', 2_000);
-  const env = makeEnv({ tier1: [openaiNode('jsonerr-a'), openaiNode('jsonerr-b')], secrets: { 'jsonerr-a': 'a', 'jsonerr-b': 'b' } });
+  const env = makeEnv({
+    tier1: [openaiNode('jsonerr-a'), openaiNode('jsonerr-b')],
+    secrets: { 'jsonerr-a': 'a', 'jsonerr-b': 'b' },
+  });
   const res = await worker.fetch(chatRequest(), env, {});
   assert.equal(res.status, 200);
   assert.deepEqual(upstreamCalls.map((c) => c.host), ['jsonerr-a.example.com', 'jsonerr-b.example.com']);
 });
 
+// ---- Streaming commit boundary -------------------------------------------
+
 await test('stream lifecycle/role-only output is not a commit; empty node can still fail over', async () => {
-  routeHandlers['role-a.example.com'] = () => sseResponse([chatChunk({ role: 'assistant' })]);
-  routeHandlers['role-b.example.com'] = () => sseResponse([chatChunk({ content: 'real output' }), chatChunk({}, 'stop'), '[DONE]']);
+  routeHandlers['role-a.example.com'] = () => sseResponse([
+    chatChunk({ role: 'assistant' }),
+  ]);
+  routeHandlers['role-b.example.com'] = () => sseResponse([
+    chatChunk({ content: 'real output' }), chatChunk({}, 'stop'), '[DONE]',
+  ]);
   recordTier1Ttft('role-a', 'general-air', 50);
   recordTier1Ttft('role-b', 'general-air', 2_000);
-  const env = makeEnv({ tier1: [openaiNode('role-a'), openaiNode('role-b')], secrets: { 'role-a': 'a', 'role-b': 'b' } });
+  const env = makeEnv({
+    tier1: [openaiNode('role-a'), openaiNode('role-b')],
+    secrets: { 'role-a': 'a', 'role-b': 'b' },
+  });
   const res = await worker.fetch(chatRequest({ stream: true }), env, {});
   assert.equal(res.status, 200);
   const text = await res.text();
@@ -473,14 +504,22 @@ await test('after meaningful stream output commits, transparent replay is forbid
   let step = 0;
   routeHandlers['commit-a.example.com'] = () => new Response(new ReadableStream({
     pull(controller) {
-      if (step++ === 0) controller.enqueue(encoder.encode(`data: ${JSON.stringify(chatChunk({ content: 'committed' }))}\n\n`));
-      else controller.error(new Error('upstream died after commit'));
+      if (step++ === 0) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(chatChunk({ content: 'committed' }))}\n\n`));
+      } else {
+        controller.error(new Error('upstream died after commit'));
+      }
     },
   }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
-  routeHandlers['commit-b.example.com'] = () => sseResponse([chatChunk({ content: 'must-not-replay' }), chatChunk({}, 'stop'), '[DONE]']);
+  routeHandlers['commit-b.example.com'] = () => sseResponse([
+    chatChunk({ content: 'must-not-replay' }), chatChunk({}, 'stop'), '[DONE]',
+  ]);
   recordTier1Ttft('commit-a', 'general-air', 50);
   recordTier1Ttft('commit-b', 'general-air', 2_000);
-  const env = makeEnv({ tier1: [openaiNode('commit-a'), openaiNode('commit-b')], secrets: { 'commit-a': 'a', 'commit-b': 'b' } });
+  const env = makeEnv({
+    tier1: [openaiNode('commit-a'), openaiNode('commit-b')],
+    secrets: { 'commit-a': 'a', 'commit-b': 'b' },
+  });
   const res = await worker.fetch(chatRequest({ stream: true }), env, {});
   assert.equal(res.status, 200);
   const reader = res.body.getReader();
@@ -493,7 +532,9 @@ await test('after meaningful stream output commits, transparent replay is forbid
 await test('Tier 1 streaming slot stays claimed until stream completion and releases once', async () => {
   const encoder = new TextEncoder();
   let controller;
-  routeHandlers['life.example.com'] = () => new Response(new ReadableStream({ start(c) { controller = c; } }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  routeHandlers['life.example.com'] = () => new Response(new ReadableStream({
+    start(c) { controller = c; },
+  }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
   const env = makeEnv({ tier1: [openaiNode('life')], secrets: { life: 'k' } });
   const pending = worker.fetch(chatRequest({ stream: true }), env, {});
   for (let i = 0; i < 100 && !controller; i++) await new Promise((r) => setTimeout(r, 5));
@@ -505,9 +546,11 @@ await test('Tier 1 streaming slot stays claimed until stream completion and rele
   assert.equal(tier1AccountInFlight('life'), 1);
   controller.enqueue(encoder.encode(`data: ${JSON.stringify(chatChunk({}, 'stop'))}\n\ndata: [DONE]\n\n`));
   controller.close();
-  while (!(await reader.read()).done) {}
+  while (!(await reader.read()).done) { /* drain */ }
   assert.equal(tier1AccountInFlight('life'), 0);
 });
+
+// ---- Protocol boundaries ---------------------------------------------------
 
 await test('Anthropic Messages native non-stream request stays native', async () => {
   routeHandlers['anthropic.example.com'] = () => jsonResponse(okMessage('native-anthropic'));
@@ -573,6 +616,8 @@ await test('Responses route never falls back to a chat-only node', async () => {
   assert.equal(upstreamCalls.length, 0);
 });
 
+// ---- Hedge / wall-clock budget --------------------------------------------
+
 await test('hedge races a slow Tier 1 primary with a same-surface twin', async () => {
   routeHandlers['hedge-slow.example.com'] = hangUntilAbort();
   routeHandlers['hedge-fast.example.com'] = () => jsonResponse(okChat('hedge-winner'));
@@ -614,10 +659,13 @@ await test('failover wall-clock budget stops before dispatching a fresh node', a
   assert.deepEqual(upstreamCalls.map((c) => c.host), ['budget-a.example.com']);
 });
 
+// ---- Operational boundaries ----------------------------------------------
 await test('upstream header allowlist drops client cookies/forwarding headers', async () => {
   routeHandlers['headers.example.com'] = () => jsonResponse(okChat());
   const env = makeEnv({ tier1: [openaiNode('headers')], secrets: { headers: 'provider-secret' } });
-  const res = await worker.fetch(chatRequest({}, ACCESS_KEY, { headers: { cookie: 'session=secret', 'x-forwarded-for': '1.2.3.4' } }), env, {});
+  const res = await worker.fetch(chatRequest({}, ACCESS_KEY, {
+    headers: { cookie: 'session=secret', 'x-forwarded-for': '1.2.3.4' },
+  }), env, {});
   assert.equal(res.status, 200);
   assert.equal(upstreamCalls[0].headers.get('cookie'), null);
   assert.equal(upstreamCalls[0].headers.get('x-forwarded-for'), null);
@@ -627,7 +675,9 @@ await test('upstream header allowlist drops client cookies/forwarding headers', 
 await test('D1 write failure is observational and never breaks a successful AI response', async () => {
   routeHandlers['d1.example.com'] = () => jsonResponse(okChat());
   const failingD1 = { prepare() { throw new Error('D1 unavailable'); } };
-  const env = makeEnv({ tier1: [openaiNode('d1')], secrets: { d1: 'k' }, extraEnv: { TOKEN_STATS_DB: failingD1 } });
+  const env = makeEnv({
+    tier1: [openaiNode('d1')], secrets: { d1: 'k' }, extraEnv: { TOKEN_STATS_DB: failingD1 },
+  });
   const res = await worker.fetch(chatRequest(), env, { waitUntil() {} });
   assert.equal(res.status, 200);
 });
@@ -635,7 +685,9 @@ await test('D1 write failure is observational and never breaks a successful AI r
 await test('/health is 200 for ready strict config and exposes no credentials', async () => {
   const secret = 'never-expose-this-provider-secret';
   const env = makeEnv({ tier1: [openaiNode('health')], secrets: { health: secret } });
-  const res = await worker.fetch(new Request('https://gateway.example.com/health', { headers: { authorization: `Bearer ${ACCESS_KEY}` } }), env, {});
+  const res = await worker.fetch(new Request('https://gateway.example.com/health', {
+    headers: { authorization: `Bearer ${ACCESS_KEY}` },
+  }), env, {});
   assert.equal(res.status, 200);
   const text = await res.text();
   assert.ok(!text.includes(secret));
@@ -650,7 +702,9 @@ await test('/v1/models derives public models from actual strict node mappings', 
     ],
     secrets: { 'models-oa': 'a', 'models-an': 'b' },
   });
-  const res = await worker.fetch(new Request('https://gateway.example.com/v1/models', { headers: { authorization: `Bearer ${ACCESS_KEY}` } }), env, {});
+  const res = await worker.fetch(new Request('https://gateway.example.com/v1/models', {
+    headers: { authorization: `Bearer ${ACCESS_KEY}` },
+  }), env, {});
   assert.equal(res.status, 200);
   const body = await res.json();
   const model = body.data.find((m) => m.id === 'general-air');
@@ -660,7 +714,9 @@ await test('/v1/models derives public models from actual strict node mappings', 
 
 await test('/version is public and reports deployment identity without topology', async () => {
   const build = 'a1b2c3d4e5f6';
-  const env = makeEnv({ tier1: [openaiNode('version')], secrets: { version: 'k' }, extraEnv: { GITHUB_SHA: build } });
+  const env = makeEnv({
+    tier1: [openaiNode('version')], secrets: { version: 'k' }, extraEnv: { GITHUB_SHA: build },
+  });
   const res = await worker.fetch(new Request('https://gateway.example.com/version'), env, {});
   assert.equal(res.status, 200);
   const body = await res.json();
