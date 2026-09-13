@@ -317,8 +317,13 @@ await test('Contract 09: removed node limits are rejected instead of influencing
     tier1: [anthropicNode('an1', { limits: { concurrency: 1, rpm: 60, rpm_mode: 'hard' } })],
     secrets: { an1: 'k' },
   });
+  const health = await worker.fetch(new Request('https://gateway.example.com/health', { headers: { authorization: `Bearer ${ACCESS_KEY}` } }), env, {});
+  assert.equal(health.status, 503, 'health must expose invalid runtime configuration');
+  const healthBody = await health.json();
+  assert.equal(healthBody.status, 'invalid');
+  assert.ok(healthBody.diagnostics.some((d) => d.includes('unknown field \"limits\"')));
   const res = await worker.fetch(messagesRequest({}), env, {});
-  assert.equal(res.status, 503, 'removed limits field makes runtime configuration invalid');
+  assert.equal(res.status, 404, 'invalid node is excluded, so the model route is unavailable');
   assert.equal(upstreamCalls.length, 0, 'invalid legacy config must never reach upstream');
 });
 
@@ -380,8 +385,8 @@ await test('Contract 15: Tier 2/3 race-loss returns { raceLost: true }, not null
   const { __resetAllStateForTests: reset } = await import('../src/reliability/node-state.ts');
   reset();
   const nodes = [
-    { id: 't2a', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], models: { 'Code-Max': 'up' }, priority: 10, limits: { concurrency: 1, rpm: 0, rpmMode: 'hard' } },
-    { id: 't2b', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], models: { 'Code-Max': 'up' }, priority: 10, limits: { concurrency: 1, rpm: 0, rpmMode: 'hard' } },
+    { id: 't2a', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], models: { 'Code-Max': 'up' }, priority: 10 },
+    { id: 't2b', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], models: { 'Code-Max': 'up' }, priority: 10 },
   ];
   const req = { model: 'Code-Max', protocol: 'openai', surface: 'chat_completions' };
   const r1 = pickCandidate(nodes, req, new Set());
@@ -404,12 +409,12 @@ await test('Contract 16: weighted budget split distributes surplus by live node 
   reset();
   const tiers = {
     1: [],
-    2: [{ id: 'r5-t2-a', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], models: { 'Code-Max': 'up' }, priority: 10, limits: { concurrency: 1, rpm: 0, rpmMode: 'hard' } }],
+    2: [{ id: 'r5-t2-a', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], models: { 'Code-Max': 'up' }, priority: 10 }],
     3: [
-      { id: 'r5-t3-a', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], models: { 'Code-Max': 'up' }, priority: 10, limits: { concurrency: 1, rpm: 0, rpmMode: 'hard' } },
-      { id: 'r5-t3-b', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], models: { 'Code-Max': 'up' }, priority: 10, limits: { concurrency: 1, rpm: 0, rpmMode: 'hard' } },
-      { id: 'r5-t3-c', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], models: { 'Code-Max': 'up' }, priority: 10, limits: { concurrency: 1, rpm: 0, rpmMode: 'hard' } },
-      { id: 'r5-t3-d', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], models: { 'Code-Max': 'up' }, priority: 10, limits: { concurrency: 1, rpm: 0, rpmMode: 'hard' } },
+      { id: 'r5-t3-a', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], models: { 'Code-Max': 'up' }, priority: 10 },
+      { id: 'r5-t3-b', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], models: { 'Code-Max': 'up' }, priority: 10 },
+      { id: 'r5-t3-c', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], models: { 'Code-Max': 'up' }, priority: 10 },
+      { id: 'r5-t3-d', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], models: { 'Code-Max': 'up' }, priority: 10 },
     ],
   };
   const req = { model: 'Code-Max', protocol: 'openai', surface: 'chat_completions' };
