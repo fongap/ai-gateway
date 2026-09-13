@@ -20,7 +20,6 @@ import {
   resolveTier1SessionId, readTier1Affinity,
   shouldEvaluateAffinity, recordTier1AffinityDecision,
 } from '../scheduler/tier1-affinity.ts';
-import { tier1DeadlineTooSmall } from '../scheduler/tier1-scheduler.ts';
 import { preflight as runPreflight } from './preflight.ts';
 import { evaluateRouteFeasibility } from './route-feasibility.ts';
 import { buildModelFallbackPlan } from './model-fallback.ts';
@@ -225,10 +224,6 @@ async function runTierLoop(loopCtx: LoopContext, reqDescriptor: RoutableRequest,
       const remainingBudgetMs = failoverBudgetMs - (Date.now() - requestStartMs);
       if (remainingBudgetMs <= 0) {
         return buildBudgetExhaustedResponse(request, env, route, requestId, requestedModel, state, exposeUpstreamInfo);
-      }
-      if (tierNumber === 1 && usedInTier > 0 && tier1DeadlineTooSmall(remainingBudgetMs)) {
-        state.tier1ExhaustionReason = 'deadline_too_small';
-        break;
       }
       const remainingDispatchableAttempts = countRemainingDispatchableAttempts(
         tiers, reqDescriptor, state.attempted, tierCaps,
