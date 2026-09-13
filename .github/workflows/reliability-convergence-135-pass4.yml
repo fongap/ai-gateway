@@ -1,0 +1,39 @@
+name: Reliability Convergence 1.3.5 Pass 4
+
+on:
+  push:
+    branches: [fix/reliability-convergence-1.3.5]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repair branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/reliability-convergence-1.3.5
+          fetch-depth: 0
+      - name: Apply exact-once lease repair
+        run: |
+          python3 scripts/reliability-convergence-135-pass4.py
+          python3 scripts/reliability-convergence-135-pass4b.py
+      - name: Remove one-time repair files
+        run: |
+          rm scripts/reliability-convergence-135-pass4.py
+          rm scripts/reliability-convergence-135-pass4b.py
+          rm .github/workflows/reliability-convergence-135-pass4.yml
+      - name: Validate patch formatting
+        run: git diff --check
+      - name: Commit repair
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: finalize reliability convergence invariants"
+          git push origin HEAD:fix/reliability-convergence-1.3.5
