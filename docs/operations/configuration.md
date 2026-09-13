@@ -90,7 +90,7 @@ Example Anthropic node:
 - `base_url` must be an absolute HTTPS URL unless insecure HTTP is explicitly enabled.
 - `priority` defaults to `100`; it is used by Tier 2/3 and ignored by Tier 1 P2C.
 - `models` maps logical model name → provider-facing model name. An empty object is the runtime wildcard form, bounded by the gateway's known-model/catalog rules where applicable.
-- `limits` is retired from active configuration. Existing syntactically-valid `limits` objects are accepted temporarily for migration safety, produce a deprecation diagnostic, and should be removed.
+- `limits` is retired from active configuration. Existing syntactically-valid `limits` objects are accepted temporarily for migration safety, produce a deprecation diagnostic, and should be removed. They are not the production source of node RPM/concurrency capacity.
 - unknown active node fields are rejected instead of silently ignored.
 
 Missing `protocol` or `surfaces` can still use deprecated compatibility defaults; operators should declare both explicitly.
@@ -119,7 +119,7 @@ Current numeric tunables from `src/config/runtime-vars.ts`:
 | `UPSTREAM_HEADERS_TIMEOUT_MS` | 15000 | 5s–600s | Time to upstream response headers |
 | `FIRST_EVENT_TIMEOUT_MS` | 30000 | 5s–600s | Time to first meaningful stream event |
 | `STREAM_IDLE_TIMEOUT_MS` | 120000 | 10s–600s | Maximum idle interval in an active stream |
-| `RATE_LIMIT_COOLDOWN_MS` | 30000 | 1s–600s | General rate-limit cooldown input |
+| `RATE_LIMIT_COOLDOWN_MS` | 30000 | 1s–600s | General non-Tier-1 rate-limit cooldown input |
 | `AUTH_FAIL_COOLDOWN_MS` | 3600000 | 1min–7d | Auth-failure credential cooldown |
 | `MAX_BODY_BYTES` | 20971520 | 1KB–100MB | Request-body limit |
 | `FAILOVER_BUDGET_MS` | 60000 | 1s–900s | Whole-request failover wall clock |
@@ -155,14 +155,16 @@ Unset/empty `PROTOCOL_FALLBACKS` resolves to:
 
 Set `PROTOCOL_FALLBACKS=disable` for Native-Only Chat/Messages behavior, or provide an explicit JSON mapping to override the default. OpenAI Responses remains Native Only regardless.
 
-Unsupported conversion routes are configuration errors rather than implicit best-effort conversions.
+Unsupported conversion routes are configuration errors rather than implicit best-effort conversions. Conversion diagnostics also act as a safety boundary: degraded fallback is skipped before dispatch when conversion would drop high-risk semantic state such as provider-native tool state/history, thinking history, context management, or a tool-result error marker. Lesser portable/emulated differences can still use the fallback path.
 
 ## Runtime capacity and heat protection
 
 Node capacity is no longer defined by guessed `limits.concurrency` or `limits.rpm` values. The gateway reacts to evidence it can actually observe:
 
 - live in-flight work is a **soft ranking signal**: a busy node is less preferred, but remains usable when healthy peers are unavailable;
-- real 429 responses create bounded cooldown/recovery behavior;
+- real 429 responses create bounded key-local cooldown/recovery behavior;
+- Tier 1 provider+key adaptive 429 cooldown follows `15s → 30s → 1m → 2m → 5m → 15m → 30m → 60m`, advancing only when a post-cooldown recovery request still returns 429;
+- upstream `Retry-After` is a minimum floor and can extend, but never shorten, the learned adaptive cooldown;
 - repeated provider-model 429 evidence adds bounded soft heat without removing the last usable node;
 - TTFT, affinity and circuit state continue to influence routing and recovery;
 - optional hedge work is suppressed before primary traffic when the pool is already busy.
@@ -171,12 +173,25 @@ Node capacity is no longer defined by guessed `limits.concurrency` or `limits.rp
 
 ## Model-family fallback
 
-When compatible logical aliases exist, the final capacity escape hatch is bounded and shares the original request wall-clock budget:
+When compatible logical aliases exist, model-family fallback is a bounded capacity escape hatch that shares the original request wall-clock and logical-attempt budgets.
 
-- `Code-Max / Code-Pro / Code-Ultra`: first round reserves `3 / 2 / 1` logical attempts in requested-model preference order;
-- `Max / Pro / Ultra`: the same `3 / 2 / 1` rule;
-- `Air`: `3 / 1 / 1 / 1` across `Air → Pro → Max → Ultra`;
-- the re-check round can only spend unused request budget and never creates an unlimited cycle;
+`max_attempts` is always a hard request-wide ceiling. Family fallback never silently raises it. For a three-member family the first round widens before it deepens:
+
+| `max_attempts` | First-round family allocation |
+| ---: | --- |
+| 1 | requested model only |
+| 2 | requested + first sibling, one each |
+| 3 | `1 / 1 / 1` |
+| 4 | `2 / 1 / 1` |
+| 5 | `3 / 1 / 1` |
+| 6+ | up to `3 / 2 / 1`, then bounded re-checks only from unused request budget |
+
+Additional rules:
+
+- `Code-Max / Code-Pro / Code-Ultra` stay inside the Code family;
+- `Max / Pro / Ultra` stay inside the general family;
+- `Air` moves only upward through `Air → Pro → Max → Ultra` and never falls back down to Air after moving upward;
+- the re-check round never creates a fresh attempt or wall-clock budget;
 - `model_missing` remains a mapping/capability fact and does not trigger cross-model fallback;
 - a completed family sweep containing only transient capacity failures returns retryable `503`, allowing coding clients to retry without manual intervention.
 
@@ -198,10 +213,11 @@ Models without a configured compatible sibling keep their existing policy budget
 }
 ```
 
-- `max_attempts` is the request-wide logical-attempt ceiling. Configured model families receive the six-attempt minimum required by the bounded `3/2/1` family contract; unrelated models keep the configured value.
+- `max_attempts` is the hard request-wide logical-attempt ceiling across tiers, protocol fallback and model-family fallback.
 - `tier_attempts` optionally caps individual tiers.
 - `hedge.enabled`, optional delay/tier fields control reactive hedge policy.
-- `first_event_timeout_ms` can override the global first-event timeout per model/policy.
+- `first_event_timeout_ms` can override the global first-event timeout per model/policy, but it cannot outlive the whole-request `FAILOVER_BUDGET_MS`; operators who intentionally need a wait above 60 seconds must raise the global failover budget as well.
+- built-in `long-reasoning` uses `first_event_timeout_ms=60000`, matching the default `FAILOVER_BUDGET_MS=60000` rather than advertising an unreachable 120-second first-event wait.
 - `budget_split` supports the current `even`/`weighted` allocation semantics.
 
 Explicit tier caps remain authoritative inside each logical-model pass and must fit within their policy definition.

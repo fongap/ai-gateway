@@ -42,7 +42,7 @@ assert.deepEqual(
       { model: 'Code-Ultra', attemptCap: 1 },
     ],
   ],
-  'Code-Max family must reserve 3-2-1 first-round attempts and bound rechecks to one attempt',
+  'default family planning keeps the established 3-2-1 preference',
 );
 
 assert.deepEqual(
@@ -61,7 +61,7 @@ assert.deepEqual(
     { model: 'Code-Max', attemptCap: 2 },
     { model: 'Code-Ultra', attemptCap: 1 },
   ],
-  'the requested Code peer always gets the 3-attempt share',
+  'the requested Code peer always gets the 3-attempt share at budget 6',
 );
 
 assert.deepEqual(
@@ -89,7 +89,7 @@ assert.deepEqual(
     { model: 'Pro', attemptCap: 2 },
     { model: 'Ultra', attemptCap: 1 },
   ],
-  'Max family must reserve 3-2-1 attempts',
+  'Max family keeps 3-2-1 at budget 6',
 );
 
 assert.deepEqual(
@@ -134,7 +134,89 @@ assert.deepEqual(
       { model: 'Ultra', attemptCap: 1 },
     ],
   ],
-  'Air must fit its one-way chain inside the same six-attempt first-round budget',
+  'Air keeps its one-way 3-1-1-1 preference at budget 6',
+);
+
+// max_attempts is a hard request ceiling. Family planning must never widen the
+// candidate set beyond the number of logical attempts the policy allows.
+assert.deepEqual(
+  buildModelFallbackPlan('Code-Max', all, 1),
+  [
+    [{ model: 'Code-Max', attemptCap: 1 }],
+    [{ model: 'Code-Max', attemptCap: 1 }],
+  ],
+  'budget 1 exposes only the requested model',
+);
+
+assert.deepEqual(
+  buildModelFallbackPlan('Code-Max', all, 2)[0],
+  [
+    { model: 'Code-Max', attemptCap: 1 },
+    { model: 'Code-Pro', attemptCap: 1 },
+  ],
+  'budget 2 widens to one sibling instead of inflating the request budget',
+);
+
+assert.deepEqual(
+  buildModelFallbackPlan('Code-Max', all, 3)[0],
+  [
+    { model: 'Code-Max', attemptCap: 1 },
+    { model: 'Code-Pro', attemptCap: 1 },
+    { model: 'Code-Ultra', attemptCap: 1 },
+  ],
+  'budget 3 gives one attempt to each compatible model',
+);
+
+assert.deepEqual(
+  buildModelFallbackPlan('Code-Max', all, 4)[0],
+  [
+    { model: 'Code-Max', attemptCap: 2 },
+    { model: 'Code-Pro', attemptCap: 1 },
+    { model: 'Code-Ultra', attemptCap: 1 },
+  ],
+  'budget 4 deepens the requested model after covering the family',
+);
+
+assert.deepEqual(
+  buildModelFallbackPlan('Code-Max', all, 5)[0],
+  [
+    { model: 'Code-Max', attemptCap: 3 },
+    { model: 'Code-Pro', attemptCap: 1 },
+    { model: 'Code-Ultra', attemptCap: 1 },
+  ],
+  'budget 5 keeps the configured hard ceiling',
+);
+
+assert.deepEqual(
+  buildModelFallbackPlan('Code-Max', all, 6)[0],
+  [
+    { model: 'Code-Max', attemptCap: 3 },
+    { model: 'Code-Pro', attemptCap: 2 },
+    { model: 'Code-Ultra', attemptCap: 1 },
+  ],
+  'budget 6 restores the full 3-2-1 preference',
+);
+
+assert.deepEqual(
+  buildModelFallbackPlan('Air', all, 4)[0],
+  [
+    { model: 'Air', attemptCap: 1 },
+    { model: 'Pro', attemptCap: 1 },
+    { model: 'Max', attemptCap: 1 },
+    { model: 'Ultra', attemptCap: 1 },
+  ],
+  'Air budget 4 covers its one-way family once before deepening Air',
+);
+
+assert.deepEqual(
+  buildModelFallbackPlan('Air', all, 6)[0],
+  [
+    { model: 'Air', attemptCap: 3 },
+    { model: 'Pro', attemptCap: 1 },
+    { model: 'Max', attemptCap: 1 },
+    { model: 'Ultra', attemptCap: 1 },
+  ],
+  'Air budget 6 keeps the established 3-1-1-1 preference',
 );
 
 assert.equal(hasModelFamilyFallback('Code-Max'), true);
@@ -187,9 +269,9 @@ assert.deepEqual(
 );
 
 assert.deepEqual(
-  buildModelFallbackPlan('Custom-Model', catalog('Custom-Model', 'Max', 'Pro')),
+  buildModelFallbackPlan('Custom-Model', catalog('Custom-Model', 'Max', 'Pro'), 1),
   [[{ model: 'Custom-Model', attemptCap: null }]],
-  'unknown model families must keep their original policy attempt budget',
+  'unknown model families keep their original policy-owned attempt budget',
 );
 
 console.log('model-family fallback tests passed.');

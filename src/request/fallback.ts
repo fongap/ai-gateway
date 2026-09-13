@@ -7,10 +7,10 @@
 // for the single source of truth):
 //   * Anthropic Messages -> OpenAI Chat Completions
 //   * OpenAI Chat Completions -> Anthropic Messages
-// A conversion is only available when PROTOCOL_FALLBACKS is configured for
-// the client route. There is no implicit cross-protocol fallback, no
-// OpenAI Responses -> Chat direction, and no Gemini conversion.
-// OpenAI Responses is native-only (no fallback to other protocols).
+// Fallback follows the resolved PROTOCOL_FALLBACKS policy, including the
+// built-in bidirectional Chat/Messages default when the variable is unset.
+// OpenAI Responses is native-only (no fallback to other protocols), and there
+// is no Gemini conversion.
 //
 // Contract:
 //   * Native-first: the native tier loop runs first and only when it
@@ -31,20 +31,17 @@
 //     reachable fallback steps is precomputed by route-feasibility.ts at
 //     preflight time and carried through loopCtx.feasibility; runFallbackChain
 //     iterates that set rather than re-implementing the feasibility check.
-//   * If the conversion itself throws ConversionError, that fallback target
-//     simply cannot express this request (the client request is still legal —
-//     it is the TARGET protocol that is incompatible). The conversion happens
-//     before any upstream dispatch, so it never touches logicalAttempts,
-//     dispatches, hedges, activeRequests, node RPM, node failure, cooldown,
-//     or circuit breaker state. The target is skipped and a safe diagnostic is
-//     emitted with only request identity, route, target protocol/surface and
-//     the converter's reason string — never request content or credentials.
+//   * If conversion throws ConversionError, or would drop high-risk semantic
+//     state, that fallback target is skipped before any upstream dispatch.
+//     The client request is still legal; the target protocol is incompatible.
+//     No logical attempt, dispatch, hedge, active-request, cooldown or circuit
+//     state is charged for a skipped conversion.
 //   * Successful conversion emits a debug-only fidelity record. Diagnostics
 //     contain only fixed feature/action labels; request content, schemas, tool
 //     names and credentials are never logged.
-//   * If every recognized fallback target is rejected by conversion before any
-//     upstream dispatch, return a dedicated 502 instead of misreporting the
-//     condition as node cooldown/circuit exhaustion.
+//   * If every recognized fallback target is rejected before any upstream
+//     dispatch, return a dedicated 502 instead of misreporting the condition as
+//     node cooldown/circuit exhaustion.
 
 import {
   convertAnthropicToOpenAIResult,
@@ -58,12 +55,26 @@ import type { ConversionResult } from '../conversion/result.ts';
 import type { LoopContext, ConversionContext } from '../types/request.ts';
 import type { RoutableRequest } from '../types/scheduler.ts';
 
+const HIGH_RISK_DROPPED_FEATURES = new Set([
+  'provider_native_tool',
+  'provider_native_tool_history',
+  'thinking_history',
+  'context_management',
+  'tool_result_error_marker',
+]);
+
 type TierLoopRunner = (
   loopCtx: LoopContext,
   reqDescriptor: RoutableRequest,
   conversionContext: ConversionContext | null,
   overrideTierCaps: Record<number, number> | null,
 ) => Promise<Response | null>;
+
+function highRiskSemanticLoss(result: ConversionResult): string[] {
+  return result.diagnostics
+    .filter((d) => d.action === 'dropped' && HIGH_RISK_DROPPED_FEATURES.has(d.feature))
+    .map((d) => d.feature);
+}
 
 /**
  * Run the cross-protocol fallback chain.
@@ -81,7 +92,7 @@ export async function runFallbackChain({ loopCtx, route, requestedModel, runTier
   } = loopCtx;
   const fallbacks = feasibility?.fallbacks ?? [];
   const logger = getLogger(env);
-  let conversionErrorCount = 0;
+  let conversionRejectedCount = 0;
   let convertedTargetCount = 0;
 
   for (const fb of fallbacks) {
@@ -105,7 +116,7 @@ export async function runFallbackChain({ loopCtx, route, requestedModel, runTier
       }
     } catch (e) {
       if (e instanceof ConversionError) {
-        conversionErrorCount++;
+        conversionRejectedCount++;
         const reason = String(e.message || e.code || 'conversion_not_supported').slice(0, 300);
         logger.error(JSON.stringify({
           event: 'fallback_conversion_skipped',
@@ -115,9 +126,6 @@ export async function runFallbackChain({ loopCtx, route, requestedModel, runTier
           fallback_surface: fb.surface,
           reason,
         }));
-        // This fallback target cannot express the request. The client request
-        // is legal; the target protocol is incompatible. Conversion happens
-        // before dispatch, so no reliability state is touched.
         continue;
       }
       throw e;
@@ -139,6 +147,21 @@ export async function runFallbackChain({ loopCtx, route, requestedModel, runTier
         : {}),
     }));
 
+    const highRiskLoss = highRiskSemanticLoss(conversionResult);
+    if (highRiskLoss.length > 0) {
+      conversionRejectedCount++;
+      logger.error(JSON.stringify({
+        event: 'fallback_conversion_skipped',
+        request_id: requestId,
+        route,
+        fallback_protocol: fb.protocol,
+        fallback_surface: fb.surface,
+        reason: 'high_risk_semantic_loss',
+        features: highRiskLoss,
+      }));
+      continue;
+    }
+
     convertedTargetCount++;
     const fbTierCaps = computeTierCaps(tiers, fbReqDescriptor, state.attempted, policy, knownModels);
     const conversionContext: ConversionContext = {
@@ -151,7 +174,7 @@ export async function runFallbackChain({ loopCtx, route, requestedModel, runTier
     if (fbResult) return fbResult;
   }
 
-  if (conversionErrorCount > 0 && convertedTargetCount === 0 && state.dispatches === 0) {
+  if (conversionRejectedCount > 0 && convertedTargetCount === 0 && state.dispatches === 0) {
     return gatewayError(
       request,
       env,

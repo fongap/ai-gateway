@@ -57,8 +57,8 @@ export function tier1DeadlineTooSmall(remainingBudgetMs: number, p99TtftMs?: num
 
 // Pick and claim one Tier 1 candidate, or null when the pool is exhausted.
 // Returns { node, releaseToken, escapedFromAffinity } on success, or
-// { raceLost: true } when the runtime admission state moved under us, or null
-// when no eligible candidate remains.
+// { raceLost: true, raceLostNodeId } when runtime admission moved under us, or
+// null when no eligible candidate remains.
 //
 //   affinityAccountId  — the session's preferred account (null = cold session)
 //   evaluateAffinity  — whether a successful non-affinity winner may migrate
@@ -148,9 +148,10 @@ export function pickTier1Candidate(tier1Nodes: ReadonlyArray<RuntimeNode>, req: 
   if (affinityAccountId && !affinityNode) updateAffinity = true;
 
   if (!claimTier1Slot(withoutHardConcurrency(chosen), now, req.model)) {
-    // Lost the race for runtime admission (e.g. RPM/recovery probe moved under
-    // us). This is NOT a node failure; the caller re-evaluates the tier.
-    return { raceLost: true };
+    // Lost the race for runtime admission (for example a recovery probe moved
+    // under us). This is not a node failure. Return the chosen identity so the
+    // caller can exclude it for this tier pass and make guaranteed progress.
+    return { raceLost: true, raceLostNodeId: chosen.id };
   }
   return {
     node: chosen,

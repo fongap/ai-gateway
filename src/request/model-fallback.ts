@@ -18,11 +18,9 @@
 //   round exists only to re-check capacity that may have recovered while other
 //   model pools were being tried. There is never an unbounded cycle.
 //
-// First-round family budgets prevent the requested alias from consuming the
-// entire request budget before compatible pools get a chance. Three-member
-// families use 3 -> 2 -> 1. Air uses 3 -> 1 -> 1 -> 1 so the whole one-way
-// chain still fits a six-attempt family budget. A second-round re-check is
-// limited to one attempt per model and only uses budget left unused by round 1.
+// `max_attempts` is always the request-wide hard ceiling. Family planning never
+// increases it. Small budgets widen across siblings first; extra budget then
+// deepens the requested model according to the established 3/2/1 preference.
 
 const FALLBACK_ORDER: Readonly<Record<string, readonly string[]>> = Object.freeze({
   'code-ultra': Object.freeze(['code-ultra', 'code-max', 'code-pro']),
@@ -36,6 +34,7 @@ const FALLBACK_ORDER: Readonly<Record<string, readonly string[]>> = Object.freez
 
 const THREE_MEMBER_FIRST_ROUND_CAPS = Object.freeze([3, 2, 1]);
 const AIR_FIRST_ROUND_CAPS = Object.freeze([3, 1, 1, 1]);
+const DEFAULT_FAMILY_ATTEMPT_BUDGET = 6;
 
 export type ModelFallbackPass = {
   model: string,
@@ -88,32 +87,72 @@ export function buildModelFallbackRounds(
   return secondRound.length > 0 ? [firstRound, secondRound] : [firstRound];
 }
 
+function normalizedBudget(maxAttempts: number): number {
+  if (!Number.isFinite(maxAttempts)) return DEFAULT_FAMILY_ATTEMPT_BUDGET;
+  return Math.max(1, Math.trunc(maxAttempts));
+}
+
+function firstRoundPlan(
+  requestedKey: string,
+  template: readonly string[],
+  round: readonly string[],
+  maxAttempts: number,
+): ModelFallbackPass[] {
+  // A budget smaller than the family width must not silently expose more
+  // sibling models than the operator allowed attempts for. Give one slot to
+  // each model in preference order first, then deepen the preferred models.
+  const visible = round.slice(0, Math.min(round.length, maxAttempts));
+  const caps = visible.map(() => 1);
+  let remaining = Math.max(0, maxAttempts - visible.length);
+  const preferredCaps = requestedKey === 'air'
+    ? AIR_FIRST_ROUND_CAPS
+    : THREE_MEMBER_FIRST_ROUND_CAPS;
+
+  for (let i = 0; i < visible.length && remaining > 0; i++) {
+    const templateIndex = template.indexOf(keyOf(visible[i]));
+    const target = templateIndex >= 0 ? (preferredCaps[templateIndex] ?? 1) : 1;
+    const extra = Math.min(remaining, Math.max(0, target - caps[i]));
+    caps[i] += extra;
+    remaining -= extra;
+  }
+
+  return visible.map((model, i) => ({ model, attemptCap: caps[i] }));
+}
+
 /**
  * Return model passes with per-pass attempt caps.
  *
  * `attemptCap=null` means legacy behavior for an unknown/non-family model: the
- * request policy owns the whole attempt budget. Family members reserve the
- * first round as 3/2/1 (or Air 3/1/1/1); a second-round re-check is one attempt
- * per model and can only spend request budget that round 1 did not consume.
+ * request policy owns the whole attempt budget. Family members never enlarge
+ * that budget. For a three-member family the first-round allocation evolves as
+ * 1 -> 1/1 -> 1/1/1 -> 2/1/1 -> 3/1/1 -> 3/2/1. Any budget beyond the first
+ * round can be used by the existing bounded re-check round.
  */
 export function buildModelFallbackPlan(
   requestedModel: string,
   knownModels: ReadonlySet<string>,
+  maxAttempts: number = DEFAULT_FAMILY_ATTEMPT_BUDGET,
 ): ModelFallbackPass[][] {
   const requestedKey = keyOf(requestedModel);
   const template = FALLBACK_ORDER[requestedKey];
   const rounds = buildModelFallbackRounds(requestedModel, knownModels);
   if (!template) return rounds.map((round) => round.map((model) => ({ model, attemptCap: null })));
 
-  const firstCaps = requestedKey === 'air' ? AIR_FIRST_ROUND_CAPS : THREE_MEMBER_FIRST_ROUND_CAPS;
-  return rounds.map((round, roundIndex) => round.map((model) => {
-    if (roundIndex > 0) return { model, attemptCap: 1 };
-    const templateIndex = template.indexOf(keyOf(model));
-    return {
-      model,
-      attemptCap: templateIndex >= 0 ? (firstCaps[templateIndex] ?? 1) : 1,
-    };
-  }));
+  const budget = normalizedBudget(maxAttempts);
+  const first = firstRoundPlan(requestedKey, template, rounds[0], budget);
+  const allowed = new Set(first.map((pass) => pass.model));
+  const out: ModelFallbackPass[][] = [first];
+
+  // Re-check only models that fit inside this policy's family width. The global
+  // request counter remains authoritative, so this round can consume only
+  // budget left unused by earlier passes.
+  if (rounds[1]?.length) {
+    const second = rounds[1]
+      .filter((model) => allowed.has(model))
+      .map((model) => ({ model, attemptCap: 1 }));
+    if (second.length) out.push(second);
+  }
+  return out;
 }
 
 /** True when the requested model belongs to a configured fallback family. */

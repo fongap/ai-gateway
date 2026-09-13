@@ -129,11 +129,11 @@ export function pickCandidate(tierNodes: ReadonlyArray<RuntimeNode>, req: Routab
 
   const chosen = best || bestUncapped;
   if (!chosen) return null;
-  // return PickedCandidate so the caller can distinguish
-  // "no eligible candidate" (null) from "slot race lost" ({ raceLost: true }).
-  // Tier 2/3 acquireSlot only arbitrates circuit half-open state now; it no
-  // longer represents an operator-defined concurrency slot.
-  if (!acquireSlot(chosen.id, now)) return { raceLost: true };
+  // Return the chosen id when runtime admission moves after selection. The
+  // request tier loop excludes that exact candidate and re-evaluates without
+  // charging an attempt, guaranteeing same-tier progress instead of re-picking
+  // the same losing candidate indefinitely.
+  if (!acquireSlot(chosen.id, now)) return { raceLost: true, raceLostNodeId: chosen.id };
   return { node: chosen };
 }
 

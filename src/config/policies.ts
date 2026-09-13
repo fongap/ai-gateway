@@ -11,7 +11,7 @@
 //   default        - balanced: maxAttempts=5, hedge enabled for Tier 1 only
 //   fast           - speed-first: maxAttempts=1, hedge disabled
 //   stable         - reliability: maxAttempts=5, hedge enabled for Tier 1 only
-//   long-reasoning - extended first-event: maxAttempts=3, hedge disabled, firstEventTimeoutMs=120000
+//   long-reasoning - extended first-event: maxAttempts=3, hedge disabled, firstEventTimeoutMs=60000
 //
 // Hedging is controlled per policy: hedge.enabled must be true for hedging to
 // activate. default and stable enable hedge for the tiers listed in
@@ -62,7 +62,10 @@ const BUILTIN_POLICIES: Record<string, PolicyConfig> = Object.freeze({
     maxAttempts: 3,
     tierAttempts: null,
     hedge: { enabled: false },
-    firstEventTimeoutMs: 120_000,
+    // Keep the built-in inside the default 60s whole-request failover budget.
+    // Operators that need a longer first-event wait can override this policy
+    // only together with a larger FAILOVER_BUDGET_MS.
+    firstEventTimeoutMs: 60_000,
     budgetSplit: null,
   },
 });

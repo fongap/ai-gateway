@@ -55,6 +55,7 @@ function tier1LiveCount(
 export type TierPickResult = {
   node?: RuntimeNode,
   raceLost?: boolean,
+  raceLostNodeId?: string,
   tier1ReleaseToken?: { accountId: string, released: boolean } | null,
   tier1EscapedFromAffinity?: boolean,
   tier1UpdateAffinity?: boolean,
@@ -73,7 +74,7 @@ type PickForTierOpts = {
 
 // Tier-aware picker. Tier 1 uses P2C + affinity + tier1-state eligibility;
 // Tier 2/3 use node-state pickCandidate. Both paths expose the same
-// { node } | { raceLost: true } | null result shape to the tier loop.
+// { node } | { raceLost: true, raceLostNodeId } | null result shape to the tier loop.
 // An optional deterministic RNG (from TIER1_SCHEDULER_SEED) makes P2C sampling
 // reproducible in tests; when the seed is absent, Math.random is used.
 export function pickForTier(tierNumber: Tier, tierNodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, opts: PickForTierOpts = {}): TierPickResult {
@@ -81,12 +82,12 @@ export function pickForTier(tierNumber: Tier, tierNodes: ReadonlyArray<RuntimeNo
   if (tierNumber !== 1) {
     const r = pickCandidate(tierNodes, req, attempted, undefined, null, knownModels, raceLostIds ?? null);
     if (!r) return null;
-    if (r.raceLost) return { raceLost: true };
+    if (r.raceLost) return { raceLost: true, raceLostNodeId: r.raceLostNodeId };
     return { node: r.node };
   }
   const r = pickTier1Candidate(tierNodes, req, attempted, { ...opts, knownModels });
   if (!r) return null;
-  if (r.raceLost) return { raceLost: true };
+  if (r.raceLost) return { raceLost: true, raceLostNodeId: r.raceLostNodeId };
   return {
     node: r.node,
     tier1ReleaseToken: r.releaseToken,

@@ -32,6 +32,7 @@ export type RoutableRequest = {
 export type PickedCandidate = {
   node?: RuntimeNode,
   raceLost?: boolean,
+  raceLostNodeId?: string,
   releaseToken?: { accountId: string, released: boolean } | null,
   updateAffinity?: boolean,
   escapedFromAffinity?: boolean,
