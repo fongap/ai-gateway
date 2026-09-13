@@ -66,7 +66,6 @@ try {
         surfaces: ['chat_completions'],
         base_url: 'https://openai-only.example.com/v1',
         models: { 'code-max': 'up-model' },
-        limits: { concurrency: 5 },
       },
     ]),
     TIER1_NODES_SECRETS_01: JSON.stringify({ 'openai-only': 'upstream-key' }),

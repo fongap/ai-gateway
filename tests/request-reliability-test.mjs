@@ -5,14 +5,13 @@ import assert from 'node:assert/strict';
 import {
   acquireSlot, peekAvailability, recordSuccess, recordFailure, recordNeutralEnd,
   getNodeState, getCooldownRemainingMs, applyHealthPenalty,
-  rollbackRpmBucket, rpmUsage,
   CIRCUIT_FAILURE_THRESHOLD, CIRCUIT_OPEN_MS,
 } from '../src/reliability/node-state.ts';
 import {
   parseRetryAfterMs, attemptBudgetSliceMs, attemptHeadersTimeoutMs, attemptFirstEventTimeoutMs,
   MIN_ATTEMPT_HEADERS_MS, MIN_ATTEMPT_FIRST_EVENT_MS,
 } from '../src/config/timeouts.ts';
-import { classifyUpstreamStatus, classifyNetworkError, classifyFirstEventFailure, classifyClientAbort, classifyPreDispatchRateLimit, classifyPreDispatchInvalidBaseUrl, classifyStreamInterrupted, classifyHedgeRaceLoss, classifyHedgeUnknown, classifyNonJsonBody, KIND } from '../src/reliability/classify.ts';
+import { classifyUpstreamStatus, classifyNetworkError, classifyFirstEventFailure, classifyClientAbort, classifyPreDispatchInvalidBaseUrl, classifyStreamInterrupted, classifyHedgeRaceLoss, classifyHedgeUnknown, classifyNonJsonBody, KIND } from '../src/reliability/classify.ts';
 import { getLimits } from '../src/config/timeouts.ts';
 import { countDispatchableNodes } from '../src/scheduler/scheduler.ts';
 
@@ -233,51 +232,6 @@ await test('half-open probe -> counted failure releases the probe and reopens th
   assert.equal(peekAvailability(id, now + 1), 'probe', 'node must be probe-ready again after the open period');
 });
 
-await test('rollbackRpmBucket returns a pre-dispatch reservation without touching post-dispatch charges', async () => {
-  const id = 'rpm-rb';
-  // acquireSlot charges the current-minute RPM bucket.
-  assert.ok(acquireSlot(id, now));
-  assert.equal(rpmUsage(id, now), 1);
-  assert.equal(getNodeState(id).activeRequests, 1);
-  // Pre-dispatch neutral: release slot AND roll back the bucket.
-  recordNeutralEnd(id);
-  rollbackRpmBucket(id, now);
-  assert.equal(getNodeState(id).activeRequests, 0);
-  assert.equal(rpmUsage(id, now), 0, 'pre-dispatch reservation must be returned to the bucket');
-
-  // A real dispatched attempt: acquire -> success. The bucket stays charged.
-  assert.ok(acquireSlot(id, now));
-  recordSuccess(id, 5, now);
-  assert.equal(rpmUsage(id, now), 1, 'a dispatched attempt must keep its RPM charge');
-
-  // Excess rollbacks floor at 0 and never go negative.
-  assert.ok(acquireSlot(id, now)); // count: 1 -> 2
-  rollbackRpmBucket(id, now); rollbackRpmBucket(id, now); rollbackRpmBucket(id, now); rollbackRpmBucket(id, now);
-  assert.equal(rpmUsage(id, now), 0, 'rollback floors at 0 and never goes negative');
-});
-
-await test('rollbackRpmBucket is a no-op once the minute window has rolled over', async () => {
-  const id = 'rpm-rb2';
-  // Reservation in the current minute, then the minute rolls over with no new
-  // acquire in between. The stale bucket must not be touched: a fresh acquire
-  // in the new minute must start at 1, not be pre-charged by the old rollback.
-  assert.ok(acquireSlot(id, now));
-  assert.equal(rpmUsage(id, now), 1);
-  recordNeutralEnd(id);
-  tick(61_000);
-  rollbackRpmBucket(id, now); // stale bucket -> must be a no-op
-  assert.ok(acquireSlot(id, now));
-  assert.equal(rpmUsage(id, now), 1, 'cross-minute rollback must not charge down the new bucket');
-});
-
-await test('rollbackRpmBucket never fabricates a bucket for a node that never acquired', async () => {
-  const id = 'rpm-rb3';
-  rollbackRpmBucket(id, now); // no prior acquire
-  assert.equal(rpmUsage(id, now), 0, 'rollback must not create a bucket from nothing');
-  assert.ok(acquireSlot(id, now));
-  assert.equal(rpmUsage(id, now), 1, 'first real acquire starts the counter at 1, not 0 or negative');
-});
-
 // ---- Per-attempt header-wait budget split -----------------------------------
 
 await test('one absolute attempt slice is shared by headers and first event', async () => {
@@ -374,7 +328,6 @@ await test('dispatchable count keeps busy nodes as soft capacity', async () => {
   const makeNode = (id) => ({
     id, models: { m: 'upstream' }, priority: 10,
     protocol: 'openai', surfaces: ['chat_completions'],
-    limits: { concurrency: 1, rpm: 0, rpmMode: 'hard' },
   });
   const req = { model: 'm', protocol: 'openai', surface: 'chat_completions' };
   const nodes = [makeNode('live-count-a'), makeNode('live-count-b')];
@@ -392,17 +345,6 @@ await test('dispatchable count keeps busy nodes as soft capacity', async () => {
 // match the budget-charging / rotation / circuit-breaker expectations of
 // the sites that call them (dispatch.ts, observability.ts, hedge.ts,
 // success.ts).
-await test('classifyPreDispatchRateLimit: rotate, NOT counted, no cooldown (budget must not be charged)', async () => {
-  const c = classifyPreDispatchRateLimit();
-  assert.equal(c.kind, KIND.RATE_LIMIT_GLOBAL);
-  assert.equal(c.action, 'rotate');
-  assert.equal(c.cooldownMs, 0);
-  assert.equal(c.counted, false, 'pre-dispatch denials must NOT feed the circuit breaker');
-  // The dispatch path will pass budgetCharged:false; verify the kind is
-  // distinct from RATE_LIMIT so terminalStatus can disambiguate.
-  assert.notEqual(c.kind, KIND.RATE_LIMIT, 'rate_limit_global is its own kind, not a synonym');
-});
-
 await test('classifyPreDispatchInvalidBaseUrl: rotate, NOT counted, no cooldown (misconfig is operator-side)', async () => {
   const c = classifyPreDispatchInvalidBaseUrl();
   assert.equal(c.kind, KIND.INVALID_BASE_URL);
@@ -435,12 +377,12 @@ await test('classifyHedgeUnknown: rotate, NOT counted (real reason will be re-cl
   assert.equal(c.counted, false);
 });
 
-await test('classifyNonJsonBody: neutral, NOT counted (upstream WAS contacted, no circuit penalty)', async () => {
+await test('classifyNonJsonBody: rotate, counted, short cooldown', async () => {
   const c = classifyNonJsonBody();
   assert.equal(c.kind, KIND.NON_JSON_BODY);
-  assert.equal(c.action, 'neutral');
-  assert.equal(c.cooldownMs, 0);
-  assert.equal(c.counted, false);
+  assert.equal(c.action, 'rotate');
+  assert.equal(c.cooldownMs, 5_000);
+  assert.equal(c.counted, true);
 });
 
 await test('every failure-kind consumer-facing value appears in KIND', async () => {

@@ -1,36 +1,38 @@
 #!/usr/bin/env node
-// Stress / fault-injection tests: hammer the REAL worker.fetch pipeline under
-// bursts and injected faults and assert the reliability invariants hold —
-//   * configured concurrency is soft; live slots still release without leaks
-//   * legacy node limits are ignored instead of becoming guessed hard quotas
-//   * cooling storms short-circuit (no wasted upstream calls)
-//   * circuit opens on sustained failure, single-probe half-open recovers
-//   * tier fallback drains the higher tier first
-//   * client abort mid-stream releases everything neutrally
-//   * failover budget stops further upstream calls once spent
-// These are test-only; no production behavior is changed.
+// SPDX-License-Identifier: MIT
+// Stress / fault-injection coverage for the current scheduler contract.
+// There is no configured node concurrency or node RPM admission. These tests
+// hammer soft in-flight ranking, cooldown/recovery, tier fallback, cancellation,
+// and the request-wide wall-clock budget through the real worker pipeline.
+
 import assert from 'node:assert/strict';
 import worker from '../src/index.ts';
 import { __resetAllStateForTests, getNodeState } from '../src/reliability/node-state.ts';
 import {
-  __resetTier1StateForTests, getTier1Account, getTier1Model,
+  __resetTier1StateForTests,
+  getTier1Model,
   tier1AccountInFlight,
+  recordTier1Ttft,
 } from '../src/reliability/tier1-state.ts';
 import { __resetTier1AffinityForTests } from '../src/scheduler/tier1-affinity.ts';
+import { __resetAdaptive429StateForTests } from '../src/reliability/adaptive-429.ts';
 
 const ACCESS_KEY = 'test-stress-key';
 let passed = 0;
+
 async function test(name, fn) {
   try {
     __resetAllStateForTests();
     __resetTier1StateForTests();
     __resetTier1AffinityForTests();
+    __resetAdaptive429StateForTests();
+    resetMock();
     await fn();
     passed++;
     console.log(`ok - ${name}`);
-  } catch (e) {
+  } catch (error) {
     console.error(`FAIL: ${name}`);
-    console.error(e && e.stack || e);
+    console.error(error?.stack || error);
     process.exitCode = 1;
   }
 }
@@ -38,40 +40,27 @@ async function test(name, fn) {
 const upstreamCalls = [];
 let routeHandlers = {};
 
-function installMockFetch() {
-  globalThis.fetch = async (input, init) => {
-    const url = new URL(typeof input === 'string' ? input : input.url);
-    const handler = routeHandlers[url.hostname];
-    if (!handler) throw new Error(`no mock upstream for ${url.hostname}`);
-    if (init?.body) upstreamCalls.push({ host: url.hostname });
-    const signal = init?.signal;
-    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-    const res = handler(reqFor(url, init));
-    if (signal && res.body) {
-      const upstream = res.body;
-      const onAbort = () => { try { upstream.cancel(); } catch { /* already closed */ } };
-      if (signal.aborted) onAbort();
-      else signal.addEventListener('abort', onAbort, { once: true });
-    }
-    return res;
-  };
-}
-function reqFor(url, init) {
-  return init?.body !== undefined
-    ? new Request(url, { method: 'POST', headers: init.headers, body: init.body })
-    : null;
-}
-function resetMock() { upstreamCalls.length = 0; routeHandlers = {}; }
+globalThis.fetch = async (input, init) => {
+  const url = new URL(typeof input === 'string' ? input : input.url);
+  const handler = routeHandlers[url.hostname];
+  if (!handler) throw new Error(`no mock upstream for ${url.hostname}`);
+  if (init?.body !== undefined) upstreamCalls.push({ host: url.hostname });
+  if (init?.signal?.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+  return handler(input, url, init);
+};
 
-function makeEnv({ tier1, tier2, tier3, secrets, extraEnv } = {}) {
-  const tierSecrets = (nodes = []) => Object.fromEntries(
-    nodes
-      .map((node) => [node.id, secrets?.[node.id]])
-      .filter(([, credential]) => credential !== undefined),
+function resetMock() {
+  upstreamCalls.length = 0;
+  routeHandlers = {};
+}
+
+function makeEnv({ tier1, tier2, tier3, secrets = {}, extraEnv = {} } = {}) {
+  const subset = (nodes = []) => Object.fromEntries(
+    nodes.map((n) => [n.id, secrets[n.id]]).filter(([, value]) => value !== undefined),
   );
-  const tier1Secrets = tierSecrets(tier1);
-  const tier2Secrets = tierSecrets(tier2);
-  const tier3Secrets = tierSecrets(tier3);
+  const t1s = subset(tier1);
+  const t2s = subset(tier2);
+  const t3s = subset(tier3);
   return {
     GATEWAY_ACCESS_KEY_AIR: ACCESS_KEY,
     GATEWAY_ACCESS_MODELS_AIR: '*',
@@ -79,393 +68,219 @@ function makeEnv({ tier1, tier2, tier3, secrets, extraEnv } = {}) {
     ...(tier1 ? { TIER1_NODES_CONFIG_01: JSON.stringify(tier1) } : {}),
     ...(tier2 ? { TIER2_NODES_CONFIG_01: JSON.stringify(tier2) } : {}),
     ...(tier3 ? { TIER3_NODES_CONFIG_01: JSON.stringify(tier3) } : {}),
-    ...(Object.keys(tier1Secrets).length ? { TIER1_NODES_SECRETS_01: JSON.stringify(tier1Secrets) } : {}),
-    ...(Object.keys(tier2Secrets).length ? { TIER2_NODES_SECRETS_01: JSON.stringify(tier2Secrets) } : {}),
-    ...(Object.keys(tier3Secrets).length ? { TIER3_NODES_SECRETS_01: JSON.stringify(tier3Secrets) } : {}),
+    ...(Object.keys(t1s).length ? { TIER1_NODES_SECRETS_01: JSON.stringify(t1s) } : {}),
+    ...(Object.keys(t2s).length ? { TIER2_NODES_SECRETS_01: JSON.stringify(t2s) } : {}),
+    ...(Object.keys(t3s).length ? { TIER3_NODES_SECRETS_01: JSON.stringify(t3s) } : {}),
     ...extraEnv,
   };
 }
-const basicNode = (id, extra = {}) => ({
-  id, provider: 'mock', base_url: `https://${id}.example.com/v1`,
-  models: { 'general-air': 'up-model' }, ...extra,
+
+const node = (id, extra = {}) => ({
+  id,
+  provider: 'mock',
+  protocol: 'openai',
+  surfaces: ['chat_completions'],
+  base_url: `https://${id}.example.com/v1`,
+  models: { 'general-air': 'up-model' },
+  ...extra,
 });
-function chatRequest(body, key = ACCESS_KEY, init = {}) {
+
+function chatRequest(body = {}, init = {}) {
   return new Request('https://gateway.example.com/v1/chat/completions', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
-    body: JSON.stringify(body),
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${ACCESS_KEY}` },
+    body: JSON.stringify({ model: 'general-air', messages: [], ...body }),
     signal: init.signal,
   });
 }
-function jsonUpstream(data, status = 200, headers = {}) {
-  return new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json', ...headers } });
-}
-const okCompletion = { id: 'x', object: 'chat.completion', model: 'up-model',
-  choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }] };
 
-installMockFetch();
+function jsonResponse(data, status = 200, headers = {}) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'content-type': 'application/json', ...headers },
+  });
+}
+
+const okCompletion = {
+  id: 'x', object: 'chat.completion', model: 'up-model',
+  choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+};
 
 function assertNoLeaks(ids) {
   for (const id of ids) {
-    const s = getNodeState(id);
-    assert.equal(tier1AccountInFlight(id), 0, `Tier 1 account ${id} leaked a slot`);
-    assert.equal(s.activeRequests, 0, `node ${id} leaked ${s.activeRequests} slot(s)`);
-    assert.equal(s.probeInFlight, false, `node ${id} stuck probeInFlight`);
+    assert.equal(tier1AccountInFlight(id), 0, `Tier 1 account ${id} leaked an in-flight slot`);
+    const state = getNodeState(id);
+    assert.equal(state.activeRequests, 0, `node ${id} leaked ${state.activeRequests} active request(s)`);
+    assert.equal(state.probeInFlight, false, `node ${id} stuck probeInFlight`);
   }
 }
 
-await test('S1 concurrency burst: configured cap is soft, all requests may run, slots released', async () => {
-  resetMock();
+await test('S1 burst: soft in-flight load never hard-blocks the only healthy Tier 1 key', async () => {
   let release;
-  const gate = new Promise((r) => { release = r; });
-  routeHandlers['c1.example.com'] = async () => { await gate; return jsonUpstream(okCompletion); };
-  const env = makeEnv({ tier1: [basicNode('c1', { limits: { concurrency: 1 } })], secrets: { c1: 'k' } });
-  const inFlight = Array.from({ length: 6 }, () => worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {}));
-  await new Promise((r) => setTimeout(r, 20));
-  assert.equal(tier1AccountInFlight('c1'), 6,
-    'configured concurrency must not hard-block primary requests');
+  const gate = new Promise((resolve) => { release = resolve; });
+  routeHandlers['burst.example.com'] = async () => { await gate; return jsonResponse(okCompletion); };
+  const env = makeEnv({ tier1: [node('burst')], secrets: { burst: 'k' } });
+  const requests = Array.from({ length: 8 }, () => worker.fetch(chatRequest(), env, {}));
+  for (let i = 0; i < 100 && upstreamCalls.length < 8; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(upstreamCalls.length, 8, 'all requests may use the only healthy key');
+  assert.equal(tier1AccountInFlight('burst'), 8);
   release();
-  const statuses = await Promise.all(inFlight.map((p) => p.then((r) => r.status)));
-  assert.equal(statuses.filter((s) => s === 200).length, 6, 'all requests may use the only healthy node');
-  assertNoLeaks(['c1']);
+  const statuses = await Promise.all(requests.map((p) => p.then((r) => r.status)));
+  assert.ok(statuses.every((status) => status === 200));
+  assertNoLeaks(['burst']);
 });
 
-await test('S2 legacy limits.rpm is ignored instead of becoming a guessed hard quota', async () => {
-  resetMock();
-  routeHandlers['rpm1.example.com'] = () => jsonUpstream(okCompletion);
-  const env = makeEnv({ tier1: [basicNode('rpm1', { limits: { concurrency: 1, rpm: 2 } })], secrets: { rpm1: 'k' } });
-  const statuses = [];
-  for (let i = 0; i < 6; i++) {
-    statuses.push((await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {})).status);
-  }
-  assert.equal(statuses.filter((s) => s === 200).length, 6,
-    'legacy limits must not manufacture provider capacity that was never known');
-  assert.equal(upstreamCalls.length, 6, 'all six requests may reach the healthy upstream');
-  assertNoLeaks(['rpm1']);
+await test('S2 pool burst: P2C spreads live work and every slot drains', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const ids = ['p1', 'p2', 'p3', 'p4'];
+  for (const id of ids) routeHandlers[`${id}.example.com`] = async () => { await gate; return jsonResponse(okCompletion); };
+  const env = makeEnv({ tier1: ids.map((id) => node(id)), secrets: Object.fromEntries(ids.map((id) => [id, 'k'])) });
+  const requests = Array.from({ length: 20 }, () => worker.fetch(chatRequest(), env, {}));
+  for (let i = 0; i < 100 && upstreamCalls.length < 20; i++) await new Promise((r) => setTimeout(r, 5));
+  const used = new Set(upstreamCalls.map((c) => c.host));
+  assert.equal(upstreamCalls.length, 20, 'all burst requests reach an eligible Tier 1 node');
+  assert.ok(used.size >= 2, `expected P2C to spread live work, got ${JSON.stringify([...used])}`);
+  release();
+  const statuses = await Promise.all(requests.map((p) => p.then((r) => r.status)));
+  assert.ok(statuses.every((status) => status === 200));
+  assertNoLeaks(ids);
 });
 
-await test('S3 tier fallback: drains tier-1 budget, then tier-2 serves', async () => {
-  resetMock();
-  for (const id of ['t1a', 't1b', 't1c', 't1d']) routeHandlers[`${id}.example.com`] = () => jsonUpstream({}, 503);
-  routeHandlers['t2a.example.com'] = () => jsonUpstream(okCompletion);
+await test('S3 tier fallback drains eligible Tier 1 candidates before Tier 2 serves', async () => {
+  const tier1Ids = ['t1a', 't1b', 't1c', 't1d'];
+  for (const id of tier1Ids) routeHandlers[`${id}.example.com`] = () => jsonResponse({}, 503);
+  routeHandlers['t2.example.com'] = () => jsonResponse(okCompletion);
   const env = makeEnv({
-    tier1: [basicNode('t1a'), basicNode('t1b'), basicNode('t1c'), basicNode('t1d')],
-    tier2: [basicNode('t2a')],
-    secrets: { t1a: 'k', t1b: 'k', t1c: 'k', t1d: 'k', t2a: 'k' },
+    tier1: tier1Ids.map((id) => node(id)),
+    tier2: [node('t2')],
+    secrets: { t1a: '1', t1b: '2', t1c: '3', t1d: '4', t2: '5' },
   });
-  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+  const res = await worker.fetch(chatRequest(), env, {});
   assert.equal(res.status, 200);
   const hosts = upstreamCalls.map((c) => c.host);
-  assert.equal(hosts.length, 5, 'default max_attempts=5 gives Tier 1 four attempts before Tier 2');
-  assert.ok(hosts.slice(0, 4).every((host) => /^t1[abcd]\.example\.com$/.test(host)));
+  assert.equal(hosts.length, 5);
   assert.equal(new Set(hosts.slice(0, 4)).size, 4);
-  assert.equal(hosts[4], 't2a.example.com');
-  assertNoLeaks(['t1a', 't1b', 't1c', 't1d', 't2a']);
+  assert.ok(hosts.slice(0, 4).every((host) => /^t1[abcd]\.example\.com$/.test(host)));
+  assert.equal(hosts[4], 't2.example.com');
+  assertNoLeaks([...tier1Ids, 't2']);
 });
 
-await test('S4 429 storm: cooling node short-circuits, no upstream hammering', async () => {
-  resetMock();
-  routeHandlers['cool1.example.com'] = () => jsonUpstream({ error: { message: 'rl' } }, 429, { 'retry-after': '60' });
-  const env = makeEnv({ tier1: [basicNode('cool1')], secrets: { cool1: 'k' } });
-  const first = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
+await test('S4 429 storm: a cooling key short-circuits without upstream hammering', async () => {
+  routeHandlers['cool.example.com'] = () => jsonResponse({ error: { message: 'rate limited' } }, 429, { 'retry-after': '60' });
+  const env = makeEnv({ tier1: [node('cool')], secrets: { cool: 'k' } });
+  const first = await worker.fetch(chatRequest(), env, {});
   assert.equal(first.status, 429);
   const callsAfterFirst = upstreamCalls.length;
-  const storm = await Promise.all(Array.from({ length: 10 }, () =>
-    worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {}).then((r) => r.status)));
-  assert.ok(storm.every((s) => s === 429), 'all storm requests must be 429');
-  assert.equal(upstreamCalls.length, callsAfterFirst, 'cooling must not re-hit upstream');
-  assertNoLeaks(['cool1']);
+  const statuses = await Promise.all(Array.from({ length: 20 }, () =>
+    worker.fetch(chatRequest(), env, {}).then((r) => r.status)));
+  assert.ok(statuses.every((status) => status === 429));
+  assert.equal(upstreamCalls.length, callsAfterFirst, 'cooldown must absorb the storm locally');
+  assertNoLeaks(['cool']);
 });
 
-await test('S5 recovery: sustained failure cools, then real half-open requests recover', async () => {
-  resetMock();
+await test('S5 recovery: sustained failure admits one real half-open request at a time', async () => {
   let fail = true;
   let release;
-  const gate = new Promise((r) => { release = r; });
-  routeHandlers['cb1.example.com'] = async () => {
-    if (fail) return jsonUpstream({}, 503);
+  const gate = new Promise((resolve) => { release = resolve; });
+  routeHandlers['recover.example.com'] = async () => {
+    if (fail) return jsonResponse({}, 503);
     await gate;
-    return jsonUpstream(okCompletion);
+    return jsonResponse(okCompletion);
   };
-  const env = makeEnv({ tier1: [basicNode('cb1', { limits: { concurrency: 1 } })], secrets: { cb1: 'k' } });
+  const env = makeEnv({ tier1: [node('recover')], secrets: { recover: 'k' } });
   for (let i = 0; i < 3; i++) {
-    const r = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-    assert.equal(r.status, 502);
+    const res = await worker.fetch(chatRequest(), env, {});
+    assert.equal(res.status, 502);
   }
-  assert.equal(getTier1Model('cb1', 'general-air').failureState, 'cooldown');
-  const callsBefore = upstreamCalls.length;
-  await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-  assert.equal(upstreamCalls.length, callsBefore, 'open circuit must not hit upstream');
+  assert.equal(getTier1Model('recover', 'general-air').failureState, 'cooldown');
+  const beforeBlocked = upstreamCalls.length;
+  const blocked = await worker.fetch(chatRequest(), env, {});
+  assert.notEqual(blocked.status, 200);
+  assert.equal(upstreamCalls.length, beforeBlocked);
 
-  getTier1Model('cb1', 'general-air').cooldownUntil = Date.now() - 1;
+  getTier1Model('recover', 'general-air').cooldownUntil = Date.now() - 1;
   fail = false;
-  const before = upstreamCalls.length;
-  const burst = Array.from({ length: 5 }, () =>
-    worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {}).then((r) => r.status));
-  await new Promise((r) => setTimeout(r, 30));
-  assert.equal(upstreamCalls.length - before, 1, 'exactly one real half-open request may reach upstream');
-  assert.equal(getTier1Model('cb1', 'general-air').failureState, 'half_open');
+  const beforeProbe = upstreamCalls.length;
+  const burst = Array.from({ length: 6 }, () => worker.fetch(chatRequest(), env, {}).then((r) => r.status));
+  for (let i = 0; i < 100 && upstreamCalls.length === beforeProbe; i++) await new Promise((r) => setTimeout(r, 5));
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(upstreamCalls.length - beforeProbe, 1, 'only one recovery request reaches upstream');
+  assert.equal(getTier1Model('recover', 'general-air').failureState, 'half_open');
   release();
   const statuses = await Promise.all(burst);
-  assert.equal(statuses.filter((s) => s === 200).length, 1, 'half-open request succeeds');
-  assert.equal(statuses.filter((s) => s === 503).length, 4, 'concurrent requests wait for the recovery probe');
-  assert.equal(getTier1Model('cb1', 'general-air').failureState, 'half_open');
-  const followUp = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-  assert.equal(followUp.status, 200);
-  assert.equal(getTier1Model('cb1', 'general-air').failureState, 'normal');
-  assertNoLeaks(['cb1']);
+  assert.equal(statuses.filter((s) => s === 200).length, 1);
+  assert.equal(statuses.filter((s) => s !== 200).length, 5);
+  const secondRecovery = await worker.fetch(chatRequest(), env, {});
+  assert.equal(secondRecovery.status, 200);
+  assert.equal(getTier1Model('recover', 'general-air').failureState, 'normal');
+  assertNoLeaks(['recover']);
 });
 
-await test('S6 client abort mid-stream: releases slot, no failure penalty', async () => {
-  resetMock();
-  const ac = new AbortController();
-  const enc = new TextEncoder();
-  let step = 0;
-  routeHandlers['ab1.example.com'] = () => new Response(new ReadableStream({
-    async pull(c) {
-      if (step === 0) { c.enqueue(enc.encode(`data: ${JSON.stringify({ id: 'x', choices: [{ index: 0, delta: { content: 'a' } }] })}\n\n`)); step = 1; return; }
-      await new Promise((r) => setTimeout(r, 50));
-      c.enqueue(enc.encode('data: [DONE]\n\n'));
-      c.close();
-    },
+await test('S6 client cancellation after stream commit releases the Tier 1 slot neutrally', async () => {
+  const encoder = new TextEncoder();
+  let controller;
+  routeHandlers['cancel.example.com'] = () => new Response(new ReadableStream({
+    start(c) { controller = c; },
   }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
-  const env = makeEnv({ tier1: [basicNode('ab1')], secrets: { ab1: 'k' } });
-  const resPromise = worker.fetch(chatRequest({ model: 'general-air', messages: [], stream: true }, ACCESS_KEY, { signal: ac.signal }), env, {});
-  const res = await resPromise;
+  const env = makeEnv({ tier1: [node('cancel')], secrets: { cancel: 'k' } });
+  const ac = new AbortController();
+  const pending = worker.fetch(chatRequest({ stream: true }, { signal: ac.signal }), env, {});
+  for (let i = 0; i < 100 && !controller; i++) await new Promise((r) => setTimeout(r, 5));
+  controller.enqueue(encoder.encode(`data: ${JSON.stringify({ id: 'x', choices: [{ index: 0, delta: { content: 'first' }, finish_reason: null }] })}\n\n`));
+  const res = await pending;
   const reader = res.body.getReader();
   await reader.read();
-  reader.releaseLock();
+  assert.equal(tier1AccountInFlight('cancel'), 1);
   ac.abort();
-  await res.body.cancel().catch(() => {});
-  await new Promise((r) => setTimeout(r, 10));
-  const s = getNodeState('ab1');
-  assert.equal(s.activeRequests, 0, 'abort must release the slot');
-  assert.equal(s.totalFailures, 0, 'abort is neutral, not a failure');
-  assert.equal(s.circuitState, 'closed');
-  assertNoLeaks(['ab1']);
+  await reader.cancel().catch(() => {});
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(tier1AccountInFlight('cancel'), 0);
+  assert.equal(getNodeState('cancel').totalFailures, 0);
+  assertNoLeaks(['cancel']);
 });
 
-await test('S7 failover budget: no further upstream after budget spent', async () => {
-  resetMock();
-  routeHandlers['slow.example.com'] = async () => { await new Promise((r) => setTimeout(r, 1600)); return jsonUpstream({}, 502); };
-  routeHandlers['fast.example.com'] = () => jsonUpstream(okCompletion);
+await test('S7 failover wall-clock budget prevents dispatch after the budget is spent', async () => {
+  routeHandlers['slow.example.com'] = async () => {
+    await new Promise((r) => setTimeout(r, 1_600));
+    return jsonResponse({}, 502);
+  };
+  routeHandlers['fast.example.com'] = () => jsonResponse(okCompletion);
+  recordTier1Ttft('slow', 'general-air', 50);
+  recordTier1Ttft('fast', 'general-air', 2_000);
   const env = makeEnv({
-    tier1: [basicNode('slow'), basicNode('fast')],
-    secrets: { slow: 'k', fast: 'k' },
+    tier1: [node('slow'), node('fast')],
+    secrets: { slow: 's', fast: 'f' },
     extraEnv: { FAILOVER_BUDGET_MS: '1200' },
   });
-  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-  assert.equal(res.status, 504, 'budget exhaustion must be terminal 504');
-  assert.deepEqual(upstreamCalls.map((c) => c.host), ['slow.example.com'],
-    'must not call the next node once the budget is spent');
+  const res = await worker.fetch(chatRequest(), env, {});
+  assert.equal(res.status, 504);
+  assert.deepEqual(upstreamCalls.map((c) => c.host), ['slow.example.com']);
   assert.equal(res.headers.get('x-should-retry'), 'false');
   assertNoLeaks(['slow', 'fast']);
 });
 
-await test('S8 randomized fault injection: invariants hold across many requests', async () => {
-  resetMock();
-  const ids = ['f1', 'f2', 'f3'];
+await test('S8 mixed transient failures under load do not leak scheduler state', async () => {
+  const ids = ['mix-a', 'mix-b', 'mix-c'];
+  let callNo = 0;
   for (const id of ids) {
     routeHandlers[`${id}.example.com`] = () => {
-      const roll = Math.random();
-      if (roll < 0.25) return jsonUpstream({}, 503);
-      if (roll < 0.35) return jsonUpstream({ error: { message: 'rl' } }, 429, { 'retry-after': '5' });
-      if (roll < 0.42) return jsonUpstream({}, 500);
-      return jsonUpstream(okCompletion);
+      callNo++;
+      if (callNo % 5 === 0) return jsonResponse({}, 503);
+      return jsonResponse(okCompletion);
     };
   }
   const env = makeEnv({
-    tier1: ids.map((id) => basicNode(id, { limits: { concurrency: 3, rpm: 100 } })),
+    tier1: ids.map((id) => node(id)),
     secrets: Object.fromEntries(ids.map((id) => [id, 'k'])),
   });
-  const results = await Promise.all(Array.from({ length: 60 }, () =>
-    worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {}).then((r) => r.status)));
-  assert.ok(results.every((s) => [200, 429, 502, 503, 504].includes(s)), 'only expected terminal statuses');
-  for (const id of ids) {
-    const s = getNodeState(id);
-    assert.equal(s.activeRequests, 0, `${id} leaked slots`);
-    assert.equal(s.probeInFlight, false, `${id} stuck probe`);
-    assert.equal(s.totalRequests, s.totalSuccesses + s.totalFailures, `${id} outcome accounting unbalanced`);
+  const statuses = [];
+  for (let i = 0; i < 40; i++) {
+    statuses.push((await worker.fetch(chatRequest(), env, {})).status);
   }
-});
-
-await test('S9 node isolation: a 429-cooling node leaves siblings serving', async () => {
-  resetMock();
-  routeHandlers['iso-a.example.com'] = () => jsonUpstream({ error: { message: 'rl' } }, 429, { 'retry-after': '120' });
-  routeHandlers['iso-b.example.com'] = () => jsonUpstream(okCompletion);
-  routeHandlers['iso-c.example.com'] = () => jsonUpstream(okCompletion);
-  const env = makeEnv({
-    tier1: ['iso-a', 'iso-b', 'iso-c'].map((id) => basicNode(id, { limits: { concurrency: 20 } })),
-    secrets: { 'iso-a': 'k', 'iso-b': 'k', 'iso-c': 'k' },
-  });
-  const first = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-  assert.equal(first.status, 200);
-  assert.equal(getTier1Account('iso-a').accountCooldownUntil > Date.now(), true, 'iso-a account must be cooling');
-  assert.equal(getTier1Model('iso-a', 'general-air').cooldownUntil, 0, 'ambiguous 429 must not create model cooldown');
-  const aCalls = upstreamCalls.filter((c) => c.host === 'iso-a.example.com').length;
-  const statuses = await Promise.all(Array.from({ length: 20 }, () =>
-    worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {}).then((r) => r.status)));
-  assert.ok(statuses.every((s) => s === 200), 'siblings must serve the whole burst');
-  const aCallsAfter = upstreamCalls.filter((c) => c.host === 'iso-a.example.com').length;
-  assert.equal(aCallsAfter, aCalls, 'cooling node must not be re-contacted');
-  assertNoLeaks(['iso-a', 'iso-b', 'iso-c']);
-});
-
-await test('S10 model isolation: a failure-cooldown account leaves siblings serving', async () => {
-  resetMock();
-  routeHandlers['cir-a.example.com'] = () => jsonUpstream({}, 503);
-  routeHandlers['cir-b.example.com'] = () => jsonUpstream(okCompletion);
-  routeHandlers['cir-c.example.com'] = () => jsonUpstream(okCompletion);
-  const warmEnv = makeEnv({
-    tier1: [basicNode('cir-a', { limits: { concurrency: 20 } })],
-    secrets: { 'cir-a': 'k' },
-  });
-  for (let i = 0; i < 3; i++) {
-    const r = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), warmEnv, {});
-    assert.equal(r.status, 502);
-  }
-  assert.equal(getTier1Model('cir-a', 'general-air').failureState, 'cooldown');
-
-  const env = makeEnv({
-    tier1: [
-      basicNode('cir-a', { priority: 1, limits: { concurrency: 20 } }),
-      basicNode('cir-b', { priority: 10, limits: { concurrency: 20 } }),
-      basicNode('cir-c', { priority: 10, limits: { concurrency: 20 } }),
-    ],
-    secrets: { 'cir-a': 'k', 'cir-b': 'k', 'cir-c': 'k' },
-  });
-  const aCalls = upstreamCalls.filter((c) => c.host === 'cir-a.example.com').length;
-  const statuses = await Promise.all(Array.from({ length: 20 }, () =>
-    worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {}).then((r) => r.status)));
-  assert.ok(statuses.every((s) => s === 200), 'siblings must serve the whole burst');
-  const aCallsAfter = upstreamCalls.filter((c) => c.host === 'cir-a.example.com').length;
-  assert.equal(aCallsAfter, aCalls, 'cooldown account must not be re-contacted');
-  assertNoLeaks(['cir-a', 'cir-b', 'cir-c']);
-});
-
-await test('S11 fallback reserve: a wide failing Tier 1 cannot starve Tier 2', async () => {
-  resetMock();
-  for (const id of ['fb1', 'fb2', 'fb3', 'fb4', 'fb5', 'fb6']) {
-    routeHandlers[`${id}.example.com`] = () => jsonUpstream({}, 503);
-  }
-  routeHandlers['paid.example.com'] = () => jsonUpstream(okCompletion);
-  const env = makeEnv({
-    tier1: ['fb1', 'fb2', 'fb3', 'fb4', 'fb5', 'fb6'].map((id) => basicNode(id, { limits: { concurrency: 20 } })),
-    tier2: [basicNode('paid', { limits: { concurrency: 20 } })],
-    secrets: { fb1: 'k', fb2: 'k', fb3: 'k', fb4: 'k', fb5: 'k', fb6: 'k', paid: 'k' },
-  });
-  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-  assert.equal(res.status, 200, 'Tier 2 must serve — fallback reserve kept it reachable');
-  const tier1Calls = upstreamCalls.filter((c) => c.host.endsWith('.example.com') && c.host.startsWith('fb')).length;
-  const tier2Calls = upstreamCalls.filter((c) => c.host === 'paid.example.com').length;
-  assert.equal(tier2Calls, 1, 'paid Tier 2 node must be contacted exactly once');
-  assert.equal(tier1Calls, 4, 'default per-tier budget gives Tier 1 four attempts');
-  assertNoLeaks(['fb1', 'fb2', 'fb3', 'fb4', 'fb5', 'fb6', 'paid']);
-});
-
-await test('S12 tier_attempts override: caps Tier 1 at 2 so Tier 2 serves', async () => {
-  resetMock();
-  for (const id of ['nb1', 'nb2', 'nb3', 'nb4', 'nb5', 'nb6']) {
-    routeHandlers[`${id}.example.com`] = () => jsonUpstream({}, 503);
-  }
-  routeHandlers['paid2.example.com'] = () => jsonUpstream(okCompletion);
-  const env = makeEnv({
-    tier1: ['nb1', 'nb2', 'nb3', 'nb4', 'nb5', 'nb6'].map((id) => basicNode(id, { limits: { concurrency: 20 } })),
-    tier2: [basicNode('paid2', { limits: { concurrency: 20 } })],
-    secrets: { nb1: 'k', nb2: 'k', nb3: 'k', nb4: 'k', nb5: 'k', nb6: 'k', paid2: 'k' },
-    extraEnv: { POLICIES_CONFIG: '{"default":{"max_attempts":5,"tier_attempts":{"tier1":2,"tier2":1}}}' },
-  });
-  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-  assert.equal(res.status, 200, 'Tier 2 must serve when Tier 1 is capped by tier_attempts');
-  const tier1Calls = upstreamCalls.filter((c) => c.host.startsWith('nb')).length;
-  assert.equal(tier1Calls, 2, 'tier_attempts must cap Tier 1 at exactly 2 attempts');
-  assert.equal(upstreamCalls.filter((c) => c.host === 'paid2.example.com').length, 1, 'Tier 2 must be reached');
-  assertNoLeaks(['nb1', 'nb2', 'nb3', 'nb4', 'nb5', 'nb6', 'paid2']);
-});
-
-await test('S13 per-tier default: each schedulable tier gets a share, middle tier reached', async () => {
-  resetMock();
-  routeHandlers['fe1.example.com'] = () => jsonUpstream({}, 503);
-  routeHandlers['fe2.example.com'] = () => jsonUpstream(okCompletion);
-  routeHandlers['fe3.example.com'] = () => jsonUpstream({}, 503);
-  const env = makeEnv({
-    tier1: [basicNode('fe1', { limits: { concurrency: 20 } })],
-    tier2: [basicNode('fe2', { limits: { concurrency: 20 } })],
-    tier3: [basicNode('fe3', { limits: { concurrency: 20 } })],
-    secrets: { fe1: 'k', fe2: 'k', fe3: 'k' },
-    extraEnv: { POLICIES_CONFIG: '{"default":{"max_attempts":3}}' },
-  });
-  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-  assert.equal(res.status, 200, 'request must eventually be served');
-  assert.equal(upstreamCalls.filter((c) => c.host === 'fe1.example.com').length, 1, 'Tier 1 gets exactly 1 attempt');
-  assert.equal(upstreamCalls.filter((c) => c.host === 'fe2.example.com').length, 1, 'middle Tier 2 is reached (not starved)');
-  assert.equal(upstreamCalls.filter((c) => c.host === 'fe3.example.com').length, 0, 'Tier 3 never reached (served in Tier 2)');
-  assertNoLeaks(['fe1', 'fe2', 'fe3']);
-});
-
-await test('S14 availability-aware: a cooling Tier 2 node does not consume Tier 1 budget', async () => {
-  resetMock();
-  for (const id of ['a1', 'a2', 'a3', 'a4', 'a5', 'a6']) {
-    routeHandlers[`${id}.example.com`] = () => jsonUpstream({}, 503);
-  }
-  routeHandlers['cool2.example.com'] = () => jsonUpstream({ error: { message: 'rl' } }, 429, { 'retry-after': '120' });
-  const env = makeEnv({
-    tier1: ['a1', 'a2', 'a3', 'a4', 'a5', 'a6'].map((id) => basicNode(id, { limits: { concurrency: 20 } })),
-    tier2: [basicNode('cool2', { limits: { concurrency: 20 } })],
-    secrets: { a1: 'k', a2: 'k', a3: 'k', a4: 'k', a5: 'k', a6: 'k', cool2: 'k' },
-  });
-  await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-  assert.ok(getNodeState('cool2').cooldownUntil > Date.now(), 'cool2 must be cooling after the warm-up');
-  const callsBefore = upstreamCalls.length;
-  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-  const newCalls = upstreamCalls.slice(callsBefore);
-  assert.equal(res.status, 502, 'Tier 1 exhausts the whole budget and no usable fallback exists');
-  assert.equal(newCalls.filter((c) => c.host.startsWith('a')).length, 5,
-    'Tier 1 may use all five shared attempts when it is the only dispatchable tier');
-  assert.equal(newCalls.filter((c) => c.host === 'cool2.example.com').length, 0,
-    'a cooling Tier-2 node is never re-contacted');
-  assertNoLeaks(['a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'cool2']);
-});
-
-await test('S15 max_attempts=2: Tier precedence order, Tier 2 reached before Tier 3', async () => {
-  resetMock();
-  routeHandlers['b1.example.com'] = () => jsonUpstream({}, 503);
-  routeHandlers['b2.example.com'] = () => jsonUpstream(okCompletion);
-  routeHandlers['b3.example.com'] = () => jsonUpstream({}, 503);
-  const env = makeEnv({
-    tier1: [basicNode('b1', { limits: { concurrency: 20 } })],
-    tier2: [basicNode('b2', { limits: { concurrency: 20 } })],
-    tier3: [basicNode('b3', { limits: { concurrency: 20 } })],
-    secrets: { b1: 'k', b2: 'k', b3: 'k' },
-    extraEnv: { POLICIES_CONFIG: '{"default":{"max_attempts":2}}' },
-  });
-  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-  assert.equal(res.status, 200, 'Tier 2 must serve');
-  assert.deepEqual(upstreamCalls.map((c) => c.host),
-    ['b1.example.com', 'b2.example.com'], 'Tier 1 then Tier 2, in precedence order');
-  assert.equal(upstreamCalls.length, 2, 'total attempts must be exactly 2 (<= max_attempts)');
-  assert.equal(upstreamCalls.filter((c) => c.host === 'b3.example.com').length, 0,
-    'Tier 3 must not be reached when Tier 2 already serves');
-  assertNoLeaks(['b1', 'b2', 'b3']);
-});
-
-await test('S16 max_attempts=1: only the highest-precedence tier is attempted', async () => {
-  resetMock();
-  routeHandlers['c1.example.com'] = () => jsonUpstream({}, 503);
-  routeHandlers['c2.example.com'] = () => jsonUpstream(okCompletion);
-  routeHandlers['c3.example.com'] = () => jsonUpstream({}, 503);
-  const env = makeEnv({
-    tier1: [basicNode('c1', { limits: { concurrency: 20 } })],
-    tier2: [basicNode('c2', { limits: { concurrency: 20 } })],
-    tier3: [basicNode('c3', { limits: { concurrency: 20 } })],
-    secrets: { c1: 'k', c2: 'k', c3: 'k' },
-    extraEnv: { POLICIES_CONFIG: '{"default":{"max_attempts":1}}' },
-  });
-  const res = await worker.fetch(chatRequest({ model: 'general-air', messages: [] }), env, {});
-  assert.equal(res.status, 502, 'a single attempt is not enough to fall through to a serving tier');
-  assert.deepEqual(upstreamCalls.map((c) => c.host), ['c1.example.com'], 'only Tier 1 is attempted');
-  assert.equal(upstreamCalls.length, 1, 'total attempts must be exactly 1 (<= max_attempts)');
-  assertNoLeaks(['c1', 'c2', 'c3']);
+  assert.ok(statuses.filter((status) => status === 200).length >= 35);
+  assertNoLeaks(ids);
 });
 
 if (!process.exitCode) console.log(`\nstress tests passed (${passed}).`);

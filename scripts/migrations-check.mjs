@@ -74,9 +74,9 @@ function checkIdempotent(files) {
   for (const f of files) {
     const sql = fs.readFileSync(path.join(migDir, f), 'utf8');
     const upper = sql.toUpperCase();
-    const createMatches = upper.match(/\bCREATE\s+(TABLE|INDEX|UNIQUE\s+INDEX)\b/g) || [];
-    for (const stmt of createMatches) {
-      const offset = upper.indexOf(stmt);
+    const createMatches = upper.matchAll(/\bCREATE\s+(TABLE|INDEX|UNIQUE\s+INDEX)\b/g);
+    for (const match of createMatches) {
+      const offset = match.index ?? 0;
       const after = upper.slice(offset, offset + 200);
       assert.ok(after.includes('IF NOT EXISTS'),
         `${f}: every CREATE must use IF NOT EXISTS so re-applies are no-ops (D1 has no migrations table)`);

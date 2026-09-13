@@ -15,7 +15,7 @@ import { anthropicErrorTypeForStatus } from '../protocol/anthropic.ts';
 import { responsesErrorResponse } from '../protocol/responses/index.ts';
 import { getCooldownRemainingMs, getModelCooldownRemainingMs } from '../reliability/node-state.ts';
 import { tier1BlockingWaitMs, tier1HasDeferredCapacity } from '../reliability/tier1-state.ts';
-import { supportsRequest, isHardRpmExhausted, tierHasDeferredCapacity } from '../scheduler/scheduler.ts';
+import { supportsRequest } from '../scheduler/scheduler.ts';
 import { TIER_ORDER } from './router.ts';
 import { modelFallbackCandidates } from './model-fallback.ts';
 import type { RequestDescriptor, LoopState } from '../types/request.ts';
@@ -103,8 +103,7 @@ export function buildExhaustedResponse(
   const knownModels_ = knownModels ?? state.knownModels;
 
   // Distinguish WHY no node was available:
-  //   hard-RPM capacity deferred -> 503, so clients back off;
-  //   cooling / circuit open -> 429 + the smallest remaining cooldown;
+  //   cooling / circuit / recovery gate -> 429 with the smallest real wait;
   //   real failures -> terminal status unless a complete model-family sweep
   //     failed only for transient reasons, in which case 503 asks the client to
   //     retry the turn instead of stopping for manual intervention.
@@ -118,17 +117,8 @@ export function buildExhaustedResponse(
       message = 'The remaining request deadline is too short for another safe upstream attempt.';
       retryAfterSec = 1;
     } else {
-      const deferred = TIER_ORDER.some((t) =>
-        t === 1
-          ? tier1HasDeferredCapacity(tiers[t], reqDescriptor, state.attempted, now, knownModels_)
-          : tierHasDeferredCapacity(tiers[t], reqDescriptor, state.attempted, now, knownModels_));
-      if (deferred) {
-        status = 503;
-        message = 'All eligible nodes are at capacity. Retry shortly.';
-      } else {
-        status = 429;
-        message = 'All eligible nodes are temporarily unavailable (cooldown or circuit open).';
-      }
+      status = 429;
+      message = 'All eligible nodes are temporarily unavailable (cooldown, recovery gate, or circuit open).';
       retryAfterSec = earliestBlockingRetryAfterSec(tiers, reqDescriptor, now, knownModels_);
     }
   } else {
@@ -166,13 +156,6 @@ export function buildExhaustedResponse(
 
     if (status === 429) {
       retryAfterSec = earliestBlockingRetryAfterSec(tiers, reqDescriptor, now, knownModels_);
-      // A distributed rate-limiter deny (rate_limit_global) leaves no node
-      // cooldown — the node was never at fault. When that is what blocked
-      // everything, back the client off to the next fixed-window reset instead
-      // of omitting Retry-After entirely.
-      if (retryAfterSec === undefined && state.failureKinds?.rate_limit_global) {
-        retryAfterSec = distributedWindowRetryAfterSec(now);
-      }
     }
   }
 
@@ -237,25 +220,17 @@ function earliestFamilyBlockingRetryAfterSec(
 
 // Per-node wait until this (node, requestedModel) pair could serve again.
 // Returns Infinity when the node is healthy & idle (not blocking). Node-level
-// cooldown (429/auth/circuit) wins over the model-scoped cooldown (404). Hard
-// RPM exhaustion is bounded by the remaining minute window. Concurrency is a
-// soft ranking signal and never contributes a blocking wait.
+// cooldown (429/auth/circuit) wins over the model-scoped cooldown (404). Live
+// in-flight load is ranking-only and never contributes a blocking wait.
 function blockingWaitMs(node: RuntimeNode, requestedModel: string, now: number): number {
   if (node.tier === 'tier-1') return tier1BlockingWaitMs(node, requestedModel, now);
   const nodeCd = getCooldownRemainingMs(node.id, now);
   if (nodeCd > 0) return nodeCd;
   const modelCd = getModelCooldownRemainingMs(node.id, requestedModel, now);
   if (modelCd > 0) return modelCd;
-  if (isHardRpmExhausted(node, now)) return Math.max(1, 60_000 - (now % 60_000));
   return Infinity;
 }
 
-// Seconds until the next fixed-window (60s) reset of the Cloudflare Rate
-// Limiting binding backing the distributed deny. Used as the Retry-After for a
-// pure rate_limit_global failure, where no node cooldown exists.
-function distributedWindowRetryAfterSec(now: number = Date.now()): number {
-  return Math.max(1, Math.ceil((60_000 - (now % 60_000)) / 1000));
-}
 
 export function buildClientErrorResponse(request: Request, env: Record<string, unknown>, route: string, requestId: string, requestedModel: string, status: number, errorText: string | Uint8Array, state: LoopState, exposeUpstreamInfo: boolean): Response {
   const detail = extractErrorMessage(errorText) || `Upstream returned HTTP ${status}.`;

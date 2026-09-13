@@ -27,9 +27,4 @@ export type RuntimeNode = {
   credential: string,
   priority: number,
   models: NodeModelMap,
-  limits: {
-    concurrency: number,
-    rpm?: number,
-    rpmMode?: 'soft' | 'hard',
-  },
 };

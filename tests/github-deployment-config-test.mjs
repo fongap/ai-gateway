@@ -9,8 +9,8 @@ function fixture() {
   return {
     vars: {
       TIER1_NODES_CONFIG_01: [{
-        id: 'node-a', base_url: 'https://provider.example.com/v1',
-        models: { 'code-pro': 'upstream-code-pro' }, limits: { concurrency: 1, rpm_mode: 'hard' },
+        id: 'node-a', protocol: 'openai', surfaces: ['chat_completions'], base_url: 'https://provider.example.com/v1',
+        models: { 'code-pro': 'upstream-code-pro' },
       }],
       MODELS_CONFIG: { 'code-pro': { policy: 'default' } },
       POLICIES_CONFIG: { default: { max_attempts: 5 } },
@@ -67,7 +67,7 @@ function envFixture() {
     FIRST_EVENT_TIMEOUT_MS: '15000',
     MODELS_CONFIG: JSON.stringify({ 'code-pro': { policy: 'default' } }),
     POLICIES_CONFIG: JSON.stringify({ default: { max_attempts: 5 } }),
-    TIER1_NODES_CONFIG_01: JSON.stringify([{ id: 'node-a', base_url: 'https://provider.example.com/v1', models: { 'code-pro': 'up' } }]),
+    TIER1_NODES_CONFIG_01: JSON.stringify([{ id: 'node-a', protocol: 'openai', surfaces: ['chat_completions'], base_url: 'https://provider.example.com/v1', models: { 'code-pro': 'up' } }]),
     CLOUDFLARE_API_TOKEN: 'cf-token',
     GATEWAY_ACCESS_KEY_AIR: 'gw-key',
     TIER1_NODES_SECRETS_01: JSON.stringify({ 'node-a': 'upstream-key' }),
@@ -82,7 +82,7 @@ function envFixture() {
 
 {
   const env = envFixture();
-  env.TIER1_NODES_CONFIG_01 = '[{"id":"node-a","base_url":"https://provider.example.com/v1","models":{"code-pro":"up"}、}]';
+  env.TIER1_NODES_CONFIG_01 = '[{"id":"node-a","protocol":"openai","surfaces":["chat_completions"],"base_url":"https://provider.example.com/v1","models":{"code-pro":"up"}、}]';
   const built = buildRuntimeFromEnv(env);
   const c = validateGatewayRuntime(built.runtime);
   assert.equal(c.ready, true, 'deployment bridge repairs browser/IME full-width punctuation before strict runtime validation');

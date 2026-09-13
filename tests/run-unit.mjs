@@ -22,6 +22,7 @@ const UNIT_TESTS = [
   'tests/tier1-heat-protection-test.mjs',
   'tests/model-family-fallback-test.mjs',
   'tests/family-rate-limit-retry-test.mjs',
+  'tests/reliability-convergence-test.mjs',
   'tests/stream-completion-test.mjs',
   'tests/token-usage-store-test.mjs',
   'tests/daily-token-overlay-test.mjs',

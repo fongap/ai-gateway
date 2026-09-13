@@ -196,19 +196,6 @@ export function tier1ProviderModelHeatFactor(provider: string, upstreamModel: st
   return 1;
 }
 
-type Tier1RpmBucket = {
-  tokens: number,
-  updatedAt: number,
-  rpm: number,
-};
-
-// Tier 1 hard-RPM admission is intentionally isolate-local. A capacity of at
-// most two tokens permits one small burst while continuous refill removes the
-// fixed-minute boundary spike. No new configuration surface is introduced:
-// node.limits.rpm remains the single rate input.
-const TIER1_RPM_BURST_TOKENS = 2;
-const rpmBuckets = new Map<string, Tier1RpmBucket>();
-
 function newModelRuntime(): Tier1ModelRuntime {
   return {
     supported: true,
@@ -284,59 +271,9 @@ function upstreamModelCooldownRemainingMs(account: Tier1AccountRuntime, node: Ru
   return until > now ? until - now : 0;
 }
 
-function tier1RpmCapacity(rpm: number): number {
-  return Math.max(1, Math.min(TIER1_RPM_BURST_TOKENS, Math.floor(rpm)));
+function recoveryGateMs(): number {
+  return TIER1_429_PROBE_GATE_MS;
 }
-
-function refilledTier1RpmTokens(bucket: Tier1RpmBucket, now: number): number {
-  const capacity = tier1RpmCapacity(bucket.rpm);
-  const elapsed = Math.max(0, now - bucket.updatedAt);
-  return Math.min(capacity, bucket.tokens + elapsed * (bucket.rpm / 60_000));
-}
-
-export function tier1RpmWaitMs(accountId: string, rpm: number, now: number = Date.now()): number {
-  if (!Number.isFinite(rpm) || rpm <= 0) return 0;
-  const bucket = rpmBuckets.get(accountId);
-  if (!bucket || bucket.rpm !== rpm) return 0;
-  const tokens = refilledTier1RpmTokens(bucket, now);
-  if (tokens >= 1) return 0;
-  return Math.max(1, Math.ceil((1 - tokens) * (60_000 / rpm)));
-}
-
-function noteTier1Rpm(accountId: string, rpm: number, now: number): boolean {
-  if (!Number.isFinite(rpm) || rpm <= 0) return true;
-  const capacity = tier1RpmCapacity(rpm);
-  const previous = rpmBuckets.get(accountId);
-  const tokens = !previous || previous.rpm !== rpm
-    ? capacity
-    : refilledTier1RpmTokens(previous, now);
-  if (tokens < 1) return false;
-  rpmBuckets.set(accountId, { tokens: Math.max(0, tokens - 1), updatedAt: now, rpm });
-  return true;
-}
-
-// Compatibility diagnostic: this is the current token deficit in the smooth
-// admission bucket, not a fixed-calendar-minute request counter.
-export function tier1RpmUsage(accountId: string, now: number = Date.now()): number {
-  const bucket = rpmBuckets.get(accountId);
-  if (!bucket) return 0;
-  return Math.max(0, tier1RpmCapacity(bucket.rpm) - refilledTier1RpmTokens(bucket, now));
-}
-
-export function rollbackTier1Rpm(accountId: string, now: number = Date.now()): void {
-  const bucket = rpmBuckets.get(accountId);
-  if (!bucket) return;
-  const capacity = tier1RpmCapacity(bucket.rpm);
-  const tokens = refilledTier1RpmTokens(bucket, now);
-  bucket.tokens = Math.min(capacity, tokens + 1);
-  bucket.updatedAt = now;
-}
-
-function recoveryGateMs(rpm: number): number {
-  const interval = Number.isFinite(rpm) && rpm > 0 ? 60_000 / rpm : 0;
-  return Math.max(TIER1_429_PROBE_GATE_MS, interval);
-}
-
 export function claimTier1Slot(node: RuntimeNode, now: number = Date.now(), modelId: string | null = null): boolean {
   const account = getTier1Account(node.id);
   if (account.accountDisabled || account.accountCooldownUntil > now || account.rateLimitRecoveryUntil > now) return false;
@@ -344,12 +281,6 @@ export function claimTier1Slot(node: RuntimeNode, now: number = Date.now(), mode
   if (modelId && upstreamModelCooldownRemainingMs(account, node, modelId, now) > 0) return false;
   if ((model?.rateLimitRecoveryUntil ?? 0) > now) return false;
   if (model?.failureState === FAILURE_STATE.HALF_OPEN && account.inFlight > 0) return false;
-  if (account.inFlight >= node.limits.concurrency) return false;
-
-  const rpm = node.limits.rpm ?? 0;
-  const hardRpm = rpm > 0 && node.limits.rpmMode !== 'soft';
-  if (hardRpm && !noteTier1Rpm(node.id, rpm, now)) return false;
-
   account.inFlight++;
   // The first real admission after a 429 cooldown is the recovery probe. Gate
   // the same scope immediately so concurrent requests in this isolate cannot
@@ -357,11 +288,11 @@ export function claimTier1Slot(node: RuntimeNode, now: number = Date.now(), mode
   // clears the gate immediately in recordTier1Success().
   if (account.rateLimitRecoveryPending) {
     account.rateLimitRecoveryPending = false;
-    account.rateLimitRecoveryUntil = now + recoveryGateMs(rpm);
+    account.rateLimitRecoveryUntil = now + recoveryGateMs();
   }
   if (model?.rateLimitRecoveryPending) {
     model.rateLimitRecoveryPending = false;
-    model.rateLimitRecoveryUntil = now + recoveryGateMs(rpm);
+    model.rateLimitRecoveryUntil = now + recoveryGateMs();
   }
   return true;
 }
@@ -397,9 +328,6 @@ export function isTier1Eligible(node: RuntimeNode, req: RoutableRequest, now: nu
   const model = account.models.get(req.model);
   if (modelBlocked(model, now) || (model?.rateLimitRecoveryUntil ?? 0) > now) return false;
   if (model?.failureState === FAILURE_STATE.HALF_OPEN && account.inFlight > 0) return false;
-  if (account.inFlight >= node.limits.concurrency) return false;
-  if (node.limits.rpm && node.limits.rpmMode !== 'soft'
-    && tier1RpmWaitMs(node.id, node.limits.rpm, now) > 0) return false;
   if (account.quotaState === 'exhausted_until' && account.quotaResetAt > now) return false;
   return true;
 }
@@ -444,12 +372,6 @@ export function effectiveTier1Ttft(accountId: string, modelId: string, candidate
     if (metric?.ttftEwma != null && metric.sampleCount > 0) known.push(metric.ttftEwma);
   }
   return known.length ? median(known) : TIER1_NEUTRAL_TTFT_MS;
-}
-
-function loadFactor(node: RuntimeNode): number {
-  const capacity = node.limits?.concurrency;
-  if (!capacity) return 1;
-  return 1 + 0.5 * Math.min(1, tier1AccountInFlight(node.id) / capacity);
 }
 
 function failureFactor(accountId: string, modelId: string): number {
@@ -522,7 +444,6 @@ export function calculateTier1Score(node: RuntimeNode, modelId: string, candidat
   return Math.max(1,
     TIER1_SCORE_BASE
     * ttftFactor(node.id, modelId, candidates)
-    * loadFactor(node)
     * failureFactor(node.id, modelId)
     * quotaFactor(node.id, now)
     * tier1ProviderModelHeatFactor(node.provider, tier1UpstreamModelOf(node, modelId), now)
@@ -776,11 +697,6 @@ export function tier1BlockingWaitMs(node: RuntimeNode, modelId: string, now: num
   if (model && model.cooldownUntil > now) return model.cooldownUntil - now;
   if (model && model.rateLimitRecoveryUntil > now) return model.rateLimitRecoveryUntil - now;
   if (model?.failureState === FAILURE_STATE.HALF_OPEN && account.inFlight > 0) return 1_000;
-  if (node.limits.rpm && node.limits.rpmMode !== 'soft') {
-    const rpmWait = tier1RpmWaitMs(node.id, node.limits.rpm, now);
-    if (rpmWait > 0) return rpmWait;
-  }
-  if (account.inFlight >= node.limits.concurrency) return 1_000;
   return Infinity;
 }
 
@@ -796,9 +712,6 @@ export function tier1HasDeferredCapacity(nodes: ReadonlyArray<RuntimeNode>, req:
     if (modelBlocked(model, now)) continue;
     if ((model?.rateLimitRecoveryUntil ?? 0) > now) return true;
     if (model?.failureState === FAILURE_STATE.HALF_OPEN && account.inFlight > 0) return true;
-    if (account.inFlight >= node.limits.concurrency) return true;
-    if (node.limits.rpm && node.limits.rpmMode !== 'soft'
-      && tier1RpmWaitMs(node.id, node.limits.rpm, now) > 0) return true;
   }
   return false;
 }
@@ -881,7 +794,6 @@ export function snapshotTier1AccountRuntime(accountId: string, modelIds: Readonl
 
 export function __resetTier1StateForTests(): void {
   accounts.clear();
-  rpmBuckets.clear();
   providerModelRateLimits.clear();
 }
 

@@ -64,7 +64,6 @@ const envelope = {
       'Code-Max': 'up-max',
       'Code-Pro': 'up-pro',
     },
-    limits: { concurrency: 1 },
   }];
   const out = publicModelStatus(nodes, { DASHBOARD_MODELS: 'code-pro,Code-Ultra' }, new Set(), 1_700_000_000_000);
   assert.deepEqual(out.models.map((m) => m.id), ['Code-Pro', 'Code-Ultra'],

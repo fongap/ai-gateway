@@ -58,7 +58,6 @@ const node = (id, models) => ({
   surfaces: ['chat_completions'],
   base_url: `https://${id}.example.com/v1`,
   models,
-  limits: { concurrency: 1 },
 });
 const configNode = (id) => ({
   id,
@@ -67,7 +66,6 @@ const configNode = (id) => ({
   surfaces: ['chat_completions'],
   base_url: `https://${id}.example.com/v1`,
   models: { 'Code-Max': 'up-model' },
-  limits: { concurrency: 1 },
 });
 const budgetNode = (id, tier) => ({
   id,
@@ -79,7 +77,6 @@ const budgetNode = (id, tier) => ({
   credential: 'k',
   priority: 10,
   models: { 'Code-Max': 'up-model' },
-  limits: { concurrency: 1 },
 });
 const now = () => 1_700_000_000_000;
 const reqFor = (model) => ({ model, protocol: 'openai', surface: 'chat_completions' });

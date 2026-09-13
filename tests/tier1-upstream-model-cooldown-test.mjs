@@ -27,7 +27,6 @@ const node = {
     'Code-Max': 'deepseek-ai/deepseek-v4-pro-0813',
     'Code-Pro': 'deepseek-ai/deepseek-v4-flash-0731',
   },
-  limits: { concurrency: 5 },
 };
 
 const req = (model) => ({ model, protocol: 'openai', surface: 'chat_completions' });

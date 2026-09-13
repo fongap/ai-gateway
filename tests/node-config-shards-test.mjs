@@ -13,7 +13,6 @@ const node = (id, extra = {}) => ({
   base_url: 'https://api.example.com/v1',
   priority: 10,
   models: { 'general-air': 'model-a' },
-  limits: { concurrency: 1 },
   ...extra,
 });
 

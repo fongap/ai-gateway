@@ -20,14 +20,6 @@ import type { Tier, RoutableRequest } from '../types/scheduler.ts';
 import type { RuntimeNode } from '../types/node.ts';
 import type { PolicyConfig } from '../types/policy.ts';
 
-const SOFT_ONLY_CONCURRENCY = Number.MAX_SAFE_INTEGER;
-
-function tier1WithoutHardConcurrency(nodes: ReadonlyArray<RuntimeNode>): RuntimeNode[] {
-  return nodes.map((node) => node.limits.concurrency === SOFT_ONLY_CONCURRENCY
-    ? node
-    : { ...node, limits: { ...node.limits, concurrency: SOFT_ONLY_CONCURRENCY } });
-}
-
 function tier1Dispatchable(
   nodes: ReadonlyArray<RuntimeNode>,
   req: RoutableRequest,
@@ -35,9 +27,7 @@ function tier1Dispatchable(
   now: number,
   knownModels: ReadonlySet<string>,
 ): boolean {
-  return tier1HasDispatchableNode(
-    tier1WithoutHardConcurrency(nodes), req, attempted, now, knownModels,
-  );
+  return tier1HasDispatchableNode(nodes, req, attempted, now, knownModels);
 }
 
 function tier1LiveCount(
@@ -47,11 +37,8 @@ function tier1LiveCount(
   now: number,
   knownModels: ReadonlySet<string>,
 ): number {
-  return tier1CountDispatchableNodes(
-    tier1WithoutHardConcurrency(nodes), req, attempted, now, knownModels,
-  );
+  return tier1CountDispatchableNodes(nodes, req, attempted, now, knownModels);
 }
-
 export type TierPickResult = {
   node?: RuntimeNode,
   raceLost?: boolean,

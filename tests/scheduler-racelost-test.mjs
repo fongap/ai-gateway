@@ -141,7 +141,6 @@ await test('Case 3b: tier with wrong protocol -> null', () => {
     baseUrl: 'https://example.com',
     credential: 'secret',
     models: { m1: 'up-x' },
-    limits: { concurrency: 2, rpm: 100, rpmMode: 'hard' },
   }];
   const pick = pickCandidate(nodes, REQ, new Set(), 1000, null, null, null);
   assert.equal(pick, null, 'protocol mismatch -> null');
