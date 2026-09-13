@@ -23,7 +23,7 @@ import {
 import { tier1DeadlineTooSmall } from '../scheduler/tier1-scheduler.ts';
 import { preflight as runPreflight } from './preflight.ts';
 import { evaluateRouteFeasibility } from './route-feasibility.ts';
-import { buildModelFallbackPlan, modelFallbackCandidates } from './model-fallback.ts';
+import { buildModelFallbackPlan } from './model-fallback.ts';
 import { pickForTier, makeTier1Rng, computeTierCaps, countRemainingDispatchableAttempts } from './tier-loop.ts';
 import { runFallbackChain } from './fallback.ts';
 import { dispatchWithHedge } from './attempt.ts';
@@ -48,13 +48,19 @@ export async function handleRequest(request: Request, env: Record<string, unknow
     config, tiers, policy, failoverBudgetMs, knownModels, feasibility,
   } = pre;
 
-  // A name such as Max/Code-Max is not enough by itself to activate family
-  // behavior. At least one compatible sibling alias must actually exist in the
-  // known-model catalog; otherwise the request keeps its legacy terminal
-  // semantics. Model-family fallback never increases the configured policy
-  // budget: max_attempts is the request-wide hard ceiling.
-  const familyFallback = modelFallbackCandidates(requestedModel, knownModels).length > 1;
   const requestPolicy = policy;
+  // Model-family fallback shares the configured policy budget. Build the plan
+  // before deriving terminal semantics so max_attempts=1 does not pretend a
+  // sibling sweep happened merely because compatible aliases exist globally.
+  const modelPlan = buildModelFallbackPlan(
+    requestedModel,
+    knownModels,
+    requestPolicy.maxAttempts,
+  );
+  const familyModels = new Set(
+    modelPlan.flat().map((pass) => pass.model.trim().toLowerCase()),
+  );
+  const familyFallback = familyModels.size > 1;
 
   // Three SEPARATE counters, never one overloaded total:
   //   logicalAttempts — request-wide attempt budget; a primary + its optional
@@ -100,11 +106,6 @@ export async function handleRequest(request: Request, env: Record<string, unknow
   // requested model toward the established 3/2/1 preference. A re-check pass
   // gets at most one attempt per eligible family member and can only spend
   // request budget that earlier passes left unused.
-  const modelPlan = buildModelFallbackPlan(
-    requestedModel,
-    knownModels,
-    requestPolicy.maxAttempts,
-  );
 
   modelRoundsLoop:
   for (let roundIndex = 0; roundIndex < modelPlan.length; roundIndex++) {
