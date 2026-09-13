@@ -152,7 +152,8 @@ export function computeTierCaps(tiers: Record<number, RuntimeNode[]>, reqDescrip
     const remaining = Math.max(0, max - explicitTotal);
     if (remaining === 0) return caps;
 
-    const totalLive = adjustable.reduce((sum, t) => sum + liveCount(t), 0);
+    const counts = new Map(adjustable.map((t) => [t, liveCount(t)]));
+    const totalLive = adjustable.reduce((sum, t) => sum + (counts.get(t) ?? 0), 0);
     if (totalLive === 0) return caps;
 
     // Give each adjustable tier a one-attempt baseline when budget permits,
@@ -163,19 +164,20 @@ export function computeTierCaps(tiers: Record<number, RuntimeNode[]>, reqDescrip
     if (remaining <= baselineCount) return caps;
 
     const surplus = remaining - baselineCount;
-    adjustable.forEach((t, i) => {
-      const baseline = i < baselineCount ? 1 : 0;
-      const weightShare = Math.floor(surplus * (liveCount(t) / totalLive));
-      caps[t] = baseline + weightShare;
+    const shares = adjustable.map((t, order) => {
+      const exact = surplus * ((counts.get(t) ?? 0) / totalLive);
+      const whole = Math.floor(exact);
+      caps[t] += whole;
+      return { tier: t, fraction: exact - whole, order };
     });
 
-    // Floor rounding remainder belongs only to an adjustable tier; explicit
-    // tier_attempts are never changed to reconcile totals.
-    const usedAdjustable = adjustable.reduce((sum, t) => sum + caps[t], 0);
-    const remainder = remaining - usedAdjustable;
-    if (remainder > 0) {
-      const lastAdjustable = adjustable[adjustable.length - 1];
-      caps[lastAdjustable] += remainder;
+    // Largest-remainder apportionment keeps the final integer allocation
+    // faithful to live-node weights. Equal fractions preserve strict tier
+    // order; explicit tier_attempts are never modified.
+    let remainder = remaining - adjustable.reduce((sum, t) => sum + caps[t], 0);
+    shares.sort((a, b) => b.fraction - a.fraction || a.order - b.order);
+    for (let i = 0; i < shares.length && remainder > 0; i++, remainder--) {
+      caps[shares[i].tier] += 1;
     }
     return caps;
   }
