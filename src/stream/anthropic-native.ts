@@ -18,7 +18,7 @@
 // helpers run BEFORE any byte reaches the client, so a failure inside them
 // still rotates to another node.
 
-import { createSseScanner } from './guard.ts';
+import { createSseScanner, readWithDeadline } from './guard.ts';
 import { mergeReportedUsage } from '../observability/token-usage.ts';
 
 const MAX_COLLECTED_BYTES = 2 * 1024 * 1024;
@@ -27,7 +27,7 @@ const MAX_COLLECTED_BYTES = 2 * 1024 * 1024;
 // /v1/messages SSE stream (message_start -> content blocks -> message_delta
 // -> message_stop). An upstream `error` event or a missing message_stop is a
 // failure: nothing reached the client yet, so the caller can rotate.
-export async function collectAnthropicMessageObject(upstream: Response, clientSignal: AbortSignal | null | undefined): Promise<Record<string, unknown>> {
+export async function collectAnthropicMessageObject(upstream: Response, clientSignal: AbortSignal | null | undefined, deadlineMs?: number | null): Promise<Record<string, unknown>> {
   if (!upstream.body) throw new Error('Upstream response has no body.');
   const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
@@ -125,7 +125,7 @@ export async function collectAnthropicMessageObject(upstream: Response, clientSi
   try {
     for (;;) {
       if (clientSignal?.aborted) await fail('Client aborted during stream assembly.');
-      const { done, value } = await reader.read();
+      const { done, value } = await readWithDeadline(reader, deadlineMs, fail);
       if (done) break;
       receivedBytes += value.byteLength;
       scanner.push(decoder.decode(value, { stream: true }));

@@ -313,7 +313,7 @@ export async function queryRecentModelEvidence(env: Record<string, unknown>, win
     const res = await d1.prepare(
       `SELECT LOWER(TRIM(model)) AS model
        FROM ${TABLE_MODEL}
-       WHERE hour >= ? AND requests > 0
+       WHERE hour >= ? AND usage_reports > 0
        GROUP BY LOWER(TRIM(model))`,
     ).bind(startHour).all();
     const rows = Array.isArray(res?.results) ? res.results : [];

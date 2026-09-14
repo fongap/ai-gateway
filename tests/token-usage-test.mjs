@@ -216,8 +216,12 @@ const anthropicStop = 'event: message_stop\ndata: {"type":"message_stop"}\n\n';
 const responsesTextDelta = (text) => `event: response.output_text.delta\ndata: ${JSON.stringify({ type: 'response.output_text.delta', sequence_number: 1, item_id: 'msg_1', output_index: 0, content_index: 0, delta: text })}\n\n`;
 const responsesCompleted = (usage) => `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', sequence_number: 2, response: { id: 'resp_1', object: 'response', status: 'completed', model: 'up-model', output: [], usage } })}\n\n`;
 
-await test('anthropic passthrough: interrupted WITH usage reports it exactly once (Anthropic shape)', async () => {
-  const calls = []; const upstream = sseUpstream([anthropicTextDelta('partial'), anthropicUsage(6, 8)]); const res = trackStreamResponse(upstream, { ...noopTrack, completionMarker: /event:\s*message_stop\b/, onUsage: (u) => calls.push(u) }); await drain(res); assert.equal(calls.length, 1); assert.equal(calls[0].input_tokens, 6); assert.equal(calls[0].output_tokens, 8);
+await test('anthropic passthrough: interrupted does NOT report usage', async () => {
+  const calls = [];
+  const upstream = sseUpstream([anthropicTextDelta('partial'), anthropicUsage(6, 8)]);
+  const res = trackStreamResponse(upstream, { ...noopTrack, completionMarker: /event:\s*message_stop\b/, onUsage: (u) => calls.push(u) });
+  await drain(res);
+  assert.equal(calls.length, 0, 'interrupted stream must not report usage');
 });
 await test('anthropic passthrough: client abort reports nothing', async () => {
   const calls = []; const ac = new AbortController(); const upstream = new Response(new ReadableStream({ pull(c) { c.enqueue(encoder.encode(anthropicTextDelta('flowing'))); } }), { status: 200, headers: { 'content-type': 'text/event-stream' } }); const res = trackStreamResponse(upstream, { ...noopTrack, completionMarker: /event:\s*message_stop\b/, onUsage: (u) => calls.push(u) }); const reader = res.body.getReader(); await reader.read(); ac.abort(); await reader.cancel().catch(() => {}); assert.equal(calls.length, 0);

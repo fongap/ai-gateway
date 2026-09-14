@@ -22,7 +22,10 @@ import {
 import { clearAdaptive429State } from '../../reliability/adaptive-429.ts';
 import { classifyStreamInterrupted } from '../../reliability/classify.ts';
 import { writeTier1Affinity } from '../../scheduler/tier1-affinity.ts';
-import { recordStreamStart, recordStreamCompleted, recordStreamInterrupted } from '../../observability/gateway-stats.ts';
+import {
+  recordStreamStart, recordStreamCompleted, recordStreamInterrupted,
+  gatewayStats,
+} from '../../observability/gateway-stats.ts';
 import { recordTokenUsage } from '../../observability/token-usage.ts';
 import { persistTokenUsage } from '../../observability/token-usage-store.ts';
 import { upstreamModelOf } from '../response-helpers.ts';
@@ -105,48 +108,61 @@ export function recordNodeSuccess(c: AttemptContext, node: RuntimeNode, latencyM
 }
 
 // Node-layer stream tracking: node outcome recording + stream-end telemetry.
-// The client-facing layer (gateway-stats.ts trackClientResponse) never passes the
-// telemetry callbacks, so stream counters count each stream exactly once.
-export function makeNodeStreamTrack(c: AttemptContext, node: RuntimeNode, latencyMs: number) {
-  const tier1 = node.tier === 'tier-1';
-  return {
-    onSuccess: () => recordNodeSuccess(c, node, latencyMs),
-    // Field evidence (NVIDIA-hosted stalls mid-generation): 2s let a stalling
-    // node straight back into rotation. 60s matches the rate-limit cooldown —
-    // long enough to push repeat offenders out of candidate ordering without
-    // permanently discarding a node that had one transient blip.
-    // Tier 1 needs the concrete interruption reason supplied to onStreamEnd,
-    // so its failure state and release happen there. Tier 2/3 keep the existing
-    // recordFailure path unchanged.
-    onFailure: () => {
-      if (!tier1) {
-        const c = classifyStreamInterrupted();
-        recordFailure(node.id, { counted: c.counted, cooldownMs: c.cooldownMs, reason: c.kind });
-      }
-    },
-    onNeutral: () => tier1
-      ? releaseTier1Slot(node.id, c.tier1ReleaseToken)
-      : recordNeutralEnd(node.id),
-    onStreamStart: () => recordStreamStart(),
-    onStreamEnd: (outcome: string, d: { reason: string | null, durationMs: number, chunkCount: number, receivedBytes: number, completionMarkerSeen: boolean }) => {
-      if (outcome === 'completed') { recordStreamCompleted(); return; }
-      if (outcome !== 'interrupted') return; // neutral (client abort) is not counted
-      recordStreamInterrupted(d.reason);
-      if (tier1) {
-        applyTier1Outcome(node.id, c.state?.requestedModel,
-          classifyTier1Failure({ kind: classifyStreamInterrupted().kind, streamReason: d.reason }));
-        releaseTier1Slot(node.id, c.tier1ReleaseToken);
-        bumpNodeCounters(node.id, { requests: 1, failures: 1 });
-      } else {
-        applyHealthPenalty(node.id, 'stream');
-      }
-      c.logger.info(
-        `[stream-interrupted] node=${node.id} provider=${node.provider}`
-        + ` protocol=${c.upstreamProtocol ?? node.protocol} surface=${c.surface ?? node.surfaces?.[0] ?? ''}`
-        + ` model=${c.requestedModel}->${upstreamModelOf(node, c.requestedModel)}`
-        + ` reason=${d.reason} duration_ms=${d.durationMs} chunks=${d.chunkCount}`
-        + ` received_bytes=${d.receivedBytes} completion_marker=${d.completionMarkerSeen}`,
-      );
-    },
+  // The client-facing layer (gateway-stats.ts trackClientResponse) no longer
+  // wraps streaming responses; all client-facing stats are recorded here so
+  // each stream is counted exactly once.
+  export function makeNodeStreamTrack(c: AttemptContext, node: RuntimeNode, latencyMs: number) {
+    const tier1 = node.tier === 'tier-1';
+    return {
+      onSuccess: () => {
+        recordNodeSuccess(c, node, latencyMs);
+        gatewayStats.activeRequests = Math.max(0, gatewayStats.activeRequests - 1);
+        gatewayStats.successes++;
+      },
+      // Field evidence (NVIDIA-hosted stalls mid-generation): 2s let a stalling
+      // node straight back into rotation. 60s matches the rate-limit cooldown —
+      // long enough to push repeat offenders out of candidate ordering without
+      // permanently discarding a node that had one transient blip.
+      // Tier 1 needs the concrete interruption reason supplied to onStreamEnd,
+      // so its failure state and release happen there. Tier 2/3 keep the existing
+      // recordFailure path unchanged.
+      onFailure: () => {
+        if (!tier1) {
+          const c = classifyStreamInterrupted();
+          recordFailure(node.id, { counted: c.counted, cooldownMs: c.cooldownMs, reason: c.kind });
+        }
+        gatewayStats.activeRequests = Math.max(0, gatewayStats.activeRequests - 1);
+        gatewayStats.failures++;
+      },
+      onNeutral: () => {
+        if (tier1) releaseTier1Slot(node.id, c.tier1ReleaseToken);
+        else recordNeutralEnd(node.id);
+        gatewayStats.activeRequests = Math.max(0, gatewayStats.activeRequests - 1);
+        gatewayStats.cancellations++;
+      },
+      onStreamStart: () => {
+        recordStreamStart();
+        gatewayStats.activeRequests++;
+      },
+      onStreamEnd: (outcome: string, d: { reason: string | null, durationMs: number, chunkCount: number, receivedBytes: number, completionMarkerSeen: boolean }) => {
+        if (outcome === 'completed') { recordStreamCompleted(); return; }
+        if (outcome !== 'interrupted') return; // neutral (client abort) is not counted
+        recordStreamInterrupted(d.reason);
+        if (tier1) {
+          applyTier1Outcome(node.id, c.state?.requestedModel,
+            classifyTier1Failure({ kind: classifyStreamInterrupted().kind, streamReason: d.reason }));
+          releaseTier1Slot(node.id, c.tier1ReleaseToken);
+          bumpNodeCounters(node.id, { requests: 1, failures: 1 });
+        } else {
+          applyHealthPenalty(node.id, 'stream');
+        }
+        c.logger.info(
+          `[stream-interrupted] node=${node.id} provider=${node.provider}`
+          + ` protocol=${c.upstreamProtocol ?? node.protocol} surface=${c.surface ?? node.surfaces?.[0] ?? ''}`
+          + ` model=${c.requestedModel}->${upstreamModelOf(node, c.requestedModel)}`
+          + ` reason=${d.reason} duration_ms=${d.durationMs} chunks=${d.chunkCount}`
+          + ` received_bytes=${d.receivedBytes} completion_marker=${d.completionMarkerSeen}`,
+        );
+      },
+};
   };
-}

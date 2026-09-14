@@ -18,7 +18,7 @@
 // helpers run BEFORE any byte reaches the client, so a failure inside them
 // still rotates to another node.
 
-import { createSseScanner } from '../../stream/guard.ts';
+import { createSseScanner, readWithDeadline } from '../../stream/guard.ts';
 import { ResponsesEventBuilder } from './events.ts';
 
 const MAX_COLLECTED_BYTES = 2 * 1024 * 1024;
@@ -28,7 +28,7 @@ const MAX_COLLECTED_BYTES = 2 * 1024 * 1024;
 //   response.completed / response.incomplete -> resolve with `response`
 //   response.failed                          -> throw (rotate; client saw nothing)
 // EOF without a terminal event                -> throw (truncated stream)
-export async function collectResponsesObject(upstream: Response, clientSignal: AbortSignal | null | undefined): Promise<Record<string, unknown>> {
+export async function collectResponsesObject(upstream: Response, clientSignal: AbortSignal | null | undefined, deadlineMs?: number | null): Promise<Record<string, unknown>> {
   if (!upstream.body) throw new Error('Upstream response has no body.');
   const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
@@ -62,7 +62,7 @@ export async function collectResponsesObject(upstream: Response, clientSignal: A
   try {
     for (;;) {
       if (clientSignal?.aborted) await fail('Client aborted during stream assembly.');
-      const { done, value } = await reader.read();
+      const { done, value } = await readWithDeadline(reader, deadlineMs, fail);
       if (done) break;
       receivedBytes += value.byteLength;
       scanner.push(decoder.decode(value, { stream: true }));

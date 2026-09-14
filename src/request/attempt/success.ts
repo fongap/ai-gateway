@@ -11,7 +11,7 @@
 import { attemptFirstEventTimeoutMs } from '../../config/timeouts.ts';
 import { markProbeFailure, recordTtft, recordNeutralEnd, bumpNodeCounters } from '../../reliability/node-state.ts';
 import { recordTier1Ttft, releaseTier1Slot } from '../../reliability/tier1-state.ts';
-import { classifyUpstreamStatus, classifyFirstEventFailure, classifyClientAbort, classifyHedgeRaceLoss, classifyNonJsonBody } from '../../reliability/classify.ts';
+import { classifyUpstreamStatus, classifyFirstEventFailure, classifyClientAbort, classifyHedgeRaceLoss, classifyNonJsonBody, classifyEmptyResponse } from '../../reliability/classify.ts';
 import {
   corsHeaders,
   safeReadErrorBody, trimDiagnostic,
@@ -22,7 +22,8 @@ import {
   collectResponsesObject, synthesizeResponsesFromObject,
 } from '../../protocol/responses/index.ts';
 import {
-  isAnthropicNativeRealOutput, isResponsesRealOutput, isOpenAIChatRealOutput,
+  isAnthropicNativeRealOutput, isAnthropicNativeRealOutputForConversion,
+  isResponsesRealOutput, isOpenAIChatRealOutput, isOpenAIChatRealOutputForConversion,
   isOpenAIChatCompletionMeaningful, isOpenAIResponsesObjectMeaningful,
   isAnthropicMessageMeaningful,
 } from '../../transport/index.ts';
@@ -101,11 +102,15 @@ export async function handleSuccess(s: {
       //   openai chat -> meaningful text/reasoning/tool delta in EVERY tier;
       //     role-only or empty deltas do not close the boundary. Tier 1 still
       //     remains the only tier that learns passive TTFT in tier1-state.
-      const isRealOutput = surface === 'messages'
-        ? isAnthropicNativeRealOutput
-        : surface === 'responses' ? isResponsesRealOutput
-        : surface === 'chat_completions' ? isOpenAIChatRealOutput
-        : undefined;
+const isRealOutput = c.conversionContext
+    ? (c.conversionContext.fallbackProtocol === 'anthropic'
+        ? isAnthropicNativeRealOutputForConversion
+        : isOpenAIChatRealOutputForConversion)
+    : surface === 'messages'
+      ? isAnthropicNativeRealOutput
+      : surface === 'responses' ? isResponsesRealOutput
+      : surface === 'chat_completions' ? isOpenAIChatRealOutput
+      : undefined;
       guarded = await ensureFirstSseEvent(upstream, firstEventTimeout, request.signal, isRealOutput);
     } catch (e) {
       detach();
@@ -297,7 +302,7 @@ export async function handleSuccess(s: {
         // Defensive: the native upstream streamed although the client asked
         // for JSON. Assemble the terminal response object — nothing has
         // reached the client, so failures here still rotate.
-        data = await collectResponsesObject(upstream, request.signal);
+        data = await collectResponsesObject(upstream, request.signal, c.attemptDeadlineMs);
       } else {
         data = JSON.parse(await safeReadErrorBody(upstream, 2 * 1024 * 1024));
       }
@@ -310,6 +315,13 @@ export async function handleSuccess(s: {
         if (classification.action === 'stop') {
           return { response: buildClientErrorResponse(request, env, route, requestId, requestedModel, status, JSON.stringify(data), state, exposeUpstreamInfo) };
         }
+        return { rotate: true, kind: classification.kind };
+      }
+      if (!isOpenAIResponsesObjectMeaningful(data)) {
+        // 200 but no meaningful output: rotate instead of counting a success
+        // and relaying an empty object to the client.
+        const classification = classifyEmptyResponse();
+        recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: 'Responses object carried no meaningful output' });
         return { rotate: true, kind: classification.kind };
       }
       recordTier1NonStreamTtft(c, node, data, isOpenAIResponsesObjectMeaningful);
@@ -352,7 +364,7 @@ export async function handleSuccess(s: {
         // Anthropic fallback upstream streamed although the client asked for
         // JSON. Assemble the full Anthropic message object, then convert to
         // the OpenAI Chat shape and deliver.
-        data = await collectAnthropicMessageObject(upstream, request.signal);
+        data = await collectAnthropicMessageObject(upstream, request.signal, c.attemptDeadlineMs);
       } else {
         const text = await safeReadErrorBody(upstream, 2 * 1024 * 1024);
         data = JSON.parse(text);
@@ -398,7 +410,12 @@ export async function handleSuccess(s: {
     if (fakeStream || (upstreamWasStreaming && !clientWantsStream)) {
       // Assemble the full object; nothing reached the client yet, so failures rotate.
       try {
-        const data = await collectOpenAIStreamObject(upstream, request.signal);
+        const data = await collectOpenAIStreamObject(upstream, request.signal, c.attemptDeadlineMs);
+        if (!isOpenAIChatCompletionMeaningful(data)) {
+          const classification = classifyEmptyResponse();
+          recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: 'assembled chat completion carried no meaningful output' });
+          return { rotate: true, kind: classification.kind };
+        }
         recordTier1NonStreamTtft(c, node, data, isOpenAIChatCompletionMeaningful);
         recordNodeSuccess(c, node, latencyMs);
         // Assembled-from-stream usage (fake-stream protection and the
@@ -464,6 +481,14 @@ export async function handleSuccess(s: {
       }
       return { rotate: true, kind: classification.kind };
     }
+    if (!isOpenAIChatCompletionMeaningful(data)) {
+      // 200 chat completion with no meaningful output (empty choices, empty
+      // content): rotate instead of crediting the node and relaying an empty
+      // object to the client.
+      const classification = classifyEmptyResponse();
+      recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: 'chat completion carried no meaningful output' });
+      return { rotate: true, kind: classification.kind };
+    }
     recordTier1NonStreamTtft(c, node, data, isOpenAIChatCompletionMeaningful);
     // Single usage capture point for BOTH delivered forms below (plain JSON
     // and the synthesized chat SSE) — nothing else parses this body.
@@ -488,7 +513,7 @@ export async function handleSuccess(s: {
         // OpenAI fallback upstream streamed although the client asked for
         // JSON. Assemble the full OpenAI completion object, then convert to
         // the Anthropic message shape and deliver.
-        data = await collectOpenAIStreamObject(upstream, request.signal);
+        data = await collectOpenAIStreamObject(upstream, request.signal, c.attemptDeadlineMs);
       } else {
         const text = await safeReadErrorBody(upstream, 2 * 1024 * 1024);
         data = JSON.parse(text);
@@ -532,7 +557,7 @@ export async function handleSuccess(s: {
       // Defensive: the native upstream streamed although the client asked
       // for JSON. Assemble the final message object — nothing has reached
       // the client, so failures here still rotate.
-      data = await collectAnthropicMessageObject(upstream, request.signal);
+      data = await collectAnthropicMessageObject(upstream, request.signal, c.attemptDeadlineMs);
     } else {
       // Use bounded read (2 MiB, consistent with assemble.js MAX_ASSEMBLED_BYTES
       // and the first-event guard pre-byte limit) instead of unbounded text().
@@ -548,6 +573,13 @@ export async function handleSuccess(s: {
       if (classification.action === 'stop') {
         return { response: buildClientErrorResponse(request, env, route, requestId, requestedModel, 502, JSON.stringify(data), state, exposeUpstreamInfo) };
       }
+      return { rotate: true, kind: classification.kind };
+    }
+    if (!isAnthropicMessageMeaningful(data)) {
+      // 200 Anthropic message with no meaningful output (empty/no text or
+      // tool content): rotate instead of counting a success.
+      const classification = classifyEmptyResponse();
+      recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: 'Anthropic message carried no meaningful output' });
       return { rotate: true, kind: classification.kind };
     }
     recordTier1NonStreamTtft(c, node, data, isAnthropicMessageMeaningful);

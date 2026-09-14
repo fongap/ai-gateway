@@ -4,7 +4,6 @@
 // Gateway request counters and the client-facing stream accounting wrapper.
 // All state is isolate-local best-effort.
 
-import { trackStreamResponse } from '../stream/track.ts';
 import { isOpenAIStreamingResponse } from '../protocol/openai.ts';
 
 export const gatewayStats = {
@@ -77,19 +76,9 @@ export function trackClientResponse(response: Response): Response {
     else gatewayStats.failures++;
     return response;
   }
-  return trackStreamResponse(response, {
-    idleTimeoutMs: 0,
-    onSuccess: () => {
-      gatewayStats.activeRequests = Math.max(0, gatewayStats.activeRequests - 1);
-      gatewayStats.successes++;
-    },
-    onFailure: () => {
-      gatewayStats.activeRequests = Math.max(0, gatewayStats.activeRequests - 1);
-      gatewayStats.failures++;
-    },
-    onNeutral: () => {
-      gatewayStats.activeRequests = Math.max(0, gatewayStats.activeRequests - 1);
-      gatewayStats.cancellations++;
-    },
-  });
+  // Streaming: the upstream response is already wrapped by trackStreamResponse
+  // inside handleSuccess (makeNodeStreamTrack). That single wrapper handles
+  // node-layer AND client-layer stats, including completionMarker detection.
+  // Return the response as-is to avoid double-wrapping and double-counting.
+  return response;
 }

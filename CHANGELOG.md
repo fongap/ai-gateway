@@ -2,6 +2,23 @@
 
 This file records concise release-level changes. Current architecture and operating rules live in `docs/`.
 
+## 1.3.6 - 2026-09-14
+
+### Fixed
+
+- **P1-1 Valid response gate**: empty `{}` / `choices:[]` 200 responses no longer count as success or end failover; new `upstream_200_no_meaningful_output` failure kind rotates away instead of crediting node health.
+- **P1-2 Post-header deadline through body assembly**: `collectOpenAIStreamObject` / `collectAnthropicMessageObject` / `collectResponsesObject` now honor the per-attempt absolute deadline; a provider that answers headers then stalls the body can no longer exceed the failover budget.
+- **P1-3 Semantic EOF for native streams**: receiving `[DONE]` / `message_stop` / `response.completed` now immediately closes the tracked stream instead of waiting for HTTP EOF, preventing idle-timeout misclassification of healthy streams as failures.
+- **P1-4 Cross-protocol commit boundary tightened**: streaming guard for O→A and A→O conversion paths excludes reasoning/thinking output (which the respective converters cannot express), so the failover boundary only commits on convertible text/tool output.
+- **P1-5 Fallback config error blocking fixed**: all `PROTOCOL_FALLBACKS` diagnostics (parse errors and unsupported conversions) now consistently trip `status=invalid` AND appear in returned diagnostics — no more "blocks but missing" or "silently passes".
+- **P1-6 Tier 2/3 honors explicit Retry-After without jitter**: explicit provider `Retry-After` headers now pass through unchanged (±10% jitter only applies to auto-computed cooldowns); fixes the comment/code mismatch in `node-state.ts`.
+- **P1-7 Tier 1 local admission ceiling**: new `maxInFlight` policy field (default 4, matching existing stress-test contract) caps concurrent requests per Tier 1 account; excess requests skip to the next candidate instead of stampeding a single key.
+- **P1-8 Observability semantics separated**: failed/aborted streams no longer record usage or pollute D1 `requests`/`model-status` evidence; client-layer double-wrapper removed so each stream counts exactly once; model-status evidence now keys off `usage_reports>0` (real reports) instead of `requests>0`.
+
+### Changed
+
+- Removed client-facing stream double-wrapper (`trackClientResponse` no longer wraps streaming responses); all client-facing stats are recorded in the node-layer `makeNodeStreamTrack` so each stream is counted exactly once.
+
 ## 1.3.5 - 2026-09-13
 
 ### Changed

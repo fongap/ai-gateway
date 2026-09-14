@@ -44,6 +44,11 @@ export const KIND = {
   // HTTP 200 with a body that violates the expected JSON protocol. This is
   // an upstream/proxy failure, not a client-success neutral.
   NON_JSON_BODY: 'upstream_200_non_json_body',
+  // HTTP 200 with a well-formed body that carries no meaningful model output
+  // (e.g. `{}`, `{choices:[]}`, a role-only chat completion). Structurally
+  // valid but semantically empty: rotating away is better than relaying
+  // nothing and counting the node as a success.
+  EMPTY_200: 'upstream_200_no_meaningful_output',
   // A hedge twin (or the primary) that lost the race and was aborted after
   // its peer committed. Neutral — no rotation, no penalty, no budget charge.
   CANCELLED_AFTER_PEER_COMMIT: 'cancelled_after_peer_commit',
@@ -64,6 +69,11 @@ export type FailureClassification = {
   counted: boolean,
   retryAfterMs?: number,
   modelScoped?: boolean,
+  // Explicit upstream Retry-After header was present and drove the cooldown.
+  // When true the cooldown must NOT be jittered so the provider's hint is
+  // honored exactly (Tier 1 uses its own ladder; Tier 2/3 pass the value
+  // through recordFailure which otherwise would apply ±10% jitter).
+  explicitRetryAfter?: boolean,
 };
 
 const CLIENT_STOP_STATUSES = new Set([400, 413, 415, 422]);
@@ -86,6 +96,7 @@ export function classifyUpstreamStatus(status: number, headers: Headers, env: Re
       cooldownMs: retryAfterMs || limits.rateLimitCooldownMs,
       retryAfterMs,
       counted: false,
+      explicitRetryAfter: retryAfterMs > 0,
     };
   }
   if (status === 401 || status === 403) {
@@ -164,6 +175,16 @@ export function classifyPreDispatchInvalidBaseUrl(): FailureClassification {
 // circuit instead of being selected again on every new client request.
 export function classifyNonJsonBody(): FailureClassification {
   return { kind: KIND.NON_JSON_BODY, action: 'rotate', cooldownMs: 5_000, counted: true };
+}
+
+// The upstream returned HTTP 200 with a body that parsed as the expected
+// JSON protocol but contains no meaningful model output (empty choices,
+// empty content, role-only). Treat it like any other unusable 200: rotate to
+// the next node, apply a short cooldown, and count it as a transient failure
+// so a provider that persistently returns empty successes can open the
+// circuit instead of being credited as healthy.
+export function classifyEmptyResponse(): FailureClassification {
+  return { kind: KIND.EMPTY_200, action: 'rotate', cooldownMs: 5_000, counted: true };
 }
 
 // The stream was interrupted mid-generation (TTL expiry, peer close, missing

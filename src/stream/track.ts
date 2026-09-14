@@ -133,18 +133,18 @@ export function trackStreamResponse(response: Response, { idleTimeoutMs, onSucce
   const finalize = (result: 'success' | 'failure' | 'neutral') => {
     if (finished) return;
     finished = true;
-    // Fire the usage callback EXACTLY ONCE per stream, for success and
-    // failure alike (a truncated stream may still have carried real reported
-    // usage before it died). A client cancel ('neutral') closes the
-    // observation window: it records neither usage nor missing.
-    if (usageScan && !usageReported && result !== 'neutral') {
+    // Fire the usage callback ONLY for a cleanly-completed stream.
+    // Failure or neutral (client abort) do not report usage: a truncated
+    // stream may have carried usage bytes, but recording them would pollute
+    // success metrics (D1 requests, model-status evidence, TTFT). The TTFT
+    // path already records first-event timing for meaningful streams; usage
+    // belongs only to streams that reached their terminal marker.
+    if (usageScan && !usageReported && result === 'success' && completionSeen) {
       usageReported = true;
       try { onUsage(usageCandidate); } catch { /* observability must never break the relay */ }
     }
     const failed = result === 'failure' || (result === 'success' && !completionSeen);
     if (result === 'success') {
-      // Clean close but the upstream never sent its termination marker:
-      // the output was truncated, so account it as a failure.
       if (!completionSeen) onFailure();
       else onSuccess();
     } else if (result === 'failure') onFailure();
@@ -294,6 +294,26 @@ export function trackStreamResponse(response: Response, { idleTimeoutMs, onSucce
         return;
       }
       controller.enqueue(forwarded);
+      // Semantic EOF: once the completion marker has been observed (e.g.
+      // [DONE], message_stop, response.completed) the protocol stream is
+      // logically finished. Do not keep reading for a provider that ends its
+      // event stream but leaves the HTTP connection open — deliver the
+      // already-buffered tail and close cleanly. The node is credited as a
+      // SUCCESS (the observed marker already closed the stream), and the
+      // upstream reader is cancelled instead of being held open until the idle
+      // timeout would otherwise mis-record a success as a failure.
+      // Only runs when a completionMarker is configured (every native /
+      // transformed passthrough); the marker-less client-faced counter (which
+      // must relay transparently) is unaffected.
+      if (completionMarker && completionSeen) {
+        reader.cancel().catch(() => {});
+        try {
+          if (encoder && lineBuffer) { controller.enqueue(encoder.encode(lineBuffer)); lineBuffer = ''; }
+        } catch { /* already closed */ }
+        finalize('success');
+        controller.close();
+        return;
+      }
     },
     cancel() {
       finalize('neutral');

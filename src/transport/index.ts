@@ -14,13 +14,13 @@
 //   openai    -> chat_completions, responses
 //   anthropic -> messages
 
-import { resolveOpenAIPath, buildOpenAIHeaders, isResponsesRealOutput, isOpenAIChatRealOutput, isOpenAIChatCompletionMeaningful, isOpenAIResponsesObjectMeaningful, OPENAI_SURFACE_PATH } from './openai.ts';
-import { resolveAnthropicPath, buildAnthropicHeaders, isAnthropicNativeRealOutput, isAnthropicMessageMeaningful, ANTHROPIC_SURFACE_PATH } from './anthropic.ts';
+import { resolveOpenAIPath, buildOpenAIHeaders, isResponsesRealOutput, isOpenAIChatRealOutput, isOpenAIChatRealOutputForConversion, isOpenAIChatCompletionMeaningful, isOpenAIResponsesObjectMeaningful, OPENAI_SURFACE_PATH } from './openai.ts';
+import { resolveAnthropicPath, buildAnthropicHeaders, isAnthropicNativeRealOutput, isAnthropicNativeRealOutputForConversion, isAnthropicMessageMeaningful, ANTHROPIC_SURFACE_PATH } from './anthropic.ts';
 import type { Protocol, Surface } from '../types/protocol.ts';
 
 export { isOpenAIStreamingResponse, withUsageStreamOptions } from '../protocol/openai.ts';
-export { OPENAI_SURFACE_PATH, resolveOpenAIPath, buildOpenAIHeaders, isResponsesRealOutput, isOpenAIChatRealOutput, isOpenAIChatCompletionMeaningful, isOpenAIResponsesObjectMeaningful };
-export { ANTHROPIC_SURFACE_PATH, resolveAnthropicPath, buildAnthropicHeaders, isAnthropicNativeRealOutput, isAnthropicMessageMeaningful };
+export { OPENAI_SURFACE_PATH, resolveOpenAIPath, buildOpenAIHeaders, isResponsesRealOutput, isOpenAIChatRealOutput, isOpenAIChatRealOutputForConversion, isOpenAIChatCompletionMeaningful, isOpenAIResponsesObjectMeaningful };
+export { ANTHROPIC_SURFACE_PATH, resolveAnthropicPath, buildAnthropicHeaders, isAnthropicNativeRealOutput, isAnthropicNativeRealOutputForConversion, isAnthropicMessageMeaningful };
 
 // The upstream path for a (protocol, surface) pair. Both must be valid: the
 // config layer already validated node.protocol / node.surfaces, and the
