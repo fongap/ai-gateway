@@ -8,14 +8,14 @@
 // so a failure here still allows node rotation.
 
 import { extractOpenAITextContent } from '../protocol/openai.ts';
-import { createSseScanner } from './guard.ts';
+import { createSseScanner, readWithDeadline } from './guard.ts';
 
 const MAX_ASSEMBLED_BYTES = 2 * 1024 * 1024;
 
 type ToolCallState = { id: string, type: string, function: { name: string, arguments: string } };
 type ChoiceState = { content: string, reasoning_content: string, toolCalls: Map<number, ToolCallState>, finish_reason: unknown };
 
-export async function collectOpenAIStreamObject(upstream: Response, clientSignal: AbortSignal | null | undefined): Promise<Record<string, unknown>> {
+export async function collectOpenAIStreamObject(upstream: Response, clientSignal: AbortSignal | null | undefined, deadlineMs?: number | null): Promise<Record<string, unknown>> {
   if (!upstream.body) throw new Error('Upstream response has no body.');
   const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
@@ -87,7 +87,7 @@ export async function collectOpenAIStreamObject(upstream: Response, clientSignal
   try {
     for (;;) {
       if (clientSignal?.aborted) await fail('Client aborted during stream assembly.');
-      const { done, value } = await reader.read();
+      const { done, value } = await readWithDeadline(reader, deadlineMs, fail);
       if (done) break;
       scanner.push(decoder.decode(value, { stream: true }));
       if (currentBytes > MAX_ASSEMBLED_BYTES) {

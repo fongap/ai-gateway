@@ -333,7 +333,7 @@ await test('completed stream without any usage fires onUsage(null) exactly once'
   assert.deepEqual(r.calls.usage, [null]);
 });
 
-await test('clean-EOF truncation without usage still fires onUsage(null)', async () => {
+await test('clean-EOF truncation without usage does NOT fire onUsage', async () => {
   const r = recorder();
   const res = trackStreamResponse(upstreamStream((c) => {
     c.enqueue(encoder.encode(sseChunk('partial output')));
@@ -341,10 +341,10 @@ await test('clean-EOF truncation without usage still fires onUsage(null)', async
   }), r.withUsage());
   await drain(res);
   assert.equal(r.calls.failure, 1);
-  assert.deepEqual(r.calls.usage, [null]);
+  assert.equal(r.calls.usage.length, 0, 'truncated stream must not fire onUsage');
 });
 
-await test('truncation AFTER a usage event keeps the reported usage (stream is still a failure)', async () => {
+await test('truncation AFTER a usage event does NOT record usage (stream is a failure)', async () => {
   const r = recorder();
   const res = trackStreamResponse(upstreamStream((c) => {
     c.enqueue(encoder.encode(sseChunk('partial') + usageEvent({ prompt_tokens: 2, completion_tokens: 4 })));
@@ -352,7 +352,7 @@ await test('truncation AFTER a usage event keeps the reported usage (stream is s
   }), r.withUsage());
   await drain(res);
   assert.equal(r.calls.failure, 1, 'no completion marker remains a failure');
-  assert.deepEqual(r.calls.usage, [{ prompt_tokens: 2, completion_tokens: 4 }]);
+  assert.equal(r.calls.usage.length, 0, 'truncated stream must not record usage');
 });
 
 await test('client cancel fires onUsage zero times', async () => {

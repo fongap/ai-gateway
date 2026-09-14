@@ -52,6 +52,7 @@ export function pickTier1Candidate(tier1Nodes: ReadonlyArray<RuntimeNode>, req: 
   affinityAccountId = null, evaluateAffinity = false, now = Date.now(),
   excludeId = null, rng = Math.random, knownModels = null,
   raceLostIds = null,
+  maxInFlight = null,
 }: {
   affinityAccountId?: string | null,
   evaluateAffinity?: boolean,
@@ -60,6 +61,7 @@ export function pickTier1Candidate(tier1Nodes: ReadonlyArray<RuntimeNode>, req: 
   rng?: () => number,
   knownModels?: ReadonlySet<string> | null,
   raceLostIds?: Set<string> | null,
+  maxInFlight?: number | null,
 } = {}): PickedCandidate | null {
   const eligible: RuntimeNode[] = [];
   for (const node of tier1Nodes) {
@@ -129,7 +131,7 @@ export function pickTier1Candidate(tier1Nodes: ReadonlyArray<RuntimeNode>, req: 
   // selected real request succeeds.
   if (affinityAccountId && !affinityNode) updateAffinity = true;
 
-  if (!claimTier1Slot(chosen, now, req.model)) {
+  if (!claimTier1Slot(chosen, now, req.model, maxInFlight)) {
     // Lost the race for runtime admission (for example a recovery probe moved
     // under us). This is not a node failure. Return the chosen identity so the
     // caller can exclude it for this tier pass and make guaranteed progress.

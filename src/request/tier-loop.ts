@@ -57,22 +57,23 @@ type PickForTierOpts = {
   rng?: () => number,
   excludeId?: string | null,
   raceLostIds?: Set<string> | null,
+  maxInFlight?: number | null,
 };
 
 // Tier-aware picker. Tier 1 uses P2C + affinity + tier1-state eligibility;
-// Tier 2/3 use node-state pickCandidate. Both paths expose the same
-// { node } | { raceLost: true, raceLostNodeId } | null result shape to the tier loop.
-// An optional deterministic RNG (from TIER1_SCHEDULER_SEED) makes P2C sampling
-// reproducible in tests; when the seed is absent, Math.random is used.
-export function pickForTier(tierNumber: Tier, tierNodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, opts: PickForTierOpts = {}): TierPickResult {
-  const { knownModels, raceLostIds } = opts;
-  if (tierNumber !== 1) {
+ // Tier 2/3 use node-state pickCandidate. Both paths expose the same
+ // { node } | { raceLost: true, raceLostNodeId } | null result shape to the tier loop.
+ // An optional deterministic RNG (from TIER1_SCHEDULER_SEED) makes P2C sampling
+ // reproducible in tests; when the seed is absent, Math.random is used.
+ export function pickForTier(tierNumber: Tier, tierNodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, opts: PickForTierOpts = {}): TierPickResult {
+   const { knownModels, raceLostIds, maxInFlight } = opts;
+   if (tierNumber !== 1) {
     const r = pickCandidate(tierNodes, req, attempted, undefined, null, knownModels, raceLostIds ?? null);
     if (!r) return null;
     if (r.raceLost) return { raceLost: true, raceLostNodeId: r.raceLostNodeId };
     return { node: r.node };
   }
-  const r = pickTier1Candidate(tierNodes, req, attempted, { ...opts, knownModels });
+  const r = pickTier1Candidate(tierNodes, req, attempted, { ...opts, knownModels, maxInFlight });
   if (!r) return null;
   if (r.raceLost) return { raceLost: true, raceLostNodeId: r.raceLostNodeId };
   return {

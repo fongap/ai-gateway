@@ -156,6 +156,40 @@ function isCompletePayload(data: string): boolean {
   }
 }
 
+// Read the next chunk from an upstream body reader, but give up (via the
+// supplied `onDeadline` callback, which must throw) if the absolute
+// `deadlineMs` elapses before a chunk arrives. This is the post-header
+// body-stall guard: the stream-to-object assembly helpers run AFTER the
+// headers have already arrived, so without a deadline a provider that answers
+// headers then stalls the body could hold the assemble path — and the whole
+// request's failover budget — open indefinitely. When `deadlineMs` is absent
+// or non-positive it behaves like a plain read, preserving the
+// client-signal-only behavior of callers that opt out.
+export async function readWithDeadline(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  deadlineMs: number | null | undefined,
+  onDeadline: (message: string) => Promise<never>,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  const message = 'Attempt deadline reached while assembling the response body.';
+  if (!deadlineMs || deadlineMs <= 0) return reader.read();
+  const remaining = deadlineMs - Date.now();
+  if (remaining <= 0) return onDeadline(message);
+  let timerId: ReturnType<typeof setTimeout> | undefined;
+  const timeoutP = new Promise<'timeout'>((resolve) => {
+    timerId = setTimeout(() => resolve('timeout'), remaining);
+  });
+  try {
+    const result = await Promise.race([
+      reader.read().then((v) => ({ chunk: v })),
+      timeoutP.then(() => 'timeout' as const),
+    ]);
+    if (result === 'timeout') return onDeadline(message);
+    return result.chunk;
+  } finally {
+    clearTimeout(timerId);
+  }
+}
+
 // Wait for the first valid event and return { response } replaying consumed bytes.
 // `isRealOutput` (optional): a per-route predicate that decides whether a
 // parseable, non-error SSE event counts as real model output. When supplied,

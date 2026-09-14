@@ -78,7 +78,15 @@ export function isResponsesRealOutput(json: unknown): boolean {
 // keep the original lax boundary. Real output = non-empty text, a reasoning
 // increment, or a tool-call increment; role-only / empty / usage-only deltas do
 // NOT commit, so a node that announces itself and then dies can still rotate.
-export function isOpenAIChatRealOutput(json: unknown): boolean {
+// OpenAI Chat meaningful-output predicate for the Tier 1 first-event guard.
+  // The original Chat guard committed on ANY parseable non-error event — a bare
+  // role-only delta ({"delta":{"role":"assistant"}}) closed the failover
+  // boundary and was recorded as TTFT, even though no real token had flowed. For Tier 1's
+  // passive TTFT learning this is only used when the node is tier-1, so Tier 2/3
+  // keep the original lax boundary. Real output = non-empty text, a reasoning
+  // increment, or a tool-call increment; role-only / empty / usage-only deltas do
+  // NOT commit, so a node that announces itself and then dies can still rotate.
+  export function isOpenAIChatRealOutput(json: unknown): boolean {
   if (!isRecord(json)) return false;
   const choices = json?.choices;
   if (!Array.isArray(choices) || choices.length === 0) return false;
@@ -101,6 +109,26 @@ function isMeaningfulToolCall(call: unknown): boolean {
     (typeof fn.name === 'string' && fn.name.trim().length > 0)
     || (typeof fn.arguments === 'string' && fn.arguments.trim().length > 0)
   ));
+}
+
+// Conversion-aware predicate for cross-protocol O→A streaming (OpenAI upstream,
+// Anthropic client). The Anthropic stream converter does NOT convert reasoning
+// content, so the failover boundary must NOT commit on reasoning-only deltas.
+// Real output = non-empty text OR tool-call increment only.
+export function isOpenAIChatRealOutputForConversion(json: unknown): boolean {
+  if (!isRecord(json)) return false;
+  const choices = json?.choices;
+  if (!Array.isArray(choices) || choices.length === 0) return false;
+  for (const c of choices) {
+    const delta = c?.delta;
+    if (!delta || typeof delta !== 'object') continue;
+    if (typeof delta.content === 'string' && delta.content.trim().length > 0) return true;
+    if (Array.isArray(delta.tool_calls) && delta.tool_calls.some(isMeaningfulToolCall)) return true;
+    // reasoning / reasoning_content deliberately NOT counted: the O→A converter
+    // drops them, so committing the failover boundary on them would produce
+    // an honest-commit but empty-output stream for the Anthropic client.
+  }
+  return false;
 }
 
 export function isOpenAIChatCompletionMeaningful(json: unknown): boolean {

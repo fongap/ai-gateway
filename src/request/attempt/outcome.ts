@@ -113,7 +113,7 @@ export function recordOutcome(state: LoopState, node: RuntimeNode, classificatio
     recordNeutralEnd(node.id);
   } else {
     applyHealthPenalty(node.id, classification.kind);
-    recordFailure(node.id, { counted: classification.counted, cooldownMs: classification.cooldownMs || 0, reason: classification.kind });
+    recordFailure(node.id, { counted: classification.counted, cooldownMs: classification.cooldownMs || 0, reason: classification.kind, explicitRetryAfter: classification.explicitRetryAfter });
   }
 
   noteFailure(state, classification.kind);

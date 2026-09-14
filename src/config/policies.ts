@@ -29,7 +29,7 @@ import type { PolicyConfig } from '../types/policy.ts';
 const MIN_ATTEMPTS = 1;
 const MAX_ATTEMPTS = 8;
 const TIER_KEYS = ['tier1', 'tier2', 'tier3'];
-const ALLOWED_FIELDS = new Set(['max_attempts', 'tier_attempts', 'hedge', 'first_event_timeout_ms', 'budget_split']);
+const ALLOWED_FIELDS = new Set(['max_attempts', 'tier_attempts', 'hedge', 'first_event_timeout_ms', 'budget_split', 'max_in_flight']);
 
 type HedgePolicy = { enabled?: boolean, delayMs?: number, tiers?: Array<'tier1' | 'tier2' | 'tier3'> } | null;
 type TierAttempts = { tier1?: number, tier2?: number, tier3?: number } | null;
@@ -43,6 +43,7 @@ const BUILTIN_POLICIES: Record<string, PolicyConfig> = Object.freeze({
     hedge: { enabled: true, tiers: ['tier1'] },
     firstEventTimeoutMs: null,
     budgetSplit: null,
+    maxInFlight: 4,
   },
   fast: {
     maxAttempts: 1,
@@ -50,16 +51,15 @@ const BUILTIN_POLICIES: Record<string, PolicyConfig> = Object.freeze({
     hedge: { enabled: false },
     firstEventTimeoutMs: null,
     budgetSplit: null,
+    maxInFlight: 4,
   },
   'long-reasoning': {
     maxAttempts: 3,
     tierAttempts: null,
     hedge: { enabled: false },
-    // Keep the built-in inside the default 60s whole-request failover budget.
-    // Operators that need a longer first-event wait can override this policy
-    // only together with a larger FAILOVER_BUDGET_MS.
     firstEventTimeoutMs: 60_000,
     budgetSplit: null,
+    maxInFlight: 4,
   },
 });
 
@@ -119,6 +119,7 @@ function analyzePolicies(env: Record<string, unknown>): { policies: Record<strin
           errors.push(`POLICIES_CONFIG: "${key}": first_event_timeout_ms (${firstEventTimeoutMs}) exceeds FAILOVER_BUDGET_MS (${getLimits(env).failoverBudgetMs})`);
         }
         const budgetSplit = cfg.budget_split === undefined ? (base?.budgetSplit ?? null) : parseBudgetSplit(cfg.budget_split, key, errors);
+        const maxInFlight = cfg.max_in_flight === undefined ? (base?.maxInFlight ?? 4) : parseMaxInFlight(cfg.max_in_flight, key, errors);
         let attempts: number;
         let maxAttemptsValid = true;
         if (cfg.max_attempts !== undefined) {
@@ -148,6 +149,7 @@ function analyzePolicies(env: Record<string, unknown>): { policies: Record<strin
           hedge,
           firstEventTimeoutMs,
           budgetSplit,
+          maxInFlight,
         };
       }
     }
@@ -237,7 +239,17 @@ function parseFirstEventTimeoutMs(value: unknown, policyName: string, errors: st
 
 // `budget_split` controls only budget that remains after explicit
 // `tier_attempts` are reserved. `even` keeps Tier precedence; `weighted`
-// distributes adjustable budget by live dispatchable node count.
+// Policy-level maxInFlight parsing. A positive integer sets the per-account
+// concurrency ceiling; 0 or null disables the limit.
+function parseMaxInFlight(value: unknown, policyName: string, errors: string[]): number | null {
+  if (value === undefined || value === null) return 4;
+  const n = typeof value === 'number' ? value : (typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN);
+  if (!Number.isInteger(n) || n < 0) {
+    errors.push(`POLICIES_CONFIG: "${policyName}": max_in_flight must be a non-negative integer`);
+    return 4;
+  }
+  return n === 0 ? null : n;
+}
 function parseBudgetSplit(value: unknown, policyName: string, errors: string[]): 'even' | 'weighted' | null {
   if (value === undefined || value === null) return null;
   if (value === 'even' || value === 'weighted') return value;

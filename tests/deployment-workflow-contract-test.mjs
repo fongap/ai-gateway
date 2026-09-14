@@ -77,7 +77,9 @@ const text = readFileSync(workflowPath, 'utf8');
 const ciText = readFileSync(ciPath, 'utf8');
 
 function parseWorkflow(source) {
-  const lines = source.split('\n');
+  // Normalize line endings (handle CRLF from Windows)
+  const normalized = source.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const lines = normalized.split('\n');
   const jobs = {};
   let currentJob = null;
   let inJobs = false;

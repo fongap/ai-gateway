@@ -56,7 +56,12 @@ export function buildAnthropicHeaders(request: Request, credential: string, requ
 // deltas are real model output. Lifecycle events (message_start,
 // content_block_start, content_block_stop, ping, message_delta) are NOT
 // commit points — a node that streams them before dying can still fail over.
-export function isAnthropicNativeRealOutput(json: unknown): boolean {
+// Anthropic-native first-real-output predicate for the first-event guard:
+  // only content_block_delta events carrying text / thinking / tool-input
+  // deltas are real model output. Lifecycle events (message_start,
+  // content_block_start, content_block_stop, ping, message_delta) are NOT
+  // commit points — a node that streams them before dying can still fail over.
+  export function isAnthropicNativeRealOutput(json: unknown): boolean {
   if (!isRecord(json)) return false;
   if (json?.type !== 'content_block_delta') return false;
   const delta = isRecord(json.delta) ? json.delta : {};
@@ -73,5 +78,21 @@ export function isAnthropicMessageMeaningful(json: unknown): boolean {
       || (block?.type === 'thinking' && typeof block.thinking === 'string' && block.thinking.trim().length > 0)) return true;
     if (block?.type === 'tool_use' && typeof block.name === 'string' && block.name.trim().length > 0) return true;
   }
+  return false;
+}
+
+// Conversion-aware predicate for cross-protocol A→O streaming (Anthropic upstream,
+// OpenAI client). The OpenAI stream converter throws on thinking_delta, so the
+// failover boundary must NOT commit on thinking-only deltas. Real output =
+// non-empty text_delta OR input_json_delta only.
+export function isAnthropicNativeRealOutputForConversion(json: unknown): boolean {
+  if (!isRecord(json)) return false;
+  if (json?.type !== 'content_block_delta') return false;
+  const delta = isRecord(json.delta) ? json.delta : {};
+  if (delta?.type === 'text_delta') return typeof delta.text === 'string' && delta.text.trim().length > 0;
+  if (delta?.type === 'input_json_delta') return typeof delta.partial_json === 'string' && delta.partial_json.trim().length > 0;
+  // thinking_delta deliberately NOT counted: the A→O converter throws on it,
+  // so committing the failover boundary on it would produce a hard error
+  // instead of a clean failover for the OpenAI client.
   return false;
 }

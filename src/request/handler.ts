@@ -235,6 +235,7 @@ async function runTierLoop(loopCtx: LoopContext, reqDescriptor: RoutableRequest,
         rng: tier1Rng,
         knownModels,
         raceLostIds,
+        maxInFlight: policy.maxInFlight ?? null,
       });
       if (!pick) break;
       if (pick.raceLost) {

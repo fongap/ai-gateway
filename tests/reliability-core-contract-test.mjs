@@ -55,6 +55,7 @@ const expectedKinds = [
   'server', 'network', 'headers_timeout', 'first_event_timeout',
   'client_abort', 'rate_limit_global', 'invalid_base_url',
   'stream_interrupted', 'upstream_200_non_json_body',
+  'upstream_200_no_meaningful_output',
   'cancelled_after_peer_commit', 'unknown',
 ];
 const missingFromKind = expectedKinds.filter((k) => !kindValues.includes(k));

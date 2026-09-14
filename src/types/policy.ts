@@ -25,4 +25,11 @@ export type PolicyConfig = {
   // When `tierAttempts` is explicitly set for a tier, that override wins
   // and `budget_split` does not apply to that tier.
   budgetSplit?: 'even' | 'weighted' | null,
+  // Local admission ceiling for Tier 1 accounts. When set to a positive
+  // integer, no more than this many concurrent requests can be admitted to
+  // the same Tier 1 account. Excess requests skip the account and allow the
+  // scheduler to try the next candidate. Default 4 (matching the current
+  // stress-test contract that 4 concurrent requests on a single primary
+  // are permitted). Set to 0/null to disable (unlimited concurrency).
+  maxInFlight?: number | null,
 };

@@ -142,12 +142,12 @@ function collectNodeModelDiagnostics(nodes: ReadonlyArray<RuntimeNode>, env: Rec
 function buildConfig(env: Record<string, unknown>): GatewayConfig {
   const diagnostics: string[] = [];
   const auxDiagnostics = collectAuxConfigDiagnostics(env);
-  diagnostics.push(...auxDiagnostics);
+  // All PROTOCOL_FALLBACKS diagnostics are blocking config errors (parse
+  // errors and unsupported conversions are hard errors, not warnings). Add
+  // them to auxDiagnostics so they trip `status='invalid'`, then spread once.
   const fallbackDiags = getProtocolFallbacksDiagnostics(env);
-  for (const msg of fallbackDiags) {
-    if (/is not a supported conversion/i.test(msg)) auxDiagnostics.push(msg);
-    else diagnostics.push(msg);
-  }
+  auxDiagnostics.push(...fallbackDiags);
+  diagnostics.push(...auxDiagnostics);
   const accessKeyBound = ['AIR', 'PRO', 'MAX', 'ULTRA', 'AGENT'].some((g) => readEnv(env, `GATEWAY_ACCESS_KEY_${g}`));
 
   const tierShards = collectShards(env, TIER_SHARD_PATTERN, 'TIER1_NODES_CONFIG_', 'TIER1_NODES_CONFIG_01', 2, diagnostics);

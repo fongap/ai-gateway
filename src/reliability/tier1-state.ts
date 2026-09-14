@@ -271,13 +271,15 @@ function upstreamModelCooldownRemainingMs(account: Tier1AccountRuntime, node: Ru
 function recoveryGateMs(): number {
   return TIER1_429_PROBE_GATE_MS;
 }
-export function claimTier1Slot(node: RuntimeNode, now: number = Date.now(), modelId: string | null = null): boolean {
+export function claimTier1Slot(node: RuntimeNode, now: number = Date.now(), modelId: string | null = null, maxInFlight: number | null = null): boolean {
   const account = getTier1Account(node.id);
   if (account.accountDisabled || account.accountCooldownUntil > now || account.rateLimitRecoveryUntil > now) return false;
   const model = modelId ? account.models.get(modelId) : null;
   if (modelId && upstreamModelCooldownRemainingMs(account, node, modelId, now) > 0) return false;
   if ((model?.rateLimitRecoveryUntil ?? 0) > now) return false;
   if (model?.failureState === FAILURE_STATE.HALF_OPEN && account.inFlight > 0) return false;
+  // Local admission ceiling: if maxInFlight is set, refuse when at capacity.
+  if (maxInFlight !== null && account.inFlight >= maxInFlight) return false;
   account.inFlight++;
   // The first real admission after a 429 cooldown is the recovery probe. Gate
   // the same scope immediately so concurrent requests in this isolate cannot

@@ -205,12 +205,16 @@ export function markProbeFailure(nodeId: string, model: string, now: number = Da
 // network / timeout / first-event) that drive the circuit. `cooldownMs` and
 // `reason` set the node-local cooldown window. When `cooldownMs` comes from
 // an auto-computed fallback (no explicit Retry-After), a light ±10% jitter
-// is applied to avoid synchronized re-probes across isolates.
-export function recordFailure(nodeId: string, { counted = false, cooldownMs = 0, reason = null }: { counted?: boolean, cooldownMs?: number, reason?: string | null } = {}, now: number = Date.now()): void {
+// is applied to avoid synchronized re-probes across isolates. Explicit
+// provider Retry-After values pass through unchanged.
+export function recordFailure(nodeId: string, { counted = false, cooldownMs = 0, reason = null, explicitRetryAfter = false }: { counted?: boolean, cooldownMs?: number, reason?: string | null, explicitRetryAfter?: boolean } = {}, now: number = Date.now()): void {
   const s = releaseAndReturn(nodeId);
   s.totalFailures++;
   if (cooldownMs > 0) {
-    s.cooldownUntil = now + maybeJitter(cooldownMs);
+    // Only jitter auto-computed cooldowns; explicit Retry-After must be
+    // honored exactly so a provider's 60s hint is not shortened to ~54s.
+    const effectiveCooldown = explicitRetryAfter ? cooldownMs : maybeJitter(cooldownMs);
+    s.cooldownUntil = now + effectiveCooldown;
     s.cooldownReason = reason;
   }
   s.consecutiveFailures = counted ? s.consecutiveFailures + 1 : 0;
