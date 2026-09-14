@@ -116,35 +116,41 @@ function assertNoLeaks(ids) {
   }
 }
 
-await test('S1 burst: soft in-flight load never hard-blocks the only healthy Tier 1 key', async () => {
+await test('S1 burst: maxInFlight=4 caps concurrent requests on the only healthy Tier 1 key', async () => {
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
   routeHandlers['burst.example.com'] = async () => { await gate; return jsonResponse(okCompletion); };
   const env = makeEnv({ tier1: [node('burst')], secrets: { burst: 'k' } });
   const requests = Array.from({ length: 8 }, () => worker.fetch(chatRequest(), env, {}));
-  for (let i = 0; i < 100 && upstreamCalls.length < 8; i++) await new Promise((r) => setTimeout(r, 5));
-  assert.equal(upstreamCalls.length, 8, 'all requests may use the only healthy key');
-  assert.equal(tier1AccountInFlight('burst'), 8);
+  for (let i = 0; i < 100 && upstreamCalls.length < 4; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(upstreamCalls.length, 4, 'only maxInFlight=4 requests may use the only healthy key concurrently');
+  assert.equal(tier1AccountInFlight('burst'), 4);
   release();
   const statuses = await Promise.all(requests.map((p) => p.then((r) => r.status)));
-  assert.ok(statuses.every((status) => status === 200));
+  const succeeded = statuses.filter((s) => s === 200).length;
+  const failed = statuses.filter((s) => s !== 200).length;
+  assert.equal(succeeded, 4, 'only maxInFlight requests succeed');
+  assert.equal(failed, 4, 'remaining requests fail due to maxInFlight limit with no alternative nodes');
   assertNoLeaks(['burst']);
 });
 
-await test('S2 pool burst: P2C spreads live work and every slot drains', async () => {
+await test('S2 pool burst: P2C spreads live work and maxInFlight caps per-node concurrency', async () => {
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
   const ids = ['p1', 'p2', 'p3', 'p4'];
   for (const id of ids) routeHandlers[`${id}.example.com`] = async () => { await gate; return jsonResponse(okCompletion); };
   const env = makeEnv({ tier1: ids.map((id) => node(id)), secrets: Object.fromEntries(ids.map((id) => [id, 'k'])) });
   const requests = Array.from({ length: 20 }, () => worker.fetch(chatRequest(), env, {}));
-  for (let i = 0; i < 100 && upstreamCalls.length < 20; i++) await new Promise((r) => setTimeout(r, 5));
+  for (let i = 0; i < 100 && upstreamCalls.length < 16; i++) await new Promise((r) => setTimeout(r, 5));
   const used = new Set(upstreamCalls.map((c) => c.host));
-  assert.equal(upstreamCalls.length, 20, 'all burst requests reach an eligible Tier 1 node');
+  assert.equal(upstreamCalls.length, 16, 'all burst requests reach an eligible Tier 1 node up to maxInFlight=4 per node');
   assert.ok(used.size >= 2, `expected P2C to spread live work, got ${JSON.stringify([...used])}`);
   release();
   const statuses = await Promise.all(requests.map((p) => p.then((r) => r.status)));
-  assert.ok(statuses.every((status) => status === 200));
+  const succeeded = statuses.filter((s) => s === 200).length;
+  const failed = statuses.filter((s) => s !== 200).length;
+  assert.equal(succeeded, 16, 'maxInFlight*4 nodes requests succeed');
+  assert.equal(failed, 4, 'remaining requests fail due to maxInFlight limit');
   assertNoLeaks(ids);
 });
 
