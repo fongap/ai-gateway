@@ -3,10 +3,10 @@
 // Copyright (c) 2026 Fongap Studio
 //
 // Regression contract for model-family exhaustion caused entirely by real 429s:
-// - every sibling pool is still tried;
+// - every sibling pool allowed by the attempt budget is still tried;
 // - internal failure accounting stays `rate_limit`;
-// - the client sees one retryable 503 capacity envelope instead of a terminal
-//   `All nodes failed...` stop;
+// - the client sees one retryable 503 attempt-budget envelope instead of a
+//   false claim that every compatible account is out of capacity;
 // - Retry-After follows the real sibling cooldown instead of forcing a 1s loop.
 
 import assert from 'node:assert/strict';
@@ -93,10 +93,12 @@ const response = await worker.fetch(request, env, {});
 const body = await response.json();
 
 assert.equal(response.status, 503,
-  'an all-429 compatible family sweep must be presented as retryable capacity exhaustion');
-assert.match(body?.error?.message || '', /Compatible model capacity is temporarily unavailable/i);
-assert.doesNotMatch(body?.error?.message || '', /All nodes failed/i,
-  'coding clients must not receive the manual-stop style terminal message');
+  'all-transient compatible family attempt exhaustion must remain retryable');
+assert.match(body?.error?.message || '', /Transient failures exhausted the compatible-model attempt budget/i);
+assert.doesNotMatch(body?.error?.message || '', /Compatible model capacity is temporarily unavailable/i,
+  'bounded attempts must not be presented as proof that the whole compatible pool has no capacity');
+assert.doesNotMatch(body?.error?.message || '', /All attempted nodes failed/i,
+  'coding clients should receive the retryable family envelope for all-transient failures');
 assert.equal(response.headers.get('x-should-retry'), null,
   '503 must remain retryable to SDK/coding clients');
 
@@ -108,6 +110,6 @@ assert.equal(body?.error?.details?.failure_kinds?.rate_limit, 3,
   'the client diagnostic must still expose that the underlying failures were 429/rate_limit');
 assert.deepEqual(calls.map((c) => c.model),
   ['up-code-ultra', 'up-code-max', 'up-code-pro'],
-  'Code-Ultra must still fall through to Code-Max and Code-Pro before the retryable envelope is returned');
+  'Code-Ultra must still fall through to Code-Max and Code-Pro within its bounded plan');
 
 console.log('family rate-limit retry test passed.');

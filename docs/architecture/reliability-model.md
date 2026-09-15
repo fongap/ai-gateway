@@ -16,15 +16,18 @@ An isolate restart clears this adaptive state. The gateway does not claim provid
 
 ## Capacity signals
 
-Provider capacity is learned from observed runtime evidence. The runtime has no node `limits`, node RPM, or configured concurrency ceiling. The removed `limits` field is a hard schema boundary: any node that still contains it is invalid configuration and is rejected rather than interpreted.
+Provider capacity is learned from observed runtime evidence. The node schema has no `limits`, node RPM, or guessed per-node concurrency fields. The removed `limits` field is a hard schema boundary: any node that still contains it is invalid configuration and is rejected rather than interpreted. Tier 1 also has no hard concurrency ceiling by default; policy `max_in_flight` is an optional isolate-local operator guard for a known per-account contract.
 
 Routing uses signals the gateway can actually observe:
 
-- live in-flight work is a **soft** ranking signal, never a guessed hard ceiling;
+- live in-flight work is a **soft** ranking signal by default, never a guessed hard ceiling;
+- an explicit positive `max_in_flight` may hard-limit Tier 1 local admission for that policy; unset, `0`, or `null` leaves admission uncapped;
 - real 429 responses create key-local adaptive cooldown and recovery state;
 - provider-model 429 evidence adds bounded soft heat when several independent keys hit the same shared capacity limit;
 - TTFT, affinity, circuit state, and recent transient failures influence ranking and recovery;
 - optional hedge work is suppressed before primary traffic when live pressure is already high.
+
+`max_in_flight` is deliberately not described as Provider-global capacity: multiple Cloudflare isolates can serve the same account independently. It is a local safety override, not a replacement for adaptive 429/cooldown learning.
 
 `GATEWAY_KEY_RPM` is separate. It protects client gateway access keys; it is not Provider/Node capacity configuration.
 
@@ -57,9 +60,9 @@ Success rate is not used as a positive routing reward. Recovery is driven by dir
 
 ## Heat protection
 
-Tier 1 heat is deliberately soft and bounded:
+Tier 1 heat is deliberately soft and bounded by default:
 
-- live in-flight pressure can weaken affinity and demote a busy candidate but never hard-block the only healthy capacity;
+- live in-flight pressure can weaken affinity and demote a busy candidate but does not hard-block primary traffic unless the operator explicitly configured `max_in_flight`;
 - a Tier 1 hedge candidate must have concurrency pressure `< 0.75`;
 - provider-model 429 evidence window: `90s`;
 - 1–2 distinct rate-limited keys: factor `1.00`;
@@ -68,7 +71,7 @@ Tier 1 heat is deliberately soft and bounded:
 - repeated 429s from the same key count once in the evidence window;
 - each real success removes at most one recent distinct-key 429 observation.
 
-Provider-model heat is keyed by the provider-facing model, not the gateway logical alias. It never changes eligibility, attempt budgets, account cooldowns, affinity storage, or Tier 2/3 behavior. If a heated cohort is the only usable capacity, Tier 1 still dispatches to it.
+Provider-model heat is keyed by the provider-facing model, not the gateway logical alias. It never changes eligibility, attempt budgets, account cooldowns, affinity storage, or Tier 2/3 behavior. If a heated cohort is the only usable capacity, Tier 1 still dispatches to it unless an explicit local admission ceiling is occupied.
 
 ## Passive TTFT
 
@@ -140,7 +143,7 @@ max_attempts>=6 3 / 2 / 1, then bounded re-checks only from unused budget
 
 `Air` follows the same hard ceiling across the one-way `Air -> Pro -> Max -> Ultra` chain. Family fallback candidates are also intersected with the authenticated Gateway Key model scope; internal fallback cannot widen the caller's authorization.
 
-Every native attempt, protocol fallback, family fallback, and bounded re-check shares the same logical-attempt counter and whole-request wall-clock budget.
+Every native attempt, protocol fallback, family fallback, and bounded re-check shares the same logical-attempt counter and whole-request wall-clock budget. When such a bounded family plan ends after only transient failures, the retryable 503 means the **attempt budget** was exhausted; it does not prove that every compatible account in the deployment was tested or unavailable.
 
 ## Timeout budget
 
@@ -156,7 +159,7 @@ The first-event guard defines the transparent-failover boundary:
 - role-only, lifecycle-only, or empty deltas are not meaningful output;
 - after meaningful output commits, transparent replay/failover is unsafe and is not attempted.
 
-Tier 1 keeps its in-flight slot through headers, first output, and the active stream. Completion, cancellation, reader error, or idle timeout releases it exactly once.
+Tier 1 keeps its in-flight slot through headers, first output, and the active stream. Completion, cancellation, reader error, or idle timeout releases it exactly once. Client-level `activeRequests` is incremented once at the outer request boundary; stream start does not increment it again.
 
 Commit semantics remain protocol-specific; see [protocol-model.md](protocol-model.md).
 
@@ -176,7 +179,7 @@ The design intentionally distinguishes “this credential is temporarily limited
 
 ## Coordination boundary
 
-Global concurrency coordination is not implemented. Adaptive 429 recovery and provider-model heat are isolate-local. Adding Durable Objects or another strong coordination layer requires production evidence that cross-isolate recovery collisions materially harm reliability enough to justify the latency and complexity.
+Global concurrency coordination is not implemented. Adaptive 429 recovery, provider-model heat, and optional `max_in_flight` admission are isolate-local. Adding Durable Objects or another strong coordination layer requires production evidence that cross-isolate recovery collisions materially harm reliability enough to justify the latency and complexity.
 
 ## Observability boundary
 

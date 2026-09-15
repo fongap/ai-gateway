@@ -11,7 +11,7 @@ Production configuration is delivered from GitHub Actions into Cloudflare Worker
 | `GATEWAY_ACCESS_KEY_{AIR,PRO,MAX,ULTRA,AGENT}` | Client gateway access keys |
 | `GATEWAY_ACCESS_MODELS_{AIR,PRO,MAX,ULTRA,AGENT}` | Per-access-group logical-model allowlists |
 | `MODELS_CONFIG` | Optional logical-model metadata/capability/policy configuration |
-| `POLICIES_CONFIG` | Request-attempt and hedge policy configuration |
+| `POLICIES_CONFIG` | Request-attempt, hedge, and optional Tier 1 admission policy configuration |
 | runtime variables | Timeouts, failover, stream, CORS, logging, and related tunables |
 
 `src/config/runtime-vars.ts` is the source of truth for recognized non-sensitive runtime variables and their numeric defaults/ranges. Sensitive values are deliberately excluded from that registry.
@@ -159,15 +159,18 @@ Unsupported conversion routes are configuration errors rather than implicit best
 
 ## Runtime capacity and heat protection
 
-Node capacity is no longer defined by guessed `limits.concurrency` or `limits.rpm` values. The gateway reacts to evidence it can actually observe:
+Node capacity is no longer defined by guessed `limits.concurrency` or `limits.rpm` values. The default Tier 1 policy also does not impose a guessed per-account concurrency ceiling. The gateway reacts to evidence it can actually observe:
 
-- live in-flight work is a **soft ranking signal**: a busy node is less preferred, but remains usable when healthy peers are unavailable;
+- live in-flight work is a **soft ranking signal by default**: a busy node is less preferred, but remains usable when healthy peers are unavailable;
+- `POLICIES_CONFIG.max_in_flight` is an explicit, isolate-local operator override for a known per-account contract; unset, `0`, or `null` means no hard ceiling;
 - real 429 responses create bounded key-local cooldown/recovery behavior;
 - Tier 1 provider+key adaptive 429 cooldown follows `15s → 30s → 1m → 2m → 5m → 15m → 30m → 60m`, advancing only when a post-cooldown recovery request still returns 429;
 - upstream `Retry-After` is a minimum floor and can extend, but never shorten, the learned adaptive cooldown;
 - repeated provider-model 429 evidence adds bounded soft heat without removing the last usable node;
 - TTFT, affinity and circuit state continue to influence routing and recovery;
 - optional hedge work is suppressed before primary traffic when the pool is already busy.
+
+An explicit `max_in_flight` is not a cluster-wide Provider quota. Cloudflare may run multiple isolates, so this option should be used only as a local safety guard when an upstream concurrency contract is known; it must not be treated as learned global capacity.
 
 `GATEWAY_KEY_RPM` is separate: it protects gateway access keys and is not a guessed Provider/Node quota.
 
@@ -193,7 +196,7 @@ Additional rules:
 - `Air` moves only upward through `Air → Pro → Max → Ultra` and never falls back down to Air after moving upward;
 - the re-check round never creates a fresh attempt or wall-clock budget;
 - `model_missing` remains a mapping/capability fact for the failing node/model pair, but the request may continue to an authorized compatible sibling within the same bounded family budget;
-- a completed family sweep containing only transient capacity failures returns retryable `503`, allowing coding clients to retry without manual intervention.
+- when a bounded compatible-family plan exhausts its allowed attempts and every observed failure is transient, the gateway returns retryable `503`; this means the request's attempt budget was exhausted, **not** that every compatible account in the deployment was proven unavailable.
 
 Models without a configured compatible sibling keep their existing policy budget and terminal semantics.
 
@@ -208,7 +211,8 @@ Models without a configured compatible sibling keep their existing policy budget
     "tier_attempts": null,
     "hedge": { "enabled": true },
     "first_event_timeout_ms": null,
-    "budget_split": null
+    "budget_split": null,
+    "max_in_flight": null
   }
 }
 ```
@@ -219,6 +223,7 @@ Models without a configured compatible sibling keep their existing policy budget
 - `first_event_timeout_ms` can override the global first-event timeout per model/policy, but it cannot outlive the whole-request `FAILOVER_BUDGET_MS`; operators who intentionally need a wait above 60 seconds must raise the global failover budget as well.
 - built-in `long-reasoning` uses `first_event_timeout_ms=60000`, matching the default `FAILOVER_BUDGET_MS=60000` rather than advertising an unreachable 120-second first-event wait.
 - `budget_split` supports the current `even`/`weighted` allocation semantics.
+- `max_in_flight` is optional Tier 1 local admission control. Built-ins default to `null`; `0`/`null` disable it; a positive integer enforces that explicit per-account ceiling inside each Worker isolate.
 
 Explicit tier caps remain authoritative inside each logical-model pass and must fit within their policy definition.
 
