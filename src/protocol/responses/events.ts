@@ -163,7 +163,9 @@ export function responsesErrorTypeForStatus(status: number): ResponsesErrorType 
   return 'api_error';
 }
 
-// OpenAI-style error envelope used by /v1/responses responses.
+// OpenAI-style error envelope used by /v1/responses responses. Keep `code`
+// nullable for strict Codex/OpenAI compatibility; gateway-specific diagnostic
+// classification is carried in response headers, never by mutating this body.
 export function buildResponsesError(message: unknown, errorType?: string | null): { error: { message: string, type: string, param: null, code: null } } {
   return {
     error: {
