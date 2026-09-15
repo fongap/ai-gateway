@@ -71,7 +71,7 @@ export function pickTier1Candidate(tier1Nodes: ReadonlyArray<RuntimeNode>, req: 
     // Lazily move expired cooldowns to HALF_OPEN so a real request can probe
     // recovery — no background probe is ever sent.
     maybeTransitionToHalfOpen(node.id, req.model, now);
-    if (!isTier1Eligible(node, req, now, knownModels)) continue;
+    if (!isTier1Eligible(node, req, now, knownModels, maxInFlight)) continue;
     // Hedge is optional latency work. Keep twins away from already-busy
     // accounts using soft live-load pressure; primary selection is unaffected.
     if (excludeId && !tier1CanAcceptHedge(node)) continue;
@@ -131,6 +131,11 @@ export function pickTier1Candidate(tier1Nodes: ReadonlyArray<RuntimeNode>, req: 
   // selected real request succeeds.
   if (affinityAccountId && !affinityNode) updateAffinity = true;
 
+  // Final re-check: the chosen node might have reached maxInFlight since the
+  // initial eligibility filter (e.g., a concurrent request claimed the last slot).
+  if (!isTier1Eligible(chosen, req, now, knownModels, maxInFlight)) {
+    return { raceLost: true, raceLostNodeId: chosen.id };
+  }
   if (!claimTier1Slot(chosen, now, req.model, maxInFlight)) {
     // Lost the race for runtime admission (for example a recovery probe moved
     // under us). This is not a node failure. Return the chosen identity so the
