@@ -12,11 +12,14 @@ The governance documents define how ai-gateway is changed. They are intentionall
 6. Rules are updated in place rather than copied into `latest`, `final`, `new`, or version-suffixed files.
 7. History belongs in Git, Pull Requests, Issues, `CHANGELOG.md`, tags, and existing GitHub Releases.
 8. Documentation changes must not be used to smuggle in runtime behavior changes.
+9. Product scope and long-term tier responsibilities are governed by [product-policy.md](product-policy.md); implementation must stay inside that boundary.
+10. Old ai-gateway behavior is not preserved through compatibility shims. The repository carries one current contract; Git carries history.
 
 ## Governance documents
 
 | Document | Authority |
 | --- | --- |
+| [product-policy.md](product-policy.md) | Permanent product scope, Tier 1/2/3 roles, no-backward-compatibility rule, simplicity boundary |
 | [development-policy.md](development-policy.md) | Branches, PRs, refactors, module boundaries, change discipline |
 | [quality-policy.md](quality-policy.md) | CI gates, test expectations, security checks, production validation |
 | [dependency-policy.md](dependency-policy.md) | npm, GitHub Actions, Wrangler, and dependency-update rules |
