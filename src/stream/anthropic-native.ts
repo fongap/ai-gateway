@@ -20,6 +20,11 @@
 
 import { createSseScanner, readWithDeadline } from './guard.ts';
 import { mergeReportedUsage } from '../observability/token-usage.ts';
+import {
+  UPSTREAM_PROCESSING_ERROR,
+  upstreamProcessingError,
+  type UpstreamProcessingErrorCode,
+} from '../transport/processing-error.ts';
 
 const MAX_COLLECTED_BYTES = 2 * 1024 * 1024;
 
@@ -28,7 +33,7 @@ const MAX_COLLECTED_BYTES = 2 * 1024 * 1024;
 // -> message_stop). An upstream `error` event or a missing message_stop is a
 // failure: nothing reached the client yet, so the caller can rotate.
 export async function collectAnthropicMessageObject(upstream: Response, clientSignal: AbortSignal | null | undefined, deadlineMs?: number | null): Promise<Record<string, unknown>> {
-  if (!upstream.body) throw new Error('Upstream response has no body.');
+  if (!upstream.body) throw upstreamProcessingError(UPSTREAM_PROCESSING_ERROR.EMPTY, 'Upstream response has no body.');
   const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
   let receivedBytes = 0;
@@ -42,9 +47,9 @@ export async function collectAnthropicMessageObject(upstream: Response, clientSi
   // content_block_start state carries accumulated deltas per block index.
   const blockState = new Map<number, Record<string, unknown> & { text?: string, thinking?: string, signature?: string, partialJson?: string }>();
 
-  const fail = async (message: string): Promise<never> => {
+  const fail = async (code: UpstreamProcessingErrorCode, message: string): Promise<never> => {
     await reader.cancel().catch(() => {});
-    throw new Error(message);
+    throw upstreamProcessingError(code, message);
   };
 
   const scanner = createSseScanner((data) => {
@@ -52,8 +57,12 @@ export async function collectAnthropicMessageObject(upstream: Response, clientSi
     let json;
     try {
       json = JSON.parse(data);
-    } catch {
-      throw Object.assign(new Error('Upstream returned malformed streaming data.'), { __cause: true });
+    } catch (error) {
+      throw upstreamProcessingError(
+        UPSTREAM_PROCESSING_ERROR.MALFORMED,
+        'Upstream returned malformed streaming data.',
+        error,
+      );
     }
     if (receivedBytes > MAX_COLLECTED_BYTES) return; // enforced in the loop
     switch (json?.type) {
@@ -108,9 +117,9 @@ export async function collectAnthropicMessageObject(upstream: Response, clientSi
         stopMessageStop = true;
         break;
       case 'error':
-        throw Object.assign(
-          new Error(`Upstream reported an error event: ${json.error?.message || 'unknown error'}`),
-          { __terminal_failure: true },
+        throw upstreamProcessingError(
+          UPSTREAM_PROCESSING_ERROR.TERMINAL,
+          `Upstream reported an error event: ${json.error?.message || 'unknown error'}`,
         );
       default:
         break; // ping and unknown event types are lifecycle noise
@@ -119,13 +128,20 @@ export async function collectAnthropicMessageObject(upstream: Response, clientSi
 
   try {
     for (;;) {
-      if (clientSignal?.aborted) await fail('Client aborted during stream assembly.');
-      const { done, value } = await readWithDeadline(reader, deadlineMs, fail);
+      if (clientSignal?.aborted) {
+        await reader.cancel().catch(() => {});
+        throw new DOMException('Client aborted during stream assembly.', 'AbortError');
+      }
+      const { done, value } = await readWithDeadline(
+        reader,
+        deadlineMs,
+        (message) => fail(UPSTREAM_PROCESSING_ERROR.DEADLINE, message),
+      );
       if (done) break;
       receivedBytes += value.byteLength;
       scanner.push(decoder.decode(value, { stream: true }));
       if (receivedBytes > MAX_COLLECTED_BYTES) {
-        await fail('Assembled response exceeded gateway memory safety limit. Use stream:true.');
+        await fail(UPSTREAM_PROCESSING_ERROR.TOO_LARGE, 'Assembled response exceeded gateway memory safety limit. Use stream:true.');
       }
       // Semantic EOF: message_stop observed — the protocol stream is logically
       // finished. Cancel the reader instead of waiting for HTTP EOF so a
@@ -142,8 +158,12 @@ export async function collectAnthropicMessageObject(upstream: Response, clientSi
     throw e;
   }
 
-  if (!stopMessageStop) throw new Error('Upstream stream ended before message_stop was received.');
-  if (blocks.length === 0) throw new Error('Upstream returned an empty streaming response.');
+  if (!stopMessageStop) {
+    throw upstreamProcessingError(UPSTREAM_PROCESSING_ERROR.TRUNCATED, 'Upstream stream ended before message_stop was received.');
+  }
+  if (blocks.length === 0) {
+    throw upstreamProcessingError(UPSTREAM_PROCESSING_ERROR.EMPTY, 'Upstream returned an empty streaming response.');
+  }
   return {
     id: messageBase?.id || `msg_${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`,
     type: 'message',
