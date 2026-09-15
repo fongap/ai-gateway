@@ -62,8 +62,14 @@ const SHARD_FACT_FILES = [
   'docs/operations/configuration.md', 'docs/operations/deployment.md', '.dev.vars.example',
 ];
 for (const file of SHARD_FACT_FILES) {
-  assert.doesNotMatch(read(file), /paired\s*1:1|matching\s+(?:config\s+)?shard|matching\s+suffix|一一对应|1:1\s*配对/i,
-    `${file}: Config/Secret suffixes must not pair`);
+  const text = read(file);
+  // The supported rule is semantic: suffixes are independent partitions and
+  // credentials bind by Tier + node id. A sentence such as "not by matching
+  // shard suffixes" is therefore evidence for the current rule, not a violation.
+  assert.match(text, /independent|independently|not by matching|无需.*对应|不按.*后缀|Tier\s*\+\s*node id/i,
+    `${file}: must state independent Config/Secret shard binding`);
+  assert.doesNotMatch(text, /(?:must|should|required to|需要|必须)[^\n]{0,80}(?:paired\s*1:1|matching\s+(?:config\s+)?shard|matching\s+suffix|一一对应|1:1\s*配对)/i,
+    `${file}: must not instruct operators to pair Config/Secret suffixes`);
   ok(`${file} independent shard suffixes`);
 }
 
