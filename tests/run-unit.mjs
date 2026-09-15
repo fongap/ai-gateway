@@ -33,6 +33,7 @@ const UNIT_TESTS = [
   'tests/scheduler-convergence-test.mjs',
   'tests/stream-completion-test.mjs',
   'tests/token-usage-store-test.mjs',
+  'tests/upstream-attempt-usage-test.mjs',
   'tests/daily-token-overlay-test.mjs',
   'tests/token-usage-test.mjs',
   'tests/protocol-matrix-test.mjs',
