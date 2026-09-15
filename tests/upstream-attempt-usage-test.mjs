@@ -157,9 +157,6 @@ test('Anthropic to OpenAI stream keeps raw provider usage including cache fields
 
   const global = d1.writes.find((w) => w.sql.includes('token_usage_hourly'));
   assert.ok(global);
-  // Anthropic cache tokens remain additional input activity. The converted
-  // OpenAI usage chunk would not carry these raw provider fields, so this
-  // asserts accounting stayed on the native provider report.
   assert.deepEqual(global.params.slice(1, 9), [5, 3, 7, 11, 26, 1, 1, 0]);
   assert.deepEqual(global.params.slice(9, 17), [5, 3, 7, 11, 26, 1, 1, 0]);
 });
@@ -185,6 +182,30 @@ test('interrupted stream exposes reported usage to physical-attempt accounting b
   assert.equal(attempts.length, 1);
   assert.equal(attempts[0].outcome, 'failure');
   assert.deepEqual(attempts[0].u, { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 });
+});
+
+test('clean EOF without completion marker is a failed physical attempt, not a delivered success', async () => {
+  const attempts = [];
+  const delivered = [];
+  let failures = 0;
+  const tracked = trackStreamResponse(sseResponse([
+    'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',
+    'data: {"usage":{"prompt_tokens":8,"completion_tokens":3,"total_tokens":11}}\n\n',
+  ]), {
+    idleTimeoutMs: 1000,
+    completionMarker: /data:\s*\[DONE\]/,
+    onSuccess() { throw new Error('truncated stream must not be successful'); },
+    onFailure() { failures++; },
+    onNeutral() {},
+    onUsage: (u) => delivered.push(u),
+    onAttemptUsage: (u, outcome) => attempts.push({ u, outcome }),
+  });
+  await drain(tracked);
+  assert.equal(failures, 1);
+  assert.equal(delivered.length, 0);
+  assert.equal(attempts.length, 1);
+  assert.equal(attempts[0].outcome, 'failure');
+  assert.deepEqual(attempts[0].u, { prompt_tokens: 8, completion_tokens: 3, total_tokens: 11 });
 });
 
 let failed = 0;
