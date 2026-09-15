@@ -200,24 +200,29 @@ export function buildExhaustedResponse(
     status = terminalStatus(state.failureKinds) ?? (last?.status === 429 ? 429 : 502);
     message = `All attempted nodes failed for model "${requestedModel}".`;
 
-    // The model-family plan is bounded by the request's max_attempts. It may
-    // stop before every configured account has been tried, so never describe
-    // this condition as proof that all compatible capacity is unavailable.
+    // The model-family plan is bounded by the request's max_attempts and may
+    // also collapse sibling aliases that resolve to an already-failed real
+    // account/model domain. It can therefore finish before max_attempts is
+    // numerically spent, so describe exhaustion of the failover PLAN rather
+    // than falsely claiming that the attempt budget itself was exhausted.
     // If every observed failure is transient, keep the internal reason in
     // failure_kinds and return one retryable 503 so coding clients can resume
     // automatically instead of stopping for a manual "continue".
     if (retryableFamilyExhaustion && familyFailureSetIsRetryable(state.failureKinds)) {
       const originalStatus = status;
       status = 503;
+      // Keep the existing stable diagnostic code introduced for this terminal
+      // family condition. The body/log wording is broader because domain
+      // deduplication can now end the plan before max_attempts is fully spent.
       gatewayCode = GATEWAY_ERROR_CODE.ATTEMPT_BUDGET_EXHAUSTED;
-      message = `Transient failures exhausted the compatible-model attempt budget for "${requestedModel}". Retry shortly.`;
+      message = `Transient failures exhausted the compatible-model failover plan for "${requestedModel}". Retry shortly.`;
       // Rate-limit exhaustion should not be retried every second. Preserve the
       // earliest real cooldown across ALL compatible sibling models when it is
       // available; other transient family failures keep the short retry hint.
       retryAfterSec = originalStatus === 429
         ? earliestFamilyBlockingRetryAfterSec(tiers, reqDescriptor, requestedModel, now, knownModels_) ?? 1
         : 1;
-      state.logger.info('model-family attempt budget exhausted by transient failures', {
+      state.logger.info('model-family failover plan exhausted by transient failures', {
         request_id: requestId,
         requested_model: requestedModel,
         upstream_status: originalStatus,
