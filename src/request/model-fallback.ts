@@ -22,6 +22,8 @@
 // increases it. Small budgets widen across siblings first; extra budget then
 // deepens the requested model according to the established 3/2/1 preference.
 
+import type { RuntimeNode } from '../types/node.ts';
+
 const FALLBACK_ORDER: Readonly<Record<string, readonly string[]>> = Object.freeze({
   'code-ultra': Object.freeze(['code-ultra', 'code-max', 'code-pro']),
   'code-max': Object.freeze(['code-max', 'code-pro', 'code-ultra']),
@@ -175,4 +177,56 @@ export function modelFallbackCandidates(
     }
   }
   return out;
+}
+
+/**
+ * Request-local failure-domain identity for logical-model fallback.
+ *
+ * One RuntimeNode is one configured upstream account/key-slot identity. If two
+ * logical aliases on that same node resolve to the same upstream model, they
+ * are the same real failure domain and must not consume separate retry budget
+ * after one of them has already failed in this request. Protocol/base URL are
+ * node properties, and surface changes do not create fresh account/model
+ * capacity, so neither belongs in the key.
+ *
+ * Raw credentials are deliberately excluded. The gateway never hashes,
+ * compares, logs or persists secret material merely to deduplicate retries.
+ */
+export function modelFailureDomainKey(node: RuntimeNode, logicalModel: string): string {
+  const upstreamModel = node.models[logicalModel] || logicalModel;
+  return JSON.stringify([node.id, upstreamModel]);
+}
+
+/**
+ * Seed a new logical-model pass with nodes whose real account/model domain has
+ * already failed earlier in this request. A node mapped to a DIFFERENT real
+ * upstream model stays eligible, even when it is the same configured account.
+ * A different node/account mapped to the same model also stays eligible.
+ */
+export function failedDomainNodeIds(
+  nodes: ReadonlyArray<RuntimeNode>,
+  logicalModel: string,
+  failedDomains: ReadonlySet<string>,
+): Set<string> {
+  const attempted = new Set<string>();
+  if (failedDomains.size === 0) return attempted;
+  for (const node of nodes) {
+    if (failedDomains.has(modelFailureDomainKey(node, logicalModel))) {
+      attempted.add(node.id);
+    }
+  }
+  return attempted;
+}
+
+/** Record the actual node/model domains touched by one failed logical pass. */
+export function rememberFailedDomains(
+  failedDomains: Set<string>,
+  nodesById: ReadonlyMap<string, RuntimeNode>,
+  attemptedNodeIds: ReadonlySet<string>,
+  logicalModel: string,
+): void {
+  for (const nodeId of attemptedNodeIds) {
+    const node = nodesById.get(nodeId);
+    if (node) failedDomains.add(modelFailureDomainKey(node, logicalModel));
+  }
 }
