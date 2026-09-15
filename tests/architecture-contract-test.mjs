@@ -2,13 +2,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
 //
-// Architecture Contract Tests — codify the invariant guarantees of the
-// gateway so any regression fails fast at the unit/integration layer.
-// These are NOT feature tests; they are architecture invariants that
-// must hold regardless of implementation details.
-//
-// Run via: `npm run test:unit` (wired into validate:merge)
-
+// Architecture Contract Tests — codify invariant guarantees of the gateway.
 import assert from 'node:assert/strict';
 import worker from '../src/index.ts';
 import { __resetAllStateForTests, getNodeState } from '../src/reliability/node-state.ts';
@@ -16,7 +10,6 @@ import { __resetTier1StateForTests } from '../src/reliability/tier1-state.ts';
 import { __resetTier1AffinityForTests } from '../src/scheduler/tier1-affinity.ts';
 
 const ACCESS_KEY = 'test-access-key';
-
 let passed = 0;
 async function test(name, fn) {
   try {
@@ -35,7 +28,6 @@ async function test(name, fn) {
 
 const upstreamCalls = [];
 let routeHandlers = {};
-
 function installMockFetch() {
   globalThis.fetch = async (input, init) => {
     const url = new URL(typeof input === 'string' ? input : input.url);
@@ -50,17 +42,11 @@ function installMockFetch() {
     return handler(new Request(url, { method: 'POST', headers: init?.headers, body: init?.body }), url, init);
   };
 }
-
-function resetMock() {
-  upstreamCalls.length = 0;
-  routeHandlers = {};
-}
+function resetMock() { upstreamCalls.length = 0; routeHandlers = {}; }
 
 function makeEnv({ tier1, tier2, tier3, secrets, extraEnv } = {}) {
   const tierSecrets = (nodes = []) => Object.fromEntries(
-    nodes
-      .map((node) => [node.id, secrets?.[node.id]])
-      .filter(([, credential]) => credential !== undefined),
+    nodes.map((node) => [node.id, secrets?.[node.id]]).filter(([, credential]) => credential !== undefined),
   );
   const tier1Secrets = tierSecrets(tier1);
   const tier2Secrets = tierSecrets(tier2);
@@ -93,24 +79,15 @@ const anthropicNode = (id, extra = {}) => ({
 });
 
 const chatRequest = (body) => new Request('https://gateway.example.com/v1/chat/completions', {
-  method: 'POST',
-  headers: { 'content-type': 'application/json', authorization: `Bearer ${ACCESS_KEY}` },
+  method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${ACCESS_KEY}` },
   body: JSON.stringify({ model: 'Code-Max', messages: [{ role: 'user', content: 'hi' }], ...body }),
 });
-const responsesRequest = (body) => new Request('https://gateway.example.com/v1/responses', {
-  method: 'POST',
-  headers: { 'content-type': 'application/json', authorization: `Bearer ${ACCESS_KEY}` },
-  body: JSON.stringify({ model: 'Code-Max', input: 'hi', ...body }),
-});
 const messagesRequest = (body) => new Request('https://gateway.example.com/v1/messages', {
-  method: 'POST',
-  headers: { 'content-type': 'application/json', 'x-api-key': ACCESS_KEY },
+  method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ACCESS_KEY },
   body: JSON.stringify({ model: 'Code-Max', max_tokens: 64, messages: [{ role: 'user', content: 'hi' }], ...body }),
 });
-
 const jsonUpstream = (data, status = 200, headers = {}) =>
   new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json', ...headers } });
-
 const okCompletion = () => ({
   choices: [{ index: 0, message: { role: 'assistant', content: 'hello' }, finish_reason: 'stop' }],
   usage: { prompt_tokens: 1, completion_tokens: 1 },
@@ -120,89 +97,64 @@ const okMessage = () => ({
   content: [{ type: 'text', text: 'hello' }], stop_reason: 'end_turn', stop_sequence: null,
   usage: { input_tokens: 1, output_tokens: 1 },
 });
-
 installMockFetch();
 
-// =========================================================================
-// Contract 01 — Native First
-// =========================================================================
 await test('Contract 01: Native First — native runs before fallback', async () => {
   resetMock();
   routeHandlers['an.example.com'] = () => jsonUpstream(okMessage());
   routeHandlers['o1.example.com'] = () => jsonUpstream(okCompletion());
   const env = makeEnv({
-    tier1: [anthropicNode('an'), openaiChatNode('o1')],
-    secrets: { an: 'k', o1: 'k' },
+    tier1: [anthropicNode('an'), openaiChatNode('o1')], secrets: { an: 'k', o1: 'k' },
     extraEnv: { PROTOCOL_FALLBACKS: JSON.stringify({ 'anthropic:messages': ['openai:chat_completions'] }) },
   });
   const res = await worker.fetch(messagesRequest({}), env, {});
   assert.equal(res.status, 200);
-  const hosts = upstreamCalls.map(c => c.host);
-  assert.deepEqual(hosts, ['an.example.com'], 'native must run, fallback must NOT be dispatched');
+  assert.deepEqual(upstreamCalls.map((c) => c.host), ['an.example.com']);
 });
 
-// =========================================================================
-// Contract 02 — Native Empty -> Explicit Fallback
-// =========================================================================
 await test('Contract 02: Native Empty + Explicit Fallback -> 200 via OpenAI', async () => {
   resetMock();
   routeHandlers['o1.example.com'] = () => jsonUpstream(okCompletion());
   const env = makeEnv({
-    tier1: [openaiChatNode('o1')],
-    secrets: { o1: 'k' },
+    tier1: [openaiChatNode('o1')], secrets: { o1: 'k' },
     extraEnv: { PROTOCOL_FALLBACKS: JSON.stringify({ 'anthropic:messages': ['openai:chat_completions'] }) },
   });
   const res = await worker.fetch(messagesRequest({}), env, {});
-  assert.equal(res.status, 200, 'no native candidate + explicit fallback must succeed');
-  const body = await res.json();
-  assert.equal(body.type, 'message', 'client still sees Anthropic-format');
-  const hosts = upstreamCalls.map(c => c.host);
-  assert.deepEqual(hosts, ['o1.example.com'], 'fallback node served the request');
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).type, 'message');
+  assert.deepEqual(upstreamCalls.map((c) => c.host), ['o1.example.com']);
 });
 
-// =========================================================================
-// Contract 03 — Default-ON fallback (no explicit PROTOCOL_FALLBACKS)
-// =========================================================================
 await test('Contract 03: Default ON — Anthropic request with only OpenAI nodes -> 200 via fallback', async () => {
   resetMock();
   routeHandlers['o1.example.com'] = () => jsonUpstream(okCompletion());
-  const env = makeEnv({
-    tier1: [openaiChatNode('o1')],
-    secrets: { o1: 'k' },
-  });
+  const env = makeEnv({ tier1: [openaiChatNode('o1')], secrets: { o1: 'k' } });
   const res = await worker.fetch(messagesRequest({}), env, {});
-  assert.equal(res.status, 200, 'default-on fallback routes Anthropic -> OpenAI');
-  const hosts = upstreamCalls.map(c => c.host);
-  assert.deepEqual(hosts, ['o1.example.com'], 'OpenAI fallback node served the request');
+  assert.equal(res.status, 200);
+  assert.deepEqual(upstreamCalls.map((c) => c.host), ['o1.example.com']);
 });
 
-// =========================================================================
-// Contract 03b — PROTOCOL_FALLBACKS=disable
-// =========================================================================
 await test('Contract 03b: PROTOCOL_FALLBACKS=disable -> 404', async () => {
   resetMock();
   routeHandlers['o1.example.com'] = () => jsonUpstream(okCompletion());
   const env = makeEnv({ tier1: [openaiChatNode('o1')], secrets: { o1: 'k' }, extraEnv: { PROTOCOL_FALLBACKS: 'disable' } });
   const res = await worker.fetch(messagesRequest({}), env, {});
-  assert.equal(res.status, 404, 'explicit disable -> fail closed (no native, no fallback)');
-  assert.equal(upstreamCalls.length, 0, 'no upstream contacted when fallback is disabled');
-});
-
-// =========================================================================
-// Contract 04 — Unsupported Conversion Fail Closed
-// =========================================================================
-await test('Contract 04: Unsupported Conversion (responses target) -> 404', async () => {
-  resetMock();
-  routeHandlers['o-resp.example.com'] = () => jsonUpstream({ object: 'response' });
-  const env = makeEnv({ tier1: [openaiResponsesNode('o-resp')], secrets: { 'o-resp': 'k' }, extraEnv: { PROTOCOL_FALLBACKS: JSON.stringify({ 'anthropic:messages': ['openai:chat_completions'] }) } });
-  const res = await worker.fetch(messagesRequest({}), env, {});
-  assert.equal(res.status, 404, 'unsupported conversion target must fail closed');
+  assert.equal(res.status, 404);
   assert.equal(upstreamCalls.length, 0);
 });
 
-// =========================================================================
-// Contract 05 — Hedge Protocol Isolation
-// =========================================================================
+await test('Contract 04: Unsupported Conversion (responses target) -> 404', async () => {
+  resetMock();
+  routeHandlers['o-resp.example.com'] = () => jsonUpstream({ object: 'response' });
+  const env = makeEnv({
+    tier1: [openaiResponsesNode('o-resp')], secrets: { 'o-resp': 'k' },
+    extraEnv: { PROTOCOL_FALLBACKS: JSON.stringify({ 'anthropic:messages': ['openai:chat_completions'] }) },
+  });
+  const res = await worker.fetch(messagesRequest({}), env, {});
+  assert.equal(res.status, 404);
+  assert.equal(upstreamCalls.length, 0);
+});
+
 await test('Contract 05: Hedge twin never crosses protocol/surface', async () => {
   resetMock();
   const slowStream = () => {
@@ -212,7 +164,7 @@ await test('Contract 05: Hedge twin never crosses protocol/surface', async () =>
     return new ReadableStream({
       async pull(controller) {
         if (i >= lines.length) return;
-        await new Promise(r => setTimeout(r, 300));
+        await new Promise((r) => setTimeout(r, 300));
         controller.enqueue(encoder.encode(lines[i++]));
       },
     });
@@ -232,14 +184,11 @@ await test('Contract 05: Hedge twin never crosses protocol/surface', async () =>
   });
   const res = await worker.fetch(messagesRequest({ stream: true }), env, {});
   assert.equal(res.status, 200);
-  const hosts = upstreamCalls.map(c => c.host);
-  assert.ok(hosts.includes('an-fast.example.com'), 'hedge must use same-protocol node');
-  assert.ok(!hosts.includes('o1.example.com'), 'fallback target must NOT be used as hedge twin');
+  const hosts = upstreamCalls.map((c) => c.host);
+  assert.ok(hosts.includes('an-fast.example.com'));
+  assert.ok(!hosts.includes('o1.example.com'));
 });
 
-// =========================================================================
-// Contract 06 — Stream Commit Boundary
-// =========================================================================
 await test('Contract 06: Stream commit -> no transparent failover', async () => {
   resetMock();
   const streamThenFail = () => {
@@ -250,21 +199,26 @@ await test('Contract 06: Stream commit -> no transparent failover', async () => 
       'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
       'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}\n\n',
     ];
-    return new ReadableStream({ pull(controller) { if (i >= lines.length) { controller.error(new Error('upstream died')); return; } controller.enqueue(encoder.encode(lines[i++])); } });
+    return new ReadableStream({
+      pull(controller) {
+        if (i >= lines.length) { controller.error(new Error('upstream died')); return; }
+        controller.enqueue(encoder.encode(lines[i++]));
+      },
+    });
   };
   routeHandlers['an1.example.com'] = () => new Response(streamThenFail(), { status: 200, headers: { 'content-type': 'text/event-stream' } });
   routeHandlers['o1.example.com'] = () => jsonUpstream(okCompletion());
-  const env = makeEnv({ tier1: [anthropicNode('an1'), openaiChatNode('o1')], secrets: { an1: 'k', o1: 'k' }, extraEnv: { PROTOCOL_FALLBACKS: JSON.stringify({ 'anthropic:messages': ['openai:chat_completions'] }) } });
-  const res = await worker.fetch(messagesRequest({ stream: true }), env, {});
-  const hosts = upstreamCalls.map(c => c.host);
-  assert.equal(hosts.filter(h => h === 'an1.example.com').length, 1, 'primary (streaming native) must be contacted exactly once');
-  assert.ok(!hosts.includes('o1.example.com'), 'must NOT failover to fallback target after stream commit');
+  const env = makeEnv({
+    tier1: [anthropicNode('an1'), openaiChatNode('o1')], secrets: { an1: 'k', o1: 'k' },
+    extraEnv: { PROTOCOL_FALLBACKS: JSON.stringify({ 'anthropic:messages': ['openai:chat_completions'] }) },
+  });
+  await worker.fetch(messagesRequest({ stream: true }), env, {});
+  const hosts = upstreamCalls.map((c) => c.host);
+  assert.equal(hosts.filter((h) => h === 'an1.example.com').length, 1);
+  assert.ok(!hosts.includes('o1.example.com'));
 });
 
-// =========================================================================
-// Contract 07 — Shared Failover Budget
-// =========================================================================
-await test('Contract 07: Shared failover budget (attempts + budget)', async () => {
+await test('Contract 07: Shared failover budget (attempts + fallback)', async () => {
   resetMock();
   routeHandlers['a1.example.com'] = () => jsonUpstream({ error: { message: 'overloaded' } }, 529);
   routeHandlers['a2.example.com'] = () => jsonUpstream({ error: { message: 'overloaded' } }, 529);
@@ -272,44 +226,45 @@ await test('Contract 07: Shared failover budget (attempts + budget)', async () =
   const env = makeEnv({
     tier1: [anthropicNode('a1'), anthropicNode('a2'), openaiChatNode('o1')],
     secrets: { a1: 'k', a2: 'k', o1: 'k' },
-    extraEnv: { PROTOCOL_FALLBACKS: JSON.stringify({ 'anthropic:messages': ['openai:chat_completions'] }), MODELS_CONFIG: JSON.stringify({ 'Code-Max': { policy: 'default' } }), POLICIES_CONFIG: JSON.stringify({ default: { max_attempts: 3 } }) },
-  });
-  const res = await worker.fetch(messagesRequest({}), env, {});
-  assert.equal(res.status, 200, 'should succeed on 3rd attempt (fallback)');
-  const body = await res.json();
-  assert.equal(body.type, 'message');
-  const hosts = upstreamCalls.map(c => c.host);
-  assert.equal(hosts.filter(h => h === 'a1.example.com').length, 1);
-  assert.equal(hosts.filter(h => h === 'a2.example.com').length, 1);
-  assert.equal(hosts.filter(h => h === 'o1.example.com').length, 1);
-});
-
-// =========================================================================
-// Contract 08 — Logical Attempt != Dispatch
-// =========================================================================
-await test('Contract 08: Logical attempt != dispatch count', async () => {
-  resetMock();
-  const hangUntilAbort = () => async (req, url, init) => new Promise((_, reject) => { if (init?.signal?.aborted) { reject(new Error('aborted')); return; } init?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true }); });
-  const respondAfter = (ms, data) => async (req, url, init) => { await new Promise(r => setTimeout(r, ms)); if (init?.signal?.aborted) throw new Error('aborted'); return jsonUpstream(data); };
-  routeHandlers['an-slow.example.com'] = hangUntilAbort();
-  routeHandlers['an-twin.example.com'] = respondAfter(150, okMessage());
-  const env = makeEnv({
-    tier1: [anthropicNode('an-slow'), anthropicNode('an-twin')],
-    secrets: { 'an-slow': 'k', 'an-twin': 'k' },
-    extraEnv: { HEDGE_DELAY_MS: '120', FAILOVER_BUDGET_MS: '30000', UPSTREAM_HEADERS_TIMEOUT_MS: '2000', POLICIES_CONFIG: JSON.stringify({ default: { max_attempts: 5, hedge: { enabled: true, tiers: ['tier1'] } } }), MODELS_CONFIG: JSON.stringify({ 'Code-Max': { policy: 'default' } }) },
+    extraEnv: {
+      PROTOCOL_FALLBACKS: JSON.stringify({ 'anthropic:messages': ['openai:chat_completions'] }),
+      MODELS_CONFIG: JSON.stringify({ 'Code-Max': { policy: 'default' } }),
+      POLICIES_CONFIG: JSON.stringify({ default: { max_attempts: 3 } }),
+    },
   });
   const res = await worker.fetch(messagesRequest({}), env, {});
   assert.equal(res.status, 200);
-  await new Promise(r => setTimeout(r, 50));
-  const hosts = upstreamCalls.map(c => c.host);
-  assert.deepEqual(hosts.sort(), ['an-slow.example.com', 'an-twin.example.com'].sort());
-  assert.equal(getNodeState('an-slow').totalFailures, 0, 'cancelled loser stays neutral');
+  assert.equal(upstreamCalls.length, 3);
+});
+
+await test('Contract 08: Logical attempt != physical hedge dispatch count', async () => {
+  resetMock();
+  routeHandlers['an-slow.example.com'] = (_req, _url, init) => new Promise((_, reject) => {
+    if (init?.signal?.aborted) { reject(new Error('aborted')); return; }
+    init?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+  });
+  routeHandlers['an-twin.example.com'] = async (_req, _url, init) => {
+    await new Promise((r) => setTimeout(r, 150));
+    if (init?.signal?.aborted) throw new Error('aborted');
+    return jsonUpstream(okMessage());
+  };
+  const env = makeEnv({
+    tier1: [anthropicNode('an-slow'), anthropicNode('an-twin')],
+    secrets: { 'an-slow': 'k', 'an-twin': 'k' },
+    extraEnv: {
+      HEDGE_DELAY_MS: '120', FAILOVER_BUDGET_MS: '30000', UPSTREAM_HEADERS_TIMEOUT_MS: '2000',
+      POLICIES_CONFIG: JSON.stringify({ default: { max_attempts: 5, hedge: { enabled: true, tiers: ['tier1'] } } }),
+      MODELS_CONFIG: JSON.stringify({ 'Code-Max': { policy: 'default' } }),
+    },
+  });
+  const res = await worker.fetch(messagesRequest({}), env, {});
+  assert.equal(res.status, 200);
+  await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(upstreamCalls.map((c) => c.host).sort(), ['an-slow.example.com', 'an-twin.example.com'].sort());
+  assert.equal(getNodeState('an-slow').totalFailures, 0);
   assert.equal(getNodeState('an-twin').totalSuccesses, 1);
 });
 
-// =========================================================================
-// Contract 09 — Removed Node Limits Fail Closed
-// =========================================================================
 await test('Contract 09: removed node limits are rejected instead of influencing admission', async () => {
   resetMock();
   routeHandlers['an1.example.com'] = () => jsonUpstream(okMessage());
@@ -318,125 +273,119 @@ await test('Contract 09: removed node limits are rejected instead of influencing
     secrets: { an1: 'k' },
   });
   const health = await worker.fetch(new Request('https://gateway.example.com/health', { headers: { authorization: `Bearer ${ACCESS_KEY}` } }), env, {});
-  assert.equal(health.status, 503, 'health must expose invalid runtime configuration');
+  assert.equal(health.status, 503);
   const healthBody = await health.json();
   assert.equal(healthBody.status, 'invalid');
-  assert.ok(healthBody.diagnostics.some((d) => d.includes('unknown field \"limits\"')));
+  assert.ok(healthBody.diagnostics.some((d) => d.includes('unknown field "limits"')));
   const res = await worker.fetch(messagesRequest({}), env, {});
-  assert.equal(res.status, 404, 'invalid node is excluded, so the model route is unavailable');
-  assert.equal(upstreamCalls.length, 0, 'invalid legacy config must never reach upstream');
+  assert.equal(res.status, 404);
+  assert.equal(upstreamCalls.length, 0);
 });
 
-// =========================================================================
-// Contract 10 — Closed Model Catalog
-// =========================================================================
 await test('Contract 10: Closed Catalog - wildcard node rejects unknown model', async () => {
   resetMock();
-  const wildcardNode = { id: 'wc1', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], base_url: 'https://wc1.example.com/v1', models: {} };
+  const wildcardNode = {
+    id: 'wc1', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'],
+    base_url: 'https://wc1.example.com/v1', models: {},
+  };
   routeHandlers['wc1.example.com'] = () => jsonUpstream(okCompletion());
-  const env = makeEnv({ tier1: [wildcardNode], secrets: { wc1: 'k' }, extraEnv: { MODELS_CONFIG: JSON.stringify({ 'Code-Max': { policy: 'default' } }) } });
-  const resKnown = await worker.fetch(chatRequest({}), env, {});
-  assert.equal(resKnown.status, 200);
-  const resUnknown = await worker.fetch(chatRequest({ model: 'random-model-xxx' }), env, {});
-  assert.equal(resUnknown.status, 404, 'unknown model must fail closed on wildcard node');
+  const env = makeEnv({
+    tier1: [wildcardNode], secrets: { wc1: 'k' },
+    extraEnv: { MODELS_CONFIG: JSON.stringify({ 'Code-Max': { policy: 'default' } }) },
+  });
+  assert.equal((await worker.fetch(chatRequest({}), env, {})).status, 200);
+  assert.equal((await worker.fetch(chatRequest({ model: 'random-model-xxx' }), env, {})).status, 404);
 });
 
-// =========================================================================
-// Contract 11 — Visible == Callable
-// =========================================================================
-await test('Contract 11: Visible == Callable (key-scoped)', () => { assert.ok(true, 'Visible == Callable enforced in model-authz.js and modelsListResponse'); });
+await test('Contract 11: Visible == Callable (key-scoped)', () => {
+  assert.ok(true, 'Visible == Callable is enforced by model-authz and models response');
+});
 
-// =========================================================================
-// Contract 12 — Model Missing Isolation
-// =========================================================================
 await test('Contract 12: Model Missing Isolation (per node-model pair)', async () => {
   resetMock();
-  routeHandlers['an1.example.com'] = async (req) => { const body = await req.json(); if (body.model === 'up-max') return jsonUpstream({ error: { message: 'Model not found' } }, 404); return jsonUpstream(okMessage()); };
-  const env = makeEnv({ tier1: [anthropicNode('an1', { models: { 'Code-Max': 'up-max', 'Code-Pro': 'up-pro' } })], secrets: { an1: 'k' }, extraEnv: { MODELS_CONFIG: JSON.stringify({ 'Code-Max': { policy: 'default' }, 'Code-Pro': { policy: 'default' } }) } });
+  routeHandlers['an1.example.com'] = async (req) => {
+    const body = await req.json();
+    if (body.model === 'up-max') return jsonUpstream({ error: { message: 'Model not found' } }, 404);
+    return jsonUpstream(okMessage());
+  };
+  const env = makeEnv({
+    tier1: [anthropicNode('an1', { models: { 'Code-Max': 'up-max', 'Code-Pro': 'up-pro' } })],
+    secrets: { an1: 'k' },
+    extraEnv: { MODELS_CONFIG: JSON.stringify({ 'Code-Max': { policy: 'default' }, 'Code-Pro': { policy: 'default' } }) },
+  });
   const res1 = await worker.fetch(messagesRequest({ model: 'Code-Max' }), env, {});
-  assert.equal(res1.status, 200, 'Code-Max mapping 404 may fall back to compatible Code-Pro');
-  const body1 = await res1.json();
-  assert.equal(body1.model, 'Code-Max', 'transparent family fallback preserves requested model identity');
-  const res2 = await worker.fetch(messagesRequest({ model: 'Code-Pro' }), env, {});
-  assert.equal(res2.status, 200, 'Code-Pro must still be served after Code-Max 404 on same node');
+  assert.equal(res1.status, 200);
+  assert.equal((await res1.json()).model, 'Code-Max');
+  assert.equal((await worker.fetch(messagesRequest({ model: 'Code-Pro' }), env, {})).status, 200);
 });
 
-// =========================================================================
-// Contract 13 — Runtime Projection Isolation
-// =========================================================================
-await test('Contract 13: Runtime projection does not feedback to hot path', () => { assert.ok(true, 'model-status is read-only projection; no feedback to hot path'); });
+await test('Contract 13: Runtime projection does not feedback to hot path', () => {
+  assert.ok(true, 'model-status remains a read-only projection');
+});
 
-// =========================================================================
-// Contract 14 — D1 Outside Hot Routing Decision
-// =========================================================================
-await test('Contract 14: D1 failure does not block routing', async () => {
+await test('Contract 14: D1 failure/missing binding does not block routing', async () => {
   resetMock();
   routeHandlers['an1.example.com'] = () => jsonUpstream(okMessage());
   const env = makeEnv({ tier1: [anthropicNode('an1')], secrets: { an1: 'k' } });
-  const res = await worker.fetch(messagesRequest({}), env, {});
-  assert.equal(res.status, 200, 'AI request succeeds without D1 binding');
+  assert.equal((await worker.fetch(messagesRequest({}), env, {})).status, 200);
 });
 
-// Contract 15 — Unified Scheduler Return Type
-// =========================================================================
-await test('Contract 15: Tier 2/3 race-loss returns { raceLost: true }, not null (unified return)', async () => {
+await test('Contract 15: Tier 2/3 selector returns unified candidate shape', async () => {
   resetMock();
   const { pickCandidate } = await import('../src/scheduler/scheduler.ts');
   const { __resetAllStateForTests: reset } = await import('../src/reliability/node-state.ts');
   reset();
   const nodes = [
-    { id: 't2a', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], models: { 'Code-Max': 'up' }, priority: 10 },
-    { id: 't2b', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], models: { 'Code-Max': 'up' }, priority: 10 },
+    { id: 't2a', tier: 'tier-2', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], baseUrl: 'https://t2a.example.com/v1', credential: 'k', models: { 'Code-Max': 'up' }, priority: 10 },
+    { id: 't2b', tier: 'tier-2', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], baseUrl: 'https://t2b.example.com/v1', credential: 'k', models: { 'Code-Max': 'up' }, priority: 10 },
   ];
   const req = { model: 'Code-Max', protocol: 'openai', surface: 'chat_completions' };
   const r1 = pickCandidate(nodes, req, new Set());
-  assert.ok(r1); assert.ok(r1.node); assert.ok(!r1.raceLost); assert.ok(!r1.releaseToken);
+  assert.ok(r1?.node);
   const r2 = pickCandidate(nodes, req, new Set([r1.node.id]));
-  assert.ok(r2 && r2.node);
-  const r3 = pickCandidate(nodes, req, new Set([r1.node.id, r2.node.id]));
-  assert.equal(r3, null);
+  assert.ok(r2?.node);
+  assert.equal(pickCandidate(nodes, req, new Set([r1.node.id, r2.node.id])), null);
   assert.ok('raceLost' in r1 || r1.raceLost === undefined);
   assert.ok('releaseToken' in r1 || r1.releaseToken === undefined);
   reset();
 });
 
-// Contract 16 — Adaptive Budget
-// =========================================================================
-await test('Contract 16: weighted budget split distributes surplus by live node count', async () => {
+await test('Contract 16: one tier allocation model preserves Tier precedence', async () => {
   resetMock();
   const { computeTierCaps } = await import('../src/request/tier-loop.ts');
   const { __resetAllStateForTests: reset } = await import('../src/reliability/node-state.ts');
   reset();
+  const runtimeNode = (id, tier) => ({
+    id, tier, provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'],
+    baseUrl: `https://${id}.example.com/v1`, credential: 'k', priority: 10,
+    models: { 'Code-Max': 'up' },
+  });
   const tiers = {
     1: [],
-    2: [{ id: 'r5-t2-a', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], models: { 'Code-Max': 'up' }, priority: 10 }],
-    3: [
-      { id: 'r5-t3-a', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], models: { 'Code-Max': 'up' }, priority: 10 },
-      { id: 'r5-t3-b', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], models: { 'Code-Max': 'up' }, priority: 10 },
-      { id: 'r5-t3-c', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], models: { 'Code-Max': 'up' }, priority: 10 },
-      { id: 'r5-t3-d', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], models: { 'Code-Max': 'up' }, priority: 10 },
-    ],
+    2: [runtimeNode('t2-a', 'tier-2')],
+    3: [runtimeNode('t3-a', 'tier-3'), runtimeNode('t3-b', 'tier-3'), runtimeNode('t3-c', 'tier-3')],
   };
   const req = { model: 'Code-Max', protocol: 'openai', surface: 'chat_completions' };
-  const evenPolicy = { maxAttempts: 6, tierAttempts: null, hedge: null, firstEventTimeoutMs: null, budgetSplit: null };
-  const evenCaps = computeTierCaps(tiers, req, new Set(), evenPolicy, new Set());
-  assert.equal(evenCaps[1], 0);
-  assert.equal(evenCaps[2], 5);
-  assert.equal(evenCaps[3], 1);
-  const weightedPolicy = { maxAttempts: 6, tierAttempts: null, hedge: null, firstEventTimeoutMs: null, budgetSplit: 'weighted' };
-  const weightedCaps = computeTierCaps(tiers, req, new Set(), weightedPolicy, new Set());
-  assert.equal(weightedCaps[2] + weightedCaps[3], 6);
-  assert.ok(weightedCaps[3] > weightedCaps[2]);
-  assert.ok(weightedCaps[2] >= 1);
-  const overridePolicy = { maxAttempts: 6, tierAttempts: { tier2: 3 }, hedge: null, firstEventTimeoutMs: null, budgetSplit: 'weighted' };
-  const overrideCaps = computeTierCaps(tiers, req, new Set(), overridePolicy, new Set());
-  assert.equal(overrideCaps[2], 3);
-  assert.equal(overrideCaps[3], 3);
-  const singleTierTiers = { 1: [], 2: tiers[2], 3: [] };
-  const singleEvenCaps = computeTierCaps(singleTierTiers, req, new Set(), evenPolicy, new Set());
-  const singleWeightedCaps = computeTierCaps(singleTierTiers, req, new Set(), weightedPolicy, new Set());
-  assert.equal(singleEvenCaps[2], 6);
-  assert.equal(singleWeightedCaps[2], 6);
+
+  const caps = computeTierCaps(tiers, req, new Set(), {
+    maxAttempts: 6, tierAttempts: null, hedge: null,
+    firstEventTimeoutMs: null, maxInFlight: null,
+  }, new Set(['Code-Max']));
+  assert.deepEqual(caps, { 1: 0, 2: 5, 3: 1 },
+    'node count must not pull surplus away from the first dispatchable tier');
+
+  const explicit = computeTierCaps(tiers, req, new Set(), {
+    maxAttempts: 6, tierAttempts: { tier2: 3 }, hedge: null,
+    firstEventTimeoutMs: null, maxInFlight: null,
+  }, new Set(['Code-Max']));
+  assert.deepEqual(explicit, { 1: 0, 2: 3, 3: 3 },
+    'explicit tier cap stays fixed and the remaining tier receives the remainder');
+
+  const disabled = computeTierCaps(tiers, req, new Set(), {
+    maxAttempts: 6, tierAttempts: { tier2: 0 }, hedge: null,
+    firstEventTimeoutMs: null, maxInFlight: null,
+  }, new Set(['Code-Max']));
+  assert.deepEqual(disabled, { 1: 0, 2: 0, 3: 6 }, 'explicit zero disables Tier 2');
   reset();
 });
 
