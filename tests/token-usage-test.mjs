@@ -183,7 +183,7 @@ await test('模型使用 folds models beyond the top 4 into one 其他 row', asy
 
 await test('Token 活动 · 近 52 周 renders a full 364-cell heatmap with month labels', async () => {
   const env = seededEnv([[{ prompt_tokens: 7, completion_tokens: 7 }]]); const html = await pageText(anonRequest(), env);
-  assert.ok(html.includes('Token 活动 · 近 52 周')); assert.ok(html.includes('次请求')); assert.equal(cellCount(html), 364); const labels = monthLabels(html); assert.ok(labels.length >= 11 && labels.length <= 13); for (const label of labels) assert.match(label, /^\d{1,2}$/); assert.ok(html.includes('data-level="4"')); assert.ok(html.includes('data-level="0"')); assert.ok(html.includes('data-tooltip="')); assert.ok(html.includes('· 1 次请求')); assert.match(html, /class="heatmap-wrap" tabindex="0" role="img"/); assert.match(html, /aria-label="近 52 周 Token 活动热力图/);
+  assert.ok(html.includes('Token 活动 · 近 52 周')); assert.ok(html.includes('次上游调用')); assert.equal(cellCount(html), 364); const labels = monthLabels(html); assert.ok(labels.length >= 11 && labels.length <= 13); for (const label of labels) assert.match(label, /^\d{1,2}$/); assert.ok(html.includes('data-level="4"')); assert.ok(html.includes('data-level="0"')); assert.ok(html.includes('data-tooltip="')); assert.ok(html.includes('· 1 次上游调用')); assert.match(html, /class="heatmap-wrap" tabindex="0" role="img"/); assert.match(html, /aria-label="近 52 周 Token 活动热力图/);
 });
 
 await test('the heatmap colors derive from daily totals, not per-hour noise', async () => {
