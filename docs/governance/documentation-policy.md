@@ -18,12 +18,15 @@ When evidence conflicts, use this order:
 2. Canonical current documentation summarizes that behavior and must be corrected when it drifts.
 3. `CHANGELOG.md`, Git tags, existing GitHub Releases, Pull Requests, Issues, and commits preserve historical context.
 
+Product scope is the exception to ordinary runtime-derived documentation: [product-policy.md](product-policy.md) is the governance authority for what ai-gateway is allowed to become. Runtime work must conform to that boundary rather than redefining it by implementation drift.
+
 Do not copy a transient implementation plan into a permanent policy document. Do not keep completed migration plans in `docs/governance/` solely for history.
 
 ## Document ownership
 
 | Change area | Canonical documentation |
 | --- | --- |
+| Product scope, Tier 1/2/3 long-term roles, no-backward-compatibility rule | `docs/governance/product-policy.md` |
 | `src/config/*` | `docs/operations/configuration.md` |
 | `src/scheduler/*` | `docs/architecture/routing-model.md` |
 | `src/reliability/*` | `docs/architecture/reliability-model.md` |
@@ -39,7 +42,7 @@ Do not copy a transient implementation plan into a permanent policy document. Do
 | CI and quality gates | `docs/governance/quality-policy.md` |
 | dependency/toolchain policy | `docs/governance/dependency-policy.md` |
 | version/tag mechanism | `docs/governance/version-policy.md` |
-| public API surface or project positioning | `README.md` |
+| public landing-page summary | `README.md` |
 
 A behavior-changing PR updates its responsible canonical document in the same PR. A documentation-only PR may correct drift without changing runtime behavior.
 
@@ -52,8 +55,10 @@ Use version labels only where version identity matters, for example:
 - `CHANGELOG.md` entries;
 - Git tags;
 - existing historical GitHub Releases;
-- compatibility notes tied to a real version boundary;
+- an operator note explaining a one-time move to the current contract;
 - an active migration document that will be removed when the migration is complete.
+
+Do not keep old runtime/configuration contracts alive merely because an older version used them. History belongs in Git, not in compatibility branches inside current code.
 
 Do not create parallel documents named `*-v2.md`, `*-latest.md`, `*-final.md`, `*-new.md`, `misc.md`, or `temp.md`.
 
@@ -74,10 +79,12 @@ Documentation may summarize these values, but should point back to the owner and
 
 `README.md` should answer, in this order:
 
-1. what the gateway is;
+1. what the gateway is and that it is intentionally scoped to household/individual/small-team use;
 2. what protocols and reliability behavior it currently supports;
 3. how to start and configure it;
 4. where to find architecture, operations, governance, security, and history.
+
+README may summarize the permanent tier roles, but [product-policy.md](product-policy.md) owns those rules.
 
 Keep implementation-detail inventories out of the README when a dedicated document already owns them.
 
@@ -89,7 +96,8 @@ The repository validates documentation through:
 
 - `scripts/docs-check.mjs` — directory, naming, localized-README, and internal-link rules;
 - `scripts/link-check.mjs` — Markdown link integrity;
-- `tests/docs-contract-test.mjs` — executable guards against known architecture and configuration drift.
+- `tests/docs-contract-test.mjs` — executable guards against known architecture and configuration drift;
+- `tests/product-policy-contract-test.mjs` — executable guard for permanent product scope, tier roles, clean replacement, and simplicity rules.
 
 A green docs check does not prove every sentence is current. Reviewers must still compare changed claims with their executable source.
 

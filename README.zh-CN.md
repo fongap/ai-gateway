@@ -2,9 +2,9 @@
 
 # ai-gateway
 
-**将碎片化 AI 容量汇聚成一个稳定端点。**
+**面向个人、家庭或小团队的简单、稳定 AI API 网关。**
 
-Cloudflare Workers · 多 Provider 路由 · 多 Key 负载均衡 · 限流保护 · 分层故障转移 · OpenAI / Anthropic 兼容
+Cloudflare Workers · 多 Provider 路由 · 多 Key 韧性 · 分层故障转移 · OpenAI / Anthropic 兼容
 
 [English](README.md) · [**简体中文**](README.zh-CN.md)
 
@@ -14,60 +14,87 @@ Cloudflare Workers · 多 Provider 路由 · 多 Key 负载均衡 · 限流保�
 ![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)
 ![License](https://img.shields.io/github/license/fongap/ai-gateway?label=License)
 
-[实时面板](https://api.135468.xyz/) · [快速开始](#快速开始) · [架构](docs/architecture/overview.md) · [配置](docs/operations/configuration.md) · [部署](docs/operations/deployment.md) · [完整文档](docs/README.md)
+[实时面板](https://api.135468.xyz/) · [快速开始](#快速开始) · [架构](docs/architecture/overview.md) · [配置](docs/operations/configuration.md) · [产品规则](docs/governance/product-policy.md)
 
 </div>
 
-ai-gateway 将异构 AI Provider、API Key 和逻辑模型别名聚合到一个可预测端点之后。它面向低成本、碎片化且稳定性不一的 AI 容量，目标是在尽可能充分利用可用资源的同时，将稀缺或高价值容量保留给更需要它们的任务。
+ai-gateway 把分散在不同 Provider、账户和 Key 上的 AI 容量汇聚成一个稳定端点，定位只面向个人、家庭或小型可信团队使用。
 
-## 为什么选择 ai-gateway
+它不做公共 SaaS 网关，不做企业 API 管理平台，不做计费/转售平台，也不做通用多租户控制面。设计目标只有一个：**先把免费容量做稳定，再把付费容量保护好，同时保持简单好用。**
 
-低成本 AI 容量通常分散在不同 Provider 与账户之间，真实 RPM / 并发上限又经常没有公开或会动态变化。ai-gateway 不再依赖人工猜测节点上限，而是根据实时 inFlight、真实 429、Cooldown、TTFT、Circuit 等运行事实调度，在同一请求预算内按 Tier 逐层故障转移。
+> 本页为中文阅读版。长期规则以 [English README](README.md) 和英文 canonical docs 为准。
 
-通过分层路由，可以将更充足或成本更低的容量放在前层承担更多基础流量，同时让更稀缺或高价值的资源保持可用，用于真正需要它们的任务。项目追求的不只是更快的单次选择，而是整个资源池的 **可用性、额度利用率与可预测恢复能力**。
+## 三层定位
 
-**实时面板：** [api.135468.xyz](https://api.135468.xyz/) — 查看当前模型可用性、流量、Token 活动与客户端快速接入示例。
+三层不是普通优先级编号，而是固定的长期职责：
 
-> 本页为简体中文阅读版。项目长期文档以 [English README](README.md) 及英文 canonical docs 为准。
+| Tier | 长期职责 |
+| --- | --- |
+| **Tier 1** | 免费或近似免费的 Token 容量。承担日常主要流量，是长期可靠性建设重点。 |
+| **Tier 2** | 预留给会员/订阅权益容量。不是第二个普通 API Key 池。 |
+| **Tier 3** | 付费 API 容量，作为受保护的最终托底。 |
+
+Tier 1 面对的本来就是额度碎片化、429、延迟波动、Provider 不稳定等问题，因此重点是：多 Key / 多 Provider 韧性、P2C 负载分散、被动 TTFT、实时 inFlight、429 自适应 Cooldown、Provider-Model 热度、Circuit/恢复和安全流式处理。
+
+目标不是持续追打某个“最好”的 Key，而是让整个免费资源池 **长期稳定、高效、安全、持续可用**。
+
+Tier 2 / Tier 3 保持简单，不因为“架构完整”就复制 Tier 1 的复杂状态机。只有真实使用证明必要时才增加机制。
 
 ## 核心能力
 
 | 能力 | 当前行为 |
 | --- | --- |
-| **多 Key 韧性** | P2C、被动 TTFT 学习、实时 inFlight 软负载、429 Cooldown 与 Provider-Model 热度 |
+| **多 Key 韧性** | P2C、被动 TTFT、实时 inFlight 软负载、429 Cooldown、Provider-Model 热度 |
 | **分层故障转移** | 在同一请求预算内按 **Tier 1 → Tier 2 → Tier 3** 逐层托底 |
-| **模型家族兜底** | 在同一请求级 `max_attempts` 硬上限内有界互保：`Code-Max ↔ Code-Pro → Code-Ultra`、`Max ↔ Pro → Ultra`，以及单向 `Air → Pro → Max → Ultra` |
-| **多 Provider 路由** | 将多个 Provider、API Key 和逻辑模型别名统一到一个网关 |
+| **模型家族兜底** | 在同一 `max_attempts` 硬上限内进行有界兼容模型切换 |
 | **协议兼容** | 原生支持 OpenAI Chat、OpenAI Responses、Anthropic Messages |
 | **安全协议转换** | 仅 OpenAI Chat ↔ Anthropic Messages；**OpenAI Responses 在协议转换层保持 Native Only** |
-| **流式与观测** | 协议感知首事件保护、SSE 转发、脱敏诊断、Token Usage 聚合 |
-
-适用于异构 OpenAI-compatible / Anthropic-compatible 上游，包括 Coding Agent 与 Claude Code 场景。
+| **流式安全** | 首个有效输出前可故障转移，提交后不透明重放 |
+| **消耗观测** | 成功交付统计与真实上游物理调用 Token 分开统计 |
 
 ## 架构
 
-```mermaid
-flowchart TB
-    A[Client] --> B[Auth + Route]
-    B --> C[Logical model pass]
-    C --> D[Native First]
-
-    D --> E["Tier 1 → Tier 2 → Tier 3"]
-    D -. native exhausted .-> F["Chat ↔ Messages fallback"]
-    F --> E
-
-    E -. model pool exhausted .-> G[Compatible model fallback]
-    F -. exhausted .-> G
-    G -. bounded re-check .-> C
-
-    E --> H[Upstream APIs]
+```text
+Client
+  ↓
+鉴权 + 校验
+  ↓
+Logical Model
+  ↓
+原生协议节点池
+  ↓
+Tier 1 → Tier 2 → Tier 3
+  ↓
+可选 Chat ↔ Messages fallback
+  ↓
+有界兼容模型 fallback
+  ↓
+Response / Stream
 ```
 
-始终优先执行原生协议。Protocol fallback 与 logical-model family fallback 共用同一套 logical-attempt、dispatch、hedge 和 wall-clock failover budget，模型家族兜底不会抬高配置的 `max_attempts`。三模型家族会随请求预算从 1 到 6 次按 `1 → 1/1 → 1/1/1 → 2/1/1 → 3/1/1 → 3/2/1` 先扩宽再加深；`Air` 同样受硬上限约束，在 6 次预算时达到 `3/1/1/1`。第二轮只使用首轮没有花掉的请求预算，不新增无限重试。
+原生重试、Protocol fallback、Model-family fallback 和 Hedge 共用同一套请求级 attempt / wall-clock 预算，任何 fallback 都不能偷偷扩大 `max_attempts`。
 
-Code 家族永远不会转入非 Code 家族。`Air` 可以单向上浮到 `Pro → Max → Ultra`，但 `Ultra / Max / Pro` 不会向下回到 `Air`。模型型 404 仍只隔离发生问题的节点/模型映射；在同一鉴权模型范围和请求预算内，可继续尝试已授权的兼容同族模型。如果整个模型家族只是因为 429、5xx、网络或超时等临时容量问题全部失败，网关返回可重试 `503`，让 Coding 客户端自行再试，而不是停下来等人工“继续”。
+Code 家族不会转入非 Code 家族。`Air` 可以单向上浮到 `Pro → Max → Ultra`，高层 general 模型不会再向下回到 `Air`。模型型 404 只隔离失败的节点/模型映射，在同一请求预算内仍可尝试已授权的兼容同族模型。
 
-Tier 1 的目标是 **稳定利用整个 Key 池，而不是持续追打某一个“最好”的 Key**。实时 inFlight 只做软排序：忙的节点少分流，但如果它是最后一个健康节点仍然可以继续使用；真实 429 决定 Cooldown / 恢复，Provider-Model 429 热度做有界软降权，可选 Hedge 会优先让位于主请求。Node `limits` 已不在现行 Schema 中，配置后会被拒绝。
+项目默认采用有界、本地状态，不为了“架构更高级”引入全局协调。只有真实运行数据证明个人/家庭/小团队场景确实需要，才考虑更强的跨 PoP 协调机制。
+
+## 不兼容旧版 ai-gateway
+
+项目只维护一套当前规则。
+
+当配置、Schema、内部契约或行为发生变化时，旧路径直接删除，不保留：
+
+- 旧字段别名；
+- 双读/双写；
+- Deprecated 过渡窗口；
+- Version Switch；
+- 仅用于旧版 ai-gateway 的 Compatibility Shim。
+
+旧版本由 Git 历史和 Tag 保存，不由当前 Runtime 背负。
+
+这条规则**不影响 OpenAI / Anthropic 协议兼容**。这些协议是当前产品能力，不是对旧版 ai-gateway 的兼容。
+
+永久规则见 [Product Policy](docs/governance/product-policy.md)。
 
 ## API Surface
 
@@ -78,8 +105,8 @@ Tier 1 的目标是 **稳定利用整个 Key 池，而不是持续追打某一�
 | `POST` | `/v1/messages` | Anthropic Messages |
 | `POST` | `/v1/messages/count_tokens` | Anthropic-compatible 本地 Token 计数 |
 | `GET` | `/v1/models` | 模型目录 |
-| `GET` | `/health` | 鉴权后的健康诊断 |
-| `GET` | `/version` | 源码版本与已部署 Build 标识 |
+| `GET` | `/health` | 鉴权健康诊断 |
+| `GET` | `/version` | 源码版本与部署 Build |
 
 ## 快速开始
 
@@ -98,9 +125,9 @@ Windows：
 powershell scripts/install.ps1
 ```
 
-生产环境请使用 [Deployment](docs/operations/deployment.md) 中定义的仓库驱动部署流程。
+生产环境使用 [Deployment](docs/operations/deployment.md) 中的仓库驱动部署流程。
 
-## 配置模型
+## 配置
 
 | 层级 | 配置 |
 | --- | --- |
@@ -110,11 +137,11 @@ powershell scripts/install.ps1
 | Model Access | `GATEWAY_ACCESS_MODELS_{AIR,PRO,MAX,ULTRA,AGENT}` |
 | 模型 / 请求策略 | `MODELS_CONFIG` · `POLICIES_CONFIG` |
 
-凭据按 **Tier + node id** 绑定；Config 与 Secret 的 shard suffix 只是独立分片编号，不要求同号对应。Gateway Access 默认 fail-closed：某个 Group Key 已配置但对应模型 allowlist 为空时，该 Key 不获得任何模型访问权限。
+凭据按 **Tier + node id** 绑定；Config 与 Secret 的 shard suffix 是彼此独立、互不关联的分片编号。Gateway Access 默认 fail-closed：Group Key 已配置但对应 `GATEWAY_ACCESS_MODELS_<GROUP>` 为空时，不获得任何模型访问权限。
 
-Node `limits` 已不在现行 Schema 中，配置后会被拒绝。运行时容量改由实时 inFlight、429/Cooldown、Circuit 与延迟等事实信号判断，不再依赖人工填写的节点上限。
+Node `limits` 已不在现行 Schema 中，配置后会被拒绝。容量判断依赖真实 inFlight、429/Cooldown、Circuit 和延迟信号，而不是人工猜测的节点上限。
 
-完整 Node Schema、Runtime Variables、Model-Family / Protocol Fallback 与 Cloudflare Bindings 见 [Configuration](docs/operations/configuration.md)。
+完整配置见 [Configuration](docs/operations/configuration.md)。
 
 ## 生产流程
 
@@ -127,29 +154,28 @@ squash merge to main
     ↓
 validate-deploy
     ↓
+D1 migrations
+    ↓
 Worker deploy
     ↓
 remote verification
-    ↓
-success / automatic Worker rollback
 ```
 
-仅修改 Markdown / `docs/**` 的文档提交会跳过 Worker 重部署。
+仅文档修改不会触发 Worker 重部署。
 
 ## 文档
 
 | 区域 | 作用 |
 | --- | --- |
-| [Architecture](docs/architecture/overview.md) | 长期架构边界、路由、协议与可靠性契约 |
-| [Operations](docs/operations/configuration.md) | 配置、部署、故障排查与 Provider Discovery |
-| [Governance](docs/governance/README.md) | 开发、质量、依赖、版本/Tag 与文档治理 |
+| [Product Policy](docs/governance/product-policy.md) | 永久产品范围、Tier 职责、简单化和彻底替换规则 |
+| [Architecture](docs/architecture/overview.md) | 运行时架构、路由、协议与可靠性边界 |
+| [Operations](docs/operations/configuration.md) | 配置、部署和排障 |
+| [Governance](docs/governance/README.md) | 开发、质量、依赖、版本与文档治理 |
 | [CHANGELOG](CHANGELOG.md) | 版本历史 |
-
-英文是 canonical 文档语言；本页仅作为中文阅读入口。Executable behavior、tests、schemas 与英文 canonical docs 具有更高事实优先级。
 
 ## 安全
 
-不要将上游凭据写入 Node Config 或公开日志。Secret 处理与漏洞报告方式见 [SECURITY.md](SECURITY.md)。
+不要将上游凭据写入 Node Config 或公开日志。详见 [SECURITY.md](SECURITY.md)。
 
 ## License
 

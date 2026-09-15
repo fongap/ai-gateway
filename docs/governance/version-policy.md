@@ -32,13 +32,17 @@ npm run version:sync
 
 ## Version changes
 
-The project follows Semantic Versioning:
+The project uses `MAJOR.MINOR.PATCH` as a source-state classification, not as a backward-compatibility promise.
 
-- **Major** — incompatible public/API/configuration change.
-- **Minor** — backward-compatible capability addition.
-- **Patch** — backward-compatible correction or hardening.
+- **Major** — material architecture, public API, protocol-surface, or configuration contract change.
+- **Minor** — meaningful capability addition or product-behavior expansion.
+- **Patch** — correction, hardening, cleanup, or small behavior adjustment.
 
-A documentation-only correction does not require a version bump. Maintenance may keep the existing patch version when no externally meaningful compatibility boundary has changed.
+The permanent rule in [product-policy.md](product-policy.md) applies to every version: ai-gateway does not carry deprecated aliases, shims, dual paths, or old configuration behavior merely to preserve compatibility with an older ai-gateway release. A newer version defines the current contract. Operators update to that contract; Git and tags preserve the old one.
+
+Intentional OpenAI/Anthropic protocol compatibility is a current product capability and is not an old-version compatibility guarantee.
+
+A documentation-only correction does not require a version bump. Maintenance may keep the existing patch version when no externally meaningful product boundary has changed.
 
 ## CHANGELOG
 
@@ -50,7 +54,7 @@ A version entry should contain the version/date and concise Added/Changed/Fixed/
 
 These identities are deliberately separate:
 
-- **Source version** — SemVer from `package.json.version`.
+- **Source version** — `MAJOR.MINOR.PATCH` from `package.json.version`.
 - **Git tag** — immutable stable-source boundary such as `vX.Y.Z`.
 - **Deployment** — a Worker build published from `main` after the production gate.
 - **Build identity** — the exact deployed commit SHA exposed by `/version` as `build`.

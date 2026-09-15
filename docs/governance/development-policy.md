@@ -17,7 +17,7 @@ Use a short prefix that describes the type of change:
 
 ```text
 feat/      user-visible capability
-fix/       defect or compatibility fix
+fix/       defect or current-contract fix
 refactor/  behavior-preserving structure change
 docs/      documentation and governance
 ci/        CI/workflow change
@@ -46,6 +46,8 @@ One PR should have one primary objective. A PR must make it possible to answer:
 - How was the change verified?
 - What are the protocol, routing, latency/resource, security, and deployment impacts?
 - Which canonical documents changed with the code?
+- Does the change stay inside [product-policy.md](product-policy.md)?
+- If complexity increased, what concrete household/small-team problem requires it?
 
 Do not mix unrelated cleanup into a correctness fix. If a separate defect is discovered, record it and handle it independently unless it blocks the current objective.
 
@@ -86,11 +88,13 @@ dashboard      public/operator presentation
 
 Provider labels are metadata and known-quirk selectors. They must not become an implicit source of model capabilities.
 
+The permanent tier roles are defined by [product-policy.md](product-policy.md): Tier 1 is free-token capacity and the primary reliability focus; Tier 2 is reserved for membership/subscription entitlements; Tier 3 is reserved for paid API capacity. New work must not blur those roles.
+
 ## Runtime dependency discipline
 
 Prefer Web Standard APIs, Node built-ins used by tooling, and small local implementations. Runtime dependencies should remain zero or minimal unless a dependency has a clear reliability/security benefit that outweighs bundle and maintenance cost.
 
-Do not add a framework merely to reorganize code. In particular, architecture work must not introduce a DI container, service locator, repository framework, or general transformation framework without a demonstrated requirement.
+Do not add a framework merely to reorganize code. In particular, architecture work must not introduce a DI container, service locator, repository framework, general transformation framework, plugin marketplace, or generic control-plane abstraction without a demonstrated household/small-team requirement.
 
 TypeScript is a development/tooling choice and must not require a runtime framework. Source imports use the repository's current TypeScript/ESM conventions and must remain compatible with Node and Wrangler validation.
 
@@ -109,15 +113,20 @@ Review especially for:
 
 Use focused regression tests and production observability as performance evidence when a change is expected to affect the request hot path. Do not introduce a standalone benchmark harness unless it has a stable baseline, explicit regression thresholds, and a maintained execution path.
 
-## Breaking changes
+## Clean replacement rule
 
-A breaking public or configuration change requires:
+ai-gateway does not keep old ai-gateway contracts alive for backward compatibility.
 
-1. explicit PR labeling/description;
-2. migration guidance;
-3. canonical documentation updates;
-4. `CHANGELOG.md` entry;
-5. an appropriate version change under [version-policy.md](version-policy.md).
+When a public/configuration/runtime contract changes:
+
+1. update the canonical implementation;
+2. update configuration/schema/tests/examples/documentation in the same change;
+3. remove the superseded path in the same change;
+4. do not add deprecated aliases, dual-read/dual-write behavior, version switches, compatibility shims, or temporary old/new parallel mechanisms solely for an older ai-gateway version;
+5. document any operator action required to adopt the new current contract;
+6. record history in Git/PRs/`CHANGELOG.md`, not in runtime compatibility code.
+
+A change may still preserve external OpenAI/Anthropic protocol compatibility when that compatibility is part of the current product surface. That is not backward compatibility with an older ai-gateway release.
 
 Documentation-only wording changes and factual drift corrections do not require a version bump.
 
