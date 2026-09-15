@@ -13,9 +13,10 @@ export type PolicyConfig = {
   // Adaptive Budget. `budget_split` controls how the per-tier
   // attempt surplus (max_attempts - dispatchable_tier_count) is distributed
   // across dispatchable tiers:
-  //   'even' (default, backward-compatible): the first (most-preferred)
+  //   'even' (historical name / default): the first (most-preferred)
   //     dispatchable tier receives the ENTIRE surplus, maximizing free /
-  //     priority resource use. Existing tests and behavior are unchanged.
+  //     priority resource use. The name is retained for config compatibility;
+  //     this is intentionally tier-first, not mathematically even splitting.
   //   'weighted': the surplus is distributed proportionally to each tier's
   //     live dispatchable node count. A tier with 3 dispatchable nodes gets
   //     3x the surplus share of a tier with 1 dispatchable node. This is
@@ -25,11 +26,9 @@ export type PolicyConfig = {
   // When `tierAttempts` is explicitly set for a tier, that override wins
   // and `budget_split` does not apply to that tier.
   budgetSplit?: 'even' | 'weighted' | null,
-  // Local admission ceiling for Tier 1 accounts. When set to a positive
-  // integer, no more than this many concurrent requests can be admitted to
-  // the same Tier 1 account. Excess requests skip the account and allow the
-  // scheduler to try the next candidate. Default 4 (matching the current
-  // stress-test contract that 4 concurrent requests on a single primary
-  // are permitted). Set to 0/null to disable (unlimited concurrency).
+  // Optional isolate-local admission ceiling for a Tier 1 account. Built-in
+  // policies default to null/unlimited. Set a positive integer only when the
+  // upstream has a KNOWN per-account concurrency contract; 0/null/unset means
+  // no hard ceiling. This is not a learned or cluster-wide Provider quota.
   maxInFlight?: number | null,
 };
