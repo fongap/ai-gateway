@@ -1,6 +1,6 @@
 # Configuration
 
-Production configuration is delivered from GitHub Actions into Cloudflare Workers. Non-sensitive configuration belongs in repository **Variables**; credentials belong in **Secrets**. The Cloudflare Dashboard is not the canonical day-to-day configuration source.
+Production configuration is delivered from GitHub Actions into Cloudflare Workers. Non-sensitive configuration belongs in repository Variables; credentials belong in Secrets. The Cloudflare Dashboard is not the canonical day-to-day configuration source.
 
 ## Configuration sources
 
@@ -11,10 +11,10 @@ Production configuration is delivered from GitHub Actions into Cloudflare Worker
 | `GATEWAY_ACCESS_KEY_{AIR,PRO,MAX,ULTRA,AGENT}` | Client gateway access keys |
 | `GATEWAY_ACCESS_MODELS_{AIR,PRO,MAX,ULTRA,AGENT}` | Per-access-group logical-model allowlists |
 | `MODELS_CONFIG` | Optional logical-model metadata/capability/policy configuration |
-| `POLICIES_CONFIG` | Request-attempt, hedge, and optional Tier 1 admission policy configuration |
+| `POLICIES_CONFIG` | Request-attempt, hedge, timeout and optional Tier 1 admission policy |
 | runtime variables | Timeouts, failover, stream, CORS, logging, and related tunables |
 
-`src/config/runtime-vars.ts` is the source of truth for recognized non-sensitive runtime variables and their numeric defaults/ranges. Sensitive values are deliberately excluded from that registry.
+`src/config/runtime-vars.ts` owns recognized non-sensitive runtime variables and numeric defaults/ranges.
 
 ## Gateway access groups
 
@@ -28,7 +28,7 @@ ULTRA
 AGENT
 ```
 
-Each group has:
+Each configured group uses both:
 
 ```text
 GATEWAY_ACCESS_KEY_<GROUP>
@@ -37,15 +37,25 @@ GATEWAY_ACCESS_MODELS_<GROUP>
 
 Rules:
 
-- at least one grouped gateway key must be configured for the gateway to be usable;
+- at least one grouped gateway key must be configured;
 - groups do not inherit from one another;
-- a configured key with a missing/empty model allowlist grants **zero models**;
-- model allowlists are CSV values and may explicitly use `*` where supported by the access-key parser;
-- no ungrouped legacy gateway key is required by the current runtime.
-
-This is fail-closed by design.
+- a configured key with a missing or empty model allowlist grants zero models;
+- model allowlists are CSV values and may use `*` where supported by the access-key parser.
 
 ## Node configuration
+
+Current node JSON is explicit. Required fields are:
+
+```text
+id
+provider
+protocol
+surfaces
+base_url
+models
+```
+
+`priority` is optional and defaults to `100`. No other node fields are accepted.
 
 Example OpenAI-compatible node:
 
@@ -82,18 +92,18 @@ Example Anthropic node:
 ### Node rules
 
 - `id` matches `^[a-z0-9][a-z0-9-]{0,63}$` and is globally unique.
-- `tier` is rejected inside node JSON; tier comes from the variable prefix.
-- credential-bearing fields such as `token`, `api_key`, `credential`, `authorization`, `password`, or `secret` are rejected.
-- `protocol` is `openai` or `anthropic`.
-- OpenAI surfaces are `chat_completions` and/or `responses`.
-- Anthropic runtime node surface is `messages`.
+- `tier` is not accepted inside node JSON; tier comes from the Variable prefix.
+- credential-bearing fields are rejected.
+- `provider` is required and non-empty.
+- `protocol` is required and is exactly `openai` or `anthropic`.
+- `surfaces` is required and non-empty. OpenAI supports `chat_completions` and `responses`; Anthropic supports `messages`.
 - `base_url` must be an absolute HTTPS URL unless insecure HTTP is explicitly enabled.
-- `priority` defaults to `100`; it is used by Tier 2/3 and ignored as a static node score in Tier 1 P2C.
-- `models` maps logical model name → provider-facing model name. An empty object is the runtime wildcard form, bounded by the gateway's known-model/catalog rules where applicable.
-- `limits` is not part of the active node schema and is rejected if present. Provider capacity is learned from runtime evidence rather than configured node RPM/concurrency ceilings.
-- unknown active node fields are rejected instead of silently ignored.
+- `priority`, when present, is a non-negative integer JSON number. Tier 2/3 use it; Tier 1 does not use static node priority as a P2C score.
+- `models` is required and must be an object mapping logical model → upstream model. Arrays and string-coercion shapes are rejected. `{}` is only an intentional catalog-bounded wildcard.
+- `limits` is not part of the schema and is rejected. Provider capacity is learned from runtime evidence rather than guessed node RPM/concurrency values.
+- unknown node fields are rejected.
 
-When omitted, `protocol` defaults to `openai`; `surfaces` defaults to `chat_completions` for OpenAI and `messages` for an explicit Anthropic protocol. Explicit fields are still recommended when a node serves a non-default surface such as OpenAI Responses.
+There is no fallback shape for missing `provider`, `protocol`, `surfaces`, or `models`.
 
 ## Credential shards
 
@@ -106,9 +116,21 @@ A credential shard is a JSON object:
 }
 ```
 
-Credentials bind by **Tier + node id**. Config and Secret shard suffixes do **not** pair. For example, a node declared in `TIER1_NODES_CONFIG_03` may receive its credential from `TIER1_NODES_SECRETS_01` as long as the tier and node id match.
+Credentials bind by **Tier + node id**. Config and Secret shard suffixes are independent partition numbers; they do not pair. A node declared in `TIER1_NODES_CONFIG_03` may receive its credential from `TIER1_NODES_SECRETS_01` when tier and node id match.
 
-The `01..10` suffix is only a transport/sharding boundary for GitHub Actions.
+## Tier roles
+
+The routing order is fixed:
+
+```text
+Tier 1 → Tier 2 → Tier 3
+```
+
+Their product roles are also fixed:
+
+- Tier 1: free/effectively free capacity and the primary reliability focus.
+- Tier 2: reserved for future membership/subscription entitlement capacity. Do not treat it as another generic API-key pool in examples or new designs.
+- Tier 3: paid API capacity kept as protected final fallback.
 
 ## Runtime variables
 
@@ -129,7 +151,7 @@ Current numeric tunables from `src/config/runtime-vars.ts`:
 
 String variables:
 
-- `ALLOWED_ORIGIN` — empty by default; CORS is not broadly enabled unless configured.
+- `ALLOWED_ORIGIN` — empty by default.
 - `STREAM_INCLUDE_USAGE` — default `auto`.
 - `STREAM_USAGE_INCLUDE_OFF_PROVIDERS` — provider exclusion list for usage hints.
 - `ANTHROPIC_COUNT_TOKENS_MODE` — default `approximate`.
@@ -153,95 +175,72 @@ Unset/empty `PROTOCOL_FALLBACKS` resolves to:
 }
 ```
 
-Set `PROTOCOL_FALLBACKS=disable` for Native-Only Chat/Messages behavior, or provide an explicit JSON mapping to override the default. OpenAI Responses remains Native Only regardless.
+Set `PROTOCOL_FALLBACKS=disable` for Native-Only Chat/Messages behavior, or provide an explicit supported mapping. OpenAI Responses remains Native Only.
 
-Unsupported conversion routes are configuration errors rather than implicit best-effort conversions. Conversion diagnostics also act as a safety boundary: degraded fallback is skipped before dispatch when conversion would drop high-risk semantic state such as provider-native tool state/history, thinking history, context management, or a tool-result error marker. Lesser portable/emulated differences can still use the fallback path.
+Unsupported conversion routes are configuration errors. Conversion is skipped before dispatch when it would drop high-risk semantic state such as provider-native tool state/history, thinking history, context management, or a tool-result error marker.
 
 ## Runtime capacity and heat protection
 
-Node capacity is no longer defined by guessed `limits.concurrency` or `limits.rpm` values. The default Tier 1 policy also does not impose a guessed per-account concurrency ceiling. The gateway reacts to evidence it can actually observe:
+Tier 1 capacity is shaped from facts the gateway can observe:
 
-- live in-flight work is a **soft ranking signal by default**: a busy node is less preferred, but remains usable when healthy peers are unavailable;
-- `POLICIES_CONFIG.max_in_flight` is an explicit, isolate-local operator override for a known per-account contract; unset, `0`, or `null` means no hard ceiling;
-- real 429 responses create bounded key-local cooldown/recovery behavior;
-- Tier 1 provider+key adaptive 429 cooldown follows `15s → 30s → 1m → 2m → 5m → 15m → 30m → 60m`, advancing only when a post-cooldown recovery request still returns 429;
-- upstream `Retry-After` is a minimum floor and can extend, but never shorten, the learned adaptive cooldown;
-- repeated provider-model 429 evidence adds bounded soft heat without removing the last usable node;
-- TTFT, affinity, request priority, circuit state and recent transient failure evidence can influence Tier 1 P2C ranking;
-- optional hedge work is suppressed before primary traffic when the pool is already busy.
+- live in-flight work is a soft ranking signal by default;
+- `POLICIES_CONFIG.max_in_flight` is an explicit isolate-local safety ceiling for a known per-account contract; unset, `0`, or `null` means no hard ceiling;
+- real rate-limit responses drive cooldown/recovery behavior, including providers that encode throughput quota errors as quota-shaped HTTP 413;
+- Tier 1 adaptive rate-limit cooldown follows bounded escalation when post-cooldown recovery still fails;
+- upstream `Retry-After` is honored as a floor;
+- provider-model heat, passive TTFT, affinity, request priority and circuit state may influence Tier 1 P2C ranking;
+- hedge work yields before primary traffic when spare capacity is low.
 
-An explicit `max_in_flight` is not a cluster-wide Provider quota. Cloudflare may run multiple isolates, so this option should be used only as a local safety guard when an upstream concurrency contract is known; it must not be treated as learned global capacity.
-
-`GATEWAY_KEY_RPM` is separate: it protects gateway access keys and is not a guessed Provider/Node quota.
+No local ceiling is presented as a cluster-wide Provider quota. `GATEWAY_KEY_RPM` protects gateway access keys; it is separate from Provider capacity.
 
 ## Model-family fallback
 
-When compatible logical aliases exist, model-family fallback is a bounded capacity escape hatch that shares the original request wall-clock and logical-attempt budgets.
+Compatible logical aliases share the original request wall-clock and logical-attempt budgets. `max_attempts` is always the request-wide hard ceiling; family fallback never raises it.
 
-`max_attempts` is always a hard request-wide ceiling. Family fallback never silently raises it. For a three-member family the first round widens before it deepens:
+Rules include:
 
-| `max_attempts` | First-round family allocation |
-| ---: | --- |
-| 1 | requested model only |
-| 2 | requested + first sibling, one each |
-| 3 | `1 / 1 / 1` |
-| 4 | `2 / 1 / 1` |
-| 5 | `3 / 1 / 1` |
-| 6+ | up to `3 / 2 / 1`, then bounded re-checks only from unused request budget |
-
-Additional rules:
-
-- `Code-Max / Code-Pro / Code-Ultra` stay inside the Code family;
-- `Max / Pro / Ultra` stay inside the general family;
-- `Air` moves only upward through `Air → Pro → Max → Ultra` and never falls back down to Air after moving upward;
-- the re-check round never creates a fresh attempt or wall-clock budget;
-- request-local failure-domain deduplication treats the same configured credential + same provider-facing upstream model as one spent execution path across aliases;
-- spent duplicate domains neither consume another logical attempt nor reserve future failover time;
-- `model_missing` remains a mapping/capability fact for the failing node/model pair, but the request may continue to an authorized compatible sibling within the same bounded family budget;
-- when a bounded compatible-family plan exhausts its allowed attempts and every observed failure is transient, the gateway returns retryable `503`; this means the request's attempt budget was exhausted, **not** that every compatible account in the deployment was proven unavailable.
-
-Models without a configured compatible sibling keep their existing policy budget and terminal semantics.
+- Code aliases stay inside the Code family;
+- general `Max / Pro / Ultra` stay inside that family;
+- `Air` moves only upward through `Air → Pro → Max → Ultra`;
+- request-local failure-domain deduplication prevents aliases that resolve to the same node/account + upstream model from burning repeated attempts;
+- model-shaped 404 isolates that node/model mapping while an authorized compatible sibling may still be tried;
+- all-transient bounded family exhaustion remains retryable.
 
 ## Policies
 
-`POLICIES_CONFIG` is a per-policy object referenced by model configuration. Important fields include:
+Current `POLICIES_CONFIG` fields are:
 
 ```json
 {
   "default": {
     "max_attempts": 5,
     "tier_attempts": null,
-    "hedge": { "enabled": true },
+    "hedge": { "enabled": true, "tiers": ["tier1"] },
     "first_event_timeout_ms": null,
-    "budget_split": null,
     "max_in_flight": null
   }
 }
 ```
 
-- `max_attempts` is the hard request-wide logical-attempt ceiling across tiers, protocol fallback and model-family fallback.
-- `tier_attempts` optionally caps individual tiers.
-- `hedge.enabled`, optional delay/tier fields control reactive hedge policy.
-- `first_event_timeout_ms` can override the global first-event timeout per model/policy, but it cannot outlive the whole-request `FAILOVER_BUDGET_MS`; operators who intentionally need a wait above 60 seconds must raise the global failover budget as well.
-- built-in `long-reasoning` uses `first_event_timeout_ms=60000`, matching the default `FAILOVER_BUDGET_MS=60000` rather than advertising an unreachable 120-second first-event wait.
-- `budget_split` supports the historical `even`/`null` tier-first behavior and the `weighted` allocation mode.
-- `max_in_flight` is optional Tier 1 local admission control. Built-ins default to `null`; `0`/`null` disable it; a positive integer enforces that explicit per-account ceiling inside each Worker isolate.
+- `max_attempts`: integer 1–8; hard request-wide logical-attempt ceiling.
+- `tier_attempts`: optional explicit caps for `tier1`, `tier2`, `tier3`; total must fit inside `max_attempts`.
+- `hedge`: optional `enabled`, `delay_ms`, and `tiers` controls.
+- `first_event_timeout_ms`: integer 5000–600000 and cannot exceed `FAILOVER_BUDGET_MS`.
+- `max_in_flight`: `null`, `0`, or a non-negative integer JSON number; positive values are Tier 1 isolate-local admission ceilings.
 
-Explicit tier caps remain authoritative inside each logical-model pass and must fit within their policy definition.
+There is one cross-tier allocation model: hard Tier precedence. `budget_split`, weighted allocation, and alternate tier-budget modes are not part of the current policy schema and are rejected as unknown fields.
 
-### Request timing semantics
+## Request timing semantics
 
-`FAILOVER_BUDGET_MS` is one wall-clock budget for the whole request. Native tiers, protocol fallback, model-family fallback, and bounded re-checks never reset it.
+`FAILOVER_BUDGET_MS` is one wall-clock budget for the whole request. Native tiers, protocol fallback, model-family fallback and bounded re-checks never reset it.
 
-The live attempt allocator is reserve-aware: instead of dividing the whole budget equally by `max_attempts`, the current candidate may use most of the remaining wall clock while preserving a small escape window for later request-plan opportunities. With sufficient budget, the reserve is capped at 5 seconds per later opportunity; under tight budgets it shrinks toward equal share.
+The attempt allocator preserves bounded future escape time for later dispatchable nodes and reachable compatible family passes. Already-spent duplicate failure domains do not reserve phantom future time.
 
-Later opportunities include currently dispatchable nodes and reachable compatible family passes. Already-spent duplicate failure domains are removed from future reserve planning. This timing calculation changes no routing eligibility and never raises `max_attempts`.
+For each physical upstream dispatch, response headers, first meaningful output, successful body assembly, and bounded non-2xx diagnostic-body reads share the same absolute attempt deadline. A hedge twin inherits that deadline instead of receiving a fresh one.
 
-For each physical upstream dispatch, response headers, first meaningful output, successful body assembly, and bounded non-2xx diagnostic-body reads all share the same absolute attempt deadline. A hedge twin inherits that deadline instead of receiving a fresh one.
+## Deployment identifiers and bindings
 
-## Cloudflare bindings and deployment identifiers
-
-Deployment-level identifiers are handled separately from runtime tunables, including:
+Deployment-level identifiers include:
 
 - `CLOUDFLARE_ACCOUNT_ID`
 - `GATEWAY_PUBLIC_BASE_URL`
@@ -250,15 +249,12 @@ Deployment-level identifiers are handled separately from runtime tunables, inclu
 
 Runtime bindings may include:
 
-- `TIER1_AFFINITY` KV — hashed session binding, 30-minute TTL;
-- `TOKEN_STATS_DB` D1 — token-usage persistence and recent public-status evidence;
-- optional `QUOTA_RATE_LIMITER` — legacy/optional distributed shaping infrastructure; it is not a source of Provider capacity facts.
+- `TIER1_AFFINITY` KV — hashed session binding;
+- `TOKEN_STATS_DB` D1 — token-usage persistence and recent public-status evidence.
 
-None of these should be described as a globally exact provider-account concurrency/quota system.
+Deployment identity is the Git commit SHA injected as `GITHUB_SHA` and exposed by authenticated `/health` as `build`. Project release numbering is not a runtime/configuration field.
 
 ## Local validation
-
-Use the repository CLI/scripts before deployment:
 
 ```bash
 npm run config:check
@@ -266,4 +262,4 @@ npm run validate:merge
 npm run check:deploy
 ```
 
-See [Deployment](deployment.md) for the production bridge and [Routing model](../architecture/routing-model.md) for how the resulting runtime node fields are used.
+See [Deployment](deployment.md) and [Routing model](../architecture/routing-model.md).
