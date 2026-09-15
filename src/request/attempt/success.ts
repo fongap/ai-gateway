@@ -42,6 +42,7 @@ import { ensureFirstSseEvent, GUARD_ERROR, guardedStreamFailureReason } from '..
 import { collectOpenAIStreamObject } from '../../stream/assemble.ts';
 import { trackStreamResponse } from '../../stream/track.ts';
 import { reportedUsageFromPayload } from '../../observability/reported-usage.ts';
+import { mergeReportedUsage } from '../../observability/token-usage.ts';
 import { gatewayError, buildClientErrorResponse } from '../errors.ts';
 import { finalHeaders, jsonResponse, streamInterruptionChunk, upstreamModelOf } from '../response-helpers.ts';
 import { convertOpenAIToAnthropicResponse } from '../../conversion/openai-to-anthropic.ts';
@@ -122,6 +123,10 @@ export async function handleSuccess(s: {
         return { response: gatewayError(request, env, route, 499, 'Client closed the request before the first stream event.', requestId) };
       }
       if (c.hedgeAbort?.signal.aborted) {
+        // A peer committed while this attempt was waiting for real output.
+        // Reliability stays neutral, but the physical dispatch still belongs
+        // in upstream accounting (including any usage seen in lifecycle events).
+        recordUndeliveredUpstreamAttempt(c, node);
         state.attempted.add(node.id);
         state.dispatches++;
         if (!c.hedgedAttempt) state.logicalAttempts++;
@@ -166,9 +171,17 @@ export async function handleSuccess(s: {
     }
 
     if (route === 'openai_chat' && c.conversionContext) {
+      let upstreamUsage: unknown = null;
       const openAiStream = createOpenAIChatStreamFromAnthropic(guarded.body, {
         messageId: `chatcmpl-${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`,
         model: requestedModel,
+        onUpstreamUsage: (u: unknown) => {
+          upstreamUsage = mergeReportedUsage(upstreamUsage, u);
+          // Raw Anthropic usage is the accounting source of truth. The
+          // translated OpenAI usage chunk is client-facing only and can omit
+          // Anthropic-specific cache creation/read fields.
+          observeUpstreamAttemptUsage(c, u);
+        },
       });
       const tracked = trackStreamResponse(
         new Response(openAiStream, { status: 200, headers }),
@@ -176,10 +189,10 @@ export async function handleSuccess(s: {
           idleTimeoutMs: limits.streamIdleTimeoutMs,
           completionMarker: /data:\s*\[DONE\]\s*(?:\r?\n|$)/,
           ...(needsModelRewrite ? { rewriteModel: requestedModel } : {}),
-          onUsage: (u: unknown) => recordTokens(c, node, u),
+          onUsage: () => recordTokens(c, node, upstreamUsage),
           interruptionChunk: (reason: string | null) => streamInterruptionChunk(route, requestId, reason),
           upstreamFailureReason: hiddenStreamFailure,
-          ...makeNodeStreamTrack(c, node, latencyMs),
+          ...makeNodeStreamTrack(c, node, latencyMs, { observeStreamUsage: false }),
         },
       );
       return { response: new Response(tracked.body, { status: 200, headers }) };
@@ -208,7 +221,7 @@ export async function handleSuccess(s: {
         model: requestedModel,
         inputTokens,
         onUpstreamUsage: (u: unknown) => {
-          upstreamUsage = u;
+          upstreamUsage = mergeReportedUsage(upstreamUsage, u);
           // This is the raw OpenAI provider report. The Anthropic stream also
           // contains a synthetic message_start usage derived from the local
           // input-token estimate; that synthetic value must never enter
