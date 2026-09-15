@@ -385,14 +385,11 @@ await test('425 Too Early is classified as rotate', () => {
 });
 
 // ─── 10. gatewayStats trackClientResponse lifecycle ──────────────────────────
-await test('trackClientResponse decrements activeRequests and increments success on clean close', async () => {
+await test('trackClientResponse returns streaming response as-is (stats handled by makeNodeStreamTrack)', async () => {
   const { trackClientResponse, gatewayStats: gs } = await import('../src/observability/gateway-stats.ts');
-  const beforeActive = gs.activeRequests;
-  const beforeSuccesses = gs.successes;
   const body = new ReadableStream({
     start(controller) {
       controller.enqueue(encoder.encode('data: {"chunk":1}\n\n'));
-      controller.enqueue(encoder.encode('data: [DONE]\n\n'));
       controller.close();
     },
   });
@@ -404,16 +401,7 @@ await test('trackClientResponse decrements activeRequests and increments success
   const tracked = trackClientResponse(response);
   assert.ok(tracked instanceof Response, 'should return a Response');
   assert.ok(tracked.body, 'tracked response should have a body');
-  // Read the tracked body to completion so the settle callback fires
-  const reader = tracked.body.getReader();
-  for (;;) {
-    const { done } = await reader.read();
-    if (done) break;
-  }
-  // After clean close, successes should have incremented
-  assert.ok(gs.successes >= beforeSuccesses + 1, `successes should increment: ${gs.successes} >= ${beforeSuccesses + 1}`);
-  // activeRequests should have decremented (or stayed at 0)
-  assert.ok(gs.activeRequests <= beforeActive, `activeRequests should not increase: ${gs.activeRequests} <= ${beforeActive}`);
+  assert.equal(tracked.body, response.body, 'streaming body should be returned as-is (no wrapper)');
 });
 
 await test('trackClientResponse exists as exported function', async () => {
@@ -421,8 +409,8 @@ await test('trackClientResponse exists as exported function', async () => {
   assert.equal(typeof trackClientResponse, 'function', 'trackClientResponse should be exported');
 });
 
-// ─── 11. gatewayStats lifecycle: cancel path ────────────────────────────────
-await test('trackClientResponse wraps streaming response with cancel handler', async () => {
+// ─── 11. gatewayStats lifecycle: streaming passthrough ───────────────────────
+await test('trackClientResponse passes streaming response body as-is (no wrapper)', async () => {
   const { trackClientResponse } = await import('../src/observability/gateway-stats.ts');
   const body = new ReadableStream({
     pull(controller) {
@@ -436,7 +424,7 @@ await test('trackClientResponse wraps streaming response with cancel handler', a
 
   const tracked = trackClientResponse(response);
   assert.ok(tracked.body, 'tracked response should have a body');
-  assert.ok(tracked.body !== response.body, 'tracked body should be a wrapper');
+  assert.equal(tracked.body, response.body, 'streaming body should be the same reference (no wrapper)');
 });
 
 // ─── 12. collectOpenAIStreamObject finish_reason semantic EOF ────────────────

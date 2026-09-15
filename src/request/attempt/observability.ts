@@ -24,6 +24,7 @@ import { classifyStreamInterrupted } from '../../reliability/classify.ts';
 import { writeTier1Affinity } from '../../scheduler/tier1-affinity.ts';
 import {
   recordStreamStart, recordStreamCompleted, recordStreamInterrupted,
+  gatewayStats,
 } from '../../observability/gateway-stats.ts';
 import { recordTokenUsage } from '../../observability/token-usage.ts';
 import { persistTokenUsage } from '../../observability/token-usage-store.ts';
@@ -117,6 +118,8 @@ export function recordNodeSuccess(c: AttemptContext, node: RuntimeNode, latencyM
     return {
       onSuccess: () => {
         recordNodeSuccess(c, node, latencyMs);
+        gatewayStats.activeRequests = Math.max(0, gatewayStats.activeRequests - 1);
+        gatewayStats.successes++;
       },
       // Field evidence (NVIDIA-hosted stalls mid-generation): 2s let a stalling
       // node straight back into rotation. 60s matches the rate-limit cooldown —
@@ -130,13 +133,18 @@ export function recordNodeSuccess(c: AttemptContext, node: RuntimeNode, latencyM
           const c = classifyStreamInterrupted();
           recordFailure(node.id, { counted: c.counted, cooldownMs: c.cooldownMs, reason: c.kind });
         }
+        gatewayStats.activeRequests = Math.max(0, gatewayStats.activeRequests - 1);
+        gatewayStats.failures++;
       },
       onNeutral: () => {
         if (tier1) releaseTier1Slot(node.id, c.tier1ReleaseToken);
         else recordNeutralEnd(node.id);
+        gatewayStats.activeRequests = Math.max(0, gatewayStats.activeRequests - 1);
+        gatewayStats.cancellations++;
       },
       onStreamStart: () => {
         recordStreamStart();
+        gatewayStats.activeRequests++;
       },
       onStreamEnd: (outcome: string, d: { reason: string | null, durationMs: number, chunkCount: number, receivedBytes: number, completionMarkerSeen: boolean }) => {
         if (outcome === 'completed') { recordStreamCompleted(); return; }

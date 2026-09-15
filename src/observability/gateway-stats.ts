@@ -80,43 +80,9 @@ export function trackClientResponse(response: Response): Response {
     else gatewayStats.failures++;
     return response;
   }
-  // Streaming: wrap with a lightweight lifecycle that decrements activeRequests
-  // and counts success/cancellation when the client-facing stream ends. The
-  // inner trackStreamResponse already handles node-layer stats (node success,
-  // streamStats, Tier1 slot) — this wrapper only manages client-level counters.
-  const innerReader = response.body.getReader();
-  let settled = false;
-  const settle = (result: 'success' | 'failure' | 'cancel') => {
-    if (settled) return;
-    settled = true;
-    gatewayStats.activeRequests = Math.max(0, gatewayStats.activeRequests - 1);
-    if (result === 'success') gatewayStats.successes++;
-    else if (result === 'failure') gatewayStats.failures++;
-    else gatewayStats.cancellations++;
-  };
-  const body = new ReadableStream({
-    async pull(controller) {
-      try {
-        const { done, value } = await innerReader.read();
-        if (done) {
-          settle('success');
-          controller.close();
-          return;
-        }
-        controller.enqueue(value);
-      } catch {
-        settle('failure');
-        try { controller.close(); } catch { /* already closed */ }
-      }
-    },
-    cancel() {
-      settle('cancel');
-      innerReader.cancel().catch(() => {});
-    },
-  });
-  return new Response(body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: response.headers,
-  });
+  // Streaming: the upstream response is already wrapped by trackStreamResponse
+  // inside handleSuccess (makeNodeStreamTrack). That single wrapper handles
+  // node-layer AND client-layer stats, including completionMarker detection.
+  // Return the response as-is to avoid double-wrapping and double-counting.
+  return response;
 }
