@@ -5,6 +5,7 @@
 // All state is isolate-local best-effort.
 
 import { isOpenAIStreamingResponse } from '../protocol/openai.ts';
+import { SYNTHETIC_CLIENT_STREAM_HEADER } from '../stream/client-lifecycle.ts';
 
 export const gatewayStats = {
   startedAt: Date.now(),
@@ -64,14 +65,6 @@ const COUNTED_ROUTES = new Set([
 export function isCountedRoute(method: string, pathname: string): boolean {
   return COUNTED_ROUTES.has(`${method} ${pathname}`);
 }
-
-// Internal handoff marker used only between handleRequest() and the outer
-// request boundary. Real upstream streams already own lifecycle accounting in
-// trackStreamResponse/makeNodeStreamTrack and are NEVER marked. Synthetic SSE
-// created from a complete JSON response has no node-layer stream tracker, so it
-// is marked at creation and handled exactly once here. The marker is stripped
-// before the response is returned to the client.
-export const SYNTHETIC_CLIENT_STREAM_HEADER = 'x-gateway-internal-synthetic-stream';
 
 // Wrap a response so its completion updates the CLIENT request counters.
 // Protocol-aware real upstream streams already own that lifecycle through
