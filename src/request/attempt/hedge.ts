@@ -99,6 +99,10 @@ export async function dispatchWithHedge(args: AttemptContext, tierNodes: Readonl
       rng: args.rng ?? Math.random,
       affinityAccountId: args.tier1AffinityAccountId,
       evaluateAffinity: args.tier1EvaluateAffinity,
+      // A hedge is still a real Tier 1 dispatch. Preserve the same explicit
+      // operator admission ceiling as the primary instead of silently falling
+      // back to the picker's unlimited default.
+      maxInFlight: args.policy?.maxInFlight ?? null,
     })
     : legacyTwin;
   if (!twinPick || twinPick.raceLost) return primary;
