@@ -19,6 +19,7 @@
 // still rotates to another node.
 
 import { createSseScanner, readWithDeadline } from '../../stream/guard.ts';
+import { markSyntheticClientStreamHeaders } from '../../stream/client-lifecycle.ts';
 import { ResponsesEventBuilder } from './events.ts';
 import {
   UPSTREAM_PROCESSING_ERROR,
@@ -112,6 +113,8 @@ export async function collectResponsesObject(upstream: Response, clientSignal: A
 // full Responses object (the "upstream answered JSON but the client wants a
 // stream" case). Event order follows the Responses contract:
 // response.created -> per-item added/delta/done -> response.completed.
+// Synthetic streams carry an internal lifecycle marker consumed and stripped
+// by the outer request boundary; real upstream streams never carry it.
 export function synthesizeResponsesFromObject(response: Record<string, unknown> | null | undefined, requestedModel: string, extraHeaders?: Record<string, string>): Response {
   const events = new ResponsesEventBuilder();
   const encoder = new TextEncoder();
@@ -153,11 +156,11 @@ export function synthesizeResponsesFromObject(response: Record<string, unknown> 
   });
   return new Response(stream, {
     status: 200,
-    headers: {
+    headers: markSyntheticClientStreamHeaders({
       'content-type': 'text/event-stream; charset=utf-8',
       'cache-control': 'no-cache, no-transform',
       'x-accel-buffering': 'no',
       ...(extraHeaders || {}),
-    },
+    }),
   });
 }
