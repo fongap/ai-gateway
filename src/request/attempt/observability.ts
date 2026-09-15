@@ -31,10 +31,6 @@ import { upstreamModelOf } from '../response-helpers.ts';
 import type { AttemptContext } from '../../types/request.ts';
 import type { RuntimeNode } from '../../types/node.ts';
 
-// Request-local attempt accounting lives outside AttemptContext so routing and
-// reliability types do not acquire observability-only mutable fields. Primary
-// and hedge contexts are distinct objects, so each physical dispatch receives
-// its own exactly-once accounting slot.
 const observedAttemptUsage = new WeakMap<object, unknown>();
 const settledAttemptUsage = new WeakSet<object>();
 
@@ -50,10 +46,6 @@ export function recordTier1NonStreamTtft(c: AttemptContext, node: RuntimeNode, d
   recordTier1Ttft(node.id, c.state.requestedModel, c.ttftMs);
 }
 
-// Delivered response: preserve the established isolate-local stats and D1
-// success evidence. persistTokenUsage also increments the upstream-attempt view
-// in the same SQL write set, because the winning response is itself one real
-// physical dispatch.
 export function recordTokens(c: AttemptContext, node: RuntimeNode, usage: unknown): void {
   if (settledAttemptUsage.has(c as object)) return;
   observeUpstreamAttemptUsage(c, usage);
@@ -63,10 +55,6 @@ export function recordTokens(c: AttemptContext, node: RuntimeNode, usage: unknow
   scheduleD1TokenPersist(c, usage, effectiveModel);
 }
 
-// Physical upstream attempt that did NOT become a delivered response. It may
-// still have reported usage (e.g. an interrupted stream emitted cumulative
-// usage before truncation). Record the best reported cumulative observation;
-// otherwise increment upstream_usage_missing. Never estimate missing tokens.
 export function recordUndeliveredUpstreamAttempt(c: AttemptContext, node: RuntimeNode, usage?: unknown): void {
   if (settledAttemptUsage.has(c as object)) return;
   if (usage !== undefined) observeUpstreamAttemptUsage(c, usage);
@@ -102,27 +90,26 @@ export function recordNodeSuccess(c: AttemptContext, node: RuntimeNode, latencyM
   if (node.tier === 'tier-1') {
     const logicalModel = c.state.requestedModel;
     recordTier1Success(node.id, logicalModel);
-    if (getTier1Account(node.id).consecutiveRateLimits === 0) {
-      clearAdaptive429State(node.provider, node.id);
-    }
+    if (getTier1Account(node.id).consecutiveRateLimits === 0) clearAdaptive429State(node.provider, node.id);
     recordTier1ProviderModelSuccess(node.provider, upstreamModelOf(node, logicalModel), node.id);
     releaseTier1Slot(node.id, c.tier1ReleaseToken);
     bumpNodeCounters(node.id, { requests: 1, successes: 1 });
-    if (c.tier1UpdateAffinity && c.tier1Session) {
-      writeTier1Affinity(c.env, c.ctx, c.tier1Session, node.id);
-    }
+    if (c.tier1UpdateAffinity && c.tier1Session) writeTier1Affinity(c.env, c.ctx, c.tier1Session, node.id);
     return;
   }
   recordSuccess(node.id, latencyMs, c.state?.requestedModel);
 }
 
-// Real upstream streams own both node outcome and client lifecycle accounting
-// here. Upstream-attempt usage for an interrupted/cancelled real stream is
-// finalized by trackStreamResponse's onAttemptUsage callback; completed streams
-// continue through recordTokens(), which updates both accounting views once.
 export function makeNodeStreamTrack(c: AttemptContext, node: RuntimeNode, latencyMs: number) {
   const tier1 = node.tier === 'tier-1';
   return {
+    // trackStreamResponse invokes this for every terminal stream outcome. A
+    // completed winner is persisted by recordTokens/onUsage below, so only
+    // failure/neutral paths need the upstream-only writer here.
+    onAttemptUsage: (usage: unknown, outcome: 'success' | 'failure' | 'neutral') => {
+      if (usage != null) observeUpstreamAttemptUsage(c, usage);
+      if (outcome !== 'success') recordUndeliveredUpstreamAttempt(c, node);
+    },
     onSuccess: () => {
       recordNodeSuccess(c, node, latencyMs);
       gatewayStats.activeRequests = Math.max(0, gatewayStats.activeRequests - 1);
@@ -142,9 +129,7 @@ export function makeNodeStreamTrack(c: AttemptContext, node: RuntimeNode, latenc
       gatewayStats.activeRequests = Math.max(0, gatewayStats.activeRequests - 1);
       gatewayStats.cancellations++;
     },
-    onStreamStart: () => {
-      recordStreamStart();
-    },
+    onStreamStart: () => recordStreamStart(),
     onStreamEnd: (outcome: string, d: { reason: string | null, durationMs: number, chunkCount: number, receivedBytes: number, completionMarkerSeen: boolean }) => {
       if (outcome === 'completed') { recordStreamCompleted(); return; }
       if (outcome !== 'interrupted') return;
