@@ -42,6 +42,12 @@ const DIAGNOSTIC_BYTES = 4096;
 // every upstream dispatch emits exactly one completion record.
 export async function attemptNode(c: AttemptContext): Promise<AttemptOutcome> {
   const outcome = await dispatchAttempt(c);
+  // Some hedge-loss paths intentionally bypass recordOutcome() because they are
+  // neutral reliability outcomes. They still contacted an upstream, so close
+  // the physical-attempt accounting slot here. The settlement helper is
+  // idempotent, therefore the headers-phase hedge path (which settles earlier)
+  // is not double-counted.
+  if (outcome.hedgedAway) recordUndeliveredUpstreamAttempt(c, c.node);
   if (outcome.budgetCharged === undefined) outcome.budgetCharged = true;
   if (outcome.response?.ok) {
     // Successful dispatches never pass through recordOutcome, so charge them
