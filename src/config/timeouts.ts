@@ -26,10 +26,9 @@ export const MIN_ATTEMPT_FIRST_EVENT_MS = 5_000;
 
 // Reserve a small escape window for each later logical attempt instead of
 // dividing the whole request budget evenly up front. Five seconds is enough
-// for a healthy alternate to return headers / an early event or fail fast,
-// while allowing the preferred candidate to use its configured work window.
-// When the total budget is too tight to reserve 5s per later attempt, the
-// allocator automatically falls back to an equal share.
+// for a healthy alternate to fail fast or begin producing output. When the
+// whole request budget is tighter, the reserve automatically shrinks to the
+// equal-share value so later candidates are never starved completely.
 export const MIN_FAILOVER_RESERVE_MS = 5_000;
 
 export type Limits = {
@@ -45,39 +44,39 @@ export type Limits = {
   gatewayKeyRpm: number,
 }
 
-// Allocate one logical attempt's absolute wall-clock window.
+// Legacy/equal-share primitive retained as a pure helper. Some tests and
+// isolated callers intentionally reason about an even split. The live request
+// path uses attemptBudgetWindowMs below so the preferred candidate is not
+// prematurely killed merely because several fallback candidates exist.
+export function attemptBudgetSliceMs(remainingBudgetMs: number, remainingAttempts: number): number {
+  const attempts = Math.max(1, Math.trunc(remainingAttempts) || 1);
+  return Math.max(1, Math.floor(Math.max(0, remainingBudgetMs) / attempts));
+}
+
+// Allocate the current logical attempt's absolute wall-clock window.
 //
-// Old behavior divided the remaining budget evenly by every candidate that
-// might still be tried. With the default 60s / 5-attempt policy that gave the
-// preferred candidate only ~12s total for BOTH response headers and the first
-// meaningful event, so a healthy coding/reasoning model could be killed well
-// before its configured FIRST_EVENT_TIMEOUT_MS.
+// The previous live path used equal-share slicing directly. With the default
+// 60s request budget and 5 possible attempts, that reduced the first candidate
+// to ~12s total for BOTH headers and first meaningful output. A healthy
+// coding/reasoning model could therefore be timed out long before its
+// configured FIRST_EVENT_TIMEOUT_MS.
 //
-// The reserve-aware allocator gives the current candidate as much of its
-// configured work window as possible, while keeping a minimum escape reserve
-// for each later candidate. If the request budget is already tight, reserve
-// per later candidate shrinks to the equal-share value, so the allocator never
-// starves the tail. `attemptCeilingMs` is normally headersTimeout + effective
-// firstEventTimeout; callers may omit it for an uncapped request-budget slice.
-export function attemptBudgetSliceMs(
-  remainingBudgetMs: number,
-  remainingAttempts: number,
-  attemptCeilingMs: number = Number.POSITIVE_INFINITY,
-): number {
+// Reserve-aware allocation lets the current candidate use the remaining
+// request budget except for a small reserve per later candidate. Phase-local
+// header/first-event timers still cap actual waiting, and the hedge twin shares
+// the same absolute deadline. When budget is tight, reservePerLater collapses
+// to the equal-share value, preserving a viable tail instead of front-loading
+// everything into the first attempt.
+export function attemptBudgetWindowMs(remainingBudgetMs: number, remainingAttempts: number): number {
   const attempts = Math.max(1, Math.trunc(remainingAttempts) || 1);
   const budget = Math.max(0, Math.floor(remainingBudgetMs));
   if (budget <= 0) return 1;
-
-  const ceiling = Number.isFinite(attemptCeilingMs)
-    ? Math.max(1, Math.floor(attemptCeilingMs))
-    : Number.POSITIVE_INFINITY;
-  if (attempts === 1) return Math.max(1, Math.min(budget, ceiling));
+  if (attempts === 1) return Math.max(1, budget);
 
   const equalShare = Math.max(1, Math.floor(budget / attempts));
   const reservePerLater = Math.min(MIN_FAILOVER_RESERVE_MS, equalShare);
   const reservedForLater = reservePerLater * (attempts - 1);
-  const availableNow = Math.max(1, budget - reservedForLater);
-  return Math.max(1, Math.min(availableNow, ceiling));
+  return Math.max(1, budget - reservedForLater);
 }
 
 function fairShareTimeoutMs(configuredTimeoutMs: number, remainingBudgetMs: number, remainingAttempts: number, floorMs: number): number {
@@ -92,10 +91,10 @@ function fairShareTimeoutMs(configuredTimeoutMs: number, remainingBudgetMs: numb
   return Math.max(1, wait);
 }
 
-// Phase-local response-header wait. Dispatch normally passes one already
-// allocated attempt window here, so the configured header timeout is preserved
-// unless the absolute attempt/request budget is tighter. The multi-attempt
-// form remains supported for isolated callers/tests.
+// Phase-local response-header wait. Dispatch passes one already allocated
+// attempt window here, so the configured header timeout is preserved unless
+// the absolute attempt/request budget is tighter. The multi-attempt form is
+// retained for isolated callers/tests.
 export function attemptHeadersTimeoutMs(headersTimeoutMs: number, remainingBudgetMs: number, remainingAttempts: number): number {
   return fairShareTimeoutMs(
     headersTimeoutMs, remainingBudgetMs, remainingAttempts, MIN_ATTEMPT_HEADERS_MS,
