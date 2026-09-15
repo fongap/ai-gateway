@@ -12,23 +12,21 @@ The product should remain simple to deploy, simple to understand, and simple to 
 
 ## Tier roles
 
-The three tiers have fixed long-term responsibilities.
-
 ### Tier 1 — free-token capacity
 
 Tier 1 is the primary long-term operating layer and carries free or effectively free token capacity from multiple providers/accounts.
 
-Its first priority is sustained availability. Tier 1 must remain stable, efficient, safe, and continuously usable under uneven quotas, 429s, latency variation, and provider failures.
+Its first priority is sustained availability. Tier 1 must remain stable, efficient, safe, and continuously usable under uneven quotas, rate limits, latency variation, and provider failures.
 
-Tier 1 engineering should therefore prioritize:
+Tier 1 engineering should prioritize:
 
 - multi-key and multi-provider resilience;
-- adaptive recovery from real 429/failure evidence;
+- adaptive recovery from real rate-limit/failure evidence;
 - bounded load spreading rather than a single preferred key;
 - predictable failover and stream safety;
 - low hot-path overhead;
 - protection against one bad account/provider degrading the whole pool;
-- observability that can distinguish useful traffic from retry/fallback/hedge amplification.
+- observability that distinguishes useful traffic from retry/fallback/hedge amplification.
 
 Do not add speculative global coordination, guessed provider limits, or complex optimization machinery without production evidence that the simpler local design is insufficient.
 
@@ -36,29 +34,41 @@ Do not add speculative global coordination, guessed provider limits, or complex 
 
 Tier 2 is reserved for future adapters that expose AI capacity obtained through user membership or subscription entitlements.
 
-Do not turn Tier 2 into another generic API-key pool. Its architecture should remain ready for subscription-entitlement connectors while staying dormant/simple until a concrete implementation exists.
+Do not turn Tier 2 into another generic API-key pool. Keep it dormant and simple until a concrete subscription-entitlement adapter exists.
 
-### Tier 3 — paid API subscription capacity
+### Tier 3 — paid API capacity
 
 Tier 3 is reserved for paid API capacity used as the final protected fallback layer.
 
 Do not spend Tier 3 capacity to compensate for avoidable Tier 1 instability. Tier 3 should remain predictable, bounded, and easy to reason about.
 
-## No backward-compatibility policy
+## Clean replacement policy
 
-ai-gateway does not preserve backward compatibility with older ai-gateway versions, deprecated configuration names, retired fields, superseded internal contracts, or historical behavior.
+ai-gateway maintains one current contract. It does not preserve retired configuration names, old fields, superseded internal contracts, or historical behavior.
 
-When the current design changes:
+When the design changes:
 
 1. change the canonical implementation;
 2. update schemas, tests, documentation, examples, and deployment configuration in the same change;
 3. delete the superseded path;
-4. do not add aliases, dual-read/dual-write paths, deprecation windows, version switches, or compatibility shims solely to keep an older ai-gateway version working;
-5. use Git history, tags, Pull Requests, and `CHANGELOG.md` for history rather than carrying old behavior forward in runtime code.
+4. do not add aliases, dual-read/dual-write paths, deprecation windows, compatibility switches, or shims solely to keep retired ai-gateway behavior alive;
+5. use Git history and Pull Requests for history rather than carrying old behavior forward in runtime code.
 
-Migration guidance may explain what an operator must change at upgrade time, but the runtime must not keep the old contract alive after the change is accepted.
+Operator guidance may explain what must change, but runtime must not keep the retired contract alive after the change is accepted.
 
-This rule does **not** remove intentional compatibility with external client/upstream protocols such as OpenAI Chat/Responses and Anthropic Messages. Protocol compatibility is a current product capability, not backward compatibility with an old ai-gateway release.
+This rule does **not** remove intentional compatibility with external client/upstream protocols such as OpenAI Chat/Responses and Anthropic Messages. Protocol compatibility is a current product capability.
+
+## Release identity rule
+
+Project release numbering is human-owned only.
+
+- Source files, configuration, documentation, tests, CI and runtime endpoints must not contain, generate, infer, synchronize, bump, or validate a project release number.
+- `package.json` and lock metadata do not carry a project release number.
+- Runtime deployment identity is the Git commit SHA exposed through authenticated `/health` and used by deployment verification.
+- When a named release is desired, a human creates the Git tag or GitHub Release manually.
+- Automation must never create or advance release numbering on behalf of the operator.
+
+Dependency numbers, runtime requirements, protocol identifiers, migration sequence numbers, dates, and other technical identifiers are not project release numbering and remain explicit where required.
 
 ## Simplicity rule
 
@@ -84,7 +94,7 @@ The project should not add, unless its product scope is deliberately changed fir
 - generic workflow/orchestration platforms;
 - speculative provider abstraction layers;
 - cluster-wide quota coordination without measured need;
-- compatibility layers whose only purpose is preserving old ai-gateway behavior.
+- compatibility layers whose only purpose is preserving retired ai-gateway behavior.
 
 ## Change review rule
 
