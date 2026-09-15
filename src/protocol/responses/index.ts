@@ -31,7 +31,18 @@ export function validateOpenAIResponsesRequest(body: unknown): string | null {
   return null;
 }
 
-export function responsesErrorResponse(request: Request, env: Record<string, unknown>, status: number, message: unknown, requestId?: string, extraHeaders?: Record<string, string>): Response {
+export function responsesErrorResponse(
+  request: Request,
+  env: Record<string, unknown>,
+  status: number,
+  message: unknown,
+  requestId?: string,
+  extraHeaders?: Record<string, string>,
+  gatewayCode: string | null = null,
+): Response {
+  // Keep the OpenAI/Codex body contract untouched (`error.code === null`).
+  // Gateway-specific classification is diagnostics metadata, so expose it as
+  // an opt-in response header alongside the aggregate counters.
   const body = buildResponsesError(message, responsesErrorTypeForStatus(status));
   return new Response(JSON.stringify(body), {
     status,
@@ -40,6 +51,7 @@ export function responsesErrorResponse(request: Request, env: Record<string, unk
       'cache-control': 'no-store',
       'x-request-id': requestId || '',
       ...(extraHeaders || {}),
+      ...(gatewayCode ? { 'x-gateway-error-code': gatewayCode } : {}),
       ...shouldNotRetryHeaders(status),
       ...corsHeaders(request, env),
     },
