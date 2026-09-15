@@ -140,7 +140,10 @@ await test('real upstream SSE is not wrapped again by client lifecycle tracking'
 
 await test('model-status evidence uses successful requests, not usage reports', () => {
   const src = readFileSync(join(root, 'src', 'observability', 'token-usage-store', 'queries.ts'), 'utf8');
-  const section = src.match(/queryRecentModelEvidence[\s\S]*?(?=export|$)/)?.[0] ?? '';
+  const start = src.indexOf('export async function queryRecentModelEvidence');
+  const end = src.indexOf('export async function queryAllModelsTtftPercentiles', start);
+  assert.ok(start >= 0 && end > start, 'queryRecentModelEvidence function block must be present');
+  const section = src.slice(start, end);
   assert.ok(section.includes('requests > 0'));
   assert.ok(!section.includes('usage_reports > 0'));
 });
