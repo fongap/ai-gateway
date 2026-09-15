@@ -34,8 +34,7 @@ export type TrackOptions = {
   onUsage?: (usage: unknown) => void,
   // Physical-upstream accounting callback. Fires once for EVERY terminal stream
   // outcome and carries the best cumulative usage the upstream actually
-  // reported, or null when no usable report was seen. Callers decide whether a
-  // successful result is already covered by onUsage.
+  // reported, or null when no usable report was seen.
   onAttemptUsage?: (usage: unknown, outcome: 'success' | 'failure' | 'neutral') => void,
   interruptionChunk?: (reason: string | null, details?: { nextSequenceNumber?: number }) => Uint8Array,
   upstreamFailureReason?: () => string | null,
@@ -104,27 +103,33 @@ export function trackStreamResponse(response: Response, { idleTimeoutMs, onSucce
     if (finished) return;
     finished = true;
 
-    // Every real upstream stream closes one physical-attempt accounting slot.
-    // Usage may be partial/cumulative; only upstream-reported values are kept.
+    // A transport-level clean EOF without the protocol completion marker is
+    // still a failed upstream attempt. Resolve that semantic outcome BEFORE
+    // firing physical-attempt accounting, otherwise truncated streams would be
+    // incorrectly labelled success and skipped by the undelivered writer.
+    const failed = result === 'failure' || (result === 'success' && !completionSeen);
+    const attemptOutcome: 'success' | 'failure' | 'neutral' = result === 'neutral'
+      ? 'neutral'
+      : failed ? 'failure' : 'success';
+
     if (!attemptUsageReported) {
       attemptUsageReported = true;
-      try { onAttemptUsage?.(usageCandidate, result); } catch { /* fail-open */ }
+      try { onAttemptUsage?.(usageCandidate, attemptOutcome); } catch { /* fail-open */ }
     }
 
     // Existing delivered-response semantics remain success-only.
-    if (usageScan && !usageReported && result === 'success' && completionSeen && typeof onUsage === 'function') {
+    if (usageScan && !usageReported && attemptOutcome === 'success' && typeof onUsage === 'function') {
       usageReported = true;
       try { onUsage(usageCandidate); } catch { /* observability must never break relay */ }
     }
 
-    const failed = result === 'failure' || (result === 'success' && !completionSeen);
     if (result === 'success') {
       if (!completionSeen) onFailure();
       else onSuccess();
     } else if (result === 'failure') onFailure();
     else onNeutral();
     onStreamEnd?.(
-      result === 'neutral' ? 'neutral' : failed ? 'interrupted' : 'completed',
+      attemptOutcome === 'neutral' ? 'neutral' : failed ? 'interrupted' : 'completed',
       {
         reason: failed ? failureReason : null,
         durationMs: Date.now() - startMs,
