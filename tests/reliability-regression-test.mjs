@@ -173,13 +173,16 @@ await test('top-level errors remain route-aware', async () => {
 await test('Tier 1 explicit maxInFlight is enforced', async () => {
   const { isTier1Eligible, __resetTier1StateForTests, claimTier1Slot, releaseTier1Slot, makeTier1ReleaseToken } = await import('../src/reliability/tier1-state.ts');
   __resetTier1StateForTests();
-  const node = { id: 'cap-test', tier: 'tier-1', protocol: 'openai', surfaces: ['chat'], models: {} };
+  const node = {
+    id: 'cap-test', tier: 'tier-1', provider: 'test', protocol: 'openai',
+    surfaces: ['chat'], models: { m: 'up-m' },
+  };
   const req = { protocol: 'openai', surface: 'chat', model: 'm' };
   for (let i = 0; i < 4; i++) assert.equal(claimTier1Slot(node, Date.now(), 'm', 4), true);
   assert.equal(claimTier1Slot(node, Date.now(), 'm', 4), false);
-  assert.equal(isTier1Eligible(node, req, Date.now(), null, 4), false);
+  assert.equal(isTier1Eligible(node, req, Date.now(), new Set(['m']), 4), false);
   releaseTier1Slot(node.id, makeTier1ReleaseToken(node.id));
-  assert.equal(isTier1Eligible(node, req, Date.now(), null, 4), true);
+  assert.equal(isTier1Eligible(node, req, Date.now(), new Set(['m']), 4), true);
 });
 
 await test('token attribution uses resolved upstream model', () => {
