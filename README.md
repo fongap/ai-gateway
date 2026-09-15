@@ -2,9 +2,9 @@
 
 # AI-Gateway
 
-**Turn fragmented AI capacity into one stable endpoint.**
+**A simple, resilient AI API gateway for a household or small trusted team.**
 
-Cloudflare Workers · Multi-provider routing · Multi-key load balancing · Rate limiting · Tiered failover · OpenAI/Anthropic compatibility
+Cloudflare Workers · Multi-provider routing · Multi-key resilience · Tiered failover · OpenAI/Anthropic compatibility
 
 [**English**](README.md) · [简体中文](README.zh-CN.md)
 
@@ -14,58 +14,75 @@ Cloudflare Workers · Multi-provider routing · Multi-key load balancing · Rate
 ![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)
 ![License](https://img.shields.io/github/license/fongap/ai-gateway?label=License)
 
-[Live Dashboard](https://api.135468.xyz/) · [Quick Start](#quick-start) · [Architecture](docs/architecture/overview.md) · [Configuration](docs/operations/configuration.md) · [Deployment](docs/operations/deployment.md) · [Documentation](docs/README.md)
+[Live Dashboard](https://api.135468.xyz/) · [Quick Start](#quick-start) · [Architecture](docs/architecture/overview.md) · [Configuration](docs/operations/configuration.md) · [Product Policy](docs/governance/product-policy.md)
 
 </div>
 
-ai-gateway aggregates heterogeneous AI providers, API keys, and logical model aliases behind one predictable endpoint. It is built to maximize the useful capacity of low-cost and failure-prone resources while preserving scarce or premium capacity for higher-value workloads.
+ai-gateway turns fragmented AI capacity into one predictable API endpoint for personal, household, or small-team use. It is intentionally not a public SaaS gateway, enterprise API-management platform, billing system, or general multi-tenant control plane.
 
-## Why ai-gateway
+The design goal is simple: make free capacity dependable first, keep paid capacity protected, and avoid turning a private gateway into an infrastructure platform.
 
-Low-cost AI capacity is often fragmented across providers and accounts, constrained by real provider limits that are not always published, and uneven in latency and availability. ai-gateway treats that capacity as a pool: it spreads load across usable resources, reacts to real 429/failure evidence, and moves through configured fallback tiers under one request budget instead of relying on a single "best" key or guessed per-node limits.
+## Tier model
 
-With tiered routing, operators can place abundant or lower-cost capacity earlier in the path and keep scarcer or premium resources available for workloads that need them. The goal is not simply to pick the fastest upstream, but to improve **availability, quota utilization, and predictable recovery** across the whole pool.
+The three tiers have fixed long-term roles:
 
-**Live dashboard:** [api.135468.xyz](https://api.135468.xyz/) — current model availability, traffic, token activity, and client quick-start examples.
+| Tier | Role |
+| --- | --- |
+| **Tier 1** | Free or effectively free token capacity. This is the primary daily layer and the main reliability focus. |
+| **Tier 2** | Reserved for future membership/subscription entitlement capacity. It is not a second generic API-key pool. |
+| **Tier 3** | Paid API capacity kept as protected final fallback. |
 
-## Highlights
+Tier 1 is designed for uneven quotas and unreliable free capacity: P2C load spreading, passive TTFT, live in-flight pressure, adaptive 429 cooldown, provider-model heat, circuit/recovery handling, bounded failover, and safe streaming. The objective is **stable, efficient, safe, continuously usable free capacity**, not chasing one “best” key.
+
+Tier 2 and Tier 3 deliberately stay simpler. The project will not copy Tier 1 adaptive machinery into them unless real usage proves it necessary.
+
+## Core capabilities
 
 | Capability | Current behavior |
 | --- | --- |
-| **Multi-key resilience** | P2C selection, passive TTFT learning, live in-flight soft load, 429 cooldown and provider-model heat |
-| **Tiered failover** | Route through **Tier 1 → Tier 2 → Tier 3** under one request budget |
-| **Model-family fallback** | Bounded recovery across compatible aliases under the same request-wide `max_attempts`: `Code-Max ↔ Code-Pro → Code-Ultra`, `Max ↔ Pro → Ultra`, and one-way `Air → Pro → Max → Ultra` |
-| **Multi-provider routing** | Aggregate independent providers, keys, and logical model aliases behind one gateway |
+| **Multi-key resilience** | P2C selection, passive TTFT, live in-flight soft load, 429 cooldown and provider-model heat |
+| **Tiered failover** | Route through **Tier 1 → Tier 2 → Tier 3** under one request-wide budget |
+| **Model-family fallback** | Bounded recovery across compatible aliases without raising `max_attempts` |
 | **Protocol compatibility** | Native OpenAI Chat, OpenAI Responses, and Anthropic Messages |
 | **Safe protocol fallback** | OpenAI Chat ↔ Anthropic Messages only; **OpenAI Responses is Native Only** for protocol conversion |
-| **Streaming & observability** | Protocol-aware first-event guards, guarded SSE, sanitized diagnostics, token-usage aggregation |
-
-Designed for heterogeneous OpenAI-compatible and Anthropic-compatible upstreams, including coding-agent and Claude Code workloads.
+| **Streaming safety** | First-meaningful-output commit boundary, SSE lifecycle tracking, no transparent failover after commit |
+| **Usage observability** | Delivered-success evidence stays separate from physical upstream-attempt token usage |
 
 ## Architecture
 
-```mermaid
-flowchart TB
-    A[Client] --> B[Auth + Route]
-    B --> C[Logical model pass]
-    C --> D[Native First]
-
-    D --> E["Tier 1 → Tier 2 → Tier 3"]
-    D -. native exhausted .-> F["Chat ↔ Messages fallback"]
-    F --> E
-
-    E -. model pool exhausted .-> G[Compatible model fallback]
-    F -. exhausted .-> G
-    G -. bounded re-check .-> C
-
-    E --> H[Upstream APIs]
+```text
+Client
+  ↓
+Auth + validation
+  ↓
+Logical model
+  ↓
+Native protocol pool
+  ↓
+Tier 1 → Tier 2 → Tier 3
+  ↓
+optional Chat ↔ Messages fallback
+  ↓
+bounded compatible-model fallback
+  ↓
+Response / stream
 ```
 
-Native execution always comes first. Cross-protocol fallback and logical-model family fallback share the same logical-attempt, dispatch, hedge, and wall-clock failover budgets. Model-family fallback never raises the configured `max_attempts`. The first round widens before it deepens: a three-model family progresses `1 → 1/1 → 1/1/1 → 2/1/1 → 3/1/1 → 3/2/1` as the request budget grows from one to six attempts; `Air` follows the same hard ceiling and reaches `3/1/1/1` at six attempts. The bounded re-check round can only use request budget left unused by the first round.
+All native retries, protocol fallback, model-family fallback, and hedge work share the same request-wide attempt and wall-clock budgets. Model-family fallback never enlarges `max_attempts`.
 
-Code models never fall back into the non-Code family. `Air` may move upward to `Pro → Max → Ultra`, but `Ultra` / `Max` / `Pro` never fall back down to `Air`. A model-shaped 404 remains isolated to the failing node/model mapping; within the same authenticated family scope and request budget, fallback may continue to an authorized compatible sibling. If a complete family sweep fails only for transient capacity reasons, the gateway returns retryable `503` so coding clients can retry instead of stopping for manual continuation.
+Code aliases stay inside the Code family. `Air` may move upward to `Pro → Max → Ultra`; higher general aliases never fall back down to `Air`. A model-shaped 404 isolates the failing node/model mapping while an authorized compatible sibling may still be tried inside the same request budget.
 
-Tier 1 is intentionally biased toward **stable capacity, not a single "best" key**. Live in-flight work is a bounded soft ranking signal, affinity weakens as a key gets busy, real 429s drive cooldown/recovery, provider-model 429 heat can softly demote a hot cohort, and optional hedge work yields before primary traffic. Node `limits` are not part of the active schema and are rejected.
+The project prefers bounded local state over global coordination. Cross-PoP concurrency/quota coordination is not added unless production evidence shows the household/small-team deployment model actually needs it.
+
+## No old-version compatibility layer
+
+ai-gateway carries one current contract. When configuration, schemas, or internal contracts change, the old path is removed rather than preserved behind aliases, dual-read/dual-write logic, deprecation windows, or compatibility shims.
+
+Git history and tags preserve old versions. Runtime code does not.
+
+This rule does **not** remove intentional OpenAI/Anthropic protocol compatibility; those protocols are part of the current product surface.
+
+See [Product Policy](docs/governance/product-policy.md) for the permanent rule.
 
 ## API surface
 
@@ -98,7 +115,7 @@ powershell scripts/install.ps1
 
 For production, use the repository-driven workflow in [Deployment](docs/operations/deployment.md).
 
-## Configuration model
+## Configuration
 
 | Layer | Configuration |
 | --- | --- |
@@ -106,13 +123,13 @@ For production, use the repository-driven workflow in [Deployment](docs/operatio
 | Upstream credentials | `TIER{1,2,3}_NODES_SECRETS_01..10` |
 | Gateway access | `GATEWAY_ACCESS_KEY_{AIR,PRO,MAX,ULTRA,AGENT}` |
 | Model access | `GATEWAY_ACCESS_MODELS_{AIR,PRO,MAX,ULTRA,AGENT}` |
-| Model / request policy | `MODELS_CONFIG` · `POLICIES_CONFIG` |
+| Model/request policy | `MODELS_CONFIG` · `POLICIES_CONFIG` |
 
-Credentials bind by **Tier + node id**; Config and Secret shard suffixes are independent partitions. Gateway access is fail-closed: a configured access key with a missing or empty model allowlist grants no model access.
+Credentials bind by **Tier + node id**; Config and Secret shard suffixes are independent partitions and do not need matching suffixes. Gateway access is fail-closed: a configured Group Key with a missing or empty corresponding `GATEWAY_ACCESS_MODELS_<GROUP>` grants no model access.
 
-Node `limits` are not part of the active schema and are rejected. Runtime capacity is learned from live in-flight pressure, 429/cooldown, circuit state, and latency signals instead of operator-guessed per-node ceilings.
+Node `limits` are not part of the active schema and are rejected. Runtime capacity is learned from real in-flight pressure, 429/cooldown, circuit state, and latency signals rather than guessed per-node ceilings.
 
-See [Configuration](docs/operations/configuration.md) for the complete node schema, runtime variables, model-family and protocol fallback settings, and Cloudflare bindings.
+See [Configuration](docs/operations/configuration.md) for the current schema and runtime variables.
 
 ## Production flow
 
@@ -125,11 +142,11 @@ squash merge to main
     ↓
 validate-deploy
     ↓
+D1 migrations
+    ↓
 Worker deploy
     ↓
 remote verification
-    ↓
-success / automatic Worker rollback
 ```
 
 Documentation-only commits are intentionally excluded from Worker redeployment.
@@ -138,16 +155,17 @@ Documentation-only commits are intentionally excluded from Worker redeployment.
 
 | Area | Purpose |
 | --- | --- |
-| [Architecture](docs/architecture/overview.md) | Durable system boundaries, routing, protocol and reliability contracts |
-| [Operations](docs/operations/configuration.md) | Configuration, deployment, troubleshooting and provider discovery |
-| [Governance](docs/governance/README.md) | Development, quality, dependency, version/tag and documentation policy |
+| [Product Policy](docs/governance/product-policy.md) | Permanent scope, tier roles, simplicity and clean-replacement rules |
+| [Architecture](docs/architecture/overview.md) | Runtime boundaries, routing, protocol and reliability contracts |
+| [Operations](docs/operations/configuration.md) | Configuration, deployment and troubleshooting |
+| [Governance](docs/governance/README.md) | Development, quality, dependency, version/tag and documentation rules |
 | [CHANGELOG](CHANGELOG.md) | Version history |
 
-English is the canonical documentation language. The [Simplified Chinese README](README.zh-CN.md) is maintained as a reader-facing translation; executable behavior, tests, schemas and the English canonical documentation remain the source of truth.
+English is the canonical documentation language. The [Simplified Chinese README](README.zh-CN.md) is a reader-facing translation.
 
 ## Security
 
-Never place upstream credentials in node configuration or public logs. See [SECURITY.md](SECURITY.md) for secret handling and vulnerability reporting.
+Never place upstream credentials in node configuration or public logs. See [SECURITY.md](SECURITY.md).
 
 ## License
 
