@@ -31,8 +31,16 @@ export function validateOpenAIResponsesRequest(body: unknown): string | null {
   return null;
 }
 
-export function responsesErrorResponse(request: Request, env: Record<string, unknown>, status: number, message: unknown, requestId?: string, extraHeaders?: Record<string, string>): Response {
-  const body = buildResponsesError(message, responsesErrorTypeForStatus(status));
+export function responsesErrorResponse(
+  request: Request,
+  env: Record<string, unknown>,
+  status: number,
+  message: unknown,
+  requestId?: string,
+  extraHeaders?: Record<string, string>,
+  errorCode: string | null = null,
+): Response {
+  const body = buildResponsesError(message, responsesErrorTypeForStatus(status), errorCode);
   return new Response(JSON.stringify(body), {
     status,
     headers: {
