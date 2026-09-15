@@ -12,6 +12,11 @@
 //   fast           - speed-first: maxAttempts=1, hedge disabled
 //   long-reasoning - extended first-event: maxAttempts=3, hedge disabled, firstEventTimeoutMs=60000
 //
+// Tier 1 concurrency is intentionally unbounded by default. Live in-flight
+// work remains a soft ranking signal; `max_in_flight` is an explicit operator
+// override for environments with a known per-account ceiling. 0/null disables
+// the ceiling.
+//
 // Hedging is controlled per policy: hedge.enabled must be true for hedging to
 // activate. default enables hedge for the tiers listed in hedge.tiers
 // (currently ['tier1']); fast and long-reasoning disable it.
@@ -35,7 +40,8 @@ type HedgePolicy = { enabled?: boolean, delayMs?: number, tiers?: Array<'tier1' 
 type TierAttempts = { tier1?: number, tier2?: number, tier3?: number } | null;
 
 // Built-in policies are the single source of truth. default enables hedging
-// for Tier 1 only; fast and long-reasoning disable it.
+// for Tier 1 only; fast and long-reasoning disable it. None guesses a hard
+// per-account concurrency ceiling.
 const BUILTIN_POLICIES: Record<string, PolicyConfig> = Object.freeze({
   default: {
     maxAttempts: 5,
@@ -43,7 +49,7 @@ const BUILTIN_POLICIES: Record<string, PolicyConfig> = Object.freeze({
     hedge: { enabled: true, tiers: ['tier1'] },
     firstEventTimeoutMs: null,
     budgetSplit: null,
-    maxInFlight: 4,
+    maxInFlight: null,
   },
   fast: {
     maxAttempts: 1,
@@ -51,7 +57,7 @@ const BUILTIN_POLICIES: Record<string, PolicyConfig> = Object.freeze({
     hedge: { enabled: false },
     firstEventTimeoutMs: null,
     budgetSplit: null,
-    maxInFlight: 4,
+    maxInFlight: null,
   },
   'long-reasoning': {
     maxAttempts: 3,
@@ -59,7 +65,7 @@ const BUILTIN_POLICIES: Record<string, PolicyConfig> = Object.freeze({
     hedge: { enabled: false },
     firstEventTimeoutMs: 60_000,
     budgetSplit: null,
-    maxInFlight: 4,
+    maxInFlight: null,
   },
 });
 
@@ -119,7 +125,7 @@ function analyzePolicies(env: Record<string, unknown>): { policies: Record<strin
           errors.push(`POLICIES_CONFIG: "${key}": first_event_timeout_ms (${firstEventTimeoutMs}) exceeds FAILOVER_BUDGET_MS (${getLimits(env).failoverBudgetMs})`);
         }
         const budgetSplit = cfg.budget_split === undefined ? (base?.budgetSplit ?? null) : parseBudgetSplit(cfg.budget_split, key, errors);
-        const maxInFlight = cfg.max_in_flight === undefined ? (base?.maxInFlight ?? 4) : parseMaxInFlight(cfg.max_in_flight, key, errors);
+        const maxInFlight = cfg.max_in_flight === undefined ? (base?.maxInFlight ?? null) : parseMaxInFlight(cfg.max_in_flight, key, errors);
         let attempts: number;
         let maxAttemptsValid = true;
         if (cfg.max_attempts !== undefined) {
@@ -240,13 +246,14 @@ function parseFirstEventTimeoutMs(value: unknown, policyName: string, errors: st
 // `budget_split` controls only budget that remains after explicit
 // `tier_attempts` are reserved. `even` keeps Tier precedence; `weighted`
 // Policy-level maxInFlight parsing. A positive integer sets the per-account
-// concurrency ceiling; 0 or null disables the limit.
+// concurrency ceiling; 0 or null disables the limit. The default is null:
+// capacity is learned from live pressure and upstream feedback, not guessed.
 function parseMaxInFlight(value: unknown, policyName: string, errors: string[]): number | null {
-  if (value === undefined || value === null) return 4;
+  if (value === undefined || value === null) return null;
   const n = typeof value === 'number' ? value : (typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN);
   if (!Number.isInteger(n) || n < 0) {
     errors.push(`POLICIES_CONFIG: "${policyName}": max_in_flight must be a non-negative integer`);
-    return 4;
+    return null;
   }
   return n === 0 ? null : n;
 }
