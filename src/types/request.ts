@@ -16,6 +16,9 @@ export type RequestDescriptor = {
   model: string,
   protocol: Protocol,
   surface: Surface,
+  /** Optional request priority (1=lowest, 5=highest). Derived from the
+   *  access key group during preflight. When absent, treated as normal (3). */
+  priority?: number,
 };
 
 /**
@@ -81,7 +84,6 @@ export type LoopState = {
   nodes: ReadonlyArray<RuntimeNode>,
   /** Preflight-computed known-model catalog shared by downstream call sites. */
   knownModels?: ReadonlySet<string>,
-  tier1ExhaustionReason?: string,
 };
 
 /**

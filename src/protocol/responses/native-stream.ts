@@ -56,9 +56,11 @@ export async function collectResponsesObject(upstream: Response, clientSignal: A
     }
     if ((json?.type === 'response.completed' || json?.type === 'response.incomplete') && json.response) {
       collected = json.response;
+      semanticEof = true;
     }
   });
 
+  let semanticEof = false;
   try {
     for (;;) {
       if (clientSignal?.aborted) await fail('Client aborted during stream assembly.');
@@ -68,6 +70,14 @@ export async function collectResponsesObject(upstream: Response, clientSignal: A
       scanner.push(decoder.decode(value, { stream: true }));
       if (receivedBytes > MAX_COLLECTED_BYTES) {
         await fail('Assembled response exceeded gateway memory safety limit. Use stream:true.');
+      }
+      // Semantic EOF: response.completed / response.incomplete / response.failed
+      // observed — the protocol stream is logically finished. Cancel the reader
+      // instead of waiting for HTTP EOF so a provider that leaves the connection
+      // open doesn't stall the failover budget.
+      if (semanticEof) {
+        await reader.cancel().catch(() => {});
+        break;
       }
     }
     scanner.flush();

@@ -215,7 +215,7 @@ async function runTierLoop(loopCtx: LoopContext, reqDescriptor: RoutableRequest,
     tier1Affinity, tier1EvaluateAffinity, tier1Rng, tier1Session,
     knownModels,
   } = loopCtx;
-  const tierCaps = overrideTierCaps ?? computeTierCaps(tiers, reqDescriptor, state.attempted, policy, knownModels);
+  const tierCaps = overrideTierCaps ?? computeTierCaps(tiers, reqDescriptor, state.attempted, policy, knownModels, policy.maxInFlight ?? null);
   for (const tierNumber of TIER_ORDER) {
     const cap = tierCaps[tierNumber] ?? 0;
     let usedInTier = 0;
@@ -227,7 +227,7 @@ async function runTierLoop(loopCtx: LoopContext, reqDescriptor: RoutableRequest,
       }
       const remainingDispatchableAttempts = countRemainingDispatchableAttempts(
         tiers, reqDescriptor, state.attempted, tierCaps,
-        tierNumber, usedInTier, policy.maxAttempts - state.logicalAttempts, knownModels,
+        tierNumber, usedInTier, policy.maxAttempts - state.logicalAttempts, knownModels, policy.maxInFlight ?? null,
       );
       const pick = pickForTier(tierNumber, tiers[tierNumber], reqDescriptor, state.attempted, {
         affinityAccountId: tierNumber === 1 ? tier1Affinity : null,

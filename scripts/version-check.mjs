@@ -80,6 +80,12 @@ const hasVersionSection = new RegExp(`## ${version} - \\d{4}-\\d{2}-\\d{2}`).tes
 if (!hasVersionSection) {
   fail(`CHANGELOG.md must have a ## ${version} - YYYY-MM-DD section matching package.json`);
 }
+// The first versioned section in CHANGELOG must match package.json version.
+// This prevents stale entries (e.g. CHANGELOG 1.3.6 while package.json is 1.3.5).
+const firstVersionMatch = changelogContent.match(/## (\d+\.\d+\.\d+) - \d{4}-\d{2}-\d{2}/);
+if (firstVersionMatch && firstVersionMatch[1] !== version) {
+  fail(`CHANGELOG.md first versioned section is ${firstVersionMatch[1]} but package.json.version is ${version}`);
+}
 // Must not have stale v1.2.7 "never released" narrative.
 const hasStale127 = /1\.2\.7.*从未发版|从未.*1\.2\.7|1\.2\.7.*not yet released/i.test(changelogContent);
 if (hasStale127) {

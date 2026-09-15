@@ -150,9 +150,11 @@ export async function preflight(request: Request, env: Record<string, unknown>, 
   // Per-key in-isolate RPM cap. The fingerprint is the credential GROUP
   // label (e.g. "AIR", "PRO") — never the raw key. A cap of
   // 0 means the limiter is disabled. Diagnostic endpoints (health /
-  // metrics / version) are exempt: they carry no upstream cost and
-  // are useful for an operator to monitor the cap itself.
-  if (route !== 'version' && route !== 'health' && route !== 'metrics') {
+  // metrics / version) and zero-cost local routes (models, count_tokens)
+  // are exempt: they carry no upstream cost and are useful for an operator
+  // to monitor the cap itself.
+  if (route !== 'version' && route !== 'health' && route !== 'metrics'
+      && route !== 'models' && route !== 'anthropic_count_tokens') {
     const limits = getLimits(env);
     // `in` narrowing keeps this correct under both the loose and strict
     // typecheck gates: only the authorized variants carry `group`.
@@ -304,10 +306,17 @@ export async function preflight(request: Request, env: Record<string, unknown>, 
   // Only the three dispatch routes reach this point (GET surfaces and
   // anthropic_count_tokens return earlier), so the route narrow below is
   // runtime-proven, not a guess.
+  // Derive priority from the access key group for Tier 1 P2C scoring.
+  // Higher groups get higher priority (5=highest). Default is 3 (normal).
+  const GROUP_PRIORITY: Record<string, number> = { AIR: 2, PRO: 3, MAX: 4, ULTRA: 5, AGENT: 3 };
+  const group = ('group' in authResult ? authResult.group : null) as string | null;
+  const priority = (group ? GROUP_PRIORITY[group] : null) ?? 3;
+
   const requestDescriptor: RequestDescriptor = {
     route: route as 'openai_chat' | 'openai_responses' | 'anthropic_messages',
     model: requestedModel,
     ...ROUTE_PROTOCOL_SURFACE[route],
+    priority,
   };
 
   // Preflight and internal fallback share the same key-scoped callable catalog.

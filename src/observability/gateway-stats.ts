@@ -67,6 +67,10 @@ export function isCountedRoute(method: string, pathname: string): boolean {
 
 // Wrap a response so its completion updates the client counters, including
 // streaming responses that finish after the handler has returned.
+// The wrapper is lightweight: it only tracks close/cancel lifecycle for
+// gateway-level stats — it does NOT parse SSE, find completion markers,
+// rewrite model fields, or scan usage. Node-layer stream tracking
+// (makeNodeStreamTrack) handles all protocol-level concerns.
 export function trackClientResponse(response: Response): Response {
   const ok = response.status < 400;
   const streaming = ok && isOpenAIStreamingResponse(response) && response.body;

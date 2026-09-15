@@ -51,8 +51,9 @@ export function recordTier1NonStreamTtft(c: AttemptContext, node: RuntimeNode, d
 //      and never change the HTTP response, fallback, node health, circuit
 //      breaker, scheduler, concurrency count or stream completion.
 export function recordTokens(c: AttemptContext, node: RuntimeNode, usage: unknown): void {
-  recordTokenUsage({ model: c.requestedModel, tier: node.tier, provider: node.provider, nodeId: node.id, usage });
-  scheduleD1TokenPersist(c, usage);
+  const effectiveModel = upstreamModelOf(node, c.requestedModel);
+  recordTokenUsage({ model: effectiveModel, tier: node.tier, provider: node.provider, nodeId: node.id, usage });
+  scheduleD1TokenPersist(c, usage, effectiveModel);
 }
 
 // Fire the D1 persistence WITHOUT touching the request path. Wrapped so that:
@@ -64,8 +65,9 @@ export function recordTokens(c: AttemptContext, node: RuntimeNode, usage: unknow
 //
 // TTFT is passed only for successful requests with meaningful output.
 // Failures MUST NOT pass a TTFT value — they enter failure statistics only.
-function scheduleD1TokenPersist(c: AttemptContext, usage: unknown): void {
-  const task = persistTokenUsage(c.env, usage, Date.now(), c.requestedModel, c.ttftMs ?? null).catch((err) => {
+function scheduleD1TokenPersist(c: AttemptContext, usage: unknown, effectiveModel?: string): void {
+  const modelForPersist = effectiveModel ?? c.requestedModel;
+  const task = persistTokenUsage(c.env, usage, Date.now(), modelForPersist, c.ttftMs ?? null).catch((err) => {
     const scope = err?.scope === 'per-model' ? 'per-model' : 'global';
     try { c.logger?.error?.(`token-stats D1 ${scope} persist failed: ${err?.message || err}`); } catch { /* never throw */ }
   });

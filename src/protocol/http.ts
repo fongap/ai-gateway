@@ -126,7 +126,7 @@ export async function readBodyTextWithLimit(request: Request, maxBytes: number):
   return text + decoder.decode();
 }
 
-export async function safeReadErrorBody(response: Response, maxBytes: number = 4096): Promise<string> {
+export async function safeReadErrorBody(response: Response, maxBytes: number = 4096, deadlineMs?: number | null): Promise<string> {
   try {
     const ct = (response.headers.get('content-type') || '').toLowerCase();
     if (ct.includes('text/event-stream')) return '[streaming body skipped]';
@@ -134,14 +134,28 @@ export async function safeReadErrorBody(response: Response, maxBytes: number = 4
     if (!reader) return '';
     const chunks: Uint8Array[] = [];
     let total = 0;
+    const deadline = deadlineMs && deadlineMs > 0 ? deadlineMs : null;
     while (total < maxBytes) {
-      const { done, value } = await reader.read();
-      if (done) break;
+      let result: ReadableStreamReadResult<Uint8Array>;
+      if (deadline) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) { await reader.cancel().catch(() => {}); return ''; }
+        let timerId: ReturnType<typeof setTimeout> | undefined;
+        const timeoutP = new Promise<null>((resolve) => { timerId = setTimeout(() => resolve(null), remaining); });
+        try {
+          const raced = await Promise.race([reader.read().then((v) => ({ ok: true as const, value: v })), timeoutP.then(() => ({ ok: false as const }))]);
+          if (!raced.ok) { await reader.cancel().catch(() => {}); return ''; }
+          result = raced.value;
+        } finally { clearTimeout(timerId); }
+      } else {
+        result = await reader.read();
+      }
+      if (result.done) break;
       const remaining = maxBytes - total;
-      const slice = value.byteLength > remaining ? value.subarray(0, remaining) : value;
+      const slice = result.value.byteLength > remaining ? result.value.subarray(0, remaining) : result.value;
       chunks.push(slice);
       total += slice.byteLength;
-      if (slice.byteLength < value.byteLength) break;
+      if (slice.byteLength < result.value.byteLength) break;
     }
     await reader.cancel().catch(() => {});
     const combined = new Uint8Array(total);

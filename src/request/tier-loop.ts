@@ -26,8 +26,9 @@ function tier1Dispatchable(
   attempted: Set<string>,
   now: number,
   knownModels: ReadonlySet<string>,
+  maxInFlight?: number | null,
 ): boolean {
-  return tier1HasDispatchableNode(nodes, req, attempted, now, knownModels);
+  return tier1HasDispatchableNode(nodes, req, attempted, now, knownModels, maxInFlight);
 }
 
 function tier1LiveCount(
@@ -36,8 +37,9 @@ function tier1LiveCount(
   attempted: Set<string>,
   now: number,
   knownModels: ReadonlySet<string>,
+  maxInFlight?: number | null,
 ): number {
-  return tier1CountDispatchableNodes(nodes, req, attempted, now, knownModels);
+  return tier1CountDispatchableNodes(nodes, req, attempted, now, knownModels, maxInFlight);
 }
 export type TierPickResult = {
   node?: RuntimeNode,
@@ -119,13 +121,13 @@ export function makeTier1Rng(env: Record<string, unknown>): () => number {
 //     dispatchable node count.
 // Budget is a per-tier upper bound; the shared state.maxAttempts still caps the
 // request's total upstream attempts, and FAILOVER_BUDGET_MS caps wall-clock.
-export function computeTierCaps(tiers: Record<number, RuntimeNode[]>, reqDescriptor: RoutableRequest, attempted: Set<string>, policy: PolicyConfig, knownModels: ReadonlySet<string>): Record<number, number> {
+export function computeTierCaps(tiers: Record<number, RuntimeNode[]>, reqDescriptor: RoutableRequest, attempted: Set<string>, policy: PolicyConfig, knownModels: ReadonlySet<string>, maxInFlight?: number | null): Record<number, number> {
   const now = Date.now();
   const caps: Record<number, number> = {};
   for (const t of TIER_ORDER) caps[t] = 0;
   const dispatchable = TIER_ORDER.filter((t) =>
     t === 1
-      ? tier1Dispatchable(tiers[t], reqDescriptor, attempted, now, knownModels)
+      ? tier1Dispatchable(tiers[t], reqDescriptor, attempted, now, knownModels, maxInFlight)
       : tierHasDispatchableNode(tiers[t], reqDescriptor, attempted, now, knownModels));
   if (dispatchable.length === 0) return caps;
 
@@ -144,7 +146,7 @@ export function computeTierCaps(tiers: Record<number, RuntimeNode[]>, reqDescrip
 
   const liveCount = (tierNumber: number): number => {
     return tierNumber === 1
-      ? tier1LiveCount(tiers[tierNumber], reqDescriptor, attempted, now, knownModels)
+      ? tier1LiveCount(tiers[tierNumber], reqDescriptor, attempted, now, knownModels, maxInFlight)
       : countDispatchableNodes(tiers[tierNumber], reqDescriptor, attempted, now, knownModels);
   };
 
@@ -207,7 +209,7 @@ export function computeTierCaps(tiers: Record<number, RuntimeNode[]>, reqDescrip
 // applying live availability, per-tier caps, strict tier order, and the shared
 // policy cap. This is recomputed before every attempt because a pre-dispatch
 // deny or a concurrent request can change the live candidate set.
-export function countRemainingDispatchableAttempts(tiers: Record<number, RuntimeNode[]>, reqDescriptor: RoutableRequest, attempted: Set<string>, tierCaps: Record<number, number>, currentTier: Tier, usedInTier: number, sharedRemaining: number, knownModels: ReadonlySet<string>): number {
+export function countRemainingDispatchableAttempts(tiers: Record<number, RuntimeNode[]>, reqDescriptor: RoutableRequest, attempted: Set<string>, tierCaps: Record<number, number>, currentTier: Tier, usedInTier: number, sharedRemaining: number, knownModels: ReadonlySet<string>, maxInFlight?: number | null): number {
   const now = Date.now();
   let total = 0;
   let currentReached = false;
@@ -218,7 +220,7 @@ export function countRemainingDispatchableAttempts(tiers: Record<number, Runtime
       (tierCaps[tierNumber] ?? 0) - (tierNumber === currentTier ? usedInTier : 0));
     if (capRemaining === 0) continue;
     const live = tierNumber === 1
-      ? tier1LiveCount(tiers[tierNumber], reqDescriptor, attempted, now, knownModels)
+      ? tier1LiveCount(tiers[tierNumber], reqDescriptor, attempted, now, knownModels, maxInFlight)
       : countDispatchableNodes(tiers[tierNumber], reqDescriptor, attempted, now, knownModels);
     total += Math.min(capRemaining, live);
   }

@@ -38,8 +38,9 @@ export async function collectOpenAIStreamObject(upstream: Response, clientSignal
     throw new Error(message);
   };
 
+  let semanticEof = false;
   const scanner = createSseScanner((data) => {
-    if (!data || data === '[DONE]') return;
+    if (!data || data === '[DONE]') { semanticEof = true; return; }
     let json;
     try {
       json = JSON.parse(data);
@@ -80,7 +81,10 @@ export async function collectOpenAIStreamObject(upstream: Response, clientSignal
         if (tc.function?.name) { existing.function.name += tc.function.name; countBytes(tc.function.name); }
         if (tc.function?.arguments) { existing.function.arguments += tc.function.arguments; countBytes(tc.function.arguments); }
       }
-      if (choice.finish_reason !== undefined && choice.finish_reason !== null) state.finish_reason = choice.finish_reason;
+      if (choice.finish_reason !== undefined && choice.finish_reason !== null) {
+        state.finish_reason = choice.finish_reason;
+        semanticEof = true;
+      }
     }
   });
 
@@ -92,6 +96,14 @@ export async function collectOpenAIStreamObject(upstream: Response, clientSignal
       scanner.push(decoder.decode(value, { stream: true }));
       if (currentBytes > MAX_ASSEMBLED_BYTES) {
         await fail('Assembled response exceeded gateway memory safety limit. Use stream:true.');
+      }
+      // Semantic EOF: [DONE] or finish_reason observed — the protocol stream
+      // is logically finished. Cancel the reader instead of waiting for HTTP
+      // EOF so a provider that leaves the connection open doesn't stall the
+      // failover budget.
+      if (semanticEof) {
+        await reader.cancel().catch(() => {});
+        break;
       }
     }
     scanner.flush();

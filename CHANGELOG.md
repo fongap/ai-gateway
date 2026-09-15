@@ -2,6 +2,24 @@
 
 This file records concise release-level changes. Current architecture and operating rules live in `docs/`.
 
+## 1.3.7 - 2026-09-15
+
+### Fixed
+
+- **P1 Post-header deadline for plain JSON**: `safeReadErrorBody` now accepts an absolute deadline (`attemptDeadlineMs`) and races every `reader.read()` against it; a provider that returns HTTP 200 headers then stalls the JSON body can no longer exceed the failover budget.
+- **P1 SSE semantic EOF for stream collectors**: `collectOpenAIStreamObject`, `collectAnthropicMessageObject`, and `collectResponsesObject` now break the read loop and cancel the upstream reader when the protocol terminal event (`[DONE]` / finish_reason, `message_stop`, `response.completed` / `response.incomplete`) is observed — no longer waiting for HTTP EOF.
+- **P1 Cross-protocol valid response gate**: Anthropic→OpenAI Chat and OpenAI Chat→Anthropic non-stream fallback paths now validate the upstream response for meaningful output (`isAnthropicMessageMeaningful` / `isOpenAIChatCompletionMeaningful`) before conversion; empty responses rotate instead of being converted and counted as success.
+- **P1 Refusal semantics**: `isOpenAIChatCompletionMeaningful` and `isOpenAIResponsesObjectMeaningful` now recognize legitimate refusal output as valid model output; refusal-only responses no longer trigger empty-response rotation.
+- **P1 Cross-protocol precommit replay**: Anthropic→OpenAI stream converter now explicitly skips `thinking` / `redacted_thinking` content blocks and `thinking_delta` / `signature_delta` events instead of throwing `ConversionError`; reasoning-only pre-commit events are no longer replayed into converters that cannot express them.
+- **P1 GatewayStats lifecycle**: removed double `activeRequests++` from `makeNodeStreamTrack.onStreamStart`; restored client-layer `gatewayStats` tracking in `makeNodeStreamTrack` so streaming paths correctly decrement `activeRequests` and count `successes`/`cancellations` — without re-parsing SSE or re-finding completion markers.
+- **P1/P2 Model Status success evidence**: `queryRecentModelEvidence` now uses `requests > 0` (successful request count) instead of `usage_reports > 0`; a model that succeeded without reporting usage is no longer marked as having no recent success evidence.
+
+### Changed
+
+- **P2 409 Conflict classification**: HTTP 409 now defaults to `action: 'stop'` instead of `action: 'rotate'`; rotating to another node is unlikely to resolve a conflict. 408/425 remain transient rotate.
+- **P2 Anthropic collector memory counting**: `collectAnthropicMessageObject` now uses only raw received bytes (`value.byteLength`) for the 2 MiB assembly guard; removed double-counting of content bytes (text/thinking/partial_json) that inflated the counter.
+- **Version governance**: bumped to 1.3.7 across `package.json`, `src/config/version.ts`, `CHANGELOG.md`; `version-check.mjs` now verifies the first versioned section in CHANGELOG matches `package.json.version`.
+- Removed `commit-msg.txt` from repository root.
 ## 1.3.6 - 2026-09-14
 
 ### Fixed

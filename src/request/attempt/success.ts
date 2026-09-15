@@ -304,7 +304,7 @@ const isRealOutput = c.conversionContext
         // reached the client, so failures here still rotate.
         data = await collectResponsesObject(upstream, request.signal, c.attemptDeadlineMs);
       } else {
-        data = JSON.parse(await safeReadErrorBody(upstream, 2 * 1024 * 1024));
+        data = JSON.parse(await safeReadErrorBody(upstream, 2 * 1024 * 1024, c.attemptDeadlineMs));
       }
       if (data && typeof data === 'object' && data.error) {
         const status = Number(data.error?.status) >= 400 && Number(data.error?.status) < 600
@@ -366,7 +366,7 @@ const isRealOutput = c.conversionContext
         // the OpenAI Chat shape and deliver.
         data = await collectAnthropicMessageObject(upstream, request.signal, c.attemptDeadlineMs);
       } else {
-        const text = await safeReadErrorBody(upstream, 2 * 1024 * 1024);
+        const text = await safeReadErrorBody(upstream, 2 * 1024 * 1024, c.attemptDeadlineMs);
         data = JSON.parse(text);
       }
       if (data && typeof data === 'object' && (data.type === 'error' || data.error)) {
@@ -382,6 +382,15 @@ const isRealOutput = c.conversionContext
           // body never reaches the client.
           return { response: buildClientErrorResponse(request, env, route, requestId, requestedModel, status, JSON.stringify(data), state, exposeUpstreamInfo) };
         }
+        return { rotate: true, kind: classification.kind };
+      }
+      // Valid response gate: HTTP 200 + no embedded error does NOT mean
+      // success. The Anthropic response must carry meaningful output before
+      // converting and crediting the node. Empty content [] or refusal-only
+      // without text/tool_use must rotate.
+      if (!isAnthropicMessageMeaningful(data)) {
+        const classification = classifyEmptyResponse();
+        recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: 'cross-protocol Anthropic message carried no meaningful output' });
         return { rotate: true, kind: classification.kind };
       }
       const converted = convertAnthropicResponseToOpenAIChat(data);
@@ -459,7 +468,7 @@ const isRealOutput = c.conversionContext
     // JSON bodies (sometimes with an embedded error object) even for
     // stream:true requests. Handle explicitly instead of feeding the client
     // a body it cannot parse as a stream.
-    const text = await safeReadErrorBody(upstream, 2 * 1024 * 1024);
+    const text = await safeReadErrorBody(upstream, 2 * 1024 * 1024, c.attemptDeadlineMs);
     let data: (Record<string, unknown> & { error?: { status?: unknown, message?: string } }) | null;
     try {
       data = JSON.parse(text);
@@ -515,7 +524,7 @@ const isRealOutput = c.conversionContext
         // the Anthropic message shape and deliver.
         data = await collectOpenAIStreamObject(upstream, request.signal, c.attemptDeadlineMs);
       } else {
-        const text = await safeReadErrorBody(upstream, 2 * 1024 * 1024);
+        const text = await safeReadErrorBody(upstream, 2 * 1024 * 1024, c.attemptDeadlineMs);
         data = JSON.parse(text);
       }
       if (data && typeof data === 'object' && data.error) {
@@ -528,6 +537,15 @@ const isRealOutput = c.conversionContext
         if (classification.action === 'stop') {
           return { response: buildClientErrorResponse(request, env, route, requestId, requestedModel, status, JSON.stringify(data), state, exposeUpstreamInfo) };
         }
+        return { rotate: true, kind: classification.kind };
+      }
+      // Valid response gate: HTTP 200 + no embedded error does NOT mean
+      // success. The OpenAI Chat response must carry meaningful output before
+      // converting and crediting the node. Empty choices or empty content must
+      // rotate.
+      if (!isOpenAIChatCompletionMeaningful(data)) {
+        const classification = classifyEmptyResponse();
+        recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: 'cross-protocol OpenAI Chat completion carried no meaningful output' });
         return { rotate: true, kind: classification.kind };
       }
       const converted = convertOpenAIToAnthropicResponse(data);
@@ -561,7 +579,7 @@ const isRealOutput = c.conversionContext
     } else {
       // Use bounded read (2 MiB, consistent with assemble.js MAX_ASSEMBLED_BYTES
       // and the first-event guard pre-byte limit) instead of unbounded text().
-      const text = await safeReadErrorBody(upstream, 2 * 1024 * 1024);
+      const text = await safeReadErrorBody(upstream, 2 * 1024 * 1024, c.attemptDeadlineMs);
       data = JSON.parse(text);
     }
     if (data && typeof data === 'object' && (data.type === 'error' || data.error)) {

@@ -260,6 +260,14 @@ function processAnthropicEvent(state: State, controller: ReadableStreamDefaultCo
         startToolBlock(state, controller, anthropicIndex, toolId, toolName);
       } else if (isRecord(block) && block.type === 'text') {
         openTextBlock(state, controller, Number(evt.index ?? 0) || 0);
+      } else if (isRecord(block) && (block.type === 'thinking' || block.type === 'redacted_thinking')) {
+        // Thinking blocks are not convertible to OpenAI Chat. Skip silently:
+        // they are valid Anthropic output but have no OpenAI Chat equivalent.
+        // The first-event guard uses isAnthropicNativeRealOutputForConversion
+        // to prevent committing on thinking-only deltas, so thinking events
+        // only appear in the pre-commit replay buffer. The converter must not
+        // throw on them — just skip.
+        return;
       } else throw new ConversionError('conversion_not_supported: unsupported Anthropic content block');
       return;
     }
@@ -290,6 +298,11 @@ function processAnthropicEvent(state: State, controller: ReadableStreamDefaultCo
         if (!partial) return;
         appendToolArguments(state, controller, anthropicIndex, partial);
         state.realOutputEmitted = true;
+        return;
+      }
+      if (delta.type === 'thinking_delta' || delta.type === 'signature_delta') {
+        // Thinking/signature deltas are not convertible to OpenAI Chat.
+        // Skip silently — same rationale as thinking content_block_start.
         return;
       }
       throw new ConversionError('conversion_not_supported: unsupported Anthropic content delta');
