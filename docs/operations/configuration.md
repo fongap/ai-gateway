@@ -88,7 +88,7 @@ Example Anthropic node:
 - OpenAI surfaces are `chat_completions` and/or `responses`.
 - Anthropic runtime node surface is `messages`.
 - `base_url` must be an absolute HTTPS URL unless insecure HTTP is explicitly enabled.
-- `priority` defaults to `100`; it is used by Tier 2/3 and ignored by Tier 1 P2C.
+- `priority` defaults to `100`; it is used by Tier 2/3 and ignored as a static node score in Tier 1 P2C.
 - `models` maps logical model name → provider-facing model name. An empty object is the runtime wildcard form, bounded by the gateway's known-model/catalog rules where applicable.
 - `limits` is not part of the active node schema and is rejected if present. Provider capacity is learned from runtime evidence rather than configured node RPM/concurrency ceilings.
 - unknown active node fields are rejected instead of silently ignored.
@@ -167,7 +167,7 @@ Node capacity is no longer defined by guessed `limits.concurrency` or `limits.rp
 - Tier 1 provider+key adaptive 429 cooldown follows `15s → 30s → 1m → 2m → 5m → 15m → 30m → 60m`, advancing only when a post-cooldown recovery request still returns 429;
 - upstream `Retry-After` is a minimum floor and can extend, but never shorten, the learned adaptive cooldown;
 - repeated provider-model 429 evidence adds bounded soft heat without removing the last usable node;
-- TTFT, affinity and circuit state continue to influence routing and recovery;
+- TTFT, affinity, request priority, circuit state and recent transient failure evidence can influence Tier 1 P2C ranking;
 - optional hedge work is suppressed before primary traffic when the pool is already busy.
 
 An explicit `max_in_flight` is not a cluster-wide Provider quota. Cloudflare may run multiple isolates, so this option should be used only as a local safety guard when an upstream concurrency contract is known; it must not be treated as learned global capacity.
@@ -195,6 +195,8 @@ Additional rules:
 - `Max / Pro / Ultra` stay inside the general family;
 - `Air` moves only upward through `Air → Pro → Max → Ultra` and never falls back down to Air after moving upward;
 - the re-check round never creates a fresh attempt or wall-clock budget;
+- request-local failure-domain deduplication treats the same configured credential + same provider-facing upstream model as one spent execution path across aliases;
+- spent duplicate domains neither consume another logical attempt nor reserve future failover time;
 - `model_missing` remains a mapping/capability fact for the failing node/model pair, but the request may continue to an authorized compatible sibling within the same bounded family budget;
 - when a bounded compatible-family plan exhausts its allowed attempts and every observed failure is transient, the gateway returns retryable `503`; this means the request's attempt budget was exhausted, **not** that every compatible account in the deployment was proven unavailable.
 
@@ -222,10 +224,20 @@ Models without a configured compatible sibling keep their existing policy budget
 - `hedge.enabled`, optional delay/tier fields control reactive hedge policy.
 - `first_event_timeout_ms` can override the global first-event timeout per model/policy, but it cannot outlive the whole-request `FAILOVER_BUDGET_MS`; operators who intentionally need a wait above 60 seconds must raise the global failover budget as well.
 - built-in `long-reasoning` uses `first_event_timeout_ms=60000`, matching the default `FAILOVER_BUDGET_MS=60000` rather than advertising an unreachable 120-second first-event wait.
-- `budget_split` supports the current `even`/`weighted` allocation semantics.
+- `budget_split` supports the historical `even`/`null` tier-first behavior and the `weighted` allocation mode.
 - `max_in_flight` is optional Tier 1 local admission control. Built-ins default to `null`; `0`/`null` disable it; a positive integer enforces that explicit per-account ceiling inside each Worker isolate.
 
 Explicit tier caps remain authoritative inside each logical-model pass and must fit within their policy definition.
+
+### Request timing semantics
+
+`FAILOVER_BUDGET_MS` is one wall-clock budget for the whole request. Native tiers, protocol fallback, model-family fallback, and bounded re-checks never reset it.
+
+The live attempt allocator is reserve-aware: instead of dividing the whole budget equally by `max_attempts`, the current candidate may use most of the remaining wall clock while preserving a small escape window for later request-plan opportunities. With sufficient budget, the reserve is capped at 5 seconds per later opportunity; under tight budgets it shrinks toward equal share.
+
+Later opportunities include currently dispatchable nodes and reachable compatible family passes. Already-spent duplicate failure domains are removed from future reserve planning. This timing calculation changes no routing eligibility and never raises `max_attempts`.
+
+For each physical upstream dispatch, response headers, first meaningful output, successful body assembly, and bounded non-2xx diagnostic-body reads all share the same absolute attempt deadline. A hedge twin inherits that deadline instead of receiving a fresh one.
 
 ## Cloudflare bindings and deployment identifiers
 

@@ -62,7 +62,6 @@ export async function attemptNode(c: AttemptContext): Promise<AttemptOutcome> {
   return outcome;
 }
 
-
 async function dispatchAttempt(c: AttemptContext): Promise<AttemptOutcome> {
   const {
     request, env, logger, requestId, route, node, requestedModel, clientWantsStream,
@@ -136,10 +135,9 @@ async function dispatchAttempt(c: AttemptContext): Promise<AttemptOutcome> {
   }
   // Give the preferred candidate a real chance to use its configured header /
   // first-event windows while reserving a small escape budget for every later
-  // candidate. This replaces the old equal split (60s / 5 => 12s), which could
-  // kill healthy coding/reasoning models before FIRST_EVENT_TIMEOUT_MS. The
-  // phase timers below still cap actual waiting, so a fast failure immediately
-  // returns unused budget to later attempts.
+  // request-plan opportunity. The count can include both live candidates in
+  // this logical-model pass and slots reserved for later compatible siblings;
+  // it never enlarges maxAttempts or creates a candidate by itself.
   //
   // A hedged TWIN does not get a fresh window: it inherits the logical
   // attempt's absolute deadline (primary + twin share ONE budget), so its
@@ -223,7 +221,10 @@ async function dispatchAttempt(c: AttemptContext): Promise<AttemptOutcome> {
   // ---- Non-OK response ----
   if (!upstream.ok) {
     detach();
-    const errorText = await safeReadErrorBody(upstream, DIAGNOSTIC_BYTES);
+    // Headers do not end the attempt budget. A provider can return 429/5xx
+    // headers and then stall its diagnostic body; keep that read inside the
+    // SAME absolute attempt deadline used by successful body assembly.
+    const errorText = await safeReadErrorBody(upstream, DIAGNOSTIC_BYTES, c.attemptDeadlineMs);
     const classification = classifyUpstreamStatus(upstream.status, upstream.headers, env, undefined, errorText);
     recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: errorText });
     if (classification.action === 'stop') {

@@ -5,6 +5,7 @@
 // normalization, and completion->SSE synthesis for OpenAI-compatible clients.
 
 import { corsHeaders } from './http.ts';
+import { markSyntheticClientStreamHeaders } from '../stream/client-lifecycle.ts';
 
 export function validateOpenAIChatRequest(body: unknown): string | null {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return 'Request body must be a JSON object.';
@@ -51,7 +52,9 @@ export function withUsageStreamOptions(body: Record<string, unknown>): Record<st
 // Convert a full OpenAI completion object into a well-formed SSE stream
 // (delta chunks + finish chunk + [DONE]) for clients that requested streaming
 // but received JSON from the upstream. Pure synthesis: it does not wrap an
-// upstream stream, so it can be called freely from the success path.
+// upstream stream. The internal lifecycle marker tells the outer request layer
+// that no node stream tracker owns this client stream; the marker is stripped
+// before the response leaves the gateway.
 export function synthesizeSseFromCompletion(data: Record<string, unknown> | null | undefined, env: Record<string, unknown>, request: Request, extraHeaders?: Record<string, string>): Response {
   const encoder = new TextEncoder();
   const choices = Array.isArray(data?.choices) ? data.choices : [];
@@ -82,12 +85,12 @@ export function synthesizeSseFromCompletion(data: Record<string, unknown> | null
   });
   return new Response(stream, {
     status: 200,
-    headers: {
+    headers: markSyntheticClientStreamHeaders({
       'content-type': 'text/event-stream; charset=utf-8',
       'cache-control': 'no-cache, no-transform',
       'x-accel-buffering': 'no',
       ...(extraHeaders || {}),
       ...corsHeaders(request, env),
-    },
+    }),
   });
 }

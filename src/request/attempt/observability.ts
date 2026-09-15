@@ -38,33 +38,12 @@ export function recordTier1NonStreamTtft(c: AttemptContext, node: RuntimeNode, d
   recordTier1Ttft(node.id, c.state.requestedModel, c.ttftMs);
 }
 
-// Token observability: called EXACTLY ONCE per delivered response — from the
-// non-stream parse points, or via the onUsage callback of the one stream
-// wrapper / transform that actually parsed the body. Rotating attempts never
-// reach here, so failover still yields a single record.
-//
-// It does TWO independent things:
-//   1. recordTokenUsage()     — isolate-local, best-effort (resets on restart).
-//   2. persistTokenUsage()    — cross-isolate D1 hour-bucket UPSERT, fired
-//      inside ctx.waitUntil() so it is OFF the request hot path. It is fully
-//      fail-open: D1 absence, errors, timeouts and rejects are swallowed here
-//      and never change the HTTP response, fallback, node health, circuit
-//      breaker, scheduler, concurrency count or stream completion.
 export function recordTokens(c: AttemptContext, node: RuntimeNode, usage: unknown): void {
   const effectiveModel = upstreamModelOf(node, c.requestedModel);
   recordTokenUsage({ model: effectiveModel, tier: node.tier, provider: node.provider, nodeId: node.id, usage });
   scheduleD1TokenPersist(c, usage, effectiveModel);
 }
 
-// Fire the D1 persistence WITHOUT touching the request path. Wrapped so that:
-//   * no binding  -> no-op (the primary "delete TOKEN_STATS_DB and it still
-//     serves every model" invariant);
-//   * ctx.waitUntil is the ONLY mechanism used — never `await` before a
-//     response, never a synchronous D1 call;
-//   * every rejection is caught and logged at most once.
-//
-// TTFT is passed only for successful requests with meaningful output.
-// Failures MUST NOT pass a TTFT value — they enter failure statistics only.
 function scheduleD1TokenPersist(c: AttemptContext, usage: unknown, effectiveModel?: string): void {
   const modelForPersist = effectiveModel ?? c.requestedModel;
   const task = persistTokenUsage(c.env, usage, Date.now(), modelForPersist, c.ttftMs ?? null).catch((err) => {
@@ -75,32 +54,20 @@ function scheduleD1TokenPersist(c: AttemptContext, usage: unknown, effectiveMode
   if (ctx && typeof ctx.waitUntil === 'function') {
     try { ctx.waitUntil(task); } catch { task.catch(() => {}); }
   } else {
-    // No ExecutionContext (unit tests): fire-and-forget with a swallow.
     task.catch(() => {});
   }
 }
 
-// Record the real request outcome first. Tier 1 learns ONLY from real business
-// requests: success drives half-open recovery and (on an affinity escape) moves
-// the session to the winning account. Tier 2/3 keep their node-state path.
-// There is NO background probe anymore — probes were Tier-1-only and have been
-// removed entirely from the scheduling path.
 export function recordNodeSuccess(c: AttemptContext, node: RuntimeNode, latencyMs: number): void {
   if (node.tier === 'tier-1') {
     const logicalModel = c.state.requestedModel;
     recordTier1Success(node.id, logicalModel);
-    // The Tier 1 state machine only clears consecutiveRateLimits when THIS
-    // success is the admitted post-cooldown recovery request. A success from a
-    // request that was already in flight when a peer hit 429 does not clear it.
-    // Mirror that exact decision into the provider+key adaptive ladder.
     if (getTier1Account(node.id).consecutiveRateLimits === 0) {
       clearAdaptive429State(node.provider, node.id);
     }
     recordTier1ProviderModelSuccess(node.provider, upstreamModelOf(node, logicalModel), node.id);
     releaseTier1Slot(node.id, c.tier1ReleaseToken);
     bumpNodeCounters(node.id, { requests: 1, successes: 1 });
-    // KV writes happen only for a cold session or an approved migration, and
-    // only after the selected account completed a real request successfully.
     if (c.tier1UpdateAffinity && c.tier1Session) {
       writeTier1Affinity(c.env, c.ctx, c.tier1Session, node.id);
     }
@@ -109,9 +76,9 @@ export function recordNodeSuccess(c: AttemptContext, node: RuntimeNode, latencyM
   recordSuccess(node.id, latencyMs, c.state?.requestedModel);
 }
 
-// Node-layer stream tracking: node outcome recording + stream-end telemetry.
-// The client request itself was already counted at the outer request boundary;
-// this layer owns only the eventual decrement/outcome for streaming responses.
+// Real upstream streams own both node outcome and client lifecycle accounting
+// here. Gateway-synthesized SSE never enters this tracker; it is explicitly
+// marked and settled once by the outer trackClientResponse boundary.
 export function makeNodeStreamTrack(c: AttemptContext, node: RuntimeNode, latencyMs: number) {
   const tier1 = node.tier === 'tier-1';
   return {
@@ -120,17 +87,10 @@ export function makeNodeStreamTrack(c: AttemptContext, node: RuntimeNode, latenc
       gatewayStats.activeRequests = Math.max(0, gatewayStats.activeRequests - 1);
       gatewayStats.successes++;
     },
-    // Field evidence (NVIDIA-hosted stalls mid-generation): 2s let a stalling
-    // node straight back into rotation. 60s matches the rate-limit cooldown —
-    // long enough to push repeat offenders out of candidate ordering without
-    // permanently discarding a node that had one transient blip.
-    // Tier 1 needs the concrete interruption reason supplied to onStreamEnd,
-    // so its failure state and release happen there. Tier 2/3 keep the existing
-    // recordFailure path unchanged.
     onFailure: () => {
       if (!tier1) {
-        const c = classifyStreamInterrupted();
-        recordFailure(node.id, { counted: c.counted, cooldownMs: c.cooldownMs, reason: c.kind });
+        const classification = classifyStreamInterrupted();
+        recordFailure(node.id, { counted: classification.counted, cooldownMs: classification.cooldownMs, reason: classification.kind });
       }
       gatewayStats.activeRequests = Math.max(0, gatewayStats.activeRequests - 1);
       gatewayStats.failures++;
@@ -146,7 +106,7 @@ export function makeNodeStreamTrack(c: AttemptContext, node: RuntimeNode, latenc
     },
     onStreamEnd: (outcome: string, d: { reason: string | null, durationMs: number, chunkCount: number, receivedBytes: number, completionMarkerSeen: boolean }) => {
       if (outcome === 'completed') { recordStreamCompleted(); return; }
-      if (outcome !== 'interrupted') return; // neutral (client abort) is not counted
+      if (outcome !== 'interrupted') return;
       recordStreamInterrupted(d.reason);
       if (tier1) {
         applyTier1Outcome(node.id, c.state?.requestedModel,

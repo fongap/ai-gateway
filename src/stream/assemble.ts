@@ -9,6 +9,11 @@
 
 import { extractOpenAITextContent } from '../protocol/openai.ts';
 import { createSseScanner, readWithDeadline } from './guard.ts';
+import {
+  UPSTREAM_PROCESSING_ERROR,
+  upstreamProcessingError,
+  type UpstreamProcessingErrorCode,
+} from '../transport/processing-error.ts';
 
 const MAX_ASSEMBLED_BYTES = 2 * 1024 * 1024;
 
@@ -16,7 +21,7 @@ type ToolCallState = { id: string, type: string, function: { name: string, argum
 type ChoiceState = { content: string, reasoning_content: string, toolCalls: Map<number, ToolCallState>, finish_reason: unknown };
 
 export async function collectOpenAIStreamObject(upstream: Response, clientSignal: AbortSignal | null | undefined, deadlineMs?: number | null): Promise<Record<string, unknown>> {
-  if (!upstream.body) throw new Error('Upstream response has no body.');
+  if (!upstream.body) throw upstreamProcessingError(UPSTREAM_PROCESSING_ERROR.EMPTY, 'Upstream response has no body.');
   const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
@@ -33,9 +38,9 @@ export async function collectOpenAIStreamObject(upstream: Response, clientSignal
     if (value) currentBytes += encoder.encode(value).length;
   };
 
-  const fail = async (message: string): Promise<never> => {
+  const fail = async (code: UpstreamProcessingErrorCode, message: string): Promise<never> => {
     await reader.cancel().catch(() => {});
-    throw new Error(message);
+    throw upstreamProcessingError(code, message);
   };
 
   let semanticEof = false;
@@ -45,7 +50,11 @@ export async function collectOpenAIStreamObject(upstream: Response, clientSignal
     try {
       json = JSON.parse(data);
     } catch (e) {
-      throw Object.assign(new Error('Upstream returned malformed streaming data.'), { __cause: e });
+      throw upstreamProcessingError(
+        UPSTREAM_PROCESSING_ERROR.MALFORMED,
+        'Upstream returned malformed streaming data.',
+        e,
+      );
     }
     if (json.id) id = json.id;
     if (json.created) created = json.created;
@@ -90,12 +99,19 @@ export async function collectOpenAIStreamObject(upstream: Response, clientSignal
 
   try {
     for (;;) {
-      if (clientSignal?.aborted) await fail('Client aborted during stream assembly.');
-      const { done, value } = await readWithDeadline(reader, deadlineMs, fail);
+      if (clientSignal?.aborted) {
+        await reader.cancel().catch(() => {});
+        throw new DOMException('Client aborted during stream assembly.', 'AbortError');
+      }
+      const { done, value } = await readWithDeadline(
+        reader,
+        deadlineMs,
+        (message) => fail(UPSTREAM_PROCESSING_ERROR.DEADLINE, message),
+      );
       if (done) break;
       scanner.push(decoder.decode(value, { stream: true }));
       if (currentBytes > MAX_ASSEMBLED_BYTES) {
-        await fail('Assembled response exceeded gateway memory safety limit. Use stream:true.');
+        await fail(UPSTREAM_PROCESSING_ERROR.TOO_LARGE, 'Assembled response exceeded gateway memory safety limit. Use stream:true.');
       }
       // Semantic EOF: [DONE] or finish_reason observed — the protocol stream
       // is logically finished. Cancel the reader instead of waiting for HTTP
@@ -112,12 +128,18 @@ export async function collectOpenAIStreamObject(upstream: Response, clientSignal
     throw e;
   }
 
-  if (choices.size === 0) throw new Error('Upstream returned an empty or malformed stream.');
+  if (choices.size === 0) {
+    throw upstreamProcessingError(UPSTREAM_PROCESSING_ERROR.EMPTY, 'Upstream returned an empty or malformed stream.');
+  }
   const states = [...choices.entries()].sort((a, b) => a[0] - b[0]);
   const hasOutput = states.some(([, s]) => Boolean(s.content) || Boolean(s.reasoning_content) || s.toolCalls.size > 0);
-  if (!hasOutput) throw new Error('Upstream returned an empty streaming response.');
+  if (!hasOutput) {
+    throw upstreamProcessingError(UPSTREAM_PROCESSING_ERROR.EMPTY, 'Upstream returned an empty streaming response.');
+  }
   const hasCompletionMarker = states.some(([, s]) => s.finish_reason !== null);
-  if (!hasCompletionMarker) throw new Error('Upstream stream ended before a completion marker was received.');
+  if (!hasCompletionMarker) {
+    throw upstreamProcessingError(UPSTREAM_PROCESSING_ERROR.TRUNCATED, 'Upstream stream ended before a completion marker was received.');
+  }
 
   return {
     id: id || `chatcmpl-${crypto.randomUUID()}`,

@@ -19,7 +19,13 @@
 // still rotates to another node.
 
 import { createSseScanner, readWithDeadline } from '../../stream/guard.ts';
+import { markSyntheticClientStreamHeaders } from '../../stream/client-lifecycle.ts';
 import { ResponsesEventBuilder } from './events.ts';
+import {
+  UPSTREAM_PROCESSING_ERROR,
+  upstreamProcessingError,
+  type UpstreamProcessingErrorCode,
+} from '../../transport/processing-error.ts';
 
 const MAX_COLLECTED_BYTES = 2 * 1024 * 1024;
 
@@ -29,29 +35,34 @@ const MAX_COLLECTED_BYTES = 2 * 1024 * 1024;
 //   response.failed                          -> throw (rotate; client saw nothing)
 // EOF without a terminal event                -> throw (truncated stream)
 export async function collectResponsesObject(upstream: Response, clientSignal: AbortSignal | null | undefined, deadlineMs?: number | null): Promise<Record<string, unknown>> {
-  if (!upstream.body) throw new Error('Upstream response has no body.');
+  if (!upstream.body) throw upstreamProcessingError(UPSTREAM_PROCESSING_ERROR.EMPTY, 'Upstream response has no body.');
   const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
   let receivedBytes = 0;
   let collected: Record<string, unknown> | null = null;
 
-  const fail = async (message: string): Promise<never> => {
+  const fail = async (code: UpstreamProcessingErrorCode, message: string): Promise<never> => {
     await reader.cancel().catch(() => {});
-    throw new Error(message);
+    throw upstreamProcessingError(code, message);
   };
 
+  let semanticEof = false;
   const scanner = createSseScanner((data) => {
     if (!data || data === '[DONE]') return;
     let json;
     try {
       json = JSON.parse(data);
-    } catch {
-      throw Object.assign(new Error('Upstream returned malformed streaming data.'), { __cause: true });
+    } catch (error) {
+      throw upstreamProcessingError(
+        UPSTREAM_PROCESSING_ERROR.MALFORMED,
+        'Upstream returned malformed streaming data.',
+        error,
+      );
     }
     if (json?.type === 'response.failed') {
-      throw Object.assign(
-        new Error(`Upstream reported response.failed: ${json.response?.error?.message || 'unknown error'}`),
-        { __terminal_failure: true },
+      throw upstreamProcessingError(
+        UPSTREAM_PROCESSING_ERROR.TERMINAL,
+        `Upstream reported response.failed: ${json.response?.error?.message || 'unknown error'}`,
       );
     }
     if ((json?.type === 'response.completed' || json?.type === 'response.incomplete') && json.response) {
@@ -60,21 +71,27 @@ export async function collectResponsesObject(upstream: Response, clientSignal: A
     }
   });
 
-  let semanticEof = false;
   try {
     for (;;) {
-      if (clientSignal?.aborted) await fail('Client aborted during stream assembly.');
-      const { done, value } = await readWithDeadline(reader, deadlineMs, fail);
+      if (clientSignal?.aborted) {
+        await reader.cancel().catch(() => {});
+        throw new DOMException('Client aborted during stream assembly.', 'AbortError');
+      }
+      const { done, value } = await readWithDeadline(
+        reader,
+        deadlineMs,
+        (message) => fail(UPSTREAM_PROCESSING_ERROR.DEADLINE, message),
+      );
       if (done) break;
       receivedBytes += value.byteLength;
       scanner.push(decoder.decode(value, { stream: true }));
       if (receivedBytes > MAX_COLLECTED_BYTES) {
-        await fail('Assembled response exceeded gateway memory safety limit. Use stream:true.');
+        await fail(UPSTREAM_PROCESSING_ERROR.TOO_LARGE, 'Assembled response exceeded gateway memory safety limit. Use stream:true.');
       }
-      // Semantic EOF: response.completed / response.incomplete / response.failed
-      // observed — the protocol stream is logically finished. Cancel the reader
-      // instead of waiting for HTTP EOF so a provider that leaves the connection
-      // open doesn't stall the failover budget.
+      // Semantic EOF: response.completed / response.incomplete observed — the
+      // protocol stream is logically finished. Cancel the reader instead of
+      // waiting for HTTP EOF so a provider that leaves the connection open
+      // doesn't stall the failover budget.
       if (semanticEof) {
         await reader.cancel().catch(() => {});
         break;
@@ -86,7 +103,9 @@ export async function collectResponsesObject(upstream: Response, clientSignal: A
     throw e;
   }
 
-  if (!collected) throw new Error('Upstream stream ended before a terminal response event.');
+  if (!collected) {
+    throw upstreamProcessingError(UPSTREAM_PROCESSING_ERROR.TRUNCATED, 'Upstream stream ended before a terminal response event.');
+  }
   return collected;
 }
 
@@ -94,6 +113,8 @@ export async function collectResponsesObject(upstream: Response, clientSignal: A
 // full Responses object (the "upstream answered JSON but the client wants a
 // stream" case). Event order follows the Responses contract:
 // response.created -> per-item added/delta/done -> response.completed.
+// Synthetic streams carry an internal lifecycle marker consumed and stripped
+// by the outer request boundary; real upstream streams never carry it.
 export function synthesizeResponsesFromObject(response: Record<string, unknown> | null | undefined, requestedModel: string, extraHeaders?: Record<string, string>): Response {
   const events = new ResponsesEventBuilder();
   const encoder = new TextEncoder();
@@ -135,11 +156,11 @@ export function synthesizeResponsesFromObject(response: Record<string, unknown> 
   });
   return new Response(stream, {
     status: 200,
-    headers: {
+    headers: markSyntheticClientStreamHeaders({
       'content-type': 'text/event-stream; charset=utf-8',
       'cache-control': 'no-cache, no-transform',
       'x-accel-buffering': 'no',
       ...(extraHeaders || {}),
-    },
+    }),
   });
 }
