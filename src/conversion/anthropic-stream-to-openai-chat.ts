@@ -228,19 +228,32 @@ function emitFinishAndDone(state: State, controller: ReadableStreamDefaultContro
   controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
 }
 
-function processAnthropicEvent(state: State, controller: ReadableStreamDefaultController<Uint8Array>, evt: unknown): void {
+function reportRawUsage(onUpstreamUsage: ((usage: unknown) => void) | undefined, usage: unknown): void {
+  if (!onUpstreamUsage || !isRecord(usage)) return;
+  try { onUpstreamUsage(usage); } catch { /* observability must never break conversion */ }
+}
+
+function processAnthropicEvent(
+  state: State,
+  controller: ReadableStreamDefaultController<Uint8Array>,
+  evt: unknown,
+  onUpstreamUsage?: (usage: unknown) => void,
+): void {
   if (!isRecord(evt)) throw new Error('Invalid upstream SSE event');
   if (state.closed) return;
   const type = evt.type;
   switch (type) {
     case 'message_start': {
       // Lifecycle event — NOT a commit boundary. Just absorb and remember the
-      // message id/model/input tokens for later use.
+      // message id/model/input tokens for later use. Keep the raw Anthropic
+      // usage separately available to observability before translating it to
+      // the OpenAI client shape (which would otherwise lose cache fields).
       const m = evt.message;
       if (isRecord(m)) {
         if (typeof m.id === 'string') state.messageId = m.id;
         if (typeof m.model === 'string') state.model = m.model;
         if (isRecord(m.usage)) {
+          reportRawUsage(onUpstreamUsage, m.usage);
           state.inputTokens = Number(m.usage.input_tokens ?? 0) || 0;
           state.outputTokens = Number(m.usage.output_tokens ?? 0) || 0;
         }
@@ -318,6 +331,7 @@ function processAnthropicEvent(state: State, controller: ReadableStreamDefaultCo
         state.finishReason = mapStopReason(evt.delta.stop_reason);
       }
       if (isRecord(evt.usage)) {
+        reportRawUsage(onUpstreamUsage, evt.usage);
         state.inputTokens = Number(evt.usage.input_tokens ?? state.inputTokens) || state.inputTokens;
         state.outputTokens = Number(evt.usage.output_tokens ?? state.outputTokens) || state.outputTokens;
         if (typeof evt.usage.total_tokens === 'number') {
@@ -351,9 +365,14 @@ function processAnthropicEvent(state: State, controller: ReadableStreamDefaultCo
 // delta.content / delta.tool_calls / finish_reason / [DONE]).
 export function createOpenAIChatStreamFromAnthropic(
   anthropicResponseBody: ReadableStream<Uint8Array> | null | undefined,
-  options: { messageId?: string, model?: string, inputTokens?: number } = {},
+  options: {
+    messageId?: string,
+    model?: string,
+    inputTokens?: number,
+    onUpstreamUsage?: (usage: unknown) => void,
+  } = {},
 ): ReadableStream<Uint8Array> {
-  const { messageId, model, inputTokens } = options;
+  const { messageId, model, inputTokens, onUpstreamUsage } = options;
   const state = createState(
     messageId || `chatcmpl-${Date.now().toString(36)}`,
     model || '',
@@ -363,6 +382,6 @@ export function createOpenAIChatStreamFromAnthropic(
   return convertSseStream(anthropicResponseBody, (data, controller) => {
     let event: unknown;
     try { event = JSON.parse(data); } catch { throw new Error('Malformed upstream SSE JSON'); }
-    processAnthropicEvent(state, controller, event);
+    processAnthropicEvent(state, controller, event, onUpstreamUsage);
   }, () => state.closed);
 }

@@ -74,25 +74,33 @@ await test('missing usage yields a missing payload and never fabricates tokens',
 
 // ---- persistTokenUsage: atomic hour-bucket UPSERT ---------------------------
 
-await test('first insert creates the hour bucket and records the write', async () => {
+await test('first insert creates the hour bucket and records both accounting views', async () => {
   const d1 = createMockD1();
   await persistTokenUsage({ TOKEN_STATS_DB: d1 }, { prompt_tokens: 2, completion_tokens: 8 }, H0);
   assert.deepEqual(
     d1._rows.get(normalizeHour(H0)),
-    { input: 2, output: 8, cacheCreation: 0, cacheRead: 0, total: 10, requests: 1, reports: 1, missing: 0 },
+    {
+      input: 2, output: 8, cacheCreation: 0, cacheRead: 0, total: 10, requests: 1, reports: 1, missing: 0,
+      upstreamInput: 2, upstreamOutput: 8, upstreamCacheCreation: 0, upstreamCacheRead: 0,
+      upstreamTotal: 10, upstreamAttempts: 1, upstreamReports: 1, upstreamMissing: 0,
+    },
   );
   assert.equal(d1._writes.length, 2, 'global + totals writes');
   assert.match(d1._writes[0].sql, /ON CONFLICT\(hour\) DO UPDATE SET/);
   assert.match(d1._writes[1].sql, /token_usage_totals/i, 'second write is totals');
 });
 
-await test('same-hour upsert accumulates input/output/total/requests atomically', async () => {
+await test('same-hour upsert accumulates delivered and upstream success views atomically', async () => {
   const d1 = createMockD1();
   await persistTokenUsage({ TOKEN_STATS_DB: d1 }, { prompt_tokens: 2, completion_tokens: 3 }, H0);
   await persistTokenUsage({ TOKEN_STATS_DB: d1 }, { prompt_tokens: 4, completion_tokens: 6 }, H0);
   assert.deepEqual(
     d1._rows.get(normalizeHour(H0)),
-    { input: 6, output: 9, cacheCreation: 0, cacheRead: 0, total: 15, requests: 2, reports: 2, missing: 0 },
+    {
+      input: 6, output: 9, cacheCreation: 0, cacheRead: 0, total: 15, requests: 2, reports: 2, missing: 0,
+      upstreamInput: 6, upstreamOutput: 9, upstreamCacheCreation: 0, upstreamCacheRead: 0,
+      upstreamTotal: 15, upstreamAttempts: 2, upstreamReports: 2, upstreamMissing: 0,
+    },
   );
 });
 
@@ -105,12 +113,16 @@ await test('different hours create separate buckets', async () => {
   assert.equal(d1._rows.get(normalizeHour(H0 + HOUR)).total, 2);
 });
 
-await test('missing usage bumps requests and usage_missing, never total_tokens', async () => {
+await test('missing usage bumps both success and upstream coverage counters, never tokens', async () => {
   const d1 = createMockD1();
   await persistTokenUsage({ TOKEN_STATS_DB: d1 }, null, H0);
   await persistTokenUsage({ TOKEN_STATS_DB: d1 }, {}, H0);
   const row = d1._rows.get(normalizeHour(H0));
-  assert.deepEqual(row, { input: 0, output: 0, cacheCreation: 0, cacheRead: 0, total: 0, requests: 2, reports: 0, missing: 2 });
+  assert.deepEqual(row, {
+    input: 0, output: 0, cacheCreation: 0, cacheRead: 0, total: 0, requests: 2, reports: 0, missing: 2,
+    upstreamInput: 0, upstreamOutput: 0, upstreamCacheCreation: 0, upstreamCacheRead: 0,
+    upstreamTotal: 0, upstreamAttempts: 2, upstreamReports: 0, upstreamMissing: 2,
+  });
 });
 
 // ---- tokenStatsD1: binding detection ----------------------------------------

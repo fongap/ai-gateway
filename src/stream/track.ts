@@ -1,30 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
 //
-// Tracked stream wrapper: the single place where a streaming response body is
-// relayed to the client while (a) enforcing the stream idle timeout, (b)
-// recording the node outcome exactly once, (c) optionally rewriting the
-// SSE model field inline, and (d) optionally scanning reported usage. Keeping
-// the model rewrite INSIDE this layer instead of wrapping yet another
-// pull-based stream around it matters: stacked pull-based stream wrappers can
-// stall on their final chunks, which clients experience as "first events
-// arrive, then the stream never terminates".
-//
-// Per-chunk work is minimal: only a small rolling tail is kept to detect an
-// in-band `event: error` marker and, when `completionMarker` is set, whether
-// the stream terminated properly. A clean close without the marker is an
-// upstream truncation and counts as a failure. The usage scan (only active
-// when `onUsage` is passed, i.e. on passthrough call sites — transformed
-// streams report usage from their own parse points) reuses the already
-// decoded tail text and is passive: it never injects, requests or estimates
-// usage; it only observes what the upstream volunteered.
+// Tracked stream wrapper: relay, idle timeout, node outcome, optional model
+// rewrite, and passive upstream-reported usage observation.
 
 import { normalizeTokenUsage, mergeReportedUsage } from '../observability/token-usage.ts';
 import { FIRST_EVENT_MAX_SSE_LINE } from './guard.ts';
 
-// Hard limit for the model-rewrite line buffer in the tracked stream (after
-// first-event commit). Prevents unbounded growth from a never-terminated
-// SSE line. Same limit as the pre-first-event guard for consistency.
 const TRACK_MAX_LINE_BUFFER = FIRST_EVENT_MAX_SSE_LINE;
 
 export type TrackStreamEndInfo = {
@@ -46,24 +28,25 @@ export type TrackOptions = {
   failureMarker?: RegExp,
   rewriteModel?: string,
   rewriteModelAt?: string,
+  // Delivered-response usage callback. Preserved semantics: fires only for a
+  // cleanly completed stream so model-status / delivered-token evidence cannot
+  // be polluted by interrupted attempts.
   onUsage?: (usage: unknown) => void,
+  // Physical-upstream accounting callback. Fires once for EVERY terminal stream
+  // outcome and carries the best cumulative usage the upstream actually
+  // reported, or null when no usable report was seen.
+  onAttemptUsage?: (usage: unknown, outcome: 'success' | 'failure' | 'neutral') => void,
   interruptionChunk?: (reason: string | null, details?: { nextSequenceNumber?: number }) => Uint8Array,
   upstreamFailureReason?: () => string | null,
 };
 
-export function trackStreamResponse(response: Response, { idleTimeoutMs, onSuccess, onFailure, onNeutral, onStreamStart, onStreamEnd, completionMarker, failureMarker, rewriteModel, rewriteModelAt, onUsage, interruptionChunk, upstreamFailureReason }: TrackOptions): Response {
+export function trackStreamResponse(response: Response, { idleTimeoutMs, onSuccess, onFailure, onNeutral, onStreamStart, onStreamEnd, completionMarker, failureMarker, rewriteModel, rewriteModelAt, onUsage, onAttemptUsage, interruptionChunk, upstreamFailureReason }: TrackOptions): Response {
   if (!response.body) {
+    try { onAttemptUsage?.(null, 'success'); } catch { /* observability only */ }
     onSuccess();
     return response;
   }
   const reader = response.body.getReader();
-  // Two SEPARATE stream-stateful TextDecoders: the rewrite path and the
-  // diagnostic tail each consume the same raw chunk with { stream: true }.
-  // A single shared decoder instance would have its internal multi-byte UTF-8
-  // carry advanced twice per chunk, corrupting any multi-byte character (e.g.
-  // CJK) split across chunk boundaries. The usage scan adds no decoder — it
-  // reuses the tail's already-decoded STRING (sharing the decoded text is
-  // safe; sharing the decoder instance is not).
   const rewriteDecoder = new TextDecoder();
   const tailDecoder = new TextDecoder();
   const encoder = rewriteModel !== undefined ? new TextEncoder() : null;
@@ -74,15 +57,11 @@ export function trackStreamResponse(response: Response, { idleTimeoutMs, onSucce
   let completionSeen = !completionMarker;
   let nextSequenceNumber = 0;
   let finished = false;
-  // Passive usage scan state: lines that may still be split across chunks,
-  // the last usable reported usage object (merged cumulatively), and a
-  // once-only fire guard.
-  const usageScan = typeof onUsage === 'function';
+  const usageScan = typeof onUsage === 'function' || typeof onAttemptUsage === 'function';
   let usageLines = '';
   let usageCandidate: unknown = null;
   let usageReported = false;
-  // Stream-end telemetry: chunk/byte volume plus the interruption reason,
-  // resolved at the failure branch that observed it.
+  let attemptUsageReported = false;
   const startMs = Date.now();
   let chunkCount = 0;
   let receivedBytes = 0;
@@ -96,12 +75,6 @@ export function trackStreamResponse(response: Response, { idleTimeoutMs, onSucce
     } catch { /* diagnostics must never break stream shutdown */ }
   };
 
-  // Incremental SSE line scan for `data: {... "usage": ...}` events. Only the
-  // LAST usable report wins, so an early empty `usage:{}` cannot clobber a
-  // later real report and two real reports keep the final one (providers that
-  // resend cumulative usage). The buffer is capped so a never-terminating
-  // line cannot grow it unbounded; scanning stops once the completion marker
-  // was seen (usage never follows [DONE]).
   const scanUsageLine = (text: string) => {
     usageLines += text;
     if (usageLines.length > 64 * 1024) usageLines = '';
@@ -113,44 +86,50 @@ export function trackStreamResponse(response: Response, { idleTimeoutMs, onSucce
       if (!raw || raw === '[DONE]') continue;
       try {
         const json = JSON.parse(raw);
-        // Native wire shapes that report usage:
-        //   OpenAI chat  -> data.usage on the terminal chunk
-        //   Responses    -> data.response.usage on response.completed
-        //   Anthropic    -> data.usage on message_delta (message_start's
-        //                   partial input-only report is superseded by the
-        //                   last usable report, per the last-wins rule below)
-        const reported = json?.response?.usage !== undefined ? json.response.usage : json?.usage;
+        const reported = json?.response?.usage !== undefined
+          ? json.response.usage
+          : json?.message?.usage !== undefined
+            ? json.message.usage
+            : json?.usage;
         if (reported !== undefined) {
-          // Merge by field (cumulative values): next field value replaces
-          // previous if present; missing fields keep previous.
           const merged = mergeReportedUsage(usageCandidate, reported);
           if (normalizeTokenUsage(merged)) usageCandidate = merged;
         }
-      } catch { /* malformed lines are ignored — passive scan */ }
+      } catch { /* passive scan */ }
     }
   };
 
   const finalize = (result: 'success' | 'failure' | 'neutral') => {
     if (finished) return;
     finished = true;
-    // Fire the usage callback ONLY for a cleanly-completed stream.
-    // Failure or neutral (client abort) do not report usage: a truncated
-    // stream may have carried usage bytes, but recording them would pollute
-    // success metrics (D1 requests, model-status evidence, TTFT). The TTFT
-    // path already records first-event timing for meaningful streams; usage
-    // belongs only to streams that reached their terminal marker.
-    if (usageScan && !usageReported && result === 'success' && completionSeen) {
-      usageReported = true;
-      try { onUsage(usageCandidate); } catch { /* observability must never break the relay */ }
-    }
+
+    // A transport-level clean EOF without the protocol completion marker is
+    // still a failed upstream attempt. Resolve that semantic outcome BEFORE
+    // firing physical-attempt accounting, otherwise truncated streams would be
+    // incorrectly labelled success and skipped by the undelivered writer.
     const failed = result === 'failure' || (result === 'success' && !completionSeen);
+    const attemptOutcome: 'success' | 'failure' | 'neutral' = result === 'neutral'
+      ? 'neutral'
+      : failed ? 'failure' : 'success';
+
+    if (!attemptUsageReported) {
+      attemptUsageReported = true;
+      try { onAttemptUsage?.(usageCandidate, attemptOutcome); } catch { /* fail-open */ }
+    }
+
+    // Existing delivered-response semantics remain success-only.
+    if (usageScan && !usageReported && attemptOutcome === 'success' && typeof onUsage === 'function') {
+      usageReported = true;
+      try { onUsage(usageCandidate); } catch { /* observability must never break relay */ }
+    }
+
     if (result === 'success') {
       if (!completionSeen) onFailure();
       else onSuccess();
     } else if (result === 'failure') onFailure();
     else onNeutral();
     onStreamEnd?.(
-      result === 'neutral' ? 'neutral' : failed ? 'interrupted' : 'completed',
+      attemptOutcome === 'neutral' ? 'neutral' : failed ? 'interrupted' : 'completed',
       {
         reason: failed ? failureReason : null,
         durationMs: Date.now() - startMs,
@@ -161,15 +140,6 @@ export function trackStreamResponse(response: Response, { idleTimeoutMs, onSucce
     );
   };
 
-  // Inline SSE model-field rewrite (same semantics as the former standalone
-  // rewriteStreamModelField wrapper). Lines that cannot contain the field are
-  // never parsed; malformed lines pass through untouched.
-  // `rewriteModelAt` selects where the logical model lives on the wire:
-  //   'model'          -> top-level data.model      (OpenAI chat chunks)
-  //   'response.model' -> data.response.model       (native Responses events)
-  //   'message.model'  -> data.message.model        (native Anthropic events)
-  // The field is only REWRITTEN when it already exists — unrelated lines are
-  // never given a model field they did not carry.
   const modelPointer = rewriteModelAt || 'model';
   const processLine = (line: string): string => {
     if (!line.startsWith('data:') || !line.includes('"model"')) return line;
@@ -193,18 +163,12 @@ export function trackStreamResponse(response: Response, { idleTimeoutMs, onSucce
     return line;
   };
 
-  // Decode + optional rewrite, returning the bytes to forward for this chunk.
-  // The line buffer is capped so a never-terminated SSE line (no newline) from
-  // a malformed or adversarial upstream cannot grow it unbounded.
   const forwardBytes = (value: Uint8Array): Uint8Array => {
     if (!encoder) return value;
     lineBuffer += rewriteDecoder.decode(value, { stream: true });
     const lines = lineBuffer.split('\n');
     lineBuffer = lines.pop() || '';
     if (lineBuffer.length > TRACK_MAX_LINE_BUFFER || lines.some((line) => line.length > TRACK_MAX_LINE_BUFFER)) {
-      // Never invent a newline or forward a partial oversized event: either
-      // action corrupts the SSE protocol. The pull loop turns this into the
-      // normal post-commit interruption path and cancels the upstream reader.
       throw new Error('tracked SSE line exceeded the hard limit');
     }
     let out = '';
@@ -222,9 +186,6 @@ export function trackStreamResponse(response: Response, { idleTimeoutMs, onSucce
       try {
         result = await raceWithIdle(reader.read(), idleTimeoutMs);
       } catch {
-        // Upstream died mid-stream. Close cleanly so chunks that were already
-        // queued still reach the client; the missing completion marker makes
-        // the truncation detectable, and the node records a failure.
         failureReason = 'reader_error';
         emitInterruption(controller);
         finalize('failure');
@@ -254,15 +215,7 @@ export function trackStreamResponse(response: Response, { idleTimeoutMs, onSucce
       receivedBytes += value.byteLength;
       if (!errorEventSeen || !completionSeen) {
         const decoded = tailDecoder.decode(value, { stream: true });
-        // Scan BEFORE the completion-marker test: a single chunk carrying the
-        // usage event and [DONE] together must still be seen.
         if (usageScan && !completionSeen) scanUsageLine(decoded);
-        // Test the full current chunk plus the previous boundary tail BEFORE
-        // retaining only a small suffix.  Large terminal events (notably
-        // response.completed, whose data contains the whole response) put the
-        // event header more than 256 characters before the chunk end; slicing
-        // first used to discard that header and mark successful streams as
-        // missing_completion_marker.
         const scanWindow = diagnosticTail + decoded;
         if (interruptionChunk) {
           const sequencePattern = /"sequence_number"\s*:\s*(\d+)/g;
@@ -274,12 +227,8 @@ export function trackStreamResponse(response: Response, { idleTimeoutMs, onSucce
         if (!errorEventSeen) {
           errorEventSeen = /(?:^|\r?\n)event:\s*error\s*(?:\r?\n|$)/.test(scanWindow);
         }
-        if (!terminalFailureSeen && failureMarker?.test(scanWindow)) {
-          terminalFailureSeen = true;
-        }
-        if (!completionSeen && completionMarker?.test(scanWindow)) {
-          completionSeen = true;
-        }
+        if (!terminalFailureSeen && failureMarker?.test(scanWindow)) terminalFailureSeen = true;
+        if (!completionSeen && completionMarker?.test(scanWindow)) completionSeen = true;
         diagnosticTail = scanWindow.slice(-256);
       }
       let forwarded;
@@ -294,17 +243,6 @@ export function trackStreamResponse(response: Response, { idleTimeoutMs, onSucce
         return;
       }
       controller.enqueue(forwarded);
-      // Semantic EOF: once the completion marker has been observed (e.g.
-      // [DONE], message_stop, response.completed) the protocol stream is
-      // logically finished. Do not keep reading for a provider that ends its
-      // event stream but leaves the HTTP connection open — deliver the
-      // already-buffered tail and close cleanly. The node is credited as a
-      // SUCCESS (the observed marker already closed the stream), and the
-      // upstream reader is cancelled instead of being held open until the idle
-      // timeout would otherwise mis-record a success as a failure.
-      // Only runs when a completionMarker is configured (every native /
-      // transformed passthrough); the marker-less client-faced counter (which
-      // must relay transparently) is unaffected.
       if (completionMarker && completionSeen) {
         reader.cancel().catch(() => {});
         try {

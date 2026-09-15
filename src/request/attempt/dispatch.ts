@@ -17,10 +17,12 @@ import { buildTargetUrl, safeReadErrorBody } from '../../protocol/http.ts';
 import { isOpenAIStreamingResponse, withUsageStreamOptions } from '../../protocol/openai.ts';
 import { resolveUpstreamPath, buildUpstreamHeadersFor } from '../../transport/index.ts';
 import { streamUsageSupported } from '../../config/provider-quirks.ts';
+import { reportedUsageFromJsonText } from '../../observability/reported-usage.ts';
 import { gatewayError, buildClientErrorResponse } from '../errors.ts';
 import { upstreamModelOf } from '../response-helpers.ts';
 import { handleSuccess } from './success.ts';
 import { recordOutcome, rotateWithNeutralEnd } from './outcome.ts';
+import { recordUndeliveredUpstreamAttempt } from './observability.ts';
 import type { AttemptContext, AttemptOutcome } from '../../types/request.ts';
 
 const DIAGNOSTIC_BYTES = 4096;
@@ -40,6 +42,12 @@ const DIAGNOSTIC_BYTES = 4096;
 // every upstream dispatch emits exactly one completion record.
 export async function attemptNode(c: AttemptContext): Promise<AttemptOutcome> {
   const outcome = await dispatchAttempt(c);
+  // Some hedge-loss paths intentionally bypass recordOutcome() because they are
+  // neutral reliability outcomes. They still contacted an upstream, so close
+  // the physical-attempt accounting slot here. The settlement helper is
+  // idempotent, therefore the headers-phase hedge path (which settles earlier)
+  // is not double-counted.
+  if (outcome.hedgedAway) recordUndeliveredUpstreamAttempt(c, c.node);
   if (outcome.budgetCharged === undefined) outcome.budgetCharged = true;
   if (outcome.response?.ok) {
     // Successful dispatches never pass through recordOutcome, so charge them
@@ -119,29 +127,14 @@ async function dispatchAttempt(c: AttemptContext): Promise<AttemptOutcome> {
     return rotateWithNeutralEnd(state, node, classifyPreDispatchInvalidBaseUrl().kind, c, true);
   }
 
-  // Protocol-aware upstream headers: OpenAI nodes authenticate with
-  // Authorization Bearer, Anthropic nodes with x-api-key + anthropic-version.
-  // The client's own gateway key never reaches the upstream for either.
   const headers = buildUpstreamHeadersFor(upstreamProtocol, request, node.credential, requestId);
   const controller = new AbortController();
   let headersTimeoutHit = false;
-  // A hedged twin loses the race by being aborted: once the winning attempt
-  // commits its response, the twin's controller fires and both the upstream
-  // fetch and the first-event guard unwind through their normal error paths.
   if (c.hedgeAbort) {
     const onHedgeAbort = () => controller.abort();
     if (c.hedgeAbort.signal.aborted) onHedgeAbort();
     else c.hedgeAbort.signal.addEventListener('abort', onHedgeAbort, { once: true });
   }
-  // Give the preferred candidate a real chance to use its configured header /
-  // first-event windows while reserving a small escape budget for every later
-  // request-plan opportunity. The count can include both live candidates in
-  // this logical-model pass and slots reserved for later compatible siblings;
-  // it never enlarges maxAttempts or creates a candidate by itself.
-  //
-  // A hedged TWIN does not get a fresh window: it inherits the logical
-  // attempt's absolute deadline (primary + twin share ONE budget), so its
-  // header wait is simply the time left until that deadline.
   let attemptHeadersTimeout: number;
   if (c.hedgedAttempt && c.attemptDeadlineMs) {
     attemptHeadersTimeout = attemptHeadersTimeoutMs(
@@ -187,10 +180,10 @@ async function dispatchAttempt(c: AttemptContext): Promise<AttemptOutcome> {
       return { response: gatewayError(request, env, route, 499, 'Client closed the request.', requestId) };
     }
     if (c.hedgeAbort?.signal.aborted) {
-      // Lost the hedge race: the upstream was healthy, just slower than its
-      // twin. Neutral end — no health penalty, no cooldown, no circuit
-      // failure; it still counts as a real dispatch because it did contact
-      // an upstream (the twin charges dispatches, never logicalAttempts).
+      // A peer committed first. This still was a real physical dispatch, but
+      // it is a neutral reliability end and carries no successful-delivery
+      // evidence. Finalize its upstream-attempt accounting before returning.
+      recordUndeliveredUpstreamAttempt(c, node);
       state.attempted.add(node.id);
       state.dispatches++;
       if (!c.hedgedAttempt) state.logicalAttempts++;
@@ -208,10 +201,6 @@ async function dispatchAttempt(c: AttemptContext): Promise<AttemptOutcome> {
     recordOutcome(state, node, classification, c, { latencyMs });
     const errorMessage = error instanceof Error ? error.message : String(error);
     logger.debug(`upstream fetch failed on ${node.id}: ${errorMessage}`);
-    // The classification kind MUST travel with the rotate outcome: hedge
-    // logging reads it from the settled outcome, and dropping it here used to
-    // surface as primary_kind=unknown / twin_kind=unknown even though the
-    // error was already classified.
     return { rotate: true, kind: classification.kind };
   }
   clearTimeout(timeoutId);
@@ -221,11 +210,11 @@ async function dispatchAttempt(c: AttemptContext): Promise<AttemptOutcome> {
   // ---- Non-OK response ----
   if (!upstream.ok) {
     detach();
-    // Headers do not end the attempt budget. A provider can return 429/5xx
-    // headers and then stall its diagnostic body; keep that read inside the
-    // SAME absolute attempt deadline used by successful body assembly.
     const errorText = await safeReadErrorBody(upstream, DIAGNOSTIC_BYTES, c.attemptDeadlineMs);
     const classification = classifyUpstreamStatus(upstream.status, upstream.headers, env, undefined, errorText);
+    // Some compatible providers include usage even on an HTTP error. Preserve
+    // only that explicit report; malformed/non-JSON bodies remain "missing".
+    recordUndeliveredUpstreamAttempt(c, node, reportedUsageFromJsonText(errorText));
     recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: errorText });
     if (classification.action === 'stop') {
       return { response: buildClientErrorResponse(request, env, route, requestId, requestedModel, upstream.status, errorText, state, exposeUpstreamInfo) };
@@ -233,10 +222,6 @@ async function dispatchAttempt(c: AttemptContext): Promise<AttemptOutcome> {
     return { rotate: true, kind: classification.kind };
   }
 
-  // Success response shaping still exposes the client-requested logical model.
-  // For a model-family fallback, pass an attempt-local node view that maps the
-  // client alias to the effective upstream model. This lets the existing stream
-  // rewriter detect the mismatch without mutating shared node configuration.
   const successNode = effectiveModel === requestedModel
     ? node
     : { ...node, models: { ...node.models, [requestedModel]: upstreamModel } };

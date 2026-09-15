@@ -21,21 +21,13 @@ export const GUARD_ERROR = {
   DONE_ONLY: 'done_only_stream',
   ABORTED: 'client_aborted',
   MALFORMED: 'malformed_first_event',
-  // HTTP 200 + a parseable JSON event that is an error envelope
-  // ({"error":{...}}). The node produced no model output, so the caller must
-  // still be allowed to rotate instead of committing the stream.
   ERROR_ENVELOPE: 'first_event_error_envelope',
-  // Hard limits to prevent unbounded memory consumption before the first
-  // valid event commits the failover boundary. When exceeded the reader is
-  // cancelled, the error is surfaced with a distinct code, and the caller
-  // records a node failure and rotates to a healthy node.
   PRE_EVENT_BYTES_EXCEEDED: 'first_event_pre_bytes_exceeded',
   SSE_LINE_EXCEEDED: 'first_event_sse_line_exceeded',
 } as const;
 
 export type GuardErrorCode = typeof GUARD_ERROR[keyof typeof GUARD_ERROR];
 
-// Same runtime shape as before (Error with name + code), now typed.
 class GuardError extends Error {
   code: GuardErrorCode;
   constructor(code: GuardErrorCode) {
@@ -51,25 +43,16 @@ function guardError(code: GuardErrorCode): GuardError {
 
 const guardedStreamState = new WeakMap<object, { failureReason: string | null }>();
 
-// Hard limits for the pre-first-event guard (shared with track.ts for
-// consistency with the 2 MiB assembled-body limit).
-export const FIRST_EVENT_MAX_PRE_BYTES = 2 * 1024 * 1024; // 2 MiB
-export const FIRST_EVENT_MAX_SSE_LINE = 1024 * 1024; // 1 MiB per SSE line/event
+export const FIRST_EVENT_MAX_PRE_BYTES = 2 * 1024 * 1024;
+export const FIRST_EVENT_MAX_SSE_LINE = 1024 * 1024;
 
 export type SseEventState = { dataLines: string[], dataLength: number };
 export type SseEventHandler = (data: string) => void;
 
-// A post-commit reader exception is intentionally relayed as a clean EOF so
-// already-buffered model output is not discarded. Expose the hidden cause to
-// the outer tracker, which can then classify/log it as reader_error instead of
-// collapsing every clean close into missing_completion_marker.
 export function guardedStreamFailureReason(response: Response): string | null {
   return guardedStreamState.get(response)?.failureReason || null;
 }
 
-// Incremental SSE line scanner shared by every streaming path so each SSE
-// event is parsed exactly once no matter which consumer processes it.
-// Usage: const s = createSseScanner(onData); s.push(chunkText)...; s.flush();
 export function createSseScanner(onEvent: SseEventHandler): { push(chunkText: string): void, flush(): void } {
   let buffer = '';
   const eventState: SseEventState = { dataLines: [], dataLength: 0 };
@@ -77,9 +60,6 @@ export function createSseScanner(onEvent: SseEventHandler): { push(chunkText: st
     push(chunkText: string): void {
       buffer += chunkText;
       buffer = drainLines(buffer, eventState, onEvent);
-      // Check the unfinished remainder AFTER draining complete lines. A large
-      // network chunk may legitimately contain many small events; its total
-      // chunk size is not the same thing as one oversized SSE line.
       if (buffer.length > FIRST_EVENT_MAX_SSE_LINE) {
         throw guardError(GUARD_ERROR.SSE_LINE_EXCEEDED);
       }
@@ -121,11 +101,9 @@ function handleSseLine(line: string, eventState: SseEventState, onEvent: SseEven
     dispatchData(eventState, onEvent);
     return;
   }
-  if (line.charCodeAt(0) === 58 /* ':' */) return; // SSE comment / keep-alive
+  if (line.charCodeAt(0) === 58) return;
   if (!line.startsWith('data:')) return;
   const value = line.slice(5).trimStart();
-  // Some providers omit the blank line between events. If the accumulated
-  // payload is already valid JSON (or [DONE]), dispatch before accumulating.
   if (eventState.dataLines.length > 0 && isCompletePayload(eventState.dataLines.join('\n'))) {
     dispatchData(eventState, onEvent);
   }
@@ -156,15 +134,6 @@ function isCompletePayload(data: string): boolean {
   }
 }
 
-// Read the next chunk from an upstream body reader, but give up (via the
-// supplied `onDeadline` callback, which must throw) if the absolute
-// `deadlineMs` elapses before a chunk arrives. This is the post-header
-// body-stall guard: the stream-to-object assembly helpers run AFTER the
-// headers have already arrived, so without a deadline a provider that answers
-// headers then stalls the body could hold the assemble path — and the whole
-// request's failover budget — open indefinitely. When `deadlineMs` is absent
-// or non-positive it behaves like a plain read, preserving the
-// client-signal-only behavior of callers that opt out.
 export async function readWithDeadline(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   deadlineMs: number | null | undefined,
@@ -190,15 +159,18 @@ export async function readWithDeadline(
   }
 }
 
-// Wait for the first valid event and return { response } replaying consumed bytes.
-// `isRealOutput` (optional): a per-route predicate that decides whether a
-// parseable, non-error SSE event counts as real model output. When supplied,
-// events that parse but carry no real output (role-only / empty delta /
-// usage-only / empty choices) do NOT commit the failover boundary — the guard
-// keeps consuming until real output appears (or the stream ends/times out).
-// Omitting it preserves the original "any parseable non-error event commits"
-// behavior used by the OpenAI Chat / Responses paths.
-export async function ensureFirstSseEvent(upstreamResponse: Response, timeoutMs: number, clientSignal: AbortSignal | null | undefined, isRealOutput: ((json: unknown) => boolean) | undefined): Promise<Response> {
+// `onParsedEvent` is intentionally observation-only. It runs after a data event
+// has parsed as JSON but BEFORE the failover boundary commits. This lets the
+// request layer retain upstream-reported usage from lifecycle/usage events even
+// when the stream later fails before first real output. The callback cannot
+// change commit semantics and any callback exception is ignored.
+export async function ensureFirstSseEvent(
+  upstreamResponse: Response,
+  timeoutMs: number,
+  clientSignal: AbortSignal | null | undefined,
+  isRealOutput: ((json: unknown) => boolean) | undefined,
+  onParsedEvent?: (json: unknown) => void,
+): Promise<Response> {
   if (!upstreamResponse.body) throw guardError(GUARD_ERROR.EMPTY);
   const reader = upstreamResponse.body.getReader();
   const consumed: Uint8Array[] = [];
@@ -239,14 +211,8 @@ export async function ensureFirstSseEvent(upstreamResponse: Response, timeoutMs:
       reject(guardError(code));
     };
 
-    // Some OpenAI-compatible providers answer HTTP 200 but stream a JSON error
-    // envelope ({"error":{...}}) as the first SSE event. That is NOT model
-    // output: committing it would close the failover boundary on a node that
-    // never produced anything, so it must rotate like any other first-event
-    // failure.
     const check = (data: string) => {
       if (data === '[DONE]') {
-        // A bare [DONE] without any output event is an empty stream.
         finishErr(GUARD_ERROR.DONE_ONLY);
         return;
       }
@@ -257,15 +223,11 @@ export async function ensureFirstSseEvent(upstreamResponse: Response, timeoutMs:
         finishErr(GUARD_ERROR.MALFORMED);
         return;
       }
+      try { onParsedEvent?.(json); } catch { /* observability must not affect failover */ }
       if (json && typeof json === 'object' && !Array.isArray(json) && json.error) {
         finishErr(GUARD_ERROR.ERROR_ENVELOPE);
         return;
       }
-      // A route may require real model output (text / reasoning / tool_call)
-      // before the failover boundary commits. Events that parse but carry no
-      // real output (role-only / empty delta / usage-only / empty choices) are
-      // skipped and the guard keeps consuming — they must NOT close the
-      // boundary on a node that has produced nothing yet.
       if (isRealOutput && !isRealOutput(json)) return;
       finishOk();
     };
@@ -299,7 +261,7 @@ async function consumeSseEventsWithReader(reader: ReadableStreamDefaultReader<Ui
       throw guardError(GUARD_ERROR.PRE_EVENT_BYTES_EXCEEDED);
     }
     scanner.push(decoder.decode(value, { stream: true }));
-    if (isSettled()) break; // guard settled mid-chunk; replay pump owns the reader now
+    if (isSettled()) break;
   }
   if (!isSettled()) scanner.flush();
 }
@@ -313,9 +275,6 @@ async function pump(reader: ReadableStreamDefaultReader<Uint8Array>, controller:
     }
     controller.close();
   } catch {
-    // Upstream died mid-stream after the first event: close cleanly so
-    // already-buffered bytes still reach the client; the missing completion
-    // marker exposes the truncation.
     state.failureReason = 'reader_error';
     try { controller.close(); } catch { /* already closed */ }
   }

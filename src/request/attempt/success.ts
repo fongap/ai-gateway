@@ -41,28 +41,20 @@ import {
 import { ensureFirstSseEvent, GUARD_ERROR, guardedStreamFailureReason } from '../../stream/guard.ts';
 import { collectOpenAIStreamObject } from '../../stream/assemble.ts';
 import { trackStreamResponse } from '../../stream/track.ts';
+import { reportedUsageFromPayload } from '../../observability/reported-usage.ts';
+import { mergeReportedUsage } from '../../observability/token-usage.ts';
 import { gatewayError, buildClientErrorResponse } from '../errors.ts';
 import { finalHeaders, jsonResponse, streamInterruptionChunk, upstreamModelOf } from '../response-helpers.ts';
-import { convertOpenAIToAnthropicResponse, convertOpenAIUsageToAnthropic } from '../../conversion/openai-to-anthropic.ts';
+import { convertOpenAIToAnthropicResponse } from '../../conversion/openai-to-anthropic.ts';
 import { createAnthropicStreamFromOpenAI } from '../../conversion/stream-converter.ts';
 import { convertAnthropicResponseToOpenAIChat } from '../../conversion/anthropic-response-to-openai-chat.ts';
 import { createOpenAIChatStreamFromAnthropic } from '../../conversion/anthropic-stream-to-openai-chat.ts';
 import {
   recordTokens, recordNodeSuccess, makeNodeStreamTrack, recordTier1NonStreamTtft,
+  observeUpstreamAttemptUsage, recordUndeliveredUpstreamAttempt,
 } from './observability.ts';
 import { recordOutcome } from './outcome.ts';
 import type { AttemptContext, AttemptOutcome } from '../../types/request.ts';
-
-// Anthropic-native first-event guard predicate: only text / thinking /
-// tool-input deltas count as real model output. message_start,
-// content_block_start/stop, ping and message_delta are lifecycle events and
-// NOT commit points — the guard keeps consuming until real output appears,
-// so a node that streams lifecycle events before dying can still fail over.
-// Defined by the Anthropic transport (src/transport/anthropic.ts) — the two
-// protocol families deliberately do NOT share a first-real-output judgment.
-// OpenAI Chat uses the same meaningful-output predicate in every tier; a
-// role-only / empty delta never closes the transparent-failover boundary.
-// Responses uses response.*.delta.
 
 export async function handleSuccess(s: {
   upstream: Response,
@@ -77,9 +69,6 @@ export async function handleSuccess(s: {
   const { request, env, logger, requestId, route, node, requestedModel, bodyJson, clientWantsStream, fakeStream, limits, exposeUpstreamInfo, state, policy } = c;
   const surface = c.surface;
   const elapsedSinceStart = () => Date.now() - (c.attemptStartMs as number);
-  // Topology-leak policy (P1): by default a successful client response carries
-  // only x-request-id. Node id / tier are operational details exposed only when
-  // EXPOSE_UPSTREAM_INFO=true (debugging) or via the auth-protected /health.
   const extraHeaders = {
     'x-request-id': requestId,
     ...(exposeUpstreamInfo ? { 'x-gateway-node': node.id, 'x-gateway-tier': node.tier } : {}),
@@ -88,29 +77,21 @@ export async function handleSuccess(s: {
   const needsModelRewrite = requestedModel !== upstreamModelOf(node, requestedModel);
 
   // Streaming passthrough / transformed streams: run the first-event guard
-  // BEFORE returning anything to the client.
+  // BEFORE returning anything to the client. Parsed lifecycle events are also
+  // offered to the usage observer before commit, so a provider-reported usage
+  // object is not lost merely because the stream later fails before real output.
   if (clientWantsStream && upstreamWasStreaming) {
     const guardStartMs = Date.now();
     let guarded: Response;
     try {
       const remainingRequestBudgetMs = (c.failoverBudgetMs ?? limits.failoverBudgetMs) - (Date.now() - (c.requestStartMs || (s.attemptStartMs as number) || Date.now()));
       const remainingAttemptBudgetMs = (c.attemptDeadlineMs ?? Date.now()) - Date.now();
-      // Policy-level first_event_timeout_ms can override the global env default
-      // for models that intentionally need a longer first-output window. The
-      // request-wide and attempt-wide clocks still remain hard upper bounds.
       const effectiveFirstEventTimeoutMs = policy?.firstEventTimeoutMs ?? limits.firstEventTimeoutMs;
       const firstEventTimeout = attemptFirstEventTimeoutMs(
         effectiveFirstEventTimeoutMs,
         Math.min(remainingRequestBudgetMs, remainingAttemptBudgetMs),
         1,
       );
-      // Per-protocol "first real output" judgment — the failover boundary
-      // commits only when genuine model output is observed:
-      //   anthropic messages -> native content deltas (transport predicate)
-      //   openai responses   -> response.*.delta events (transport predicate)
-      //   openai chat -> meaningful text/reasoning/tool delta in EVERY tier;
-      //     role-only or empty deltas do not close the boundary. Tier 1 still
-      //     remains the only tier that learns passive TTFT in tier1-state.
       const isRealOutput = c.conversionContext
         ? (c.conversionContext.fallbackProtocol === 'anthropic'
             ? isAnthropicNativeRealOutputForConversion
@@ -120,7 +101,16 @@ export async function handleSuccess(s: {
           : surface === 'responses' ? isResponsesRealOutput
           : surface === 'chat_completions' ? isOpenAIChatRealOutput
           : undefined;
-      guarded = await ensureFirstSseEvent(upstream, firstEventTimeout, request.signal, isRealOutput);
+      guarded = await ensureFirstSseEvent(
+        upstream,
+        firstEventTimeout,
+        request.signal,
+        isRealOutput,
+        (event: unknown) => {
+          const usage = reportedUsageFromPayload(event);
+          if (usage != null) observeUpstreamAttemptUsage(c, usage);
+        },
+      );
     } catch (e) {
       detach();
       const code = (e && typeof e === 'object' && 'code' in e) ? String((e as { code: unknown }).code) : GUARD_ERROR.EMPTY;
@@ -133,11 +123,10 @@ export async function handleSuccess(s: {
         return { response: gatewayError(request, env, route, 499, 'Client closed the request before the first stream event.', requestId) };
       }
       if (c.hedgeAbort?.signal.aborted) {
-        // Lost the hedge race while waiting for the first event: same neutral
-        // treatment as the fetch-phase loss — slow is not broken. This holds
-        // REGARDLESS of the guard error code: once the peer committed, this
-        // side was cancelled, and a body-reader unwinding caused by our own
-        // abort must not be miscounted as a first-event timeout.
+        // A peer committed while this attempt was waiting for real output.
+        // Reliability stays neutral, but the physical dispatch still belongs
+        // in upstream accounting (including any usage seen in lifecycle events).
+        recordUndeliveredUpstreamAttempt(c, node);
         state.attempted.add(node.id);
         state.dispatches++;
         if (!c.hedgedAttempt) state.logicalAttempts++;
@@ -182,9 +171,17 @@ export async function handleSuccess(s: {
     }
 
     if (route === 'openai_chat' && c.conversionContext) {
+      let upstreamUsage: unknown = null;
       const openAiStream = createOpenAIChatStreamFromAnthropic(guarded.body, {
         messageId: `chatcmpl-${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`,
         model: requestedModel,
+        onUpstreamUsage: (u: unknown) => {
+          upstreamUsage = mergeReportedUsage(upstreamUsage, u);
+          // Raw Anthropic usage is the accounting source of truth. The
+          // translated OpenAI usage chunk is client-facing only and can omit
+          // Anthropic-specific cache creation/read fields.
+          observeUpstreamAttemptUsage(c, u);
+        },
       });
       const tracked = trackStreamResponse(
         new Response(openAiStream, { status: 200, headers }),
@@ -192,10 +189,10 @@ export async function handleSuccess(s: {
           idleTimeoutMs: limits.streamIdleTimeoutMs,
           completionMarker: /data:\s*\[DONE\]\s*(?:\r?\n|$)/,
           ...(needsModelRewrite ? { rewriteModel: requestedModel } : {}),
-          onUsage: (u: unknown) => recordTokens(c, node, u),
+          onUsage: () => recordTokens(c, node, upstreamUsage),
           interruptionChunk: (reason: string | null) => streamInterruptionChunk(route, requestId, reason),
           upstreamFailureReason: hiddenStreamFailure,
-          ...makeNodeStreamTrack(c, node, latencyMs),
+          ...makeNodeStreamTrack(c, node, latencyMs, { observeStreamUsage: false }),
         },
       );
       return { response: new Response(tracked.body, { status: 200, headers }) };
@@ -223,19 +220,26 @@ export async function handleSuccess(s: {
         messageId,
         model: requestedModel,
         inputTokens,
-        onUpstreamUsage: (u: unknown) => { upstreamUsage = u; },
+        onUpstreamUsage: (u: unknown) => {
+          upstreamUsage = mergeReportedUsage(upstreamUsage, u);
+          // This is the raw OpenAI provider report. The Anthropic stream also
+          // contains a synthetic message_start usage derived from the local
+          // input-token estimate; that synthetic value must never enter
+          // upstream accounting.
+          observeUpstreamAttemptUsage(c, u);
+        },
       });
       const tracked = trackStreamResponse(
         new Response(anthropicStream, { status: 200, headers }),
         {
           idleTimeoutMs: limits.streamIdleTimeoutMs,
           completionMarker: /event:\s*message_stop\b/,
-          onUsage: () => {
-            if (upstreamUsage !== null) recordTokens(c, node, upstreamUsage);
-          },
+          // A clean delivery still counts even when the upstream omitted usage;
+          // recordTokens(null) records coverage-missing without inventing tokens.
+          onUsage: () => recordTokens(c, node, upstreamUsage),
           interruptionChunk: (reason: string | null) => streamInterruptionChunk(route, requestId, reason),
           upstreamFailureReason: hiddenStreamFailure,
-          ...makeNodeStreamTrack(c, node, latencyMs),
+          ...makeNodeStreamTrack(c, node, latencyMs, { observeStreamUsage: false }),
         },
       );
       return { response: new Response(tracked.body, { status: 200, headers }) };
@@ -265,6 +269,7 @@ export async function handleSuccess(s: {
           ? Math.trunc(Number(data.error?.status))
           : 502;
         const classification = classifyUpstreamStatus(status, upstream.headers, env, undefined, data.error?.message || '');
+        recordUndeliveredUpstreamAttempt(c, node, reportedUsageFromPayload(data));
         recordOutcome(state, node, classification, c, { latencyMs, status, diagnostic: trimDiagnostic(data.error.message || 'embedded error', 200) });
         if (classification.action === 'stop') {
           return { response: buildClientErrorResponse(request, env, route, requestId, requestedModel, status, JSON.stringify(data), state, exposeUpstreamInfo) };
@@ -273,6 +278,7 @@ export async function handleSuccess(s: {
       }
       if (!isOpenAIResponsesObjectMeaningful(data)) {
         const classification = classifyEmptyResponse();
+        recordUndeliveredUpstreamAttempt(c, node, reportedUsageFromPayload(data));
         recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: 'Responses object carried no meaningful output' });
         return { rotate: true, kind: classification.kind };
       }
@@ -309,6 +315,7 @@ export async function handleSuccess(s: {
           : 502;
         const message = data.error?.message || 'Upstream returned an embedded error.';
         const classification = classifyUpstreamStatus(status, upstream.headers, env, undefined, message);
+        recordUndeliveredUpstreamAttempt(c, node, reportedUsageFromPayload(data));
         recordOutcome(state, node, classification, c, { latencyMs, status, diagnostic: trimDiagnostic(message, 200) });
         if (classification.action === 'stop') {
           return { response: buildClientErrorResponse(request, env, route, requestId, requestedModel, status, JSON.stringify(data), state, exposeUpstreamInfo) };
@@ -317,13 +324,15 @@ export async function handleSuccess(s: {
       }
       if (!isAnthropicMessageMeaningful(data)) {
         const classification = classifyEmptyResponse();
+        recordUndeliveredUpstreamAttempt(c, node, reportedUsageFromPayload(data));
         recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: 'cross-protocol Anthropic message carried no meaningful output' });
         return { rotate: true, kind: classification.kind };
       }
       const converted = convertAnthropicResponseToOpenAIChat(data);
       converted.model = requestedModel;
       recordNodeSuccess(c, node, latencyMs);
-      recordTokens(c, node, converted?.usage);
+      // Persist the raw Anthropic usage, not the client-facing converted shape.
+      recordTokens(c, node, data?.usage);
       if (clientWantsStream) return { response: synthesizeSseFromCompletion(converted, env, request, extraHeaders) };
       return { response: jsonResponse(200, converted, env, request, extraHeaders) };
     } catch (error) {
@@ -345,6 +354,7 @@ export async function handleSuccess(s: {
         const data = await collectOpenAIStreamObject(upstream, request.signal, c.attemptDeadlineMs);
         if (!isOpenAIChatCompletionMeaningful(data)) {
           const classification = classifyEmptyResponse();
+          recordUndeliveredUpstreamAttempt(c, node, reportedUsageFromPayload(data));
           recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: 'assembled chat completion carried no meaningful output' });
           return { rotate: true, kind: classification.kind };
         }
@@ -392,6 +402,7 @@ export async function handleSuccess(s: {
         ? Math.trunc(Number(data.error?.status))
         : 502;
       const classification = classifyUpstreamStatus(status, upstream.headers, env, undefined, data.error?.message || '');
+      recordUndeliveredUpstreamAttempt(c, node, reportedUsageFromPayload(data));
       recordOutcome(state, node, classification, c, { latencyMs, status, diagnostic: trimDiagnostic(data.error.message || 'embedded error', 200) });
       if (classification.action === 'stop') {
         return { response: buildClientErrorResponse(request, env, route, requestId, requestedModel, status, text, state, exposeUpstreamInfo) };
@@ -400,6 +411,7 @@ export async function handleSuccess(s: {
     }
     if (!isOpenAIChatCompletionMeaningful(data)) {
       const classification = classifyEmptyResponse();
+      recordUndeliveredUpstreamAttempt(c, node, reportedUsageFromPayload(data));
       recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: 'chat completion carried no meaningful output' });
       return { rotate: true, kind: classification.kind };
     }
@@ -427,6 +439,7 @@ export async function handleSuccess(s: {
           : 502;
         const message = data.error?.message || 'Upstream returned an embedded error.';
         const classification = classifyUpstreamStatus(status, upstream.headers, env, undefined, message);
+        recordUndeliveredUpstreamAttempt(c, node, reportedUsageFromPayload(data));
         recordOutcome(state, node, classification, c, { latencyMs, status, diagnostic: trimDiagnostic(message, 200) });
         if (classification.action === 'stop') {
           return { response: buildClientErrorResponse(request, env, route, requestId, requestedModel, status, JSON.stringify(data), state, exposeUpstreamInfo) };
@@ -435,13 +448,15 @@ export async function handleSuccess(s: {
       }
       if (!isOpenAIChatCompletionMeaningful(data)) {
         const classification = classifyEmptyResponse();
+        recordUndeliveredUpstreamAttempt(c, node, reportedUsageFromPayload(data));
         recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: 'cross-protocol OpenAI Chat completion carried no meaningful output' });
         return { rotate: true, kind: classification.kind };
       }
       const converted = convertOpenAIToAnthropicResponse(data);
       converted.model = requestedModel;
       recordNodeSuccess(c, node, latencyMs);
-      recordTokens(c, node, convertOpenAIUsageToAnthropic(data?.usage));
+      // Persist raw OpenAI usage; conversion is only a client-facing concern.
+      recordTokens(c, node, data?.usage);
       if (clientWantsStream) return { response: synthesizeAnthropicFromMessage(converted, { ...extraHeaders, ...corsHeaders(request, env) }) };
       return { response: jsonResponse(200, converted, env, request, extraHeaders) };
     } catch (error) {
@@ -464,6 +479,7 @@ export async function handleSuccess(s: {
     if (data && typeof data === 'object' && (data.type === 'error' || data.error)) {
       const message = data.error?.message || 'Upstream returned an embedded error.';
       const classification = classifyUpstreamStatus(502, upstream.headers, env, undefined, message);
+      recordUndeliveredUpstreamAttempt(c, node, reportedUsageFromPayload(data));
       recordOutcome(state, node, classification, c, { latencyMs, status: 502, diagnostic: trimDiagnostic(message, 200) });
       if (classification.action === 'stop') {
         return { response: buildClientErrorResponse(request, env, route, requestId, requestedModel, 502, JSON.stringify(data), state, exposeUpstreamInfo) };
@@ -472,6 +488,7 @@ export async function handleSuccess(s: {
     }
     if (!isAnthropicMessageMeaningful(data)) {
       const classification = classifyEmptyResponse();
+      recordUndeliveredUpstreamAttempt(c, node, reportedUsageFromPayload(data));
       recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: 'Anthropic message carried no meaningful output' });
       return { rotate: true, kind: classification.kind };
     }

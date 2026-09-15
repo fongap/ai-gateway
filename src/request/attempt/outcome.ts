@@ -21,14 +21,12 @@ import { KIND } from '../../reliability/classify.ts';
 import type { FailureClassification, FailureKind } from '../../reliability/classify.ts';
 import { trimDiagnostic } from '../../protocol/http.ts';
 import { upstreamModelOf } from '../response-helpers.ts';
+import { recordUndeliveredUpstreamAttempt } from './observability.ts';
 import type { LoopState, AttemptContext, AttemptOutcome } from '../../types/request.ts';
 import type { RuntimeNode } from '../../types/node.ts';
 
 export function rotateWithNeutralEnd(state: LoopState, node: RuntimeNode, reason: FailureKind, c: Partial<AttemptContext> = {}, preDispatch: boolean = false): AttemptOutcome {
   state.attempted.add(node.id);
-  // Pre-dispatch neutrals (invalid base URL) never reached an upstream, so they
-  // do not consume any budget — no dispatch/attempt charge, and the outcome
-  // reports budgetCharged:false exactly like the rate-limiter deny.
   if (!preDispatch) {
     state.dispatches++;
     if (!c.hedgedAttempt) state.logicalAttempts++;
@@ -51,20 +49,17 @@ export function rotateWithNeutralEnd(state: LoopState, node: RuntimeNode, reason
   return preDispatch ? { rotate: true, budgetCharged: false, kind: reason } : { rotate: true, kind: reason };
 }
 
-// Aggregate failure-kind counter for the exhausted response. Kinds alone (no
-// node ids / no ordering) are safe to expose to clients by default and answer
-// the only question that matters when everything failed: HOW did it fail?
 export function noteFailure(state: LoopState, kind: FailureKind): void {
   state.failureKinds[kind] = (state.failureKinds[kind] || 0) + 1;
 }
 
-// Record a classified attempt outcome exactly once. `c` is the dispatch
-// context (attemptNode args): its hedgedAttempt / hedgedWithTwin flags decide
-// charging and the hedged log field, headersMs feeds the timing fields.
-//   * dispatches counts every real upstream dispatch (never a pre-dispatch deny);
-//   * logicalAttempts counts the logical attempt the dispatch belongs to — a
-//     hedge twin belongs to its primary's attempt and does not increment it.
+// Every call here represents a REAL upstream dispatch that did not become the
+// delivered response. Finalize its upstream-attempt usage before reliability
+// bookkeeping. The helper is exactly-once per AttemptContext and records
+// missing coverage instead of estimating tokens when no report was observed.
 export function recordOutcome(state: LoopState, node: RuntimeNode, classification: FailureClassification, c: AttemptContext, { latencyMs = -1, ttftWaitMs, status = 0, diagnostic }: { latencyMs?: number, ttftWaitMs?: number, status?: number, diagnostic?: string } = {}): void {
+  recordUndeliveredUpstreamAttempt(c, node);
+
   state.attempted.add(node.id);
   state.dispatches++;
   if (!c?.hedgedAttempt) state.logicalAttempts++;
@@ -74,12 +69,6 @@ export function recordOutcome(state: LoopState, node: RuntimeNode, classificatio
   let tier1RateLimitCooldownMs: number | null = null;
 
   if (node.tier === 'tier-1') {
-    // Tier 1 owns its own failure state machine. Logical-model performance and
-    // timeout/5xx state remain keyed by the requested model. 429 cooldown is
-    // different: one runtime node is one configured credential/key, so the
-    // adaptive ladder is bound to (provider, key-slot=node.id), never to the
-    // provider as a whole and never to a logical model. Raw credentials never
-    // enter the state key. model_missing is keyed by the resolved upstream id.
     releaseTier1Slot(node.id, c.tier1ReleaseToken);
     if (classification.action === 'neutral') {
       bumpNodeCounters(node.id, { requests: 1 });
@@ -105,9 +94,6 @@ export function recordOutcome(state: LoopState, node: RuntimeNode, classificatio
       bumpNodeCounters(node.id, { requests: 1, failures: 1 });
     }
   } else if (classification.modelScoped) {
-    // A 404 "model not found" is a (node, model) mapping mismatch, not a node
-    // health issue: cool the PAIR only, leave the node healthy for its other
-    // models, do not penalize health, do not feed the circuit.
     recordModelMissing(node.id, state.requestedModel, classification.cooldownMs || 0);
   } else if (classification.action === 'neutral') {
     recordNeutralEnd(node.id);
