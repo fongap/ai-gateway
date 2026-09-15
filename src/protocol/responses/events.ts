@@ -163,14 +163,21 @@ export function responsesErrorTypeForStatus(status: number): ResponsesErrorType 
   return 'api_error';
 }
 
-// OpenAI-style error envelope used by /v1/responses responses.
-export function buildResponsesError(message: unknown, errorType?: string | null): { error: { message: string, type: string, param: null, code: null } } {
+// OpenAI-style error envelope used by /v1/responses responses. `code` remains
+// null for ordinary protocol/upstream errors. Gateway-owned terminal routing
+// failures may supply a stable `gateway_*` code without changing the envelope
+// shape Codex/OpenAI clients already parse.
+export function buildResponsesError(
+  message: unknown,
+  errorType?: string | null,
+  errorCode: string | null = null,
+): { error: { message: string, type: string, param: null, code: string | null } } {
   return {
     error: {
       message: String(message || 'Unknown gateway error.'),
       type: errorType || 'api_error',
       param: null,
-      code: null,
+      code: errorCode,
     },
   };
 }
