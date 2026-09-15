@@ -187,7 +187,7 @@ export function buildExhaustedResponse(
   let status: number;
   let message: string;
   let retryAfterSec: number | undefined;
-  let gatewayCode = GATEWAY_ERROR_CODE.UPSTREAM_EXHAUSTED;
+  let gatewayCode: string = GATEWAY_ERROR_CODE.UPSTREAM_EXHAUSTED;
   if (nothingAttempted) {
     status = 429;
     gatewayCode = GATEWAY_ERROR_CODE.NO_DISPATCHABLE_NODE;
