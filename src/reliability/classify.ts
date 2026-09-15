@@ -83,26 +83,51 @@ export type FailureClassification = {
 
 const CLIENT_STOP_STATUSES = new Set([400, 413, 415, 422]);
 
+function rateLimitClassification(headers: Headers, env: Record<string, unknown>, now: number): FailureClassification {
+  const limits = getLimits(env);
+  const retryAfterMs = parseRetryAfterMs(headers, now);
+  // Tier 2/3 retain the configured fixed fallback through cooldownMs. Tier 1
+  // reads retryAfterMs separately so an absent header can drive its own
+  // repeated-rate-limit exponential backoff instead of looking explicit.
+  return {
+    kind: KIND.RATE_LIMIT,
+    action: 'rotate',
+    cooldownMs: retryAfterMs || limits.rateLimitCooldownMs,
+    retryAfterMs,
+    counted: false,
+    explicitRetryAfter: retryAfterMs > 0,
+  };
+}
+
+// Some providers use HTTP 413 for account/model throughput limits instead of
+// HTTP 429. Example: an input-tokens-per-minute (ITPM) limit can yield a body
+// such as "Limit 7000, Requested 7398". That is provider capacity, not a
+// malformed client payload: another account/provider/model may still serve the
+// same request, so the gateway should rotate and cool the failing node.
+//
+// Keep this deliberately narrow. A normal payload-size 413 remains a client
+// stop; only explicit rate/quota vocabulary upgrades it to RATE_LIMIT.
+function looksLikeProviderRateLimit(body: unknown): boolean {
+  const text = String(body || '').toLowerCase();
+  if (!text) return false;
+  if (/\b(?:itpm|tpm|rpm)\b/.test(text)) return true;
+  if (/\b(?:input\s+)?tokens?\s+per\s+minute\b/.test(text)) return true;
+  if (/\brequests?\s+per\s+minute\b/.test(text)) return true;
+  if (/\brate[ _-]?limit(?:ed|ing)?\b/.test(text)) return true;
+  return false;
+}
+
 // Classify a non-OK upstream response.
 // Returns { kind, action: 'rotate'|'stop'|'neutral', cooldownMs, counted }.
 // `counted` = transient failure that feeds the circuit breaker.
-// `body` (optional 5th arg) carries the upstream error text, used to tell a
-// "model not found" 404 apart from an "endpoint not found" 404.
+// `body` (optional 5th arg) carries the upstream error text, used to tell
+// provider-capacity 413 and model-missing 404 responses from client/config
+// failures that happen to share those HTTP status codes.
 export function classifyUpstreamStatus(status: number, headers: Headers, env: Record<string, unknown>, now: number = Date.now(), body: unknown = ''): FailureClassification {
   const limits = getLimits(env);
-  if (status === 429) {
-    const retryAfterMs = parseRetryAfterMs(headers, now);
-    // Tier 2/3 retain the configured fixed fallback through cooldownMs. Tier 1
-    // reads retryAfterMs separately so an absent header can drive its own
-    // repeated-429 exponential backoff instead of looking explicit.
-    return {
-      kind: KIND.RATE_LIMIT,
-      action: 'rotate',
-      cooldownMs: retryAfterMs || limits.rateLimitCooldownMs,
-      retryAfterMs,
-      counted: false,
-      explicitRetryAfter: retryAfterMs > 0,
-    };
+  if (status === 429) return rateLimitClassification(headers, env, now);
+  if (status === 413 && looksLikeProviderRateLimit(body)) {
+    return rateLimitClassification(headers, env, now);
   }
   if (status === 401 || status === 403) {
     return { kind: KIND.AUTH, action: 'rotate', cooldownMs: limits.authFailCooldownMs, counted: false };
@@ -210,7 +235,7 @@ export function classifyNonJsonBody(): FailureClassification {
   return { kind: KIND.NON_JSON_BODY, action: 'rotate', cooldownMs: 5_000, counted: true };
 }
 
-// The upstream returned HTTP 200 with a body that parsed as the expected
+// The upstream returned HTTP 200 with a well-formed body that parsed as the expected
 // JSON protocol but contains no meaningful model output (empty choices,
 // empty content, role-only). Treat it like any other unusable 200: rotate to
 // the next node, apply a short cooldown, and count it as a transient failure
