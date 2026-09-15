@@ -19,11 +19,18 @@ const LIMITS: Record<string, { min: number, max: number, def: number }> = Object
 const RETRY_AFTER_MIN_MS = 1_000;
 const RETRY_AFTER_MAX_MS = 600_000;
 
-// Floor for one attempt's response-header wait. Healthy upstreams return
-// headers in seconds; the floor only matters when the fair share of a large
-// remaining budget would undercut a viable slow upstream.
+// Floors for phase-local waits. These are not request-wide admission limits;
+// the absolute attempt deadline and remaining request budget still win.
 export const MIN_ATTEMPT_HEADERS_MS = 20_000;
 export const MIN_ATTEMPT_FIRST_EVENT_MS = 5_000;
+
+// Reserve a small escape window for each later logical attempt instead of
+// dividing the whole request budget evenly up front. Five seconds is enough
+// for a healthy alternate to return headers / an early event or fail fast,
+// while allowing the preferred candidate to use its configured work window.
+// When the total budget is too tight to reserve 5s per later attempt, the
+// allocator automatically falls back to an equal share.
+export const MIN_FAILOVER_RESERVE_MS = 5_000;
 
 export type Limits = {
   headersTimeoutMs: number,
@@ -38,13 +45,39 @@ export type Limits = {
   gatewayKeyRpm: number,
 }
 
-// One dispatch gets one wall-clock slice. Response headers and the first SSE
-// event both consume this SAME slice; callers turn it into an absolute
-// deadline. Without an attempt deadline the two serial phases could each take
-// a separately calculated fair share and still starve later candidates.
-export function attemptBudgetSliceMs(remainingBudgetMs: number, remainingAttempts: number): number {
+// Allocate one logical attempt's absolute wall-clock window.
+//
+// Old behavior divided the remaining budget evenly by every candidate that
+// might still be tried. With the default 60s / 5-attempt policy that gave the
+// preferred candidate only ~12s total for BOTH response headers and the first
+// meaningful event, so a healthy coding/reasoning model could be killed well
+// before its configured FIRST_EVENT_TIMEOUT_MS.
+//
+// The reserve-aware allocator gives the current candidate as much of its
+// configured work window as possible, while keeping a minimum escape reserve
+// for each later candidate. If the request budget is already tight, reserve
+// per later candidate shrinks to the equal-share value, so the allocator never
+// starves the tail. `attemptCeilingMs` is normally headersTimeout + effective
+// firstEventTimeout; callers may omit it for an uncapped request-budget slice.
+export function attemptBudgetSliceMs(
+  remainingBudgetMs: number,
+  remainingAttempts: number,
+  attemptCeilingMs: number = Number.POSITIVE_INFINITY,
+): number {
   const attempts = Math.max(1, Math.trunc(remainingAttempts) || 1);
-  return Math.max(1, Math.floor(Math.max(0, remainingBudgetMs) / attempts));
+  const budget = Math.max(0, Math.floor(remainingBudgetMs));
+  if (budget <= 0) return 1;
+
+  const ceiling = Number.isFinite(attemptCeilingMs)
+    ? Math.max(1, Math.floor(attemptCeilingMs))
+    : Number.POSITIVE_INFINITY;
+  if (attempts === 1) return Math.max(1, Math.min(budget, ceiling));
+
+  const equalShare = Math.max(1, Math.floor(budget / attempts));
+  const reservePerLater = Math.min(MIN_FAILOVER_RESERVE_MS, equalShare);
+  const reservedForLater = reservePerLater * (attempts - 1);
+  const availableNow = Math.max(1, budget - reservedForLater);
+  return Math.max(1, Math.min(availableNow, ceiling));
 }
 
 function fairShareTimeoutMs(configuredTimeoutMs: number, remainingBudgetMs: number, remainingAttempts: number, floorMs: number): number {
@@ -59,25 +92,19 @@ function fairShareTimeoutMs(configuredTimeoutMs: number, remainingBudgetMs: numb
   return Math.max(1, wait);
 }
 
-// Per-attempt response-header wait. The whole-request failover budget is
-// divided evenly across the attempts that may still be needed, so the first
-// node cannot consume UPSTREAM_HEADERS_TIMEOUT_MS in full and starve every
-// later candidate (with 120s headers / 180s budget the second node used to be
-// left ~60s, and a two-timeout request died at 504 with only half its budget
-// spent on real candidates). The result is still capped by
-// UPSTREAM_HEADERS_TIMEOUT_MS and by the remaining budget itself — a single
-// remaining attempt keeps the old behavior exactly (share = remaining).
+// Phase-local response-header wait. Dispatch normally passes one already
+// allocated attempt window here, so the configured header timeout is preserved
+// unless the absolute attempt/request budget is tighter. The multi-attempt
+// form remains supported for isolated callers/tests.
 export function attemptHeadersTimeoutMs(headersTimeoutMs: number, remainingBudgetMs: number, remainingAttempts: number): number {
   return fairShareTimeoutMs(
     headersTimeoutMs, remainingBudgetMs, remainingAttempts, MIN_ATTEMPT_HEADERS_MS,
   );
 }
 
-// The first-event guard shares the same whole-request budget as the headers
-// wait.  Split it across the candidates that can still be attempted too;
-// otherwise an upstream that returns HTTP 200/SSE headers and then stays
-// silent can consume FIRST_EVENT_TIMEOUT_MS in full and recreate the exact
-// starvation that fair header waits prevent.
+// Phase-local first-event guard. It consumes only the time left in the same
+// absolute attempt window after headers, and never exceeds the configured
+// first-event timeout. Primary and hedge twin share that same deadline.
 export function attemptFirstEventTimeoutMs(firstEventTimeoutMs: number, remainingBudgetMs: number, remainingAttempts: number): number {
   return fairShareTimeoutMs(
     firstEventTimeoutMs, remainingBudgetMs, remainingAttempts, MIN_ATTEMPT_FIRST_EVENT_MS,
