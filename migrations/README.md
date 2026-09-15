@@ -50,6 +50,7 @@ Keep each new migration focused and forward-compatible. Do not rely on a Worker 
 | `0006_token_usage_weekly.sql` | Adds UTC+8 weekly aggregation for rolling activity views |
 | `0007_drop_redundant_usage_indexes.sql` | Removes redundant indexes already covered by primary-key indexes |
 | `0008_token_usage_cache_tokens.sql` | Adds Anthropic prompt-cache creation/read token breakdown columns to usage tables |
+| `0009_upstream_attempt_usage.sql` | Adds physical upstream-attempt usage alongside delivered-response statistics; historical values are initialized from known delivered usage as a lower bound |
 
 The SQL files themselves are the schema-change source of truth; this table is only an index.
 
