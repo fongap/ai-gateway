@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
 //
-// 使用情况 section — KPI strip, 52-week heatmap, model usage donut + bars.
-// Extracted from pages.ts for the v5 Compact Quiet Technical Interface.
+// 使用情况 section — physical upstream-attempt token KPIs, heatmap and model
+// distribution. Public Model Status / TTFT still use successful-delivery data.
 
 import {
-  queryTokenSummary,
-  queryTokenDailySeries,
-  queryTokenModelUsage,
+  queryUpstreamTokenSummary,
+  queryUpstreamTokenDailySeries,
+  queryUpstreamTokenModelUsage,
   utc8DayStartUtcMs,
   isoDayUtc8,
 } from '../observability/token-usage-store.ts';
@@ -20,9 +20,6 @@ import type { TtftEntry } from './model-status-view.ts';
 
 const DAY_MS = 86_400_000;
 const HEATMAP_WEEKS = 52;
-
-// Teal ramp shared by the donut ring and the bar list.  Rank 1 gets the
-// deepest teal, later ranks fade towards a light tint.
 const TEAL_SHADES = ['#0f5d53', '#3f8b7c', '#7cb4a5', '#a9d0c4', '#dce9e3'];
 
 function modelShade(i: number, n: number): string {
@@ -32,19 +29,6 @@ function modelShade(i: number, n: number): string {
   const c = from.map((f, k) => Math.round(f + (to[k] - f) * t));
   return `#${c.map((v) => v.toString(16).padStart(2, '0')).join('')}`;
 }
-
-// ---- Heatmap ---------------------------------------------------------------
-//
-// The heatmap is now built through the shared `buildCalendarHeatmap`
-// utility (`src/dashboard/heatmap.ts`) and rendered by `renderHeatmap`
-// (`src/dashboard/heatmap-view.ts`). The utility supports two modes
-// (rolling-52-weeks and calendar-year) and is the single source of
-// truth for the date / weekday / month plumbing. The renderer is the
-// single source of truth for the HTML output.
-//
-// `buildHeatmap` is kept as a thin adapter so the existing call-site
-// in `usageSection` and the test contract (which asserts on the HTML
-// output) continue to work without churn.
 
 export function buildHeatmap(daily: Map<string, DailyCellData> | null, now: number, coverage?: number | null): { cells: string[], labels: string[], ariaLabel: string, weekCount: number } {
   const heatmap = buildCalendarHeatmap({
@@ -58,12 +42,8 @@ export function buildHeatmap(daily: Map<string, DailyCellData> | null, now: numb
     valueKey: 'total',
     coverage,
   });
-  // weekCount feeds the shared `--week-count` CSS variable: the heatmap
-  // grid and the month-label row MUST use the same week-column tracks.
   return { cells, labels, ariaLabel, weekCount: heatmap.weeks.length };
 }
-
-// ---- KPI -------------------------------------------------------------------
 
 function statCell(value: string, label: string): string {
   const exact = typeof value === 'string' && /^[\d,]+$/.test(value) ? Number(value.replace(/,/g, '')) : null;
@@ -71,12 +51,9 @@ function statCell(value: string, label: string): string {
   return `<div class="stat"><div class="stat-value"${titleAttr}>${value}</div><div class="stat-label">${label}</div></div>`;
 }
 
-// ---- Donut -----------------------------------------------------------------
-
 const DONUT_R = 60;
 const DONUT_STROKE = 16;
 const DONUT_CIRC = 2 * Math.PI * DONUT_R;
-
 type ModelUsageRow = { model: string, total: number, requests: number };
 
 function renderDonut(rows: ModelUsageRow[]): string {
@@ -90,12 +67,12 @@ function renderDonut(rows: ModelUsageRow[]): string {
       `stroke="${modelShade(i, rows.length)}" stroke-width="${DONUT_STROKE}" ` +
       `stroke-dasharray="${len} ${DONUT_CIRC - len}" stroke-dashoffset="${-acc}" ` +
       `transform="rotate(-90 78 78)" ` +
-      `data-tooltip="${escapeHtml(`${r.model}\n${fmtTokens(r.total)} Token · ${fmtInt(r.requests)} 次请求 · ${(frac * 100).toFixed(1)}%`)}" ` +
+      `data-tooltip="${escapeHtml(`${r.model}\n${fmtTokens(r.total)} Token · ${fmtInt(r.requests)} 次上游调用 · ${(frac * 100).toFixed(1)}%`)}" ` +
       `tabindex="0" aria-label="${escapeHtml(`${r.model} ${(frac * 100).toFixed(1)}%`)}"></circle>`;
     acc += len;
     return seg;
   }).join('');
-  return `<div class="donut" role="img" aria-label="各模型 Token 占比，统计窗口为近 7 天">
+  return `<div class="donut" role="img" aria-label="各模型上游 Token 占比，统计窗口为近 7 天">
   <svg viewBox="0 0 156 156" aria-hidden="true">
     <circle cx="78" cy="78" r="${DONUT_R}" fill="none" stroke="var(--line-soft)" stroke-width="${DONUT_STROKE}"></circle>
     ${segments}
@@ -104,14 +81,12 @@ function renderDonut(rows: ModelUsageRow[]): string {
 </div>`;
 }
 
-// ---- Model usage bars ------------------------------------------------------
-
 function renderBars(rows: ModelUsageRow[]): string {
   const max = rows.reduce((m, r) => (r.total > m ? r.total : m), 0);
   const items = rows.map((r, i) => {
     const color = modelShade(i, rows.length);
     const pct = max > 0 ? Math.max(2, Math.round((r.total / max) * 100)) : 0;
-    const exactTitle = `${fmtTokens(r.total)} Token · ${fmtInt(r.requests)} 次请求`;
+    const exactTitle = `${fmtTokens(r.total)} Token · ${fmtInt(r.requests)} 次上游调用`;
     return `<div class="bar-row" style="--c:${color};--w:${pct}%" data-tooltip="${escapeHtml(exactTitle)}" tabindex="0" aria-label="${escapeHtml(exactTitle)}">` +
       `<div class="bar-name"><i></i>${escapeHtml(r.model)}</div>` +
       `<div class="bar-track"><i></i></div>` +
@@ -120,26 +95,18 @@ function renderBars(rows: ModelUsageRow[]): string {
   return `<div class="bars">${items}</div>`;
 }
 
-// ---- Model usage section ---------------------------------------------------
-//
-// `officialNames` maps the canonical D1 statistics key (trim + lowercase) to
-// the official logical model ID from the node mappings, so the usage panel
-// presents the SAME names as the model status section (Code-Max, not
-// code-max). Unknown keys (model not declared on any node) fall back to the
-// raw statistics key.
-
 type ModelUsageResult = { available?: boolean, rows?: ModelUsageRow[], error?: string };
 
 function renderModelUsage(modelUsage: ModelUsageResult | null | undefined, officialNames: Map<string, string> | null | undefined): string {
   if (!modelUsage || modelUsage.available === false) {
-    return `<div class="subhead" style="margin-bottom:32px"><b>模型使用</b></div>` +
+    return `<div class="subhead" style="margin-bottom:32px"><b>模型上游消耗</b></div>` +
       `<div class="model-usage-empty">—</div>`;
   }
   const displayName = (key: string): string => (officialNames instanceof Map && officialNames.get(key)) || key;
   const rows: ModelUsageRow[] = (Array.isArray(modelUsage.rows) ? modelUsage.rows : [])
     .map((r) => ({ ...r, model: displayName(r.model) }));
   if (!rows.length) {
-    return `<div class="subhead" style="margin-bottom:32px"><b>模型使用</b></div>` +
+    return `<div class="subhead" style="margin-bottom:32px"><b>模型上游消耗</b></div>` +
       `<div class="model-usage-empty">近 7 天暂无数据</div>`;
   }
   const TOP_N = 4;
@@ -152,37 +119,24 @@ function renderModelUsage(modelUsage: ModelUsageResult | null | undefined, offic
       requests: rest.reduce((s, r) => s + r.requests, 0),
     }];
   }
-  const donut = renderDonut(chartRows);
-  const bars = renderBars(chartRows);
-  return `<div class="subhead" style="margin-bottom:32px"><b>模型使用</b></div>` +
-    `<div class="usage-split">${donut}${bars}</div>`;
+  return `<div class="subhead" style="margin-bottom:32px"><b>模型上游消耗</b></div>` +
+    `<div class="usage-split">${renderDonut(chartRows)}${renderBars(chartRows)}</div>`;
 }
-
-// ---- Full section ----------------------------------------------------------
 
 function isSummaryAvailable(s: SummaryResult | null): s is Extract<SummaryResult, { available: true }> {
   return s != null && s.available === true;
 }
-
 function isSummaryError(s: SummaryResult | null): s is { available: false, error: string } {
   return s != null && s.available === false;
 }
-
 function isDailyAvailable(d: DailyResult | null): d is Map<string, HeatmapDataEntry> {
   return d instanceof Map;
 }
-
 function isDailyError(d: DailyResult | null): d is { available: false, error: string } {
   return d != null && !(d instanceof Map);
 }
-
-function dailyErrorMessage(d: DailyResult | null): string | undefined {
-  return isDailyError(d) ? d.error : undefined;
-}
-
-function summaryErrorMessage(s: SummaryResult | null): string | undefined {
-  return isSummaryError(s) ? s.error : undefined;
-}
+function dailyErrorMessage(d: DailyResult | null): string | undefined { return isDailyError(d) ? d.error : undefined; }
+function summaryErrorMessage(s: SummaryResult | null): string | undefined { return isSummaryError(s) ? s.error : undefined; }
 
 export async function usageSection(env: Record<string, unknown>, now: number = Date.now(), stats: DashboardStats | null = null, officialNames: Map<string, string> | null = null): Promise<string> {
   const cache = stats || await getCachedDashboardStats(env, now);
@@ -198,16 +152,14 @@ export async function usageSection(env: Record<string, unknown>, now: number = D
         statCell(fmtTokens(summary.d7.total), '7 天'),
         statCell(fmtTokens(summary.cumulative.total), '累计'),
       ].join('')
-    : [
-        statCell('—', '今日'),
-        statCell('—', '近 24 小时'),
-        statCell('—', '7 天'),
-        statCell('—', '累计'),
-      ].join('');
-  let totalRequests = 0;
-  if (available && dailyMap) {
-    for (const v of dailyMap.values()) totalRequests += v.requests;
-  }
+    : [statCell('—', '今日'), statCell('—', '近 24 小时'), statCell('—', '7 天'), statCell('—', '累计')].join('');
+
+  let totalAttempts = 0;
+  if (available && dailyMap) for (const v of dailyMap.values()) totalAttempts += v.requests;
+  const coverageText = summaryOk && summary.coverage !== null
+    ? ` · Usage 覆盖 ${(summary.coverage * 100).toFixed(1)}%`
+    : '';
+
   const errors: string[] = [];
   if (summaryErrorMessage(summary)) errors.push(summaryErrorMessage(summary) as string);
   if (dailyErrorMessage(daily)) errors.push(dailyErrorMessage(daily) as string);
@@ -217,32 +169,30 @@ export async function usageSection(env: Record<string, unknown>, now: number = D
   if (errors.length && env && env.LOG_LEVEL !== 'none') {
     try { console.warn(`[dashboard D1 degraded] ${errors.join('; ')}`); } catch { /* ignore */ }
   }
+
   const activity = available && dailyMap
     ? (() => {
         const { cells, labels, ariaLabel, weekCount } = buildHeatmap(dailyMap as Map<string, DailyCellData>, now, summaryOk ? summary.coverage : null);
-        // `--week-count` makes `.months` share the heatmap's exact week
-        // column tracks, so each label's grid-column anchoring is real
-        // positioning, not a flex approximation.
         const weekTracks = `--week-count:${weekCount}`;
-        return `<div class="heatmap-wrap" tabindex="0" role="img" ` +
-          `aria-label="${escapeHtml(ariaLabel)}">` +
+        return `<div class="heatmap-wrap" tabindex="0" role="img" aria-label="${escapeHtml(ariaLabel)}">` +
           `<div class="heatmap" style="${weekTracks}" aria-hidden="true">${cells.join('')}</div>` +
           `<div class="months" style="${weekTracks}" aria-hidden="true">${labels.join('')}</div></div>`;
       })()
     : `<div class="model-usage-empty">统计暂不可用</div>`;
-  const modelSection = renderModelUsage(modelUsage, officialNames);
+
   return `<section id="usage">
   <div class="wrap">
-    <div class="section-head"><span class="section-title">使用情况</span></div>
+    <div class="section-head"><span class="section-title">上游 Token 使用</span></div>
     <div class="stat-row">${kpis}</div>
-    <div class="subhead"><b>Token 活动 · 近 52 周</b><span>${fmtInt(totalRequests)} 次请求</span></div>
+    <div class="subhead"><b>上游 Token 活动 · 近 52 周</b><span>${fmtInt(totalAttempts)} 次上游调用${coverageText}</span></div>
     ${activity}
-    ${modelSection}
+    ${renderModelUsage(modelUsage, officialNames)}
   </div>
 </section>`;
 }
 
-// Re-export cache helpers used by pages.ts
+// Status / TTFT remain on delivered-success evidence, deliberately separate
+// from the upstream-attempt usage queries above.
 import { MODEL_STATUS_RECENT_WINDOW_MS, MODEL_STATUS_HISTORICAL_WINDOW_MS, queryAllModelsTtftPercentiles, queryRecentModelEvidence } from '../observability/token-usage-store.ts';
 
 type SummaryBucket = { total: number, requests: number };
@@ -269,18 +219,11 @@ export type DashboardStats = {
 const DASHBOARD_CACHE_TTL_MS = 45_000;
 let dashboardCaches = new WeakMap<object, { expiresAt: number, inFlight: Promise<DashboardStats> | null, value: DashboardStats | null }>();
 let missingBindingCache: { expiresAt: number, inFlight: Promise<DashboardStats> | null, value: DashboardStats | null } = { expiresAt: 0, inFlight: null, value: null };
-
 type CacheEntry = { expiresAt: number, inFlight: Promise<DashboardStats> | null, value: DashboardStats | null };
-
-function newDashboardCacheEntry(): CacheEntry {
-  return { expiresAt: 0, inFlight: null, value: null };
-}
-
+function newDashboardCacheEntry(): CacheEntry { return { expiresAt: 0, inFlight: null, value: null }; }
 function dashboardCacheFor(env: Record<string, unknown> | null | undefined): CacheEntry {
   const d1 = env?.TOKEN_STATS_DB;
-  if (!d1 || (typeof d1 !== 'object' && typeof d1 !== 'function') || typeof (d1 as { prepare?: unknown }).prepare !== 'function') {
-    return missingBindingCache;
-  }
+  if (!d1 || (typeof d1 !== 'object' && typeof d1 !== 'function') || typeof (d1 as { prepare?: unknown }).prepare !== 'function') return missingBindingCache;
   let entry = dashboardCaches.get(d1 as object);
   if (!entry) {
     entry = newDashboardCacheEntry();
@@ -296,9 +239,7 @@ export async function getCachedDashboardStats(env: Record<string, unknown>, now:
   if (cache.value && cache.expiresAt > nowMs) return cache.value;
   cache.expiresAt = nowMs + DASHBOARD_CACHE_TTL_MS;
   const task = loadDashboardStats(env, now);
-  const inFlight = task.finally(() => {
-    if (cache.inFlight === inFlight) cache.inFlight = null;
-  });
+  const inFlight = task.finally(() => { if (cache.inFlight === inFlight) cache.inFlight = null; });
   cache.inFlight = inFlight;
   try {
     cache.value = await cache.inFlight;
@@ -320,16 +261,13 @@ async function loadDashboardStats(env: Record<string, unknown>, now: number): Pr
   const currentWeekStartUtc8 = gridStartUtc8 - dow * DAY_MS;
   const startIso = isoDayUtc8(currentWeekStartUtc8 - (HEATMAP_WEEKS - 1) * 7 * DAY_MS);
   const [summary, daily, modelUsage, recentEvidence, historicalEvidence, ttftQuery] = await Promise.all([
-    queryTokenSummary(env, now),
-    queryTokenDailySeries(env, startIso, now),
-    queryTokenModelUsage(env, 7, now),
+    queryUpstreamTokenSummary(env, now),
+    queryUpstreamTokenDailySeries(env, startIso, now),
+    queryUpstreamTokenModelUsage(env, 7, now),
     queryRecentModelEvidence(env, MODEL_STATUS_RECENT_WINDOW_MS, now),
     queryRecentModelEvidence(env, MODEL_STATUS_HISTORICAL_WINDOW_MS, now),
     queryAllModelsTtftPercentiles(env, MODEL_STATUS_RECENT_WINDOW_MS, now),
   ]);
-  // One grouped D1 query covers ALL models in the 24h window — no Top-4 slice,
-  // no per-model N+1. Entries are keyed by the canonical statistical model
-  // key; models without rows are filled per-public-catalog in pages.ts.
   const ttft = ttftQuery?.available && ttftQuery.ttft instanceof Map ? ttftQuery.ttft : new Map<string, TtftEntry>();
   return { summary, daily, modelUsage, recentEvidence, historicalEvidence, ttft, observedAt: new Date(now).toISOString() };
 }
