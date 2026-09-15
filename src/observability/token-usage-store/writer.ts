@@ -37,9 +37,6 @@ type UsagePayload = {
   missing: number,
 };
 
-// Derive one exact reported-vs-missing payload. `requests` means one accounting
-// event for the caller: delivered response in the legacy view, or physical
-// dispatch in the upstream-attempt view. The token values are never estimated.
 export function tokenUsagePayload(usage: unknown): UsagePayload {
   const normalized: NormalizedTokenUsage | null = normalizeTokenUsage(usage);
   if (normalized) {
@@ -66,10 +63,10 @@ function persistFailure(scope: string, cause: unknown, model: string | null = nu
   return error;
 }
 
-// Persist one SUCCESSFULLY DELIVERED response. Because the winning response is
-// also a real physical upstream attempt, each statement increments both the
-// established delivered columns and the new upstream_* columns. Doing both in
-// one UPSERT avoids doubling D1 writes on the normal success path.
+// Persist one SUCCESSFULLY DELIVERED response. The legacy parameter prefix in
+// every statement remains unchanged; upstream columns are appended. Besides
+// easing rolling compatibility, this protects the independently tested TTFT /
+// success-evidence contract from accidental positional drift.
 export function persistTokenUsage(env: Record<string, unknown>, usage: unknown, now: number = Date.now(), model: string | null = null, ttftMs: number | null = null): Promise<void> {
   const d1 = tokenStatsD1(env);
   if (!d1) return Promise.resolve();
@@ -120,11 +117,10 @@ export function persistTokenUsage(env: Record<string, unknown>, usage: unknown, 
       `INSERT INTO ${TABLE_TOTALS} (
         scope,
         input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, total_tokens,
-        requests, usage_reports, usage_missing,
+        requests, usage_reports, usage_missing, updated_at,
         upstream_input_tokens, upstream_output_tokens,
         upstream_cache_creation_input_tokens, upstream_cache_read_input_tokens, upstream_total_tokens,
-        upstream_attempts, upstream_usage_reports, upstream_usage_missing,
-        updated_at
+        upstream_attempts, upstream_usage_reports, upstream_usage_missing
       )
       VALUES ('global', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(scope) DO UPDATE SET
@@ -136,6 +132,7 @@ export function persistTokenUsage(env: Record<string, unknown>, usage: unknown, 
         requests = ${TABLE_TOTALS}.requests + excluded.requests,
         usage_reports = ${TABLE_TOTALS}.usage_reports + excluded.usage_reports,
         usage_missing = ${TABLE_TOTALS}.usage_missing + excluded.usage_missing,
+        updated_at = excluded.updated_at,
         upstream_input_tokens = ${TABLE_TOTALS}.upstream_input_tokens + excluded.upstream_input_tokens,
         upstream_output_tokens = ${TABLE_TOTALS}.upstream_output_tokens + excluded.upstream_output_tokens,
         upstream_cache_creation_input_tokens = ${TABLE_TOTALS}.upstream_cache_creation_input_tokens + excluded.upstream_cache_creation_input_tokens,
@@ -143,13 +140,12 @@ export function persistTokenUsage(env: Record<string, unknown>, usage: unknown, 
         upstream_total_tokens = ${TABLE_TOTALS}.upstream_total_tokens + excluded.upstream_total_tokens,
         upstream_attempts = ${TABLE_TOTALS}.upstream_attempts + excluded.upstream_attempts,
         upstream_usage_reports = ${TABLE_TOTALS}.upstream_usage_reports + excluded.upstream_usage_reports,
-        upstream_usage_missing = ${TABLE_TOTALS}.upstream_usage_missing + excluded.upstream_usage_missing,
-        updated_at = excluded.updated_at`,
+        upstream_usage_missing = ${TABLE_TOTALS}.upstream_usage_missing + excluded.upstream_usage_missing`,
     );
     totalsTask = Promise.resolve(totalsStmt.bind(
       p.input, p.output, p.cacheCreation, p.cacheRead, p.total, p.requests, p.reports, p.missing,
-      p.input, p.output, p.cacheCreation, p.cacheRead, p.total, p.requests, p.reports, p.missing,
       new Date(now).toISOString(),
+      p.input, p.output, p.cacheCreation, p.cacheRead, p.total, p.requests, p.reports, p.missing,
     ).run());
   } catch (cause) {
     console.error('token-stats totals persist failed:', (cause as { message?: unknown } | null | undefined)?.message || cause);
@@ -179,11 +175,11 @@ export function persistTokenUsage(env: Record<string, unknown>, usage: unknown, 
         hour, model,
         input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, total_tokens,
         requests, usage_reports, usage_missing,
+        successful_ttft_count,
+        ttft_b0, ttft_b1, ttft_b2, ttft_b3, ttft_b4, ttft_b5, ttft_b6,
         upstream_input_tokens, upstream_output_tokens,
         upstream_cache_creation_input_tokens, upstream_cache_read_input_tokens, upstream_total_tokens,
-        upstream_attempts, upstream_usage_reports, upstream_usage_missing,
-        successful_ttft_count,
-        ttft_b0, ttft_b1, ttft_b2, ttft_b3, ttft_b4, ttft_b5, ttft_b6
+        upstream_attempts, upstream_usage_reports, upstream_usage_missing
       )
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(hour, model) DO UPDATE SET
@@ -195,14 +191,6 @@ export function persistTokenUsage(env: Record<string, unknown>, usage: unknown, 
         requests = ${TABLE_MODEL}.requests + excluded.requests,
         usage_reports = ${TABLE_MODEL}.usage_reports + excluded.usage_reports,
         usage_missing = ${TABLE_MODEL}.usage_missing + excluded.usage_missing,
-        upstream_input_tokens = ${TABLE_MODEL}.upstream_input_tokens + excluded.upstream_input_tokens,
-        upstream_output_tokens = ${TABLE_MODEL}.upstream_output_tokens + excluded.upstream_output_tokens,
-        upstream_cache_creation_input_tokens = ${TABLE_MODEL}.upstream_cache_creation_input_tokens + excluded.upstream_cache_creation_input_tokens,
-        upstream_cache_read_input_tokens = ${TABLE_MODEL}.upstream_cache_read_input_tokens + excluded.upstream_cache_read_input_tokens,
-        upstream_total_tokens = ${TABLE_MODEL}.upstream_total_tokens + excluded.upstream_total_tokens,
-        upstream_attempts = ${TABLE_MODEL}.upstream_attempts + excluded.upstream_attempts,
-        upstream_usage_reports = ${TABLE_MODEL}.upstream_usage_reports + excluded.upstream_usage_reports,
-        upstream_usage_missing = ${TABLE_MODEL}.upstream_usage_missing + excluded.upstream_usage_missing,
         successful_ttft_count = ${TABLE_MODEL}.successful_ttft_count + excluded.successful_ttft_count,
         ttft_b0 = ${TABLE_MODEL}.ttft_b0 + excluded.ttft_b0,
         ttft_b1 = ${TABLE_MODEL}.ttft_b1 + excluded.ttft_b1,
@@ -210,13 +198,21 @@ export function persistTokenUsage(env: Record<string, unknown>, usage: unknown, 
         ttft_b3 = ${TABLE_MODEL}.ttft_b3 + excluded.ttft_b3,
         ttft_b4 = ${TABLE_MODEL}.ttft_b4 + excluded.ttft_b4,
         ttft_b5 = ${TABLE_MODEL}.ttft_b5 + excluded.ttft_b5,
-        ttft_b6 = ${TABLE_MODEL}.ttft_b6 + excluded.ttft_b6`,
+        ttft_b6 = ${TABLE_MODEL}.ttft_b6 + excluded.ttft_b6,
+        upstream_input_tokens = ${TABLE_MODEL}.upstream_input_tokens + excluded.upstream_input_tokens,
+        upstream_output_tokens = ${TABLE_MODEL}.upstream_output_tokens + excluded.upstream_output_tokens,
+        upstream_cache_creation_input_tokens = ${TABLE_MODEL}.upstream_cache_creation_input_tokens + excluded.upstream_cache_creation_input_tokens,
+        upstream_cache_read_input_tokens = ${TABLE_MODEL}.upstream_cache_read_input_tokens + excluded.upstream_cache_read_input_tokens,
+        upstream_total_tokens = ${TABLE_MODEL}.upstream_total_tokens + excluded.upstream_total_tokens,
+        upstream_attempts = ${TABLE_MODEL}.upstream_attempts + excluded.upstream_attempts,
+        upstream_usage_reports = ${TABLE_MODEL}.upstream_usage_reports + excluded.upstream_usage_reports,
+        upstream_usage_missing = ${TABLE_MODEL}.upstream_usage_missing + excluded.upstream_usage_missing`,
     ).bind(
       hour, canonicalModel,
       p.input, p.output, p.cacheCreation, p.cacheRead, p.total, p.requests, p.reports, p.missing,
-      p.input, p.output, p.cacheCreation, p.cacheRead, p.total, p.requests, p.reports, p.missing,
       successTtftCount,
       buckets[0], buckets[1], buckets[2], buckets[3], buckets[4], buckets[5], buckets[6],
+      p.input, p.output, p.cacheCreation, p.cacheRead, p.total, p.requests, p.reports, p.missing,
     ).run());
   } catch (cause) {
     modelTask = Promise.reject(cause);
