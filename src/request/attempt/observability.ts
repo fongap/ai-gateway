@@ -60,7 +60,11 @@ export function recordUndeliveredUpstreamAttempt(c: AttemptContext, node: Runtim
   if (usage !== undefined) observeUpstreamAttemptUsage(c, usage);
   settledAttemptUsage.add(c as object);
   const observed = observedAttemptUsage.get(c as object) ?? null;
-  const effectiveModel = upstreamModelOf(node, c.reqDescriptor.model);
+  // Some reliability unit tests intentionally construct the historical minimal
+  // AttemptContext shape without reqDescriptor. Falling back to requestedModel
+  // preserves that compatibility and is also the correct native-pass identity.
+  const routedModel = c.reqDescriptor?.model ?? c.requestedModel;
+  const effectiveModel = upstreamModelOf(node, routedModel);
   const task = persistUpstreamAttemptUsage(c.env, observed, Date.now(), effectiveModel).catch((err) => {
     const scope = String(err?.scope || '').includes('model') ? 'upstream-model' : 'upstream-global';
     try { c.logger?.error?.(`upstream token-stats D1 ${scope} persist failed: ${err?.message || err}`); } catch { /* fail-open */ }
@@ -100,14 +104,22 @@ export function recordNodeSuccess(c: AttemptContext, node: RuntimeNode, latencyM
   recordSuccess(node.id, latencyMs, c.state?.requestedModel);
 }
 
-export function makeNodeStreamTrack(c: AttemptContext, node: RuntimeNode, latencyMs: number) {
+export function makeNodeStreamTrack(
+  c: AttemptContext,
+  node: RuntimeNode,
+  latencyMs: number,
+  { observeStreamUsage = true }: { observeStreamUsage?: boolean } = {},
+) {
   const tier1 = node.tier === 'tier-1';
   return {
     // trackStreamResponse invokes this for every terminal stream outcome. A
     // completed winner is persisted by recordTokens/onUsage below, so only
-    // failure/neutral paths need the upstream-only writer here.
+    // failure/neutral paths need the upstream-only writer here. Converted
+    // streams may contain synthetic client-facing usage; those call sites turn
+    // observation off and feed the RAW upstream usage through their converter
+    // callback instead.
     onAttemptUsage: (usage: unknown, outcome: 'success' | 'failure' | 'neutral') => {
-      if (usage != null) observeUpstreamAttemptUsage(c, usage);
+      if (observeStreamUsage && usage != null) observeUpstreamAttemptUsage(c, usage);
       if (outcome !== 'success') recordUndeliveredUpstreamAttempt(c, node);
     },
     onSuccess: () => {
