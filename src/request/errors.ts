@@ -29,10 +29,6 @@ const GATEWAY_ERROR_CODE = Object.freeze({
   UPSTREAM_EXHAUSTED: 'gateway_upstream_exhausted',
 });
 
-// Responses keeps its standard body envelope, so compact non-sensitive
-// diagnostics travel in headers instead of adding a gateway-specific `details`
-// object that Codex/OpenAI clients do not expect. Never expose node ids,
-// providers, credentials, upstream messages or the ordered attempt sequence.
 function responsesDiagnosticHeaders(
   details?: Record<string, unknown>,
   extraHeaders?: Record<string, string>,
@@ -71,8 +67,6 @@ function formatFailureKinds(value: unknown): string | null {
   return entries.length ? entries.map(([kind, count]) => `${kind}:${count}`).join(',') : null;
 }
 
-// Unified gateway error: Anthropic-style for Anthropic routes, OpenAI
-// Responses-style for /v1/responses, OpenAI Chat-style otherwise.
 export function gatewayError(
   request: Request,
   env: Record<string, unknown>,
@@ -126,11 +120,6 @@ export function gatewayError(
 }
 
 export function buildBudgetExhaustedResponse(request: Request, env: Record<string, unknown>, route: string, requestId: string, requestedModel: string, state: LoopState, exposeUpstreamInfo: boolean): Response {
-  // The gateway spent the whole failover budget rotating and still has no answer.
-  // Stop: return a clear, terminal error and the attempt COUNT only. Do not keep
-  // calling further upstreams, and do not leak the internal failure sequence by
-  // default. 504 + x-should-retry:false tells clients not to blind-retry a request
-  // the gateway already spent its budget resolving.
   const status = 504;
   const details = {
     requested_model: requestedModel,
@@ -170,19 +159,8 @@ export function buildExhaustedResponse(
 ): Response {
   const last = state.attempts[state.attempts.length - 1];
   const nothingAttempted = state.attempts.length === 0;
-
-  // The Known Model Catalog bounds wildcard nodes so the exhausted-response
-  // analysis (deferred capacity, blocking wait) only considers nodes that
-  // actually serve a known model. Optional: when absent, the analysis degrades
-  // to the legacy permissive wildcard behavior. state may carry the same Set
-  // that preflight computed.
   const knownModels_ = knownModels ?? state.knownModels;
 
-  // Distinguish WHY no node was available:
-  //   cooling / circuit / recovery / explicit local admission -> 429;
-  //   real failures -> terminal status unless a bounded model-family attempt
-  //     plan failed only for transient reasons, in which case 503 asks the
-  //     client to retry the turn instead of stopping for manual intervention.
   const now = Date.now();
   let status: number;
   let message: string;
@@ -194,31 +172,14 @@ export function buildExhaustedResponse(
     message = 'No eligible node can dispatch this request right now (cooldown, recovery gate, circuit state, or configured admission limit).';
     retryAfterSec = earliestBlockingRetryAfterSec(tiers, reqDescriptor, now, knownModels_);
   } else {
-    // Terminal status is driven by the aggregated failure kinds, not by whatever
-    // the last attempt happened to be. Otherwise a trailing 429 would mask a
-    // dominant upstream failure (and vice versa).
     status = terminalStatus(state.failureKinds) ?? (last?.status === 429 ? 429 : 502);
     message = `All attempted nodes failed for model "${requestedModel}".`;
 
-    // The model-family plan is bounded by the request's max_attempts and may
-    // also collapse sibling aliases that resolve to an already-failed real
-    // account/model domain. It can therefore finish before max_attempts is
-    // numerically spent, so describe exhaustion of the failover PLAN rather
-    // than falsely claiming that the attempt budget itself was exhausted.
-    // If every observed failure is transient, keep the internal reason in
-    // failure_kinds and return one retryable 503 so coding clients can resume
-    // automatically instead of stopping for a manual "continue".
     if (retryableFamilyExhaustion && familyFailureSetIsRetryable(state.failureKinds)) {
       const originalStatus = status;
       status = 503;
-      // Keep the existing stable diagnostic code introduced for this terminal
-      // family condition. The body/log wording is broader because domain
-      // deduplication can now end the plan before max_attempts is fully spent.
       gatewayCode = GATEWAY_ERROR_CODE.ATTEMPT_BUDGET_EXHAUSTED;
       message = `Transient failures exhausted the compatible-model failover plan for "${requestedModel}". Retry shortly.`;
-      // Rate-limit exhaustion should not be retried every second. Preserve the
-      // earliest real cooldown across ALL compatible sibling models when it is
-      // available; other transient family failures keep the short retry hint.
       retryAfterSec = originalStatus === 429
         ? earliestFamilyBlockingRetryAfterSec(tiers, reqDescriptor, requestedModel, now, knownModels_) ?? 1
         : 1;
@@ -239,8 +200,6 @@ export function buildExhaustedResponse(
 
   const details = {
     requested_model: requestedModel,
-    // attempts = LOGICAL attempts (primary + optional hedge twin each);
-    // dispatches = real upstream requests; hedges = hedge twin count.
     attempts: state.logicalAttempts,
     dispatches: state.dispatches,
     hedges: state.hedges,
@@ -249,7 +208,6 @@ export function buildExhaustedResponse(
       : {}),
     ...(exposeUpstreamInfo && state.attempts.length ? { attempts_detail: state.attempts } : {}),
   };
-  // Route-aware body: Anthropic clients must receive Anthropic-shaped errors.
   return gatewayError(
     request,
     env,
@@ -263,12 +221,6 @@ export function buildExhaustedResponse(
   );
 }
 
-// Earliest moment any node that serves the request (protocol + surface +
-// model descriptor) could accept the request again, as a Retry-After in
-// seconds. A node cooling for an unrelated model, or a healthy idle node,
-// never contributes — only timed blocking reasons can produce a meaningful
-// Retry-After. An explicit max_in_flight ceiling has no known release time and
-// therefore intentionally contributes no guessed delay.
 function earliestBlockingRetryAfterSec(tiers: Record<number, RuntimeNode[]>, reqDescriptor: RequestDescriptor, now: number = Date.now(), knownModels?: ReadonlySet<string>): number | undefined {
   let minMs = Infinity;
   for (const t of TIER_ORDER) {
@@ -282,11 +234,6 @@ function earliestBlockingRetryAfterSec(tiers: Record<number, RuntimeNode[]>, req
   return Math.max(1, Math.ceil(minMs / 1000));
 }
 
-// Family-aware Retry-After. A Code-Ultra request may have just exhausted
-// Code-Ultra + Code-Max + Code-Pro; using only the original alias can over-wait
-// or under-wait. Take the earliest real recovery across every configured
-// compatible sibling while keeping the underlying per-node cooldown reasons
-// untouched for diagnostics and scheduling.
 function earliestFamilyBlockingRetryAfterSec(
   tiers: Record<number, RuntimeNode[]>,
   reqDescriptor: RequestDescriptor,
@@ -305,11 +252,6 @@ function earliestFamilyBlockingRetryAfterSec(
   return Number.isFinite(minSec) ? minSec : undefined;
 }
 
-// Per-node timed wait until this (node, requestedModel) pair could serve again.
-// Returns Infinity when no timed block exists. Node-level cooldown
-// (429/auth/circuit) wins over the model-scoped cooldown (404). Live in-flight
-// load is ranking-only by default; an explicit max_in_flight limit has no
-// deterministic wait and is therefore not represented here.
 function blockingWaitMs(node: RuntimeNode, requestedModel: string, now: number): number {
   if (node.tier === 'tier-1') return tier1BlockingWaitMs(node, requestedModel, now);
   const nodeCd = getCooldownRemainingMs(node.id, now);
@@ -318,7 +260,6 @@ function blockingWaitMs(node: RuntimeNode, requestedModel: string, now: number):
   if (modelCd > 0) return modelCd;
   return Infinity;
 }
-
 
 export function buildClientErrorResponse(request: Request, env: Record<string, unknown>, route: string, requestId: string, requestedModel: string, status: number, errorText: string | Uint8Array, state: LoopState, exposeUpstreamInfo: boolean): Response {
   const detail = extractErrorMessage(errorText) || `Upstream returned HTTP ${status}.`;
@@ -397,29 +338,45 @@ function familyFailureSetIsRetryable(failureKinds?: Partial<Record<string, numbe
     FAILURE_KIND.FIRST_EVENT_TIMEOUT,
     FAILURE_KIND.STREAM_INTERRUPTED,
   ]);
-  // The contract says EVERY observed family failure must be transient. Unknown
-  // or future failure kinds fail closed here instead of being accidentally
-  // hidden behind a retryable 503 just because one sibling also returned 429.
   return observed.every(([kind]) => retryableKinds.has(kind));
 }
 
-// Map the aggregated per-attempt failure kinds to a terminal HTTP status.
-//   dominant rate_limit / distributed deny -> 429 (retryable)
-//   dominant headers/first-event timeout  -> 504 (spent, terminal)
-//   otherwise (server/network/auth/model) -> 502
-function dominantKind(failureKinds?: Partial<Record<string, number>>): string | null {
-  let best: string | null = null;
-  let bestN = 0;
-  for (const [kind, n] of Object.entries(failureKinds || {})) {
-    if ((n || 0) > bestN) { best = kind; bestN = n || 0; }
-  }
-  return best;
+function terminalStatusForKind(kind: string): 429 | 502 | 504 {
+  if (kind === FAILURE_KIND.RATE_LIMIT || kind === FAILURE_KIND.RATE_LIMIT_GLOBAL) return 429;
+  if (kind === FAILURE_KIND.HEADERS_TIMEOUT || kind === FAILURE_KIND.FIRST_EVENT_TIMEOUT) return 504;
+  return 502;
 }
 
-function terminalStatus(failureKinds?: Partial<Record<string, number>>): number | null {
-  const dom = dominantKind(failureKinds);
-  if (!dom) return null;
-  if (dom === FAILURE_KIND.RATE_LIMIT || dom === FAILURE_KIND.RATE_LIMIT_GLOBAL) return 429;
-  if (dom === FAILURE_KIND.HEADERS_TIMEOUT || dom === FAILURE_KIND.FIRST_EVENT_TIMEOUT) return 504;
-  return 502;
+// Aggregate by CLIENT-VISIBLE terminal status before selecting the winner.
+// Failure kinds that mean the same thing to the client belong to one bucket;
+// otherwise rate_limit + rate_limit_global, for example, can lose to one
+// unrelated kind merely because they were stored under separate keys.
+//
+// Tie rule is deliberate and order-independent:
+//   504 > 502 > 429
+// A timeout tie means the request already spent its waiting window, so do not
+// mislabel it as capacity-only 429. A generic upstream failure likewise wins a
+// tie over 429 because the request was not purely rate-limited.
+export function terminalStatus(failureKinds?: Partial<Record<string, number>>): number | null {
+  const counts: Record<429 | 502 | 504, number> = { 429: 0, 502: 0, 504: 0 };
+  for (const [kind, rawCount] of Object.entries(failureKinds || {})) {
+    const count = typeof rawCount === 'number' && Number.isFinite(rawCount)
+      ? Math.max(0, Math.trunc(rawCount))
+      : 0;
+    if (count === 0) continue;
+    counts[terminalStatusForKind(kind)] += count;
+  }
+
+  const total = counts[429] + counts[502] + counts[504];
+  if (total === 0) return null;
+
+  let bestStatus: 429 | 502 | 504 = 504;
+  let bestCount = counts[504];
+  for (const status of [502, 429] as const) {
+    if (counts[status] > bestCount) {
+      bestStatus = status;
+      bestCount = counts[status];
+    }
+  }
+  return bestStatus;
 }
