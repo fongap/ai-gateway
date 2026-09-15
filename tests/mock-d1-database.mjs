@@ -2,30 +2,35 @@
 // Copyright (c) 2026 Fongap Studio
 //
 // Minimal Cloudflare D1 test database for the token-usage store tests.
-// It simulates the statements the real store issues:
-//   * persistTokenUsage (global)    -> token_usage_hourly UPSERT
-//   * persistTokenUsage (per-model) -> token_usage_model_hourly UPSERT
-//   * persistTokenUsage (totals)    -> token_usage_totals UPSERT
-//   * queryTokenSummary             -> SELECT from totals + hourly windows
-//   * queryTokenDailySeries         -> SELECT from daily (with hourly fallback)
-//   * queryTokenModelUsage          -> token_usage_model_hourly GROUP BY LOWER(TRIM(model))
-//   * aggregateHourlyToDaily        -> SELECT hourly, INSERT daily (overwrite)
-//   * aggregateDailyToWeekly        -> SELECT daily, INSERT weekly (overwrite)
-//   * cleanupUsageRetention         -> DELETE from hourly/daily/weekly
-// It is NOT a SQL parser: it recognises statements by shape (which table
-// is touched) and applies the same atomic UPSERT / window aggregation
-// semantics the real D1 performs, so the test asserts the STORE's algorithm
-// (not SQL string matching) while still verifying correctness. `failWrites`
-// / `failReads` simulate a broken binding to prove the fail-open contract.
+// It simulates both durable accounting views that share the production tables:
+//   * delivered columns (`requests`, `total_tokens`, TTFT evidence)
+//   * physical upstream-attempt columns (`upstream_attempts`, `upstream_total_tokens`)
+//
+// It is NOT a SQL parser: statements are recognised by table/query shape and
+// the same additive/overwrite semantics as the real store are applied. This
+// keeps tests focused on store contracts while `failWrites` / `failReads`
+// exercise fail-open behaviour.
 
 export function createMockD1({ failWrites = false, failReads = false } = {}) {
-  const rows = new Map(); // hour -> { input, output, total, requests, reports, missing }
-  const modelRows = new Map(); // `${hour}|${model}` -> { ... }
-  const totalsRow = { input: 0, output: 0, cacheCreation: 0, cacheRead: 0, total: 0, requests: 0, reports: 0, missing: 0, updated_at: '' };
-  const dailyRows = new Map(); // day (YYYY-MM-DD) -> { input, output, total, requests, reports, missing }
-  const weeklyRows = new Map(); // week_start (YYYY-MM-DD) -> { input, output, total, requests, reports, missing }
-  const writes = []; // every write's bind params, in order
-  const reads = []; // every first()/all() read, for cache/coalescing assertions
+  const emptyUsage = () => ({
+    input: 0, output: 0, cacheCreation: 0, cacheRead: 0, total: 0,
+    requests: 0, reports: 0, missing: 0,
+    upstreamInput: 0, upstreamOutput: 0, upstreamCacheCreation: 0, upstreamCacheRead: 0,
+    upstreamTotal: 0, upstreamAttempts: 0, upstreamReports: 0, upstreamMissing: 0,
+  });
+  const emptyModel = () => ({
+    ...emptyUsage(),
+    successful_ttft_count: 0,
+    ttft_b0: 0, ttft_b1: 0, ttft_b2: 0, ttft_b3: 0, ttft_b4: 0, ttft_b5: 0, ttft_b6: 0,
+  });
+
+  const rows = new Map();
+  const modelRows = new Map();
+  const totalsRow = { ...emptyUsage(), updated_at: '' };
+  const dailyRows = new Map();
+  const weeklyRows = new Map();
+  const writes = [];
+  const reads = [];
 
   const MODEL_KEY_SEP = '|';
   const modelKey = (hour, model) => `${hour}${MODEL_KEY_SEP}${model}`;
@@ -35,14 +40,51 @@ export function createMockD1({ failWrites = false, failReads = false } = {}) {
     return { hour: key.slice(0, idx), model: key.slice(idx + 1) };
   };
   const norm = (m) => String(m || '').trim().toLowerCase();
+  const addDelivered = (cur, values) => {
+    const [input, output, cacheCreation, cacheRead, total, requests, reports, missing] = values;
+    cur.input += input || 0;
+    cur.output += output || 0;
+    cur.cacheCreation += cacheCreation || 0;
+    cur.cacheRead += cacheRead || 0;
+    cur.total += total || 0;
+    cur.requests += requests || 0;
+    cur.reports += reports || 0;
+    cur.missing += missing || 0;
+  };
+  const addUpstream = (cur, values) => {
+    const [input, output, cacheCreation, cacheRead, total, attempts, reports, missing] = values;
+    cur.upstreamInput += input || 0;
+    cur.upstreamOutput += output || 0;
+    cur.upstreamCacheCreation += cacheCreation || 0;
+    cur.upstreamCacheRead += cacheRead || 0;
+    cur.upstreamTotal += total || 0;
+    cur.upstreamAttempts += attempts || 0;
+    cur.upstreamReports += reports || 0;
+    cur.upstreamMissing += missing || 0;
+  };
+  const toSqlRow = (r) => ({
+    input_tokens: r.input,
+    output_tokens: r.output,
+    cache_creation_input_tokens: r.cacheCreation,
+    cache_read_input_tokens: r.cacheRead,
+    total_tokens: r.total,
+    requests: r.requests,
+    usage_reports: r.reports,
+    usage_missing: r.missing,
+    upstream_input_tokens: r.upstreamInput,
+    upstream_output_tokens: r.upstreamOutput,
+    upstream_cache_creation_input_tokens: r.upstreamCacheCreation,
+    upstream_cache_read_input_tokens: r.upstreamCacheRead,
+    upstream_total_tokens: r.upstreamTotal,
+    upstream_attempts: r.upstreamAttempts,
+    upstream_usage_reports: r.upstreamReports,
+    upstream_usage_missing: r.upstreamMissing,
+  });
 
   function prepare(sql) {
-    // Simulate the canonical grouping the real D1 performs for
-    // `GROUP BY LOWER(TRIM(model))` (and, for legacy statements,
-    // plain `GROUP BY model`): rows merge by the trimmed lowercase
-    // model key and the `model` column comes back canonical.
     const groupByModelExpr = /GROUP\s+BY\s+LOWER\s*\(\s*TRIM\s*\(\s*model\s*\)\s*\)/i.test(sql)
       || /GROUP\s+BY\s+model/i.test(sql);
+    const usesUpstream = /upstream_(?:total_tokens|attempts|usage_reports|usage_missing|input_tokens|output_tokens)/i.test(sql);
     const stmt = {
       _params: [],
       bind(...params) {
@@ -53,178 +95,145 @@ export function createMockD1({ failWrites = false, failReads = false } = {}) {
         writes.push({ sql, params: this._params });
         if (failWrites) throw new Error('mock D1 write failure');
 
-        // DELETE FROM token_usage_model_hourly (legacy cleanupModelStats)
         if (/DELETE\s+FROM\s+token_usage_model_hourly/i.test(sql)) {
           const cutoffHour = this._params[0];
           let changes = 0;
           for (const key of [...modelRows.keys()]) {
             const parsed = parseModelKey(key);
-            if (parsed && parsed.hour < cutoffHour) {
-              modelRows.delete(key);
-              changes++;
-            }
+            if (parsed && parsed.hour < cutoffHour) { modelRows.delete(key); changes++; }
           }
           return { success: true, meta: { changes } };
         }
-
-        // DELETE FROM token_usage_hourly (hourly cleanup)
         if (/DELETE\s+FROM\s+token_usage_hourly/i.test(sql)) {
           const cutoffHour = this._params[0];
           let changes = 0;
           for (const hour of [...rows.keys()]) {
-            if (hour < cutoffHour) {
-              rows.delete(hour);
-              changes++;
-            }
+            if (hour < cutoffHour) { rows.delete(hour); changes++; }
           }
           return { success: true, meta: { changes } };
         }
-
-        // DELETE FROM token_usage_daily
         if (/DELETE\s+FROM\s+token_usage_daily/i.test(sql)) {
           const cutoffDay = this._params[0];
           let changes = 0;
           for (const day of [...dailyRows.keys()]) {
-            if (day < cutoffDay) {
-              dailyRows.delete(day);
-              changes++;
-            }
+            if (day < cutoffDay) { dailyRows.delete(day); changes++; }
           }
           return { success: true, meta: { changes } };
         }
-
-        // DELETE FROM token_usage_weekly
         if (/DELETE\s+FROM\s+token_usage_weekly/i.test(sql)) {
           const cutoffWeek = this._params[0];
           let changes = 0;
           for (const week of [...weeklyRows.keys()]) {
-            if (week < cutoffWeek) {
-              weeklyRows.delete(week);
-              changes++;
-            }
+            if (week < cutoffWeek) { weeklyRows.delete(week); changes++; }
           }
           return { success: true, meta: { changes } };
         }
 
-        // INSERT INTO token_usage_totals (totals upsert)
         if (/INSERT\s+INTO\s+token_usage_totals/i.test(sql)) {
-          // SQL: VALUES ('global', ?, ?, ?, ?, ?, ?, ?, ?) -- 9 params after 'global'
-          const [input, output, cacheCreation, cacheRead, total, req, reports, missing, updated_at] = this._params;
-          totalsRow.input += input || 0;
-          totalsRow.output += output || 0;
-          totalsRow.cacheCreation += cacheCreation || 0;
-          totalsRow.cacheRead += cacheRead || 0;
-          totalsRow.total += total || 0;
-          totalsRow.requests += req || 0;
-          totalsRow.reports += reports || 0;
-          totalsRow.missing += missing || 0;
-          totalsRow.updated_at = updated_at || '';
+          const deliveredWrite = /scope\s*,\s*input_tokens/i.test(sql);
+          if (deliveredWrite) {
+            addDelivered(totalsRow, this._params.slice(0, 8));
+            totalsRow.updated_at = this._params[8] || '';
+            if (this._params.length >= 17) addUpstream(totalsRow, this._params.slice(9, 17));
+          } else {
+            addUpstream(totalsRow, this._params.slice(0, 8));
+            totalsRow.updated_at = this._params[8] || '';
+          }
           return { success: true };
         }
 
-        // INSERT INTO token_usage_daily (daily upsert - overwrite)
         if (/INSERT\s+INTO\s+token_usage_daily/i.test(sql)) {
-          const [day, input, output, total, req, reports, missing] = this._params;
-          dailyRows.set(day, {
-            input: input || 0,
-            output: output || 0,
-            total: total || 0,
-            requests: req || 0,
-            reports: reports || 0,
-            missing: missing || 0,
-          });
+          const day = this._params[0];
+          const row = emptyUsage();
+          if (usesUpstream && this._params.length >= 17) {
+            addDelivered(row, this._params.slice(1, 9));
+            addUpstream(row, this._params.slice(9, 17));
+          } else {
+            // Legacy aggregation statements used total/request fields only;
+            // preserve compatibility for tests that seed old statement shapes.
+            const [input, output, total, req, reports, missing] = this._params.slice(1);
+            addDelivered(row, [input, output, 0, 0, total, req, reports, missing]);
+          }
+          dailyRows.set(day, row);
           return { success: true };
         }
 
-        // INSERT INTO token_usage_weekly (weekly upsert - overwrite)
         if (/INSERT\s+INTO\s+token_usage_weekly/i.test(sql)) {
-          const [week_start, input, output, total, req, reports, missing] = this._params;
-          weeklyRows.set(week_start, {
-            input: input || 0,
-            output: output || 0,
-            total: total || 0,
-            requests: req || 0,
-            reports: reports || 0,
-            missing: missing || 0,
-          });
+          const week = this._params[0];
+          const row = emptyUsage();
+          if (usesUpstream && this._params.length >= 17) {
+            addDelivered(row, this._params.slice(1, 9));
+            addUpstream(row, this._params.slice(9, 17));
+          } else {
+            const [input, output, total, req, reports, missing] = this._params.slice(1);
+            addDelivered(row, [input, output, 0, 0, total, req, reports, missing]);
+          }
+          weeklyRows.set(week, row);
           return { success: true };
         }
 
-        // INSERT INTO token_usage_model_hourly
         if (/token_usage_model_hourly/i.test(sql)) {
-          const [hour, model, input, output, cacheCreation, cacheRead, total, req, reports, missing,
-            successTtftCount, b0, b1, b2, b3, b4, b5, b6] = this._params;
+          const [hour, model] = this._params;
           const key = modelKey(hour, model);
-          const cur = modelRows.get(key)
-            || { input: 0, output: 0, cacheCreation: 0, cacheRead: 0, total: 0, requests: 0, reports: 0, missing: 0,
-                 successful_ttft_count: 0, ttft_b0: 0, ttft_b1: 0, ttft_b2: 0,
-                 ttft_b3: 0, ttft_b4: 0, ttft_b5: 0, ttft_b6: 0 };
-          modelRows.set(key, {
-            input: cur.input + (input || 0),
-            output: cur.output + (output || 0),
-            cacheCreation: cur.cacheCreation + (cacheCreation || 0),
-            cacheRead: cur.cacheRead + (cacheRead || 0),
-            total: cur.total + (total || 0),
-            requests: cur.requests + (req || 0),
-            reports: cur.reports + (reports || 0),
-            missing: cur.missing + (missing || 0),
-            successful_ttft_count: cur.successful_ttft_count + (successTtftCount || 0),
-            ttft_b0: cur.ttft_b0 + (b0 || 0),
-            ttft_b1: cur.ttft_b1 + (b1 || 0),
-            ttft_b2: cur.ttft_b2 + (b2 || 0),
-            ttft_b3: cur.ttft_b3 + (b3 || 0),
-            ttft_b4: cur.ttft_b4 + (b4 || 0),
-            ttft_b5: cur.ttft_b5 + (b5 || 0),
-            ttft_b6: cur.ttft_b6 + (b6 || 0),
-          });
+          const cur = modelRows.get(key) || emptyModel();
+          if (/successful_ttft_count/i.test(sql)) {
+            // Stable legacy prefix: hour, model, 8 delivered values, TTFT count
+            // + seven buckets. The new eight upstream values are appended.
+            addDelivered(cur, this._params.slice(2, 10));
+            const [successTtftCount, b0, b1, b2, b3, b4, b5, b6] = this._params.slice(10, 18);
+            cur.successful_ttft_count += successTtftCount || 0;
+            cur.ttft_b0 += b0 || 0; cur.ttft_b1 += b1 || 0; cur.ttft_b2 += b2 || 0;
+            cur.ttft_b3 += b3 || 0; cur.ttft_b4 += b4 || 0; cur.ttft_b5 += b5 || 0; cur.ttft_b6 += b6 || 0;
+            if (this._params.length >= 26) addUpstream(cur, this._params.slice(18, 26));
+          } else if (usesUpstream) {
+            addUpstream(cur, this._params.slice(2, 10));
+          } else {
+            addDelivered(cur, this._params.slice(2, 10));
+          }
+          modelRows.set(key, cur);
           return { success: true };
         }
 
-        // Default: global hourly UPSERT
-        const [hour, input, output, cacheCreation, cacheRead, total, req, reports, missing] = this._params;
-        const cur = rows.get(hour)
-          || { input: 0, output: 0, cacheCreation: 0, cacheRead: 0, total: 0, requests: 0, reports: 0, missing: 0 };
-        rows.set(hour, {
-          input: cur.input + (input || 0),
-          output: cur.output + (output || 0),
-          cacheCreation: cur.cacheCreation + (cacheCreation || 0),
-          cacheRead: cur.cacheRead + (cacheRead || 0),
-          total: cur.total + (total || 0),
-          requests: cur.requests + (req || 0),
-          reports: cur.reports + (reports || 0),
-          missing: cur.missing + (missing || 0),
-        });
+        // token_usage_hourly writes. A success statement carries the legacy
+        // delivered prefix plus eight appended upstream values; an undelivered
+        // physical attempt carries only the upstream set.
+        const [hour] = this._params;
+        const cur = rows.get(hour) || emptyUsage();
+        if (usesUpstream && this._params.length >= 17) {
+          addDelivered(cur, this._params.slice(1, 9));
+          addUpstream(cur, this._params.slice(9, 17));
+        } else if (usesUpstream) {
+          addUpstream(cur, this._params.slice(1, 9));
+        } else {
+          addDelivered(cur, this._params.slice(1, 9));
+        }
+        rows.set(hour, cur);
         return { success: true };
       },
+
       async first() {
         reads.push({ method: 'first', sql, params: this._params });
         if (failReads) throw new Error('mock D1 read failure');
 
-        // SELECT from token_usage_totals (queryTokenSummary cumulative)
         if (/FROM\s+token_usage_totals/i.test(sql)) {
-          // Return with column names matching the SQL SELECT
-          return {
-            input_tokens: totalsRow.input,
-            output_tokens: totalsRow.output,
-            cache_creation_input_tokens: totalsRow.cacheCreation,
-            cache_read_input_tokens: totalsRow.cacheRead,
-            total_tokens: totalsRow.total,
-            requests: totalsRow.requests,
-            usage_reports: totalsRow.reports,
-            usage_missing: totalsRow.missing,
-            updated_at: totalsRow.updated_at,
-          };
+          if (usesUpstream) {
+            return {
+              upstream_total_tokens: totalsRow.upstreamTotal,
+              upstream_attempts: totalsRow.upstreamAttempts,
+              upstream_usage_reports: totalsRow.upstreamReports,
+              upstream_usage_missing: totalsRow.upstreamMissing,
+              updated_at: totalsRow.updated_at,
+            };
+          }
+          return { ...toSqlRow(totalsRow), updated_at: totalsRow.updated_at };
         }
 
-        // queryModelUsageCoverage: SELECT model, SUM(requests), SUM(usage_reports), SUM(usage_missing)
-        // GROUP BY LOWER(TRIM(model)) WHERE hour >= ?
         if (groupByModelExpr && /usage_reports/i.test(sql) && /usage_missing/i.test(sql)) {
           const startHour = this._params[0];
           const byModel = new Map();
           for (const [key, r] of modelRows) {
             const parsed = parseModelKey(key);
-            if (!parsed) continue;
-            if (parsed.hour < startHour) continue;
+            if (!parsed || parsed.hour < startHour) continue;
             const model = norm(parsed.model);
             const cur = byModel.get(model) || { requests: 0, reports: 0, missing: 0 };
             byModel.set(model, {
@@ -235,92 +244,83 @@ export function createMockD1({ failWrites = false, failReads = false } = {}) {
           }
           const results = [...byModel.entries()]
             .sort((a, b) => b[1].requests - a[1].requests)
-            .map(([model, r]) => ({ model, requests: r.requests, reports: r.reports, missing: r.missing }));
+            .map(([model, r]) => ({ model, ...r }));
           return { results };
         }
 
-        // queryTokenSummary windows from hourly (today/h24/d7)
-        // Recognize by the CASE WHEN hour >= pattern.
         if (/CASE\s+WHEN\s+hour\s*>=/i.test(sql)) {
           const [todayStart, , h24Start, , d7Start] = this._params;
-          let today_total = 0, today_requests = 0;
-          let h24_total = 0, h24_requests = 0, d7_total = 0, d7_requests = 0;
+          if (usesUpstream) {
+            let today_total = 0, today_attempts = 0, h24_total = 0, h24_attempts = 0, d7_total = 0, d7_attempts = 0;
+            for (const [hour, r] of rows) {
+              if (hour >= todayStart) { today_total += r.upstreamTotal; today_attempts += r.upstreamAttempts; }
+              if (hour >= h24Start) { h24_total += r.upstreamTotal; h24_attempts += r.upstreamAttempts; }
+              if (hour >= d7Start) { d7_total += r.upstreamTotal; d7_attempts += r.upstreamAttempts; }
+            }
+            return { today_total, today_attempts, h24_total, h24_attempts, d7_total, d7_attempts };
+          }
+          let today_total = 0, today_requests = 0, h24_total = 0, h24_requests = 0, d7_total = 0, d7_requests = 0;
           for (const [hour, r] of rows) {
             if (hour >= todayStart) { today_total += r.total; today_requests += r.requests; }
             if (hour >= h24Start) { h24_total += r.total; h24_requests += r.requests; }
             if (hour >= d7Start) { d7_total += r.total; d7_requests += r.requests; }
           }
-          return {
-            today_total, today_requests,
-            h24_total, h24_requests, d7_total, d7_requests,
-          };
+          return { today_total, today_requests, h24_total, h24_requests, d7_total, d7_requests };
         }
 
-        // Fallback cumulative scan (for rolling-deploy safety)
-        if (/SUM\(total_tokens\)|SUM\(requests\)|SUM\(usage_reports\)|SUM\(usage_missing\)/i.test(sql) &&
-            !/CASE\s+WHEN/i.test(sql)) {
-          let t = 0, r = 0, rp = 0, rm = 0;
-          for (const [, v] of rows) {
-            t += v.total; r += v.requests; rp += v.reports; rm += v.missing;
+        if (/SUM\((?:upstream_)?total_tokens\)|SUM\((?:upstream_)?attempts\)|SUM\(requests\)|SUM\((?:upstream_)?usage_reports\)|SUM\((?:upstream_)?usage_missing\)/i.test(sql)
+            && !/CASE\s+WHEN/i.test(sql)) {
+          if (usesUpstream) {
+            let t = 0, a = 0, rp = 0, rm = 0;
+            for (const r of rows.values()) { t += r.upstreamTotal; a += r.upstreamAttempts; rp += r.upstreamReports; rm += r.upstreamMissing; }
+            return { t, a, rp, rm };
           }
+          let t = 0, r = 0, rp = 0, rm = 0;
+          for (const v of rows.values()) { t += v.total; r += v.requests; rp += v.reports; rm += v.missing; }
           return { t, r, rp, rm };
         }
-
         return null;
       },
+
       async all() {
         reads.push({ method: 'all', sql, params: this._params });
         if (failReads) throw new Error('mock D1 read failure');
 
-        // queryRecentModelEvidence: SELECT model FROM ... WHERE hour >= ? AND requests > 0 GROUP BY LOWER(TRIM(model))
         if (groupByModelExpr && /requests\s*>\s*0/i.test(sql)) {
           const startHour = this._params[0];
           const out = new Map();
           for (const [key, r] of modelRows) {
             const parsed = parseModelKey(key);
-            if (!parsed) continue;
-            const { hour } = parsed;
-            if (hour < startHour) continue;
-            if ((r.requests || 0) <= 0) continue;
+            if (!parsed || parsed.hour < startHour || (r.requests || 0) <= 0) continue;
             out.set(norm(parsed.model), true);
           }
           return { results: [...out.keys()].map((model) => ({ model })) };
         }
 
-        // queryAllModelsTtftPercentiles: SELECT model, SUM(successful_ttft_count), SUM(ttft_b0..b6)
-        // GROUP BY LOWER(TRIM(model)) WHERE hour >= ?
         if (groupByModelExpr && /successful_ttft_count/i.test(sql) && /ttft_b0/i.test(sql)) {
           const startHour = this._params[0];
           const byModel = new Map();
           for (const [key, r] of modelRows) {
             const parsed = parseModelKey(key);
-            if (!parsed) continue;
-            if (parsed.hour < startHour) continue;
+            if (!parsed || parsed.hour < startHour) continue;
             const model = norm(parsed.model);
             const cur = byModel.get(model) || { total_ttft: 0, b0: 0, b1: 0, b2: 0, b3: 0, b4: 0, b5: 0, b6: 0 };
             byModel.set(model, {
               total_ttft: cur.total_ttft + (r.successful_ttft_count || 0),
-              b0: cur.b0 + (r.ttft_b0 || 0),
-              b1: cur.b1 + (r.ttft_b1 || 0),
-              b2: cur.b2 + (r.ttft_b2 || 0),
-              b3: cur.b3 + (r.ttft_b3 || 0),
-              b4: cur.b4 + (r.ttft_b4 || 0),
-              b5: cur.b5 + (r.ttft_b5 || 0),
-              b6: cur.b6 + (r.ttft_b6 || 0),
+              b0: cur.b0 + (r.ttft_b0 || 0), b1: cur.b1 + (r.ttft_b1 || 0),
+              b2: cur.b2 + (r.ttft_b2 || 0), b3: cur.b3 + (r.ttft_b3 || 0),
+              b4: cur.b4 + (r.ttft_b4 || 0), b5: cur.b5 + (r.ttft_b5 || 0), b6: cur.b6 + (r.ttft_b6 || 0),
             });
           }
           return { results: [...byModel.entries()].map(([model, r]) => ({ model, ...r })) };
         }
 
-        // queryModelUsageCoverage (all): SELECT model, SUM(requests), SUM(usage_reports), SUM(usage_missing)
-        // GROUP BY LOWER(TRIM(model)) WHERE hour >= ?
-        if (groupByModelExpr && /usage_reports/i.test(sql) && /usage_missing/i.test(sql)) {
+        if (groupByModelExpr && /usage_reports/i.test(sql) && /usage_missing/i.test(sql) && !usesUpstream) {
           const startHour = this._params[0];
           const byModel = new Map();
           for (const [key, r] of modelRows) {
             const parsed = parseModelKey(key);
-            if (!parsed) continue;
-            if (parsed.hour < startHour) continue;
+            if (!parsed || parsed.hour < startHour) continue;
             const model = norm(parsed.model);
             const cur = byModel.get(model) || { requests: 0, reports: 0, missing: 0 };
             byModel.set(model, {
@@ -331,60 +331,73 @@ export function createMockD1({ failWrites = false, failReads = false } = {}) {
           }
           const results = [...byModel.entries()]
             .sort((a, b) => b[1].requests - a[1].requests)
-            .map(([model, r]) => ({ model, requests: r.requests, reports: r.reports, missing: r.missing }));
+            .map(([model, r]) => ({ model, ...r }));
           return { results };
         }
 
-        // queryTokenModelUsage: SELECT model, SUM(...) GROUP BY LOWER(TRIM(model)) WHERE hour >= start.
         if (groupByModelExpr) {
           const startHour = this._params[0];
           const byModel = new Map();
           for (const [key, r] of modelRows) {
             const parsed = parseModelKey(key);
-            if (!parsed) continue;
-            const { hour } = parsed;
-            if (hour < startHour) continue;
+            if (!parsed || parsed.hour < startHour) continue;
             const model = norm(parsed.model);
-            const cur = byModel.get(model) || { total: 0, requests: 0 };
-            byModel.set(model, { total: cur.total + r.total, requests: cur.requests + r.requests });
+            const cur = byModel.get(model) || { total: 0, requests: 0, attempts: 0 };
+            if (usesUpstream) {
+              cur.total += r.upstreamTotal || 0;
+              cur.attempts += r.upstreamAttempts || 0;
+            } else {
+              cur.total += r.total || 0;
+              cur.requests += r.requests || 0;
+            }
+            byModel.set(model, cur);
           }
           const results = [...byModel.entries()]
             .sort((a, b) => b[1].total - a[1].total)
-            .map(([model, r]) => ({ model, total: r.total, requests: r.requests }));
+            .map(([model, r]) => usesUpstream
+              ? ({ model, total: r.total, attempts: r.attempts })
+              : ({ model, total: r.total, requests: r.requests }));
           return { results };
         }
 
-        // queryTokenDailySeries: SELECT day, ... FROM token_usage_daily WHERE day >= ?
         if (/FROM\s+token_usage_daily/i.test(sql)) {
           const startDay = this._params[0];
           const results = [];
           for (const [day, r] of dailyRows) {
-            if (day < startDay) continue;
-            results.push({
-              day,
-              input_tokens: r.input,
-              output_tokens: r.output,
-              total_tokens: r.total,
-              requests: r.requests,
-              usage_reports: r.reports,
-              usage_missing: r.missing,
-            });
+            if (startDay && day < startDay) continue;
+            results.push({ day, ...toSqlRow(r) });
           }
           results.sort((a, b) => (a.day < b.day ? -1 : 1));
           return { results };
         }
 
-        // SELECT hourly for daily series fallback / today overlay
-        const startHour = this._params[0];
-        const byHour = new Map();
-        for (const [hour, r] of rows) {
-          if (hour < startHour) continue;
-          const cur = byHour.get(hour) || { total: 0, requests: 0, reports: 0, missing: 0 };
-          byHour.set(hour, { total: cur.total + r.total, requests: cur.requests + r.requests, reports: cur.reports + r.reports, missing: cur.missing + r.missing });
+        // Raw hourly scan used by hourly->daily materialization.
+        if (/FROM\s+token_usage_hourly/i.test(sql) && !/GROUP\s+BY\s+hour/i.test(sql)) {
+          return {
+            results: [...rows.entries()]
+              .sort(([a], [b]) => (a < b ? -1 : 1))
+              .map(([hour, r]) => ({ hour, ...toSqlRow(r) })),
+          };
         }
-        const results = [...byHour.entries()]
-          .sort(([a], [b]) => (a < b ? -1 : 1))
-          .map(([hour, r]) => ({ hour, total: r.total, requests: r.requests, reports: r.reports, missing: r.missing }));
+
+        // Hourly grouped/fallback reads used by daily-series queries.
+        const startHour = this._params[0];
+        const results = [];
+        for (const [hour, r] of rows) {
+          if (startHour && hour < startHour) continue;
+          if (usesUpstream) {
+            results.push({
+              hour,
+              total: r.upstreamTotal,
+              attempts: r.upstreamAttempts,
+              reports: r.upstreamReports,
+              missing: r.upstreamMissing,
+            });
+          } else {
+            results.push({ hour, total: r.total, requests: r.requests, reports: r.reports, missing: r.missing });
+          }
+        }
+        results.sort((a, b) => (a.hour < b.hour ? -1 : 1));
         return { results };
       },
     };
@@ -393,23 +406,19 @@ export function createMockD1({ failWrites = false, failReads = false } = {}) {
 
   return {
     prepare,
-    // Construct a raw per-model row directly in the simulated table,
-    // bypassing persistTokenUsage() — the writer canonicalizes its model
-    // key, so tests that need HISTORICAL case variants (Code-Max /
-    // CODE-MAX / padded strings) must seed rows at this level. The hour
-    // key is normalized exactly like the writer's normalizeHour() so
-    // window comparisons behave like real rows.
+    async batch(statements) { return Promise.all(statements.map((s) => s.run())); },
     seedModelRow(hour, model, fields = {}) {
       const hourKey = typeof hour === 'number'
         ? new Date(Math.floor(hour / 3_600_000) * 3_600_000).toISOString()
         : hour;
-      modelRows.set(modelKey(hourKey, model), {
-        input: 0, output: 0, total: 0, requests: 0, reports: 0, missing: 0,
-        successful_ttft_count: 0, ttft_b0: 0, ttft_b1: 0, ttft_b2: 0,
-        ttft_b3: 0, ttft_b4: 0, ttft_b5: 0, ttft_b6: 0,
-        ...fields,
-      });
+      modelRows.set(modelKey(hourKey, model), { ...emptyModel(), ...fields });
     },
-    _rows: rows, _modelRows: modelRows, _totalsRow: totalsRow, _dailyRows: dailyRows, _weeklyRows: weeklyRows, _writes: writes, _reads: reads,
+    _rows: rows,
+    _modelRows: modelRows,
+    _totalsRow: totalsRow,
+    _dailyRows: dailyRows,
+    _weeklyRows: weeklyRows,
+    _writes: writes,
+    _reads: reads,
   };
 }
