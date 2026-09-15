@@ -38,6 +38,7 @@ const UNIT_TESTS = [
   'tests/config-cli-test.mjs',
   'tests/docs-contract-test.mjs',
   'tests/product-policy-contract-test.mjs',
+  'tests/release-identity-contract-test.mjs',
   'tests/provider-discovery-test.mjs',
   'tests/provider-discovery-ssrf-guard-test.mjs',
   'tests/model-discovery-live-test.mjs',
