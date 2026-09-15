@@ -1,19 +1,44 @@
 # Architecture overview
 
-ai-gateway is a Cloudflare Workers aggregation gateway designed to make a pool of heterogeneous AI APIs and credentials behave like one predictable endpoint without hiding protocol boundaries or inventing global guarantees the runtime does not have.
+ai-gateway is a Cloudflare Workers AI API gateway for a household, an individual operator, or a small trusted team. It makes a pool of heterogeneous AI capacity behave like one predictable endpoint without hiding protocol boundaries or inventing global guarantees the runtime does not have.
+
+The product boundary is governed by [Product policy](../governance/product-policy.md). It is intentionally not a public SaaS gateway, enterprise API-management platform, billing system, reseller platform, or general multi-tenant control plane.
 
 ## Design goals
 
+The long-term design order is:
+
+1. keep Tier 1 free-token capacity stable, efficient, safe, and continuously usable;
+2. preserve protocol correctness and security;
+3. keep operation simple for a household or small trusted team;
+4. maximize useful free capacity without hiding retry/fallback amplification;
+5. keep Tier 2 ready for membership/subscription entitlements;
+6. keep Tier 3 as protected paid-API fallback capacity;
+7. add extensibility only for a concrete current use case.
+
 A runtime feature should improve at least one of these properties without materially damaging the others:
 
-- upstream quota utilization;
 - request success and recovery behavior;
+- free-capacity utilization;
 - tail-latency control;
 - protocol compatibility;
 - operational predictability;
+- security;
 - Worker hot-path cost.
 
-The project prefers bounded, local mechanisms over global coordination unless production evidence shows local shaping is insufficient.
+The project prefers bounded, local mechanisms over global coordination unless production evidence shows local shaping is insufficient. It also prefers deleting superseded mechanisms over carrying old/new implementations in parallel.
+
+## Tier roles
+
+Tier roles are permanent architecture boundaries, not generic priority labels.
+
+| Tier | Long-term role | Design priority |
+| --- | --- | --- |
+| **Tier 1** | Free or effectively free token capacity across providers/accounts | Primary daily traffic; resilience, load spreading, 429 recovery, low cost, continuous availability |
+| **Tier 2** | Membership/subscription entitlement capacity | Reserved for future subscription-entitlement adapters; not a second generic API-key pool |
+| **Tier 3** | Paid API capacity | Protected final fallback; predictable and bounded use |
+
+Tier 1 therefore receives most reliability engineering. Tier 2 and Tier 3 must stay simpler and must not accumulate Tier 1-specific adaptive machinery without a demonstrated need.
 
 ## Request flow
 
@@ -75,7 +100,7 @@ These boundaries are intentional. Transport does not select nodes. Scheduler and
 - `Air` may fall back upward to `Pro → Max → Ultra`; higher general aliases never fall back down to `Air`.
 - Compatible model families get at most two evaluation rounds; there is no unbounded model loop.
 - `max_attempts` is the request-wide hard ceiling; model-family fallback never enlarges it internally.
-- Model-shaped 404s remain model-mapping failures and do not trigger model-family fallback.
+- A model-shaped 404 isolates the failing node/model mapping; an authorized compatible sibling may still be evaluated within the same request budget.
 - Native retry, protocol fallback, and model-family fallback share the same logical-attempt and wall-clock failover budget.
 - A hedge twin remains in the primary request's protocol and surface.
 - Tier 1 uses Eligibility → soft Affinity → P2C with passive TTFT and bounded heat protection.
@@ -85,6 +110,7 @@ These boundaries are intentional. Transport does not select nodes. Scheduler and
 - `TIER1_AFFINITY` KV stores only hashed session affinity and does not make routing globally sticky.
 - Provider Discovery is read-only advisory tooling.
 - Public Model Status is a read-only projection and never feeds Scheduler or Reliability.
+- ai-gateway carries one current internal/configuration contract; superseded old-version paths are removed rather than kept behind compatibility shims.
 
 ## Configuration authority
 
@@ -106,6 +132,6 @@ D1 and KV are deliberately outside the critical scheduling decision path where p
 - Tier 1 TTFT, in-flight, cooldown, adaptive 429/heat, half-open state: isolate-local memory.
 - Tier 2/3 health/circuit/concurrency state: isolate-local memory.
 
-The gateway does not claim cross-PoP globally accurate concurrency or provider-account quota from these local states.
+The gateway does not claim cross-PoP globally accurate concurrency or provider-account quota from these local states. Stronger coordination is not added merely because it is theoretically cleaner; it requires measured evidence that the household/small-team deployment model needs it.
 
 See [Protocol model](protocol-model.md), [Routing model](routing-model.md), and [Reliability model](reliability-model.md) for the detailed contracts.
