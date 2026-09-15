@@ -14,11 +14,6 @@ import {
   upstreamProcessingErrorCode,
 } from '../transport/processing-error.ts';
 
-// `KIND` is the single source of truth for every failure-kind
-// string that appears on the request hot path (LoopState.failureKinds,
-// AttemptOutcome.kind, terminalStatus dispatch, Tier1 mapping). It is
-// exported so consumers (e.g. errors.ts) can compare against the canonical
-// values without re-typing the literal.
 export const KIND = {
   RATE_LIMIT: 'rate_limit',
   AUTH: 'auth',
@@ -27,46 +22,20 @@ export const KIND = {
   ENDPOINT_NOT_FOUND: 'endpoint_not_found',
   SERVER: 'server',
   NETWORK: 'network',
-  // Waiting for HTTP response headers timed out: no HTTP status was ever
-  // received (status=0 in attempt records).
   HEADERS_TIMEOUT: 'headers_timeout',
-  // HTTP 200 headers were received but no complete meaningful result arrived
-  // before the attempt deadline. Streaming first-output waits and pre-commit
-  // response assembly both use this kind when the absolute attempt clock wins.
   FIRST_EVENT_TIMEOUT: 'first_event_timeout',
   CLIENT_ABORT: 'client_abort',
-  // --- pre-dispatch and intra-request kinds ---------------
-  // A pre-dispatch denial by a distributed rate-limiter binding: the request
-  // never reached an upstream, so it must NOT consume any failover budget.
   RATE_LIMIT_GLOBAL: 'rate_limit_global',
-  // A structurally broken node config (e.g. an unparseable base_url): the
-  // request never reached an upstream, so it must NOT consume any budget.
   INVALID_BASE_URL: 'invalid_base_url',
-  // A streaming response was interrupted/truncated. Before the client commit
-  // boundary this can still rotate transparently; after commit it is recorded
-  // by the stream tracker. The reliability meaning is the same upstream fault.
   STREAM_INTERRUPTED: 'stream_interrupted',
-  // HTTP 200 with a body that violates the expected JSON/protocol shape. This
-  // is an upstream/proxy failure, not a client-success neutral.
   NON_JSON_BODY: 'upstream_200_non_json_body',
-  // HTTP 200 with a well-formed body that carries no meaningful model output
-  // (e.g. `{}`, `{choices:[]}`, a role-only chat completion). Structurally
-  // valid but semantically empty: rotating away is better than relaying
-  // nothing and counting the node as a success.
   EMPTY_200: 'upstream_200_no_meaningful_output',
-  // A hedge twin (or the primary) that lost the race and was aborted after
-  // its peer committed. Neutral — no rotation, no penalty, no budget charge.
   CANCELLED_AFTER_PEER_COMMIT: 'cancelled_after_peer_commit',
-  // A hedge twin / primary that errored in an unexpected way (the catch-all
-  // around attemptNode in hedge.ts). Rotate to give the next node a chance.
   UNKNOWN: 'unknown',
 } as const;
 
 export type FailureKind = typeof KIND[keyof typeof KIND];
 
-// Classification result shared by every classify* function. Extra fields are
-// optional because only some paths carry them (retryAfterMs for 429,
-// modelScoped for 404 model-missing).
 export type FailureClassification = {
   kind: FailureKind,
   action: 'rotate' | 'stop' | 'neutral',
@@ -74,49 +43,45 @@ export type FailureClassification = {
   counted: boolean,
   retryAfterMs?: number,
   modelScoped?: boolean,
-  // Explicit upstream Retry-After header was present and drove the cooldown.
-  // When true the cooldown must NOT be jittered so the provider's hint is
-  // honored exactly (Tier 1 uses its own ladder; Tier 2/3 pass the value
-  // through recordFailure which otherwise would apply ±10% jitter).
   explicitRetryAfter?: boolean,
 };
 
 const CLIENT_STOP_STATUSES = new Set([400, 413, 415, 422]);
 
-// Classify a non-OK upstream response.
-// Returns { kind, action: 'rotate'|'stop'|'neutral', cooldownMs, counted }.
-// `counted` = transient failure that feeds the circuit breaker.
-// `body` (optional 5th arg) carries the upstream error text, used to tell a
-// "model not found" 404 apart from an "endpoint not found" 404.
+function rateLimitClassification(headers: Headers, env: Record<string, unknown>, now: number): FailureClassification {
+  const limits = getLimits(env);
+  const retryAfterMs = parseRetryAfterMs(headers, now);
+  return {
+    kind: KIND.RATE_LIMIT,
+    action: 'rotate',
+    cooldownMs: retryAfterMs || limits.rateLimitCooldownMs,
+    retryAfterMs,
+    counted: false,
+    explicitRetryAfter: retryAfterMs > 0,
+  };
+}
+
+function looksLikeProviderRateLimit(body: unknown): boolean {
+  const text = String(body || '').toLowerCase();
+  if (!text) return false;
+  if (/\b(?:itpm|tpm|rpm)\b/.test(text)) return true;
+  if (/\b(?:input\s+)?tokens?\s+per\s+minute\b/.test(text)) return true;
+  if (/\brequests?\s+per\s+minute\b/.test(text)) return true;
+  if (/\brate[ _-]?limit(?:ed|ing)?\b/.test(text)) return true;
+  return false;
+}
+
 export function classifyUpstreamStatus(status: number, headers: Headers, env: Record<string, unknown>, now: number = Date.now(), body: unknown = ''): FailureClassification {
   const limits = getLimits(env);
-  if (status === 429) {
-    const retryAfterMs = parseRetryAfterMs(headers, now);
-    // Tier 2/3 retain the configured fixed fallback through cooldownMs. Tier 1
-    // reads retryAfterMs separately so an absent header can drive its own
-    // repeated-429 exponential backoff instead of looking explicit.
-    return {
-      kind: KIND.RATE_LIMIT,
-      action: 'rotate',
-      cooldownMs: retryAfterMs || limits.rateLimitCooldownMs,
-      retryAfterMs,
-      counted: false,
-      explicitRetryAfter: retryAfterMs > 0,
-    };
-  }
+  if (status === 429) return rateLimitClassification(headers, env, now);
+  if (status === 413 && looksLikeProviderRateLimit(body)) return rateLimitClassification(headers, env, now);
   if (status === 401 || status === 403) {
     return { kind: KIND.AUTH, action: 'rotate', cooldownMs: limits.authFailCooldownMs, counted: false };
   }
   if (CLIENT_STOP_STATUSES.has(status)) {
-    // The request itself is broken; repeating it on other nodes cannot help.
     return { kind: KIND.CLIENT, action: 'stop', cooldownMs: 0, counted: false };
   }
   if (status === 404) {
-    // A 404 is either "model not found on this node" (a model-mapping problem:
-    // cool only the (node, model) pair) or "endpoint not found" (a node config
-    // problem: wrong base_url/path — cool the whole node briefly so a broken
-    // endpoint is not hammered). The error body disambiguates: a model-shaped
-    // message means the former; anything else is treated as an endpoint 404.
     if (looksLikeModelMissing(body)) {
       return { kind: KIND.MODEL_MISSING, action: 'rotate', cooldownMs: 5_000, counted: false, modelScoped: true };
     }
@@ -126,22 +91,14 @@ export function classifyUpstreamStatus(status: number, headers: Headers, env: Re
     return { kind: KIND.SERVER, action: 'rotate', cooldownMs: 0, counted: true };
   }
   if (status === 409) {
-    // 409 Conflict: rotating to another node is unlikely to resolve a conflict.
-    // Default to stop; only rotate when the provider's 409 is known-retryable.
     return { kind: KIND.SERVER, action: 'stop', cooldownMs: 0, counted: false };
   }
   if (status >= 500) {
     return { kind: KIND.SERVER, action: 'rotate', cooldownMs: 0, counted: true };
   }
-  // Other 4xx: gateway-generated semantics vary; treat as client-visible stop.
   return { kind: KIND.CLIENT, action: 'stop', cooldownMs: 0, counted: false };
 }
 
-// Heuristic: does a 404 error body indicate a missing/unknown MODEL rather
-// than a missing endpoint? Model-not-found errors mention "model" alongside
-// not-found / unknown / does-not-exist language; a bare endpoint 404 usually
-// says only "not found" (or nothing). Conservative: only classify as a model
-// problem when the body strongly implies one.
 function looksLikeModelMissing(body: unknown): boolean {
   const text = String(body || '').toLowerCase();
   if (!text.includes('model')) return false;
@@ -149,8 +106,6 @@ function looksLikeModelMissing(body: unknown): boolean {
 }
 
 export function classifyNetworkError(kindHeadersTimeout: boolean): FailureClassification {
-  // No standalone cooldown: transient failures feed the circuit breaker,
-  // which owns the open-period cooldown when the threshold trips.
   return kindHeadersTimeout
     ? { kind: KIND.HEADERS_TIMEOUT, action: 'rotate', cooldownMs: 0, counted: true }
     : { kind: KIND.NETWORK, action: 'rotate', cooldownMs: 0, counted: true };
@@ -160,26 +115,16 @@ export function classifyFirstEventFailure(): FailureClassification {
   return { kind: KIND.FIRST_EVENT_TIMEOUT, action: 'rotate', cooldownMs: 0, counted: true };
 }
 
-// Classify a failure that happened AFTER HTTP headers arrived but BEFORE a
-// complete response was committed to the client. Parsers/assemblers expose a
-// typed transport reason; this function is the single reliability mapping.
-// No error-message string matching is used.
 export function classifyPostHeadersFailure(error: unknown): FailureClassification {
   const code = upstreamProcessingErrorCode(error);
   if (code === UPSTREAM_PROCESSING_ERROR.DEADLINE) return classifyFirstEventFailure();
-  if (code === UPSTREAM_PROCESSING_ERROR.MALFORMED || code === UPSTREAM_PROCESSING_ERROR.TOO_LARGE) {
-    return classifyNonJsonBody();
-  }
+  if (code === UPSTREAM_PROCESSING_ERROR.MALFORMED || code === UPSTREAM_PROCESSING_ERROR.TOO_LARGE) return classifyNonJsonBody();
   if (code === UPSTREAM_PROCESSING_ERROR.TRUNCATED) return classifyStreamInterrupted();
   if (code === UPSTREAM_PROCESSING_ERROR.EMPTY) return classifyEmptyResponse();
   if (code === UPSTREAM_PROCESSING_ERROR.TERMINAL) {
     return { kind: KIND.SERVER, action: 'rotate', cooldownMs: 0, counted: true };
   }
-  // Plain JSON.parse failures are still structural upstream-body failures even
-  // when they came from a non-stream 200 response rather than an assembler.
   if (error instanceof SyntaxError) return classifyNonJsonBody();
-  // Preserve the previous retryable behavior for genuinely unknown post-header
-  // exceptions while typed coverage expands; do not invent another taxonomy.
   return classifyFirstEventFailure();
 }
 
@@ -187,59 +132,26 @@ export function classifyClientAbort(): FailureClassification {
   return { kind: KIND.CLIENT_ABORT, action: 'neutral', cooldownMs: 0, counted: false };
 }
 
-// Pre-dispatch and intra-request classification helpers.
-// These cover failures that never produced an HTTP status (the upstream was
-// never contacted) or that happen mid-stream. They are kept here so the
-// entire `kind` vocabulary lives in one place: `KIND` is the single source of
-// truth, every consumer imports from this module, and the type system catches
-// drift.
-
-// The node's base_url is structurally invalid (unparseable URL, wrong
-// scheme, etc.). Rotate, do NOT charge the budget, do NOT feed the circuit
-// (a misconfigured node is an operator problem, not a provider health
-// issue).
 export function classifyPreDispatchInvalidBaseUrl(): FailureClassification {
   return { kind: KIND.INVALID_BASE_URL, action: 'rotate', cooldownMs: 0, counted: false };
 }
 
-// The upstream returned HTTP 200 with a body that could not be parsed as
-// the expected protocol JSON. Rotate, apply a short node cooldown, and count it
-// as a transient failure so a persistent WAF/proxy HTML response can open the
-// circuit instead of being selected again on every new client request.
 export function classifyNonJsonBody(): FailureClassification {
   return { kind: KIND.NON_JSON_BODY, action: 'rotate', cooldownMs: 5_000, counted: true };
 }
 
-// The upstream returned HTTP 200 with a body that parsed as the expected
-// JSON protocol but contains no meaningful model output (empty choices,
-// empty content, role-only). Treat it like any other unusable 200: rotate to
-// the next node, apply a short cooldown, and count it as a transient failure
-// so a provider that persistently returns empty successes can open the
-// circuit instead of being credited as healthy.
 export function classifyEmptyResponse(): FailureClassification {
   return { kind: KIND.EMPTY_200, action: 'rotate', cooldownMs: 5_000, counted: true };
 }
 
-// The stream was interrupted mid-generation (TTL expiry, peer close, missing
-// completion marker). Rotate so a different node is tried on the next
-// attempt; counted=true so the circuit breaker sees it; 60s cooldown on
-// Tier 2/3 (matches the rate-limit cooldown so repeat offenders fall out
-// of the candidate ordering without permanent discard).
 export function classifyStreamInterrupted(): FailureClassification {
   return { kind: KIND.STREAM_INTERRUPTED, action: 'rotate', cooldownMs: 60_000, counted: true };
 }
 
-// A hedge twin (or the primary) lost the race and was aborted because its
-// peer committed a response. Neutral — no rotation, no penalty, no budget
-// charge. The winner is the one that decides the request outcome; the loser
-// is just bookkeeping.
 export function classifyHedgeRaceLoss(): FailureClassification {
   return { kind: KIND.CANCELLED_AFTER_PEER_COMMIT, action: 'neutral', cooldownMs: 0, counted: false };
 }
 
-// The hedge promise rejected in an unexpected way (network blip, abort
-// storm, etc.). Rotate to give the next node a chance; the regular upstream
-// failure path will re-classify the real reason if there is one.
 export function classifyHedgeUnknown(): FailureClassification {
   return { kind: KIND.UNKNOWN, action: 'rotate', cooldownMs: 0, counted: false };
 }
