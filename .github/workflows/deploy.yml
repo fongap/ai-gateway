@@ -21,10 +21,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # The gate validates the workflow_run source/conclusion before any deploy is
-  # allowed, preventing fork heads and non-push CI runs from reaching production.
+  # Original repo deploys by default, but an explicit DEPLOY_ENABLED=false is
+  # an emergency kill switch. Forks remain opt-in and require true.
   gate:
-    if: github.repository == 'fongap/ai-gateway' || vars.DEPLOY_ENABLED == 'true'
+    if: vars.DEPLOY_ENABLED != 'false' && (github.repository == 'fongap/ai-gateway' || vars.DEPLOY_ENABLED == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
