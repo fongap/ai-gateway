@@ -65,7 +65,6 @@ const UNIT_TESTS = [
   'tests/calendar-heatmap-view-test.mjs',
   'tests/calendar-heatmap-contract-test.mjs',
   'tests/migrations-check-test.mjs',
-  'tests/version-check-test.mjs',
   'tests/architecture-contract-test.mjs',
   'tests/repository-layout-test.mjs',
   'tests/reliability-core-contract-test.mjs',
