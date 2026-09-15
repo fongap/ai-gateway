@@ -11,7 +11,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
 const deploy = readFileSync(join(root, '.github', 'workflows', 'deploy.yml'), 'utf8');
 
-const gateIf = deploy.match(/\n  gate:\n(?:.|\n)*?\n    if:\s*(.+)\n/)?.[1] || '';
+// The gate condition is intentionally one line. Find it by the three semantic
+// clauses we care about instead of trying to parse surrounding YAML/comments.
+const gateIf = deploy.split(/\r?\n/).find((line) =>
+  line.includes("vars.DEPLOY_ENABLED != 'false'")
+  && line.includes("github.repository == 'fongap/ai-gateway'")
+  && line.includes("vars.DEPLOY_ENABLED == 'true'"),
+)?.trim() || '';
 
 assert.ok(
   gateIf.includes("vars.DEPLOY_ENABLED != 'false'"),
