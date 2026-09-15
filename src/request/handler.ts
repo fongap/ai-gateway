@@ -22,7 +22,11 @@ import {
 } from '../scheduler/tier1-affinity.ts';
 import { preflight as runPreflight } from './preflight.ts';
 import { evaluateRouteFeasibility } from './route-feasibility.ts';
-import { buildModelFallbackPlan } from './model-fallback.ts';
+import {
+  buildModelFallbackPlan,
+  failedDomainNodeIds,
+  rememberFailedDomains,
+} from './model-fallback.ts';
 import { pickForTier, makeTier1Rng, computeTierCaps, countRemainingDispatchableAttempts } from './tier-loop.ts';
 import { runFallbackChain } from './fallback.ts';
 import { dispatchWithHedge } from './attempt.ts';
@@ -61,6 +65,14 @@ export async function handleRequest(request: Request, env: Record<string, unknow
   );
   const familyFallback = familyModels.size > 1;
 
+  // Request-local real failure domains. A logical sibling is not fresh
+  // capacity when the same configured account resolves it to the same upstream
+  // model that already failed earlier in this request. Keep this separate from
+  // node health/cooldown: it is only retry-budget deduplication inside this one
+  // family plan, never persistent reliability state.
+  const failedDomains = new Set<string>();
+  const nodesById = new Map(config.nodes.map((node) => [node.id, node] as const));
+
   // Three SEPARATE counters, never one overloaded total:
   //   logicalAttempts — request-wide attempt budget; a primary + its optional
   //                     hedge twin together are ONE logical attempt;
@@ -96,9 +108,12 @@ export async function handleRequest(request: Request, env: Record<string, unknow
   // Model fallback is a bounded outer loop around the EXISTING scheduler. It
   // never changes node selection, P2C, affinity, cooldown, hedge, tier order,
   // protocol conversion, or reliability state machines. Each logical-model
-  // pass gets a fresh request-local attempted set so the same credential can
-  // legitimately serve a different logical model, and the second round can
-  // re-check a model whose cooldown recovered while sibling pools were tried.
+  // pass gets a fresh request-local attempted set, seeded only with REAL
+  // account/model failure domains already spent by earlier family passes.
+  // Therefore the same account can still serve a genuinely different upstream
+  // model, while aliases that collapse to the same upstream target cannot burn
+  // the request budget repeatedly. The second round can still discover nodes
+  // that were unavailable (and therefore never attempted) in the first round.
   //
   // Family allocation is derived from the configured max_attempts. Small
   // budgets widen across compatible siblings first; larger budgets deepen the
@@ -143,7 +158,8 @@ export async function handleRequest(request: Request, env: Record<string, unknow
       // availability is still evaluated inside the normal tier loop.
       if (!effectiveFeasibility.reachable) continue;
 
-      state.attempted = new Set<string>();
+      state.attempted = failedDomainNodeIds(config.nodes, effectiveModel, failedDomains);
+      const domainExcluded = state.attempted.size;
       // Reliability state is keyed to the model actually being routed. The
       // client-facing requested model remains loopCtx.requestedModel and is
       // preserved in response bodies; only this request-local reliability key
@@ -155,11 +171,12 @@ export async function handleRequest(request: Request, env: Record<string, unknow
         policy: passPolicy,
       };
 
-      if (effectiveModel !== requestedModel || roundIndex > 0) {
+      if (effectiveModel !== requestedModel || roundIndex > 0 || domainExcluded > 0) {
         logger.info(
           `model-fallback request=${requestId} round=${roundIndex + 1}/${modelPlan.length}`
           + ` requested=${requestedModel} effective=${effectiveModel}`
           + ` pass_cap=${pass.attemptCap ?? 'policy'}`
+          + ` domain_excluded=${domainExcluded}`
           + ` logical_attempts=${state.logicalAttempts}/${requestPolicy.maxAttempts}`,
         );
       }
@@ -167,6 +184,7 @@ export async function handleRequest(request: Request, env: Record<string, unknow
       // Native-first for this logical model.
       const nativeResult = await runTierLoop(effectiveLoopCtx, effectiveReqDescriptor, null);
       if (nativeResult) return nativeResult;
+      rememberFailedDomains(failedDomains, nodesById, state.attempted, effectiveModel);
 
       if (state.logicalAttempts >= requestPolicy.maxAttempts) break modelRoundsLoop;
       // This model spent its reserved share. Move to its sibling instead of
@@ -176,7 +194,9 @@ export async function handleRequest(request: Request, env: Record<string, unknow
 
       // Then run the existing cross-protocol fallback chain for this SAME
       // effective logical model. Native + protocol fallback share this pass's
-      // cap and the request-wide attempt/wall-clock budget.
+      // cap and the request-wide attempt/wall-clock budget. The attempted set
+      // already contains common failure-domain exclusions, so protocol fallback
+      // cannot resurrect an alias of a domain spent by an earlier model pass.
       const fbResult = await runFallbackChain({
         loopCtx: effectiveLoopCtx,
         route,
@@ -184,6 +204,7 @@ export async function handleRequest(request: Request, env: Record<string, unknow
         runTierLoop,
       });
       if (fbResult) return fbResult;
+      rememberFailedDomains(failedDomains, nodesById, state.attempted, effectiveModel);
 
     }
   }

@@ -5,7 +5,7 @@
 // Regression contract for model-family exhaustion caused entirely by real 429s:
 // - every sibling pool allowed by the attempt budget is still tried;
 // - internal failure accounting stays `rate_limit`;
-// - the client sees one retryable 503 attempt-budget envelope instead of a
+// - the client sees one retryable 503 failover-plan envelope instead of a
 //   false claim that every compatible account is out of capacity;
 // - Retry-After follows the real sibling cooldown instead of forcing a 1s loop.
 
@@ -93,8 +93,8 @@ const response = await worker.fetch(request, env, {});
 const body = await response.json();
 
 assert.equal(response.status, 503,
-  'all-transient compatible family attempt exhaustion must remain retryable');
-assert.match(body?.error?.message || '', /Transient failures exhausted the compatible-model attempt budget/i);
+  'all-transient compatible family exhaustion must remain retryable');
+assert.match(body?.error?.message || '', /Transient failures exhausted the compatible-model failover plan/i);
 assert.doesNotMatch(body?.error?.message || '', /Compatible model capacity is temporarily unavailable/i,
   'bounded attempts must not be presented as proof that the whole compatible pool has no capacity');
 assert.doesNotMatch(body?.error?.message || '', /All attempted nodes failed/i,
