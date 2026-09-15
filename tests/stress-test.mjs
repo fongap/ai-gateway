@@ -140,10 +140,20 @@ await test('S2 pool burst: P2C spreads live work and maxInFlight caps per-node c
   const ids = ['p1', 'p2', 'p3', 'p4'];
   for (const id of ids) routeHandlers[`${id}.example.com`] = async () => { await gate; return jsonResponse(okCompletion); };
   const env = makeEnv({ tier1: ids.map((id) => node(id)), secrets: Object.fromEntries(ids.map((id) => [id, 'k'])) });
-  const requests = Array.from({ length: 20 }, () => worker.fetch(chatRequest(), env, {}));
-  for (let i = 0; i < 100 && upstreamCalls.length < 16; i++) await new Promise((r) => setTimeout(r, 5));
+  const settledStatuses = [];
+  const requests = Array.from({ length: 20 }, () => worker.fetch(chatRequest(), env, {}).then((response) => {
+    settledStatuses.push(response.status);
+    return response;
+  }));
+  for (let i = 0; i < 100 && (upstreamCalls.length < 16 || settledStatuses.length < 4); i++) {
+    await new Promise((r) => setTimeout(r, 5));
+  }
   const used = new Set(upstreamCalls.map((c) => c.host));
   assert.equal(upstreamCalls.length, 16, 'all burst requests reach an eligible Tier 1 node up to maxInFlight=4 per node');
+  assert.equal(settledStatuses.length, 4, 'excess requests must settle while all Tier 1 slots are still occupied');
+  assert.ok(settledStatuses.every((status) => status !== 200), 'only overload responses may settle before the gate is released');
+  assert.ok(ids.every((id) => tier1AccountInFlight(id) <= 4), 'no Tier 1 account may exceed maxInFlight=4');
+  assert.equal(ids.reduce((sum, id) => sum + tier1AccountInFlight(id), 0), 16, 'the pool must hold exactly 16 concurrent slots before release');
   assert.ok(used.size >= 2, `expected P2C to spread live work, got ${JSON.stringify([...used])}`);
   release();
   const statuses = await Promise.all(requests.map((p) => p.then((r) => r.status)));
