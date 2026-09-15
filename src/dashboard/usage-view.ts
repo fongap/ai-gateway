@@ -41,6 +41,7 @@ export function buildHeatmap(daily: Map<string, DailyCellData> | null, now: numb
     data: daily,
     valueKey: 'total',
     coverage,
+    countLabel: '次上游调用',
   });
   return { cells, labels, ariaLabel, weekCount: heatmap.weeks.length };
 }
@@ -72,7 +73,7 @@ function renderDonut(rows: ModelUsageRow[]): string {
     acc += len;
     return seg;
   }).join('');
-  return `<div class="donut" role="img" aria-label="各模型上游 Token 占比，统计窗口为近 7 天">
+  return `<div class="donut" role="img" aria-label="各模型已报告上游 Token 占比，统计窗口为近 7 天">
   <svg viewBox="0 0 156 156" aria-hidden="true">
     <circle cx="78" cy="78" r="${DONUT_R}" fill="none" stroke="var(--line-soft)" stroke-width="${DONUT_STROKE}"></circle>
     ${segments}
@@ -98,15 +99,16 @@ function renderBars(rows: ModelUsageRow[]): string {
 type ModelUsageResult = { available?: boolean, rows?: ModelUsageRow[], error?: string };
 
 function renderModelUsage(modelUsage: ModelUsageResult | null | undefined, officialNames: Map<string, string> | null | undefined): string {
+  const heading = '模型使用 · 上游消耗';
   if (!modelUsage || modelUsage.available === false) {
-    return `<div class="subhead" style="margin-bottom:32px"><b>模型上游消耗</b></div>` +
+    return `<div class="subhead" style="margin-bottom:32px"><b>${heading}</b></div>` +
       `<div class="model-usage-empty">—</div>`;
   }
   const displayName = (key: string): string => (officialNames instanceof Map && officialNames.get(key)) || key;
   const rows: ModelUsageRow[] = (Array.isArray(modelUsage.rows) ? modelUsage.rows : [])
     .map((r) => ({ ...r, model: displayName(r.model) }));
   if (!rows.length) {
-    return `<div class="subhead" style="margin-bottom:32px"><b>模型上游消耗</b></div>` +
+    return `<div class="subhead" style="margin-bottom:32px"><b>${heading}</b></div>` +
       `<div class="model-usage-empty">近 7 天暂无数据</div>`;
   }
   const TOP_N = 4;
@@ -119,7 +121,7 @@ function renderModelUsage(modelUsage: ModelUsageResult | null | undefined, offic
       requests: rest.reduce((s, r) => s + r.requests, 0),
     }];
   }
-  return `<div class="subhead" style="margin-bottom:32px"><b>模型上游消耗</b></div>` +
+  return `<div class="subhead" style="margin-bottom:32px"><b>${heading}</b></div>` +
     `<div class="usage-split">${renderDonut(chartRows)}${renderBars(chartRows)}</div>`;
 }
 
@@ -182,9 +184,9 @@ export async function usageSection(env: Record<string, unknown>, now: number = D
 
   return `<section id="usage">
   <div class="wrap">
-    <div class="section-head"><span class="section-title">上游 Token 使用</span></div>
+    <div class="section-head"><span class="section-title">使用情况</span></div>
     <div class="stat-row">${kpis}</div>
-    <div class="subhead"><b>上游 Token 活动 · 近 52 周</b><span>${fmtInt(totalAttempts)} 次上游调用${coverageText}</span></div>
+    <div class="subhead"><b>已报告上游 Token 活动 · 近 52 周</b><span>${fmtInt(totalAttempts)} 次上游调用${coverageText} · 缺失不估算 · 迁移前历史为已知下限</span></div>
     ${activity}
     ${renderModelUsage(modelUsage, officialNames)}
   </div>
