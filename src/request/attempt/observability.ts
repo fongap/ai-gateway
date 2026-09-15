@@ -49,10 +49,15 @@ export function recordTier1NonStreamTtft(c: AttemptContext, node: RuntimeNode, d
 export function recordTokens(c: AttemptContext, node: RuntimeNode, usage: unknown): void {
   if (settledAttemptUsage.has(c as object)) return;
   observeUpstreamAttemptUsage(c, usage);
+  // Prefer the cumulative request-local observation when available. This keeps
+  // exact usage reported before the final callback (e.g. Anthropic lifecycle
+  // events) instead of downgrading a real report to "missing" at completion.
+  // No estimate is ever inserted into this map.
+  const reportedUsage = observedAttemptUsage.get(c as object) ?? usage;
   settledAttemptUsage.add(c as object);
   const effectiveModel = upstreamModelOf(node, c.requestedModel);
-  recordTokenUsage({ model: effectiveModel, tier: node.tier, provider: node.provider, nodeId: node.id, usage });
-  scheduleD1TokenPersist(c, usage, effectiveModel);
+  recordTokenUsage({ model: effectiveModel, tier: node.tier, provider: node.provider, nodeId: node.id, usage: reportedUsage });
+  scheduleD1TokenPersist(c, reportedUsage, effectiveModel);
 }
 
 export function recordUndeliveredUpstreamAttempt(c: AttemptContext, node: RuntimeNode, usage?: unknown): void {
@@ -60,9 +65,6 @@ export function recordUndeliveredUpstreamAttempt(c: AttemptContext, node: Runtim
   if (usage !== undefined) observeUpstreamAttemptUsage(c, usage);
   settledAttemptUsage.add(c as object);
   const observed = observedAttemptUsage.get(c as object) ?? null;
-  // Some reliability unit tests intentionally construct the historical minimal
-  // AttemptContext shape without reqDescriptor. Falling back to requestedModel
-  // preserves that compatibility and is also the correct native-pass identity.
   const routedModel = c.reqDescriptor?.model ?? c.requestedModel;
   const effectiveModel = upstreamModelOf(node, routedModel);
   const task = persistUpstreamAttemptUsage(c.env, observed, Date.now(), effectiveModel).catch((err) => {
@@ -112,12 +114,6 @@ export function makeNodeStreamTrack(
 ) {
   const tier1 = node.tier === 'tier-1';
   return {
-    // trackStreamResponse invokes this for every terminal stream outcome. A
-    // completed winner is persisted by recordTokens/onUsage below, so only
-    // failure/neutral paths need the upstream-only writer here. Converted
-    // streams may contain synthetic client-facing usage; those call sites turn
-    // observation off and feed the RAW upstream usage through their converter
-    // callback instead.
     onAttemptUsage: (usage: unknown, outcome: 'success' | 'failure' | 'neutral') => {
       if (observeStreamUsage && usage != null) observeUpstreamAttemptUsage(c, usage);
       if (outcome !== 'success') recordUndeliveredUpstreamAttempt(c, node);
