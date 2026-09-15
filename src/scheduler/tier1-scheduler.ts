@@ -8,8 +8,9 @@
 // UNKNOWN accounts (ttftEwma == null) still get sampled — a small
 // exploration factor gives them a chance without distorting known data.
 //
-// Live in-flight work is a soft ranking/hedge-admission signal only. There is
-// no configured node concurrency or RPM admission ceiling.
+// Live in-flight work is a soft ranking/hedge-admission signal by default.
+// There is no guessed node concurrency or RPM ceiling; an explicit policy
+// `max_in_flight` may opt into a local per-account admission ceiling.
 //
 // This module touches Tier 1 ONLY. Tier 2 / Tier 3 keep using
 // src/scheduler/scheduler.ts.
@@ -71,7 +72,7 @@ export function pickTier1Candidate(tier1Nodes: ReadonlyArray<RuntimeNode>, req: 
     // Lazily move expired cooldowns to HALF_OPEN so a real request can probe
     // recovery — no background probe is ever sent.
     maybeTransitionToHalfOpen(node.id, req.model, now);
-    if (!isTier1Eligible(node, req, now, knownModels)) continue;
+    if (!isTier1Eligible(node, req, now, knownModels, maxInFlight)) continue;
     // Hedge is optional latency work. Keep twins away from already-busy
     // accounts using soft live-load pressure; primary selection is unaffected.
     if (excludeId && !tier1CanAcceptHedge(node)) continue;
@@ -132,9 +133,10 @@ export function pickTier1Candidate(tier1Nodes: ReadonlyArray<RuntimeNode>, req: 
   if (affinityAccountId && !affinityNode) updateAffinity = true;
 
   if (!claimTier1Slot(chosen, now, req.model, maxInFlight)) {
-    // Lost the race for runtime admission (for example a recovery probe moved
-    // under us). This is not a node failure. Return the chosen identity so the
-    // caller can exclude it for this tier pass and make guaranteed progress.
+    // Lost the race for runtime admission (for example a recovery probe or an
+    // explicit max_in_flight ceiling moved under us). This is not a node
+    // failure. Return the chosen identity so the caller can exclude it for this
+    // tier pass and make guaranteed progress.
     return { raceLost: true, raceLostNodeId: chosen.id };
   }
   return {
