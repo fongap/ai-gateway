@@ -5,7 +5,7 @@
 Long-lived project documentation is English-canonical.
 
 - `README.md` is the canonical repository landing page.
-- Additional translations are optional. Localized root READMEs use `README.<locale>.md` (for example `README.zh-CN.md`), must identify the English canonical document, and must not introduce independent behavior, configuration, or policy claims.
+- Additional translations are optional. Localized root READMEs use `README.<locale>.md`, identify the English canonical document, and do not introduce independent behavior, configuration, or policy claims.
 - Files under `docs/` use lowercase English `kebab-case.md`, except conventional `README.md` files.
 
 ## Source-of-truth model
@@ -16,9 +16,9 @@ When evidence conflicts, use this order:
 
 1. Runtime code, configuration parsers/schemas, tests, and GitHub workflows determine current executable behavior.
 2. Canonical current documentation summarizes that behavior and must be corrected when it drifts.
-3. `CHANGELOG.md`, Git tags, existing GitHub Releases, Pull Requests, Issues, and commits preserve historical context.
+3. Git history, Pull Requests, Issues, commits, and human-created tags/Releases preserve historical context.
 
-Product scope is the exception to ordinary runtime-derived documentation: [product-policy.md](product-policy.md) is the governance authority for what ai-gateway is allowed to become. Runtime work must conform to that boundary rather than redefining it by implementation drift.
+[product-policy.md](product-policy.md) is the governance authority for product scope, Tier roles, clean replacement, simplicity, and human-owned release identity.
 
 Do not copy a transient implementation plan into a permanent policy document. Do not keep completed migration plans in `docs/governance/` solely for history.
 
@@ -26,7 +26,7 @@ Do not copy a transient implementation plan into a permanent policy document. Do
 
 | Change area | Canonical documentation |
 | --- | --- |
-| Product scope, Tier 1/2/3 long-term roles, no-backward-compatibility rule | `docs/governance/product-policy.md` |
+| Product scope, Tier roles, clean replacement, release identity | `docs/governance/product-policy.md` |
 | `src/config/*` | `docs/operations/configuration.md` |
 | `src/scheduler/*` | `docs/architecture/routing-model.md` |
 | `src/reliability/*` | `docs/architecture/reliability-model.md` |
@@ -41,39 +41,30 @@ Do not copy a transient implementation plan into a permanent policy document. Do
 | top-level module layout | `docs/architecture/repository-layout.md` |
 | CI and quality gates | `docs/governance/quality-policy.md` |
 | dependency/toolchain policy | `docs/governance/dependency-policy.md` |
-| version/tag mechanism | `docs/governance/version-policy.md` |
 | public landing-page summary | `README.md` |
 
 A behavior-changing PR updates its responsible canonical document in the same PR. A documentation-only PR may correct drift without changing runtime behavior.
 
 ## Current contract vs. history
 
-Architecture and operations documents describe the **current contract**. Avoid headings such as “v1.3.0 routing”, “latest architecture”, or “final configuration” in long-lived documents.
+Architecture and operations documents describe the **current contract**. Do not create numbered project-release copies, `latest`, `final`, or `new` variants of long-lived documents.
 
-Use version labels only where version identity matters, for example:
+Project release numbering is not stored in documentation. If the operator wants a named release, a human creates a Git tag or GitHub Release manually. Current docs remain unnumbered and describe only the current contract.
 
-- `CHANGELOG.md` entries;
-- Git tags;
-- existing historical GitHub Releases;
-- an operator note explaining a one-time move to the current contract;
-- an active migration document that will be removed when the migration is complete.
-
-Do not keep old runtime/configuration contracts alive merely because an older version used them. History belongs in Git, not in compatibility branches inside current code.
-
-Do not create parallel documents named `*-v2.md`, `*-latest.md`, `*-final.md`, `*-new.md`, `misc.md`, or `temp.md`.
+Do not keep old runtime/configuration contracts alive merely because a retired implementation used them. History belongs in Git, not in compatibility branches inside current code.
 
 ## Avoid duplicated facts
 
 High-drift values should have one executable owner whenever practical.
 
-- Software version: `package.json.version`.
 - Node requirement: `package.json.engines.node`.
 - Runtime variable names/defaults: `src/config/runtime-vars.ts`.
 - Error-kind vocabulary: `src/reliability/classify.ts`.
 - Unit-suite registry: `tests/run-unit.mjs`.
 - Wrangler pin: `scripts/cloudflare-wrangler.mjs`.
+- Deployment identity: CI-selected Git commit SHA, exposed as `/health.build`.
 
-Documentation may summarize these values, but should point back to the owner and must be updated when the summary changes. README badges that can read an executable source directly should prefer that over a duplicated hard-coded value.
+Project release numbering deliberately has **no executable owner**. It is human-created outside the source contract when needed.
 
 ## README policy
 
@@ -82,13 +73,11 @@ Documentation may summarize these values, but should point back to the owner and
 1. what the gateway is and that it is intentionally scoped to household/individual/small-team use;
 2. what protocols and reliability behavior it currently supports;
 3. how to start and configure it;
-4. where to find architecture, operations, governance, security, and history.
+4. where to find architecture, operations, governance, and security.
 
-README may summarize the permanent tier roles, but [product-policy.md](product-policy.md) owns those rules.
+README may summarize permanent Tier roles, but [product-policy.md](product-policy.md) owns those rules.
 
-Keep implementation-detail inventories out of the README when a dedicated document already owns them.
-
-Localized READMEs are reader-facing mirrors, not additional sources of truth. They should follow the canonical README structure closely enough to remain easy to synchronize, while links to architecture, operations, governance, security, and history continue to target the canonical English documents.
+Localized READMEs are reader-facing mirrors, not additional sources of truth.
 
 ## Documentation checks
 
@@ -97,7 +86,7 @@ The repository validates documentation through:
 - `scripts/docs-check.mjs` — directory, naming, localized-README, and internal-link rules;
 - `scripts/link-check.mjs` — Markdown link integrity;
 - `tests/docs-contract-test.mjs` — executable guards against known architecture and configuration drift;
-- `tests/product-policy-contract-test.mjs` — executable guard for permanent product scope, tier roles, clean replacement, and simplicity rules.
+- `tests/product-policy-contract-test.mjs` — executable guard for permanent product scope, Tier roles, clean replacement, human-owned release identity, and simplicity rules.
 
 A green docs check does not prove every sentence is current. Reviewers must still compare changed claims with their executable source.
 
