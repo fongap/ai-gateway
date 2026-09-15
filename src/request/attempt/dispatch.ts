@@ -4,12 +4,12 @@
 // attempt/index.ts for the module map.
 
 // dispatch.ts - one attempt against one node: outbound preparation (URL,
-// headers, body, conversion context), timeout acquisition (fair-share header
-// wait), the upstream fetch, and the classification entry points for
-// non-OK / network / client-abort outcomes. Success handling lives in
-// success.ts; the hedge race lives in hedge.ts.
+// headers, body, conversion context), reserve-aware attempt deadline,
+// the upstream fetch, and the classification entry points for non-OK /
+// network / client-abort outcomes. Success handling lives in success.ts;
+// the hedge race lives in hedge.ts.
 
-import { attemptHeadersTimeoutMs, attemptBudgetSliceMs } from '../../config/timeouts.ts';
+import { attemptHeadersTimeoutMs, attemptBudgetWindowMs } from '../../config/timeouts.ts';
 import { recordNeutralEnd, bumpNodeCounters } from '../../reliability/node-state.ts';
 import { releaseTier1Slot } from '../../reliability/tier1-state.ts';
 import { classifyUpstreamStatus, classifyNetworkError, classifyClientAbort, classifyPreDispatchInvalidBaseUrl, classifyHedgeRaceLoss } from '../../reliability/classify.ts';
@@ -134,14 +134,14 @@ async function dispatchAttempt(c: AttemptContext): Promise<AttemptOutcome> {
     if (c.hedgeAbort.signal.aborted) onHedgeAbort();
     else c.hedgeAbort.signal.addEventListener('abort', onHedgeAbort, { once: true });
   }
-  // Cap this attempt's own wait by a FAIR SHARE of the remaining whole-request
-  // budget instead of letting one node consume UPSTREAM_HEADERS_TIMEOUT_MS in
-  // full: the budget is split across the attempts that may still be needed, so
-  // a slow first candidate no longer starves every later one. The last
-  // remaining attempt keeps the entire remaining budget (share = remaining),
-  // and the wait never exceeds UPSTREAM_HEADERS_TIMEOUT_MS.
+  // Give the preferred candidate a real chance to use its configured header /
+  // first-event windows while reserving a small escape budget for every later
+  // candidate. This replaces the old equal split (60s / 5 => 12s), which could
+  // kill healthy coding/reasoning models before FIRST_EVENT_TIMEOUT_MS. The
+  // phase timers below still cap actual waiting, so a fast failure immediately
+  // returns unused budget to later attempts.
   //
-  // A hedged TWIN does not get a fresh slice: it inherits the logical
+  // A hedged TWIN does not get a fresh window: it inherits the logical
   // attempt's absolute deadline (primary + twin share ONE budget), so its
   // header wait is simply the time left until that deadline.
   let attemptHeadersTimeout: number;
@@ -153,7 +153,7 @@ async function dispatchAttempt(c: AttemptContext): Promise<AttemptOutcome> {
     );
   } else {
     const remainingBudgetMs = failoverBudgetMs - (Date.now() - requestStartMs);
-    const attemptBudgetMs = attemptBudgetSliceMs(remainingBudgetMs, remainingDispatchableAttempts);
+    const attemptBudgetMs = attemptBudgetWindowMs(remainingBudgetMs, remainingDispatchableAttempts);
     c.attemptDeadlineMs = Date.now() + attemptBudgetMs;
     attemptHeadersTimeout = attemptHeadersTimeoutMs(
       limits.headersTimeoutMs,
