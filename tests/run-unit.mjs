@@ -20,6 +20,7 @@ const UNIT_TESTS = [
   'tests/composed-capacity-contract-test.mjs',
   'tests/attempt-budget-contract-test.mjs',
   'tests/request-execution-ownership-test.mjs',
+  'tests/upstream-processing-classification-test.mjs',
   'tests/responses-error-diagnostics-test.mjs',
   'tests/request-reliability-test.mjs',
   'tests/adaptive-429-test.mjs',
