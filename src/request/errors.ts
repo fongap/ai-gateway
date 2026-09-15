@@ -22,9 +22,68 @@ import type { RequestDescriptor, LoopState } from '../types/request.ts';
 import { KIND as FAILURE_KIND } from '../reliability/classify.ts';
 import type { RuntimeNode } from '../types/node.ts';
 
+const GATEWAY_ERROR_CODE = Object.freeze({
+  FAILOVER_BUDGET_EXHAUSTED: 'gateway_failover_budget_exhausted',
+  NO_DISPATCHABLE_NODE: 'gateway_no_dispatchable_node',
+  ATTEMPT_BUDGET_EXHAUSTED: 'gateway_attempt_budget_exhausted',
+  UPSTREAM_EXHAUSTED: 'gateway_upstream_exhausted',
+});
+
+// Responses keeps its standard body envelope, so compact non-sensitive
+// diagnostics travel in headers instead of adding a gateway-specific `details`
+// object that Codex/OpenAI clients do not expect. Never expose node ids,
+// providers, credentials, upstream messages or the ordered attempt sequence.
+function responsesDiagnosticHeaders(
+  details?: Record<string, unknown>,
+  extraHeaders?: Record<string, string>,
+): Record<string, string> | undefined {
+  const headers: Record<string, string> = { ...(extraHeaders || {}) };
+  if (details) {
+    for (const [field, header] of [
+      ['attempts', 'x-gateway-attempts'],
+      ['dispatches', 'x-gateway-dispatches'],
+      ['hedges', 'x-gateway-hedges'],
+    ] as const) {
+      const value = details[field];
+      if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+        headers[header] = String(Math.trunc(value));
+      }
+    }
+    const failureKinds = formatFailureKinds(details.failure_kinds);
+    if (failureKinds) headers['x-gateway-failure-kinds'] = failureKinds;
+    else if (typeof details.failure_kind === 'string' && details.failure_kind) {
+      headers['x-gateway-failure-kinds'] = `${sanitizeFailureKind(details.failure_kind)}:1`;
+    }
+  }
+  return Object.keys(headers).length ? headers : undefined;
+}
+
+function sanitizeFailureKind(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 64);
+}
+
+function formatFailureKinds(value: unknown): string | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, count]) => typeof count === 'number' && Number.isFinite(count) && count > 0)
+    .map(([kind, count]) => [sanitizeFailureKind(kind), Math.trunc(count as number)] as const)
+    .sort(([a], [b]) => a.localeCompare(b));
+  return entries.length ? entries.map(([kind, count]) => `${kind}:${count}`).join(',') : null;
+}
+
 // Unified gateway error: Anthropic-style for Anthropic routes, OpenAI
 // Responses-style for /v1/responses, OpenAI Chat-style otherwise.
-export function gatewayError(request: Request, env: Record<string, unknown>, route: string, status: number, message: string, requestId: string, details?: Record<string, unknown>, extraHeaders?: Record<string, string>): Response {
+export function gatewayError(
+  request: Request,
+  env: Record<string, unknown>,
+  route: string,
+  status: number,
+  message: string,
+  requestId: string,
+  details?: Record<string, unknown>,
+  extraHeaders?: Record<string, string>,
+  gatewayCode: string | null = null,
+): Response {
   if (route === 'anthropic_messages' || route === 'anthropic_count_tokens') {
     return new Response(JSON.stringify({
       type: 'error',
@@ -43,7 +102,15 @@ export function gatewayError(request: Request, env: Record<string, unknown>, rou
     });
   }
   if (route === 'openai_responses') {
-    return responsesErrorResponse(request, env, status, message, requestId, extraHeaders);
+    return responsesErrorResponse(
+      request,
+      env,
+      status,
+      message,
+      requestId,
+      responsesDiagnosticHeaders(details, extraHeaders),
+      gatewayCode,
+    );
   }
   return new Response(JSON.stringify({ error: { message, ...(details ? { details } : {}) } }), {
     status,
@@ -75,8 +142,17 @@ export function buildBudgetExhaustedResponse(request: Request, env: Record<strin
       : {}),
     ...(exposeUpstreamInfo && state.attempts.length ? { attempts_detail: state.attempts } : {}),
   };
-  return gatewayError(request, env, route, status,
-    `Gateway failover budget exhausted after ${state.logicalAttempts} attempt(s).`, requestId, details);
+  return gatewayError(
+    request,
+    env,
+    route,
+    status,
+    `Gateway failover budget exhausted after ${state.logicalAttempts} attempt(s).`,
+    requestId,
+    details,
+    undefined,
+    GATEWAY_ERROR_CODE.FAILOVER_BUDGET_EXHAUSTED,
+  );
 }
 
 export function buildExhaustedResponse(
@@ -111,8 +187,10 @@ export function buildExhaustedResponse(
   let status: number;
   let message: string;
   let retryAfterSec: number | undefined;
+  let gatewayCode = GATEWAY_ERROR_CODE.UPSTREAM_EXHAUSTED;
   if (nothingAttempted) {
     status = 429;
+    gatewayCode = GATEWAY_ERROR_CODE.NO_DISPATCHABLE_NODE;
     message = 'No eligible node can dispatch this request right now (cooldown, recovery gate, circuit state, or configured admission limit).';
     retryAfterSec = earliestBlockingRetryAfterSec(tiers, reqDescriptor, now, knownModels_);
   } else {
@@ -131,6 +209,7 @@ export function buildExhaustedResponse(
     if (retryableFamilyExhaustion && familyFailureSetIsRetryable(state.failureKinds)) {
       const originalStatus = status;
       status = 503;
+      gatewayCode = GATEWAY_ERROR_CODE.ATTEMPT_BUDGET_EXHAUSTED;
       message = `Transient failures exhausted the compatible-model attempt budget for "${requestedModel}". Retry shortly.`;
       // Rate-limit exhaustion should not be retried every second. Preserve the
       // earliest real cooldown across ALL compatible sibling models when it is
@@ -166,8 +245,17 @@ export function buildExhaustedResponse(
     ...(exposeUpstreamInfo && state.attempts.length ? { attempts_detail: state.attempts } : {}),
   };
   // Route-aware body: Anthropic clients must receive Anthropic-shaped errors.
-  return gatewayError(request, env, route, status, message, requestId, details,
-    retryAfterSec ? { 'retry-after': String(retryAfterSec) } : undefined);
+  return gatewayError(
+    request,
+    env,
+    route,
+    status,
+    message,
+    requestId,
+    details,
+    retryAfterSec ? { 'retry-after': String(retryAfterSec) } : undefined,
+    gatewayCode,
+  );
 }
 
 // Earliest moment any node that serves the request (protocol + surface +
@@ -249,7 +337,19 @@ export function buildClientErrorResponse(request: Request, env: Record<string, u
     });
   }
   if (route === 'openai_responses') {
-    return responsesErrorResponse(request, env, status, detail, requestId);
+    return responsesErrorResponse(
+      request,
+      env,
+      status,
+      detail,
+      requestId,
+      responsesDiagnosticHeaders({
+        requested_model: requestedModel,
+        attempts: state.logicalAttempts,
+        dispatches: state.dispatches,
+        hedges: state.hedges,
+      }),
+    );
   }
   return new Response(JSON.stringify({
     error: {
