@@ -18,6 +18,7 @@ const UNIT_TESTS = [
   'tests/gateway-configuration-test.mjs',
   'tests/policy-max-in-flight-test.mjs',
   'tests/composed-capacity-contract-test.mjs',
+  'tests/attempt-budget-contract-test.mjs',
   'tests/request-reliability-test.mjs',
   'tests/adaptive-429-test.mjs',
   'tests/tier1-upstream-model-cooldown-test.mjs',
