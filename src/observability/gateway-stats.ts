@@ -44,39 +44,8 @@ export function recordStreamInterrupted(reason: string | null): void {
   else if (reason === 'reader_error') streamStats.readerError++;
 }
 
-// A streaming response can be finalized in one of two places:
-//   1. node-layer trackStreamResponse, for a real upstream stream;
-//   2. this module, for a gateway-synthesized SSE stream created from an
-//      already-complete JSON response.
-//
-// Content-Type alone cannot tell those cases apart. Earlier code assumed every
-// successful SSE had a node-layer owner, which leaked activeRequests for the
-// synthesized-stream case. Keep an explicit, request-id-scoped handoff marker
-// instead. The marker exists only between handleRequest() and the outer
-// trackClientResponse() call and is consumed immediately.
-const nodeTrackedClientStreams = new Set<string>();
-const MAX_TRACKED_STREAM_MARKERS = 4096;
-
-export function markNodeTrackedClientStream(requestId: string): void {
-  const id = String(requestId || '').trim();
-  if (!id) return;
-  if (nodeTrackedClientStreams.size >= MAX_TRACKED_STREAM_MARKERS) {
-    const oldest = nodeTrackedClientStreams.values().next().value;
-    if (oldest) nodeTrackedClientStreams.delete(oldest);
-  }
-  nodeTrackedClientStreams.add(id);
-}
-
-function consumeNodeTrackedClientStream(requestId: string | null): boolean {
-  const id = String(requestId || '').trim();
-  if (!id || !nodeTrackedClientStreams.has(id)) return false;
-  nodeTrackedClientStreams.delete(id);
-  return true;
-}
-
 export function __resetStreamStatsForTests(): void {
   for (const key of Object.keys(streamStats)) streamStats[key] = 0;
-  nodeTrackedClientStreams.clear();
 }
 
 const COUNTED_ROUTES = new Set([
@@ -96,11 +65,18 @@ export function isCountedRoute(method: string, pathname: string): boolean {
   return COUNTED_ROUTES.has(`${method} ${pathname}`);
 }
 
+// Internal handoff marker used only between handleRequest() and the outer
+// request boundary. Real upstream streams already own lifecycle accounting in
+// trackStreamResponse/makeNodeStreamTrack and are NEVER marked. Synthetic SSE
+// created from a complete JSON response has no node-layer stream tracker, so it
+// is marked at creation and handled exactly once here. The marker is stripped
+// before the response is returned to the client.
+export const SYNTHETIC_CLIENT_STREAM_HEADER = 'x-gateway-internal-synthetic-stream';
+
 // Wrap a response so its completion updates the CLIENT request counters.
-// Protocol-aware node streams already own that lifecycle through
-// makeNodeStreamTrack; synthesized SSE streams do not. Only the latter receive
-// this lightweight relay wrapper, so we do not stack another pull-based wrapper
-// around real upstream streams.
+// Protocol-aware real upstream streams already own that lifecycle through
+// makeNodeStreamTrack; gateway-synthesized SSE streams do not. Only explicitly
+// marked synthetic streams receive the lightweight relay wrapper below.
 export function trackClientResponse(response: Response): Response {
   const ok = response.status < 400;
   const streaming = ok && isOpenAIStreamingResponse(response) && response.body;
@@ -111,14 +87,17 @@ export function trackClientResponse(response: Response): Response {
     return response;
   }
 
-  // A real upstream stream was already wrapped by trackStreamResponse. Its
-  // node-layer callbacks own client completion/cancel accounting exactly once.
-  if (consumeNodeTrackedClientStream(response.headers.get('x-request-id'))) {
+  const synthetic = response.headers.get(SYNTHETIC_CLIENT_STREAM_HEADER) === '1';
+  if (!synthetic) {
+    // A real upstream / transformed stream is already wrapped by
+    // trackStreamResponse. Returning it as-is avoids stacked pull wrappers and
+    // preserves the established stream timing/cancellation contract.
     return response;
   }
 
-  // Gateway-synthesized SSE has no node-layer tracker. Relay it transparently
-  // and settle client counters on EOF / reader failure / cancellation.
+  const headers = new Headers(response.headers);
+  headers.delete(SYNTHETIC_CLIENT_STREAM_HEADER);
+
   const reader = response.body!.getReader();
   let finished = false;
   const finalize = (outcome: 'success' | 'failure' | 'cancel') => {
@@ -154,6 +133,6 @@ export function trackClientResponse(response: Response): Response {
   return new Response(body, {
     status: response.status,
     statusText: response.statusText,
-    headers: response.headers,
+    headers,
   });
 }
