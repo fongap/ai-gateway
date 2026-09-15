@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MIT
 // Stress / fault-injection coverage for the current scheduler contract.
-// There is no configured node concurrency or node RPM admission. These tests
-// hammer soft in-flight ranking, cooldown/recovery, tier fallback, cancellation,
-// and the request-wide wall-clock budget through the real worker pipeline.
+// There is no default configured node concurrency or node RPM admission. These
+// tests hammer soft in-flight ranking, optional explicit admission, cooldown/
+// recovery, tier fallback, cancellation, and the request-wide wall-clock budget
+// through the real worker pipeline.
 
 import assert from 'node:assert/strict';
 import worker from '../src/index.ts';
@@ -16,6 +17,7 @@ import {
 } from '../src/reliability/tier1-state.ts';
 import { __resetTier1AffinityForTests } from '../src/scheduler/tier1-affinity.ts';
 import { __resetAdaptive429StateForTests } from '../src/reliability/adaptive-429.ts';
+import { gatewayStats } from '../src/observability/gateway-stats.ts';
 
 const ACCESS_KEY = 'test-stress-key';
 let passed = 0;
@@ -114,54 +116,66 @@ function assertNoLeaks(ids) {
     assert.equal(state.activeRequests, 0, `node ${id} leaked ${state.activeRequests} active request(s)`);
     assert.equal(state.probeInFlight, false, `node ${id} stuck probeInFlight`);
   }
+  assert.equal(gatewayStats.activeRequests, 0, 'gateway client activeRequests must return to zero');
 }
 
-await test('S1 burst: maxInFlight=4 caps concurrent requests on the only healthy Tier 1 key', async () => {
+await test('S1 burst: default Tier 1 has no guessed per-account concurrency ceiling', async () => {
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
   routeHandlers['burst.example.com'] = async () => { await gate; return jsonResponse(okCompletion); };
   const env = makeEnv({ tier1: [node('burst')], secrets: { burst: 'k' } });
   const requests = Array.from({ length: 8 }, () => worker.fetch(chatRequest(), env, {}));
-  for (let i = 0; i < 100 && upstreamCalls.length < 4; i++) await new Promise((r) => setTimeout(r, 5));
-  assert.equal(upstreamCalls.length, 4, 'only maxInFlight=4 requests may use the only healthy key concurrently');
-  assert.equal(tier1AccountInFlight('burst'), 4);
+  for (let i = 0; i < 100 && upstreamCalls.length < 8; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(upstreamCalls.length, 8, 'default policy must not reject primary traffic at an invented local ceiling');
+  assert.equal(tier1AccountInFlight('burst'), 8);
   release();
   const statuses = await Promise.all(requests.map((p) => p.then((r) => r.status)));
-  const succeeded = statuses.filter((s) => s === 200).length;
-  const failed = statuses.filter((s) => s !== 200).length;
-  assert.equal(succeeded, 4, 'only maxInFlight requests succeed');
-  assert.equal(failed, 4, 'remaining requests fail due to maxInFlight limit with no alternative nodes');
+  assert.equal(statuses.filter((s) => s === 200).length, 8, 'all default burst requests should succeed');
   assertNoLeaks(['burst']);
 });
 
-await test('S2 pool burst: P2C spreads live work and maxInFlight caps per-node concurrency', async () => {
+await test('S2 pool burst: P2C spreads live work without a default hard ceiling', async () => {
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
   const ids = ['p1', 'p2', 'p3', 'p4'];
   for (const id of ids) routeHandlers[`${id}.example.com`] = async () => { await gate; return jsonResponse(okCompletion); };
   const env = makeEnv({ tier1: ids.map((id) => node(id)), secrets: Object.fromEntries(ids.map((id) => [id, 'k'])) });
-  const settledStatuses = [];
-  const requests = Array.from({ length: 20 }, () => worker.fetch(chatRequest(), env, {}).then((response) => {
-    settledStatuses.push(response.status);
-    return response;
-  }));
-  for (let i = 0; i < 100 && (upstreamCalls.length < 16 || settledStatuses.length < 4); i++) {
-    await new Promise((r) => setTimeout(r, 5));
-  }
+  const requests = Array.from({ length: 20 }, () => worker.fetch(chatRequest(), env, {}));
+  for (let i = 0; i < 100 && upstreamCalls.length < 20; i++) await new Promise((r) => setTimeout(r, 5));
   const used = new Set(upstreamCalls.map((c) => c.host));
-  assert.equal(upstreamCalls.length, 16, 'all burst requests reach an eligible Tier 1 node up to maxInFlight=4 per node');
-  assert.equal(settledStatuses.length, 4, 'excess requests must settle while all Tier 1 slots are still occupied');
-  assert.ok(settledStatuses.every((status) => status !== 200), 'only overload responses may settle before the gate is released');
-  assert.ok(ids.every((id) => tier1AccountInFlight(id) <= 4), 'no Tier 1 account may exceed maxInFlight=4');
-  assert.equal(ids.reduce((sum, id) => sum + tier1AccountInFlight(id), 0), 16, 'the pool must hold exactly 16 concurrent slots before release');
+  assert.equal(upstreamCalls.length, 20, 'all default burst requests must reach an eligible Tier 1 node');
+  assert.equal(ids.reduce((sum, id) => sum + tier1AccountInFlight(id), 0), 20, 'the pool must hold all 20 concurrent requests before release');
   assert.ok(used.size >= 2, `expected P2C to spread live work, got ${JSON.stringify([...used])}`);
   release();
   const statuses = await Promise.all(requests.map((p) => p.then((r) => r.status)));
-  const succeeded = statuses.filter((s) => s === 200).length;
-  const failed = statuses.filter((s) => s !== 200).length;
-  assert.equal(succeeded, 16, 'maxInFlight*4 nodes requests succeed');
-  assert.equal(failed, 4, 'remaining requests fail due to maxInFlight limit');
+  assert.equal(statuses.filter((s) => s === 200).length, 20, 'all default pool requests should succeed');
   assertNoLeaks(ids);
+});
+
+await test('S2b explicit max_in_flight=4 remains an opt-in admission ceiling', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  routeHandlers['capped.example.com'] = async () => { await gate; return jsonResponse(okCompletion); };
+  const env = makeEnv({
+    tier1: [node('capped')],
+    secrets: { capped: 'k' },
+    extraEnv: { POLICIES_CONFIG: JSON.stringify({ default: { max_in_flight: 4 } }) },
+  });
+  const settled = [];
+  const requests = Array.from({ length: 8 }, () => worker.fetch(chatRequest(), env, {}).then((response) => {
+    settled.push(response.status);
+    return response;
+  }));
+  for (let i = 0; i < 100 && (upstreamCalls.length < 4 || settled.length < 4); i++) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(upstreamCalls.length, 4, 'explicit max_in_flight=4 must cap this account at four concurrent dispatches');
+  assert.equal(tier1AccountInFlight('capped'), 4);
+  assert.equal(settled.length, 4, 'excess requests should be rejected while the explicit ceiling is occupied');
+  assert.ok(settled.every((status) => status !== 200));
+  release();
+  const statuses = await Promise.all(requests.map((p) => p.then((r) => r.status)));
+  assert.equal(statuses.filter((s) => s === 200).length, 4);
+  assert.equal(statuses.filter((s) => s !== 200).length, 4);
+  assertNoLeaks(['capped']);
 });
 
 await test('S3 tier fallback drains eligible Tier 1 candidates before Tier 2 serves', async () => {
