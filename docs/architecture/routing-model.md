@@ -18,7 +18,7 @@ Node `limits` are not part of the active schema. A node config that still contai
 
 Credentials bind by **Tier + node id**. `TIER*_NODES_CONFIG_XX` and `TIER*_NODES_SECRETS_XX` suffixes are independent shard numbers; they are not positional pairs.
 
-`priority` remains meaningful for Tier 2/3. Tier 1 deliberately ignores static priority.
+Node `priority` remains meaningful for Tier 2/3 and is deliberately ignored by Tier 1. Tier 1 may still use the request priority derived from the authenticated Gateway Access Group as a bounded score factor; that is request metadata, not static node priority or a cross-request queue.
 
 ## Logical-model family fallback
 
@@ -57,9 +57,11 @@ Compatible families still get at most two evaluation rounds. The second round ex
 
 Every model pass runs the normal native-first Tier 1 → Tier 2 → Tier 3 path and, when configured, the existing cross-protocol fallback for that same effective model. All passes share logical-attempt, dispatch, hedge, and `FAILOVER_BUDGET_MS` ceilings; switching models never creates a fresh wall-clock budget or an unlimited retry loop.
 
-A model-shaped 404 (`model_missing`) is a mapping/capability fact rather than transient capacity exhaustion. It remains isolated to the failing model mapping and does not trigger model-family fallback.
+A model-shaped 404 (`model_missing`) is a mapping/capability fact rather than transient capacity exhaustion. The failing node/model mapping is isolated, but the request may still continue to an authorized compatible sibling while request-wide attempt and wall-clock budget remain. `model_missing` never creates a provider-wide or family-wide cooldown.
 
-When a complete family sweep fails only for transient reasons such as 429, 5xx, network failure, headers/first-event timeout, or stream interruption, the gateway returns retryable `503` with a short `Retry-After`. Coding clients can then retry the turn instead of stopping for manual continuation. Auth/config/client/model-mapping failures remain terminal.
+Model-family retry budgeting is also failure-domain aware. If two logical aliases on the same configured account resolve to the same provider-facing upstream model, a failure of that execution domain prevents the sibling alias from spending another logical attempt on the same path. Such a spent duplicate domain also stops reserving future wall-clock escape time.
+
+When a bounded compatible-family plan ends after only transient reasons such as 429, 5xx, network failure, headers/first-event timeout, or stream interruption, the gateway returns retryable `503` with a short `Retry-After`. This means the bounded request plan was exhausted; it does **not** prove that every compatible account in the deployment was tested or unavailable.
 
 ## Tier 1: Eligibility → Affinity → P2C
 
@@ -116,7 +118,10 @@ When more than one candidate exists, Tier 1 samples two distinct eligible accoun
 - explicit quota-near-limit state when observed;
 - soft affinity;
 - exploration for unobserved nodes;
-- provider + upstream-model multi-key 429 heat.
+- provider + upstream-model multi-key 429 heat;
+- request priority derived from the authorized access group.
+
+Request priority is only a bounded factor inside the sampled P2C comparison. It is not a global priority queue and does not create capacity or bypass health/cooldown eligibility.
 
 Success rate is **not** a positive score/reward signal. This avoids concentrating traffic on a currently successful key until it becomes the next rate-limited hotspot.
 
@@ -181,16 +186,20 @@ Model-family planning is not an exception to `max_attempts`: it distributes the 
 
 `budget_split` supports:
 
-- `even` / `null` — preserve tier priority and give surplus to the first dispatchable unbounded tier;
+- `even` / `null` — historical config name for tier-first allocation: preserve tier priority and give surplus to the first dispatchable unbounded tier;
 - `weighted` — distribute remaining budget among unbounded dispatchable tiers by live candidate count.
 
 Explicit `tier_attempts` wins over tier budget splitting inside each model pass. The sum of explicit tier caps must not exceed the policy's configured `max_attempts`. Model-family and protocol fallback still share one wall-clock request boundary.
 
 ## Failover budget
 
-`FAILOVER_BUDGET_MS` limits the entire request wall clock; the current default is **60 seconds**. New attempts stop when the remaining budget cannot safely fit another try.
+`FAILOVER_BUDGET_MS` limits the entire request wall clock; the current default is **60 seconds**. Neither protocol fallback nor model-family fallback receives a fresh clock.
 
-The budget starts when the gateway receives the request. Neither protocol fallback nor model-family fallback receives a fresh clock.
+The live path uses reserve-aware attempt windows rather than equal-splitting the whole request budget. The current attempt may use the remaining budget except for a small escape reserve for later request-plan opportunities. `MIN_FAILOVER_RESERVE_MS` is 5 seconds per later opportunity when the budget is large enough; under a tight budget that reserve shrinks toward equal share so the tail cannot be starved.
+
+“Later opportunity” is request-scoped, not merely the current tier/model pass: live candidates in the current pass and statically reachable compatible family siblings are both visible to the allocator. Known duplicate failure domains are pruned from that future reserve. This is wall-clock allocation only; it does not create candidates or enlarge `max_attempts`.
+
+Each physical upstream dispatch receives one absolute attempt deadline. Header wait, first meaningful output, successful response assembly, and bounded non-2xx diagnostic-body reads all stay inside that same deadline. A hedge twin inherits the primary logical attempt's deadline rather than creating another window.
 
 ## Hedge
 
@@ -220,4 +229,4 @@ Active routing instead uses:
 
 `GATEWAY_KEY_RPM` remains separate gateway-access protection and does not claim to represent a Provider account quota. Optional Cloudflare rate-limiting infrastructure is likewise not a globally exact Provider-capacity source.
 
-See [Reliability model](reliability-model.md) for cooldown, 429 recovery, and failure accounting.
+See [Reliability model](reliability-model.md) for cooldown, 429 recovery, failure accounting, and stream-lifecycle ownership.
