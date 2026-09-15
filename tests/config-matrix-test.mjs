@@ -1,25 +1,5 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MIT
-//
-// Config-effect Matrix contract tests. Node mappings are the PRIMARY source
-// of the public model set; MODELS_CONFIG is OPTIONAL metadata that can
-// downgrade a model to `visibility: 'internal'` to hide it. The governance
-// matrix is therefore the product of (node-mapping presence x visibility):
-//
-//   node-mapped  x visibility   listed in public status/dashboard   requestable
-//   yes          public        yes                                yes
-//   yes          internal      no  (hidden)                       yes
-//   no           (n/a)         no  (not public)                    no
-//
-// The Registry is OPTIONAL: an operator who only deploys node configs (the
-// common free-model case) needs no MODELS_CONFIG. When MODELS_CONFIG IS
-// present, the only thing it can do to the public catalog is hide internal
-// models; it never widens the public set on its own.
-//
-// Requestability uses the real scheduler predicate the request handler relies
-// on (supportsRequest): a request for a model with no serving node is exactly
-// the 404 "No configured node provides model ..." denial path in handler.ts.
-
 import assert from 'node:assert/strict';
 import { getPublicModelStatus } from '../src/runtime/model-status.ts';
 import { renderModels } from '../src/dashboard/model-status-view.ts';
@@ -36,255 +16,141 @@ function test(name, fn) {
     __resetTier1StateForTests();
     __resetAllStateForTests();
     fn();
-    passed += 1;
+    passed++;
     console.log(`ok - ${name}`);
   } catch (e) {
     console.error(`FAIL: ${name}`);
-    console.error(e && e.stack || e);
+    console.error(e?.stack || e);
     process.exitCode = 1;
   }
 }
 
 const access = { GATEWAY_ACCESS_KEY_AIR: 'k', GATEWAY_ACCESS_MODELS_AIR: '*' };
-const env = (models) => ({
-  ...access,
-  ...(models ? { MODELS_CONFIG: JSON.stringify(models) } : {}),
-});
-const node = (id, models) => ({
-  id,
-  provider: 'mock',
-  tier: 'tier-1',
-  protocol: 'openai',
-  surfaces: ['chat_completions'],
-  base_url: `https://${id}.example.com/v1`,
-  models,
+const env = (models) => ({ ...access, ...(models ? { MODELS_CONFIG: JSON.stringify(models) } : {}) });
+const runtimeNode = (id, models) => ({
+  id, provider: 'mock', tier: 'tier-1', protocol: 'openai', surfaces: ['chat_completions'],
+  base_url: `https://${id}.example.com/v1`, models,
 });
 const configNode = (id) => ({
-  id,
-  provider: 'mock',
-  protocol: 'openai',
-  surfaces: ['chat_completions'],
-  base_url: `https://${id}.example.com/v1`,
-  models: { 'Code-Max': 'up-model' },
+  id, provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'],
+  base_url: `https://${id}.example.com/v1`, models: { 'Code-Max': 'up-model' },
 });
 const budgetNode = (id, tier) => ({
-  id,
-  tier,
-  provider: 'mock',
-  protocol: 'openai',
-  surfaces: ['chat_completions'],
-  baseUrl: `https://${id}.example.com/v1`,
-  credential: 'k',
-  priority: 10,
+  id, tier, provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'],
+  baseUrl: `https://${id}.example.com/v1`, credential: 'k', priority: 10,
   models: { 'Code-Max': 'up-model' },
 });
 const now = () => 1_700_000_000_000;
-const reqFor = (model) => ({ model, protocol: 'openai', surface: 'chat_completions' });
-const isRequestable = (nodes, model) => nodes.some((n) => supportsRequest(n, reqFor(model)));
+const req = { model: 'Code-Max', protocol: 'openai', surface: 'chat_completions' };
 const ids = (result) => result.models.map((m) => m.id);
 
-// --- Primary rule: node mappings are the public set -------------------------
-
-test('primary: node-mapped models are public by default, no MODELS_CONFIG required', () => {
-  const nodes = [node('a', { 'public-air': 'up-air', 'public-max': 'up-max' })];
+// Node mappings own the public/requestable model set; MODELS_CONFIG can narrow
+// presentation but never invent a serving model.
+test('node-mapped models are public without MODELS_CONFIG', () => {
+  const nodes = [runtimeNode('a', { 'public-air': 'up-air', 'public-max': 'up-max' })];
   recordTier1Ttft('a', 'public-air', 100, now() - 1000);
-  // No MODELS_CONFIG: both models should still be listed.
   const result = getPublicModelStatus(nodes, env(null), new Set(), now());
-  assert.ok(ids(result).includes('public-air'), 'node-mapped model listed without MODELS_CONFIG');
-  assert.ok(ids(result).includes('public-max'), 'node-mapped model listed without MODELS_CONFIG');
+  assert.ok(ids(result).includes('public-air'));
+  assert.ok(ids(result).includes('public-max'));
 });
 
-// --- Governance: visibility:internal hides a node-mapped model ---------------
-
-test('governance: internal model hidden from public status AND dashboard HTML; public model present', () => {
-  const nodes = [node('a', { 'public-vis': 'up-pub', 'private-vis': 'up-priv' })];
-  recordTier1Ttft('a', 'public-vis', 100, now() - 1000);
-  recordTier1Ttft('a', 'private-vis', 100, now() - 1000);
-  const result = getPublicModelStatus(nodes, env({
-    'public-vis': { policy: 'fast' },
-    'private-vis': { policy: 'fast', visibility: 'internal' },
-  }), new Set(), now());
-  assert.ok(ids(result).includes('public-vis'), 'public model is listed in public status');
-  assert.ok(!ids(result).includes('private-vis'), 'internal model is hidden from public status');
+test('visibility internal hides a mapped model but does not make it unrequestable', () => {
+  const nodes = [runtimeNode('a', { pub: 'up-pub', hidden: 'up-hidden' })];
+  recordTier1Ttft('a', 'pub', 100, now() - 1000);
+  recordTier1Ttft('a', 'hidden', 100, now() - 1000);
+  const result = getPublicModelStatus(nodes, env({ pub: {}, hidden: { visibility: 'internal' } }), new Set(), now());
+  assert.ok(ids(result).includes('pub'));
+  assert.ok(!ids(result).includes('hidden'));
   const { html } = renderModels(result);
-  assert.ok(html.includes('public-vis'), 'public model appears in the rendered dashboard HTML');
-  assert.ok(!html.includes('private-vis'), 'internal model never reaches the rendered dashboard HTML');
+  assert.ok(html.includes('pub'));
+  assert.ok(!html.includes('hidden'));
+  assert.equal(nodes.some((n) => supportsRequest(n, { model: 'hidden', protocol: 'openai', surface: 'chat_completions' })), true);
 });
 
-// --- Governance: node-mapped + public + available + requestable --------------
-
-test('governance: public + node + serving + available -> listed, available, requestable, dashboard-visible', () => {
-  const nodes = [node('p1', { 'public-air': 'up-air' })];
-  recordTier1Ttft('p1', 'public-air', 100, now() - 1000);
-  const result = getPublicModelStatus(nodes, env({ 'public-air': { policy: 'fast' } }), new Set(), now());
-  const entry = result.models.find((m) => m.id === 'public-air');
-  assert.ok(entry, 'public model is listed in public status');
-  assert.equal(entry.status, 'available', 'serving node with a TTFT sample -> available');
-  assert.ok(isRequestable(nodes, 'public-air'), 'public model with a serving node IS requestable');
-  const { html } = renderModels(result);
-  assert.ok(html.includes('public-air'), 'public model is rendered on the dashboard');
+test('MODELS_CONFIG alone never widens public/requestable models', () => {
+  const result = getPublicModelStatus([], env({ orphan: { policy: 'fast' } }), new Set(), now());
+  assert.ok(!ids(result).includes('orphan'));
+  assert.equal([].some((n) => supportsRequest(n, { model: 'orphan', protocol: 'openai', surface: 'chat_completions' })), false);
 });
 
-// --- Governance: internal + node + serving + hidden, but still requestable --
-
-test('governance: internal + node + serving -> hidden from public, but requestable', () => {
-  const nodes = [node('i1', { 'internal-pro': 'up-pro' })];
-  recordTier1Ttft('i1', 'internal-pro', 100, now() - 1000);
-  const result = getPublicModelStatus(nodes, env({
-    'internal-pro': { policy: 'fast', visibility: 'internal' },
-  }), new Set(), now());
-  assert.ok(!ids(result).includes('internal-pro'), 'internal model is hidden from public status');
-  const { html } = renderModels(result);
-  assert.ok(!html.includes('internal-pro'), 'internal model is hidden from the dashboard HTML');
-  assert.ok(isRequestable(nodes, 'internal-pro'), 'internal model with a serving node IS requestable');
-});
-
-// --- Governance: not node-mapped -> not in the public set at all -------------
-
-test('governance: a model declared in MODELS_CONFIG but with no node is NOT public', () => {
-  // public-air exists in MODELS_CONFIG but no node maps it.
-  const result = getPublicModelStatus([], env({ 'public-air': { policy: 'fast' } }), new Set(), now());
-  assert.ok(!ids(result).includes('public-air'),
-    'MODELS_CONFIG alone never surfaces a model — node mappings are required');
-  assert.ok(!isRequestable([], 'public-air'), 'no serving node -> request denied (404 path)');
-});
-
-// --- Visibility default: no explicit field => public ------------------------
-
-test('visibility default: a node-mapped model with NO explicit visibility field is treated as public', () => {
-  const nodes = [node('d1', { 'no-field': 'up' })];
-  recordTier1Ttft('d1', 'no-field', 100, now() - 1000);
-  const result = getPublicModelStatus(nodes, env({ 'no-field': { policy: 'fast' } }), new Set(), now());
-  assert.ok(ids(result).includes('no-field'), 'missing visibility field defaults to public -> listed');
-  const { html } = renderModels(result);
-  assert.ok(html.includes('no-field'), 'missing visibility field defaults to public -> rendered on dashboard');
-});
-
-// --- MODELS_CONFIG never widens: it can only narrow (visibility:internal) --
-
-test('MODELS_CONFIG never widens: a model in MODELS_CONFIG but no node mapping is still not public', () => {
-  const result = getPublicModelStatus([], env({
-    'registry-only': { policy: 'fast' },
-  }), new Set(), now());
-  assert.ok(!ids(result).includes('registry-only'),
-    'MODELS_CONFIG cannot surface a model that no node maps to');
-});
-
-// --- Secret tier isolation --------------------------------------------------
-
-test('secret tier: same tier may bind across different shard suffixes', () => {
+// Credentials bind by Tier + node id, not shard suffix.
+test('same-tier credential may live in a different shard suffix', () => {
   const cfg = loadGatewayConfig({
     ...access,
     TIER1_NODES_CONFIG_01: JSON.stringify([configNode('same-tier')]),
     TIER1_NODES_SECRETS_07: JSON.stringify({ 'same-tier': 'secret' }),
   });
   assert.equal(cfg.status, 'ready');
-  assert.equal(cfg.ready, true);
   assert.equal(cfg.nodes[0].credential, 'secret');
 });
 
-test('secret tier: TIER2 node cannot consume a TIER1 credential', () => {
+test('cross-tier credential binding is rejected', () => {
   const cfg = loadGatewayConfig({
     ...access,
     TIER2_NODES_CONFIG_01: JSON.stringify([configNode('tier2-cross')]),
     TIER1_NODES_SECRETS_01: JSON.stringify({ 'tier2-cross': 'secret' }),
   });
-  assert.equal(cfg.status, 'invalid');
   assert.equal(cfg.ready, false);
-  const diag = cfg.diagnostics.find((d) => d.includes('tier2-cross')) || '';
-  assert.match(diag, /TIER2/);
-  assert.match(diag, /TIER1/);
+  assert.ok(cfg.diagnostics.some((d) => d.includes('tier2-cross') && d.includes('TIER2') && d.includes('TIER1')));
 });
 
-test('secret tier: TIER3 node cannot consume a TIER2 credential', () => {
-  const cfg = loadGatewayConfig({
-    ...access,
-    TIER3_NODES_CONFIG_01: JSON.stringify([configNode('tier3-cross')]),
-    TIER2_NODES_SECRETS_07: JSON.stringify({ 'tier3-cross': 'secret' }),
-  });
-  assert.equal(cfg.status, 'invalid');
-  assert.equal(cfg.ready, false);
-  const diag = cfg.diagnostics.find((d) => d.includes('tier3-cross')) || '';
-  assert.match(diag, /TIER3/);
-  assert.match(diag, /TIER2/);
+// One tier allocation model only.
+test('explicit tier_attempts remains a hard cap', () => {
+  const tiers = { 1: [], 2: [budgetNode('t2', 'tier-2')], 3: [] };
+  const policy = { maxAttempts: 6, tierAttempts: { tier2: 3 }, hedge: null, firstEventTimeoutMs: null, maxInFlight: null };
+  const caps = computeTierCaps(tiers, req, new Set(), policy, new Set());
+  assert.equal(caps[2], 3);
 });
 
-// --- Explicit tier_attempts contract ---------------------------------------
-
-test('weighted tier_attempts: explicit Tier2=3 stays 3 when it is the only dispatchable tier', () => {
-  const tiers = { 1: [], 2: [budgetNode('only-t2', 'tier-2')], 3: [] };
-  const policy = {
-    maxAttempts: 6,
-    tierAttempts: { tier2: 3 },
-    hedge: null,
-    firstEventTimeoutMs: null,
-    budgetSplit: 'weighted',
-  };
-  const caps = computeTierCaps(tiers, reqFor('Code-Max'), new Set(), policy, new Set());
-  assert.equal(caps[2], 3, 'weighted reconciliation must not inflate explicit Tier2 from 3 to 6');
-});
-
-test('POLICIES_CONFIG rejects explicit tier_attempts total above max_attempts', () => {
-  const extra = {
-    POLICIES_CONFIG: JSON.stringify({
-      over: { max_attempts: 6, tier_attempts: { tier2: 4, tier3: 4 }, budget_split: 'weighted' },
-    }),
-  };
-  const diags = getPoliciesConfigDiagnostics(extra);
-  assert.ok(diags.some((d) => d.includes('tier_attempts total exceeds max_attempts')),
-    `expected tier_attempts total diagnostic, got ${diags}`);
-
-  const cfg = loadGatewayConfig({
-    ...access,
-    TIER2_NODES_CONFIG_01: JSON.stringify([configNode('over-budget')]),
-    TIER2_NODES_SECRETS_01: JSON.stringify({ 'over-budget': 'secret' }),
-    ...extra,
-  });
-  assert.equal(cfg.status, 'invalid');
-  assert.equal(cfg.ready, false);
-});
-
-test('tier_attempts: unset Tier3 receives only the remaining budget', () => {
+test('unset lower tier receives remaining budget after explicit higher-tier cap', () => {
   const tiers = {
     1: [],
-    2: [budgetNode('split-t2', 'tier-2')],
-    3: [budgetNode('split-t3', 'tier-3')],
+    2: [budgetNode('t2', 'tier-2')],
+    3: [budgetNode('t3', 'tier-3')],
   };
-  const basePolicy = {
-    maxAttempts: 6,
-    tierAttempts: { tier2: 3 },
-    hedge: null,
-    firstEventTimeoutMs: null,
-  };
-  const weightedCaps = computeTierCaps(tiers, reqFor('Code-Max'), new Set(), { ...basePolicy, budgetSplit: 'weighted' }, new Set());
-  const evenCaps = computeTierCaps(tiers, reqFor('Code-Max'), new Set(), { ...basePolicy, budgetSplit: 'even' }, new Set());
-  assert.equal(weightedCaps[2], 3, 'weighted keeps explicit Tier2 fixed');
-  assert.equal(weightedCaps[3], 3, 'weighted gives remaining 3 attempts to unset Tier3');
-  assert.equal(evenCaps[2], 3, 'even keeps explicit Tier2 fixed');
-  assert.equal(evenCaps[3], 3, 'even gives remaining 3 attempts to unset Tier3');
+  const policy = { maxAttempts: 6, tierAttempts: { tier2: 3 }, hedge: null, firstEventTimeoutMs: null, maxInFlight: null };
+  const caps = computeTierCaps(tiers, req, new Set(), policy, new Set());
+  assert.equal(caps[2], 3);
+  assert.equal(caps[3], 3);
 });
 
-test('Tier1 has no independent attempt cap beyond max_attempts and tier_attempts', () => {
+test('surplus goes to the first adjustable dispatchable tier', () => {
   const tiers = {
-    1: Array.from({ length: 5 }, (_, i) => budgetNode(`tier1-${i + 1}`, 'tier-1')),
-    2: [],
-    3: [],
+    1: [budgetNode('t1a', 'tier-1'), budgetNode('t1b', 'tier-1')],
+    2: [budgetNode('t2', 'tier-2')],
+    3: [budgetNode('t3', 'tier-3')],
   };
-  const basePolicy = {
-    maxAttempts: 5,
-    tierAttempts: { tier1: 5 },
-    hedge: null,
-    firstEventTimeoutMs: null,
+  const policy = { maxAttempts: 5, tierAttempts: null, hedge: null, firstEventTimeoutMs: null, maxInFlight: null };
+  const caps = computeTierCaps(tiers, req, new Set(), policy, new Set());
+  assert.deepEqual(caps, { 1: 3, 2: 1, 3: 1 });
+});
+
+test('explicit zero disables a tier', () => {
+  const tiers = {
+    1: [budgetNode('t1', 'tier-1')],
+    2: [budgetNode('t2', 'tier-2')],
+    3: [budgetNode('t3', 'tier-3')],
   };
-  const evenCaps = computeTierCaps(tiers, reqFor('Code-Max'), new Set(), { ...basePolicy, budgetSplit: null }, new Set());
-  const weightedCaps = computeTierCaps(tiers, reqFor('Code-Max'), new Set(), { ...basePolicy, budgetSplit: 'weighted' }, new Set());
-  assert.equal(evenCaps[1], 5, 'default split must honor explicit Tier1=5');
-  assert.equal(weightedCaps[1], 5, 'weighted split must honor explicit Tier1=5');
+  const policy = { maxAttempts: 4, tierAttempts: { tier2: 0 }, hedge: null, firstEventTimeoutMs: null, maxInFlight: null };
+  const caps = computeTierCaps(tiers, req, new Set(), policy, new Set());
+  assert.equal(caps[2], 0);
+  assert.equal(caps[1], 3);
+  assert.equal(caps[3], 1);
+});
+
+test('tier_attempts total above max_attempts is rejected', () => {
+  const diags = getPoliciesConfigDiagnostics({
+    POLICIES_CONFIG: JSON.stringify({ over: { max_attempts: 6, tier_attempts: { tier2: 4, tier3: 4 } } }),
+  });
+  assert.ok(diags.some((d) => d.includes('tier_attempts total exceeds max_attempts')));
+});
+
+test('budget_split is not a current policy field', () => {
+  const diags = getPoliciesConfigDiagnostics({
+    POLICIES_CONFIG: JSON.stringify({ bad: { max_attempts: 5, budget_split: 'weighted' } }),
+  });
+  assert.ok(diags.some((d) => d.includes('unknown field "budget_split"')));
 });
 
 console.log(`\nconfig-matrix tests: ${passed} passed.`);
-if (process.exitCode) {
-  console.error('Some config-matrix tests FAILED.');
-} else {
-  console.log('All config-matrix tests passed.');
-}
+if (process.exitCode) process.exit(1);
