@@ -1,34 +1,5 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
-//
-// Request Preflight — the entry-phase orchestration before any node
-// attempt is dispatched.
-//
-// Responsible for:
-//   1. request id + route detection + URL parsing
-//   2. content-type + body size + JSON parse
-//   3. access-key configuration readiness
-//   4. authorization (Bearer / x-api-key, timing-safe, fail closed)
-//   5. protocol-specific request validation (OpenAI Chat / Responses,
-//      Anthropic Messages / count_tokens)
-//   6. requested model extraction
-//   7. model authorization (visible == callable, key-scoped)
-//   8. gateway config readiness and execution-path feasibility
-//      (requested model OR an internal compatible model-family fallback)
-//   9. per-model policy resolution
-//
-// Explicitly NOT responsible for (those live downstream):
-//   - tier selection
-//   - any node attempt / dispatch / hedge
-//   - stream / non-stream finalization
-//   - cross-protocol fallback orchestration
-//   - model-family fallback orchestration
-//   - budget / attempt accounting
-//
-// The function returns either a terminal `Response` (caller returns
-// directly) or a `PreflightResult` that the orchestrator carries into
-// the native / fallback tier loops. No state mutation, no scheduler
-// call, no Reliability touch, no Transport call.
 
 import { loadGatewayConfig } from '../config/nodes.ts';
 import { loadModelsConfig } from '../config/models.ts';
@@ -58,11 +29,6 @@ import type { GatewayConfig } from '../config/nodes.ts';
 import type { PolicyConfig } from '../types/policy.ts';
 import type { RuntimeNode } from '../types/node.ts';
 
-// (protocol, surface) keyed by the client route. The same map lives in
-// handler.ts for now; this is a long-term import path. Until the rest of
-// the refactor lands, the preflight result simply forwards the values the
-// orchestrator needs and lets handler.ts own the source-of-truth
-// constant.
 const ROUTE_PROTOCOL_SURFACE = Object.freeze({
   openai_chat: { protocol: 'openai', surface: 'chat_completions' },
   openai_responses: { protocol: 'openai', surface: 'responses' },
@@ -73,11 +39,7 @@ export function getRouteProtocolSurface(route: keyof typeof ROUTE_PROTOCOL_SURFA
   return ROUTE_PROTOCOL_SURFACE[route];
 }
 
-export type PreflightTerminal = {
-  ok: false,
-  response: Response,
-};
-
+export type PreflightTerminal = { ok: false, response: Response };
 export type PreflightOk = {
   ok: true,
   request: Request,
@@ -101,19 +63,8 @@ export type PreflightOk = {
   knownModels: Set<string>,
   feasibility: RouteFeasibilityResult,
 };
-
 export type PreflightResult = PreflightTerminal | PreflightOk;
 
-/**
- * Run the preflight sequence. Returns a `PreflightResult`.
- *
- *   - On any terminal failure (auth, model authz, config, missing
- *     execution path, count_tokens, etc.) `result.ok === false` and the
- *     caller returns `result.response` directly.
- *   - On success, `result.ok === true` and the caller enters the
- *     native / model-family / protocol-fallback orchestration with the carried
- *     `requestDescriptor`, `tiers`, `policy`, and `bodyJson`.
- */
 export async function preflight(request: Request, env: Record<string, unknown>, ctx: { waitUntil?: Function }): Promise<PreflightResult> {
   const requestId = crypto.randomUUID();
   const requestUrl = new URL(request.url);
@@ -130,65 +81,50 @@ export async function preflight(request: Request, env: Record<string, unknown>, 
     return { ok: false, response: await dashboardResponse(request, env) };
   }
 
-  // ---- Authorization (grouped multi-key, fail closed) ----
-  const accessConfig = route !== 'version' ? loadAccessKeysConfig(env) : { keys: [] };
-  if (accessConfig.keys.length === 0 && route !== 'version') {
+  const accessConfig = loadAccessKeysConfig(env);
+  if (accessConfig.keys.length === 0) {
     return {
       ok: false,
       response: gatewayError(request, env, route, 500,
         'Gateway misconfigured: no GATEWAY_ACCESS_KEY_<GROUP> is set.', requestId),
     };
   }
-  const authResult: AuthResult = route !== 'version' ? await authorize(request, env) : { authorized: true, mode: 'skip', group: null };
-  if (route !== 'version' && !authResult.authorized) {
+  const authResult: AuthResult = await authorize(request, env);
+  if (!authResult.authorized) {
     return {
       ok: false,
       response: gatewayError(request, env, route, 401, 'Unauthorized: gateway access key is invalid or missing.', requestId),
     };
   }
 
-  // Per-key in-isolate RPM cap. The fingerprint is the credential GROUP
-  // label (e.g. "AIR", "PRO") — never the raw key. A cap of
-  // 0 means the limiter is disabled. Diagnostic endpoints (health /
-  // metrics / version) and zero-cost local routes (models, count_tokens)
-  // are exempt: they carry no upstream cost and are useful for an operator
-  // to monitor the cap itself.
-  if (route !== 'version' && route !== 'health' && route !== 'metrics'
+  // Local diagnostics/model-list routes carry no upstream cost and do not
+  // consume the client-key RPM budget.
+  if (route !== 'health' && route !== 'metrics'
       && route !== 'models' && route !== 'anthropic_count_tokens') {
     const limits = getLimits(env);
-    // `in` narrowing keeps this correct under both the loose and strict
-    // typecheck gates: only the authorized variants carry `group`.
     const fingerprint = ('group' in authResult ? authResult.group : null) || 'ANON';
     const verdict = admitKeyRequest(fingerprint, limits.gatewayKeyRpm);
     if (verdict.ok === false) {
-      // The union narrows to the deny variant via the `ok === false`
-      // check, so `retryAfterSec` is available without a cast.
       const headers = {
         'retry-after': String(verdict.retryAfterSec),
         ...(corsHeaders(request, env) || {}),
       };
       return {
         ok: false,
-        response: new Response(
-          JSON.stringify({
-            error: {
-              message: `Gateway access-key RPM cap exceeded. Retry after ${verdict.retryAfterSec}s.`,
-              type: 'rate_limit_error',
-              code: 'gateway_key_rpm',
-              retry_after_seconds: verdict.retryAfterSec,
-            },
-          }),
-          { status: 429, headers: { 'content-type': 'application/json', ...headers } },
-        ),
+        response: new Response(JSON.stringify({
+          error: {
+            message: `Gateway access-key RPM cap exceeded. Retry after ${verdict.retryAfterSec}s.`,
+            type: 'rate_limit_error',
+            code: 'gateway_key_rpm',
+            retry_after_seconds: verdict.retryAfterSec,
+          },
+        }), { status: 429, headers: { 'content-type': 'application/json', ...headers } }),
       };
     }
   }
 
-  // Authenticated diagnostic endpoints short-circuit here.
   const diag = await import('../observability/diagnostic-endpoints.ts');
   switch (route) {
-    case 'version':
-      return { ok: false, response: diag.versionResponse(request, env) };
     case 'health':
       return { ok: false, response: diag.healthResponse(request, env, requestId) };
     case 'metrics':
@@ -204,7 +140,6 @@ export async function preflight(request: Request, env: Record<string, unknown>, 
       return { ok: false, response: gatewayError(request, env, route, 404, 'Route not found.', requestId) };
   }
 
-  // ---- Request body ----
   const limits = getLimits(env);
   let bodyJson: Record<string, unknown>;
   try {
@@ -228,7 +163,6 @@ export async function preflight(request: Request, env: Record<string, unknown>, 
     };
   }
 
-  // ---- Local Anthropic count_tokens ----
   if (route === 'anthropic_count_tokens') {
     const mode = String(env?.ANTHROPIC_COUNT_TOKENS_MODE || 'approximate').toLowerCase();
     if (!['approximate', 'disabled'].includes(mode)) {
@@ -250,7 +184,6 @@ export async function preflight(request: Request, env: Record<string, unknown>, 
     };
   }
 
-  // ---- Protocol-specific request validation ----
   let validationError: string | null | undefined;
   if (route === 'openai_responses') validationError = validateOpenAIResponsesRequest(bodyJson);
   else if (route === 'anthropic_messages') validationError = validateAnthropicMessagesRequest(bodyJson);
@@ -265,17 +198,10 @@ export async function preflight(request: Request, env: Record<string, unknown>, 
     && String(env?.FAKE_STREAM_PROTECTION ?? '').trim().toLowerCase() === 'true'
     && !clientWantsStream;
 
-  // ---- Model authorization (fail closed, BEFORE the scheduler) ----
-  // The Known Model Catalog is the union of every explicit node.models key
-  // and every MODELS_CONFIG key. It is the single source of model existence:
-  // "*" means every model in this catalog, never an arbitrary string, and an
-  // empty catalog grants zero models.
   const gatewayConfigForAuth = loadGatewayConfig(env);
   const knownModels = collectKnownModels(gatewayConfigForAuth.nodes, env);
   const modelAuthz = authorizeModel(requestedModel, knownModels, authResult);
   if (modelAuthz.allowed === false) {
-    // The `allowed` literal discriminates the union, so the deny variant
-    // (and its `status`) is available here without a cast.
     const denyStatus = modelAuthz.status;
     return {
       ok: false,
@@ -286,12 +212,7 @@ export async function preflight(request: Request, env: Record<string, unknown>, 
     };
   }
 
-  // The scheduler/fallback catalog is key-scoped as well: internal model-family
-  // fallback may only use models this key is itself allowed to call. This keeps
-  // visible == callable across the entire request, not just at the entry gate.
   const callableModels = new Set(filterVisibleModels(knownModels, authResult));
-
-  // ---- Candidate pool ----
   const config = loadGatewayConfig(env);
   if (!config.ready) {
     return {
@@ -302,12 +223,8 @@ export async function preflight(request: Request, env: Record<string, unknown>, 
         { configuration_status: config.status, ...(exposeUpstreamInfo ? { diagnostics: config.diagnostics.slice(0, 5) } : {}) }),
     };
   }
+
   const tiers = config.tiers;
-  // Only the three dispatch routes reach this point (GET surfaces and
-  // anthropic_count_tokens return earlier), so the route narrow below is
-  // runtime-proven, not a guess.
-  // Derive priority from the access key group for Tier 1 P2C scoring.
-  // Higher groups get higher priority (5=highest). Default is 3 (normal).
   const GROUP_PRIORITY: Record<string, number> = { AIR: 2, PRO: 3, MAX: 4, ULTRA: 5, AGENT: 3 };
   const group = ('group' in authResult ? authResult.group : null) as string | null;
   const priority = (group ? GROUP_PRIORITY[group] : null) ?? 3;
@@ -315,14 +232,10 @@ export async function preflight(request: Request, env: Record<string, unknown>, 
   const requestDescriptor: RequestDescriptor = {
     route: route as 'openai_chat' | 'openai_responses' | 'anthropic_messages',
     model: requestedModel,
-    ...ROUTE_PROTOCOL_SURFACE[route],
+    ...ROUTE_PROTOCOL_SURFACE[route as keyof typeof ROUTE_PROTOCOL_SURFACE],
     priority,
   };
 
-  // Preflight and internal fallback share the same key-scoped callable catalog.
-  // A family member outside the current key's model allowlist is not a candidate,
-  // even when it exists globally. Runtime cooldown/circuit/capacity remains a
-  // scheduler concern downstream.
   const feasibility = evaluateRouteFeasibility({
     route, requestedModel, requestDescriptor, tiers, knownModels: callableModels, env,
   });
@@ -354,7 +267,6 @@ export async function preflight(request: Request, env: Record<string, unknown>, 
   }
 
   const policy = getPolicy(requestedModel, loadModelsConfig(env), loadPoliciesConfig(env));
-
   return {
     ok: true,
     request,
