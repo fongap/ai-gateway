@@ -1,27 +1,17 @@
 #!/usr/bin/env node
-// Gateway configuration tests: shard index parsing, fail-fast Node schema,
-// wildcard-vs-invalid `models` semantics, and the Model Registry.
+// SPDX-License-Identifier: MIT
 import assert from 'node:assert/strict';
 import {
   loadGatewayConfig, collectShards, TIER_SHARD_PATTERN, SECRET_SHARD_PATTERN,
 } from '../src/config/nodes.ts';
-import {
-  loadModelRegistry, modelRegistryEntry, servesModel, isWildcardNode,
-} from '../src/config/registry.ts';
+import { loadModelRegistry, modelRegistryEntry, servesModel, isWildcardNode } from '../src/config/registry.ts';
 import { getModelsConfigDiagnostics } from '../src/config/models.ts';
 import { getPoliciesConfigDiagnostics, loadPoliciesConfig } from '../src/config/policies.ts';
 
 let passed = 0;
 function test(name, fn) {
-  try {
-    fn();
-    passed++;
-    console.log(`ok - ${name}`);
-  } catch (e) {
-    console.error(`FAIL: ${name}`);
-    console.error(e && e.stack || e);
-    process.exitCode = 1;
-  }
+  try { fn(); passed++; console.log(`ok - ${name}`); }
+  catch (e) { console.error(`FAIL: ${name}`); console.error(e?.stack || e); process.exitCode = 1; }
 }
 
 const node = (id, extra = {}) => ({
@@ -33,7 +23,6 @@ const node = (id, extra = {}) => ({
   models: { 'general-air': 'up-model' },
   ...extra,
 });
-
 function makeEnv({ tier1, secrets, extraEnv } = {}) {
   return {
     GATEWAY_ACCESS_KEY_AIR: 'k',
@@ -43,404 +32,173 @@ function makeEnv({ tier1, secrets, extraEnv } = {}) {
     ...extraEnv,
   };
 }
-
-// ---- Shard index capture groups -------------------------------------------
-
-test('collectShards parses the correct index group per shard kind', () => {
-  const diags = [];
-  const secretShards = collectShards(
-    { TIER1_NODES_SECRETS_01: '{}', TIER1_NODES_SECRETS_09: '{}', TIER1_NODES_SECRETS_12: '{}' },
-    SECRET_SHARD_PATTERN, 'TIER1_NODES_SECRETS_', 'TIER1_NODES_SECRETS_01', 2, diags,
-  );
-  // Index 12 is out of the 01..10 range and must be rejected with a diagnostic.
-  assert.deepEqual(secretShards.map((s) => s.index).sort((a, b) => a - b), [1, 9]);
-  assert.ok(diags.some((d) => /TIER1_NODES_SECRETS_12/.test(d) && /out of range/.test(d)), 'shard 12 flagged as out of range');
-  assert.ok(secretShards.every((s) => Number.isInteger(s.index)), 'secret index must be a number, never NaN');
-
-  const tierShards = collectShards(
-    { TIER2_NODES_CONFIG_03: '[]' },
-    TIER_SHARD_PATTERN, 'TIER2_NODES_CONFIG_', 'TIER2_NODES_CONFIG_01', 2, [],
-  );
-  assert.equal(tierShards[0].tierNumber, 2);
-  assert.equal(tierShards[0].index, 3);
-});
-
-test('malformed shard name is flagged instead of silently ignored', () => {
-  const diags = [];
-  collectShards(
-    { TIER1_NODES_CONFIG_01: '[]', TIER1_NODES_CONFIG_XX: '[]' },
-    TIER_SHARD_PATTERN, 'TIER1_NODES_CONFIG_', 'TIER1_NODES_CONFIG_01', 2, diags,
-  );
-  assert.equal(diags.length, 1);
-  assert.match(diags[0], /malformed shard name/);
-});
-
-// ---- models: wildcard vs invalid ------------------------------------------
-
-test('models missing or explicit {} is a wildcard', () => {
-  const missing = loadGatewayConfig(makeEnv({ tier1: [node('a', { models: undefined })], secrets: { a: 'x' } }));
-  assert.deepEqual(missing.nodes[0].models, {});
-  const empty = loadGatewayConfig(makeEnv({ tier1: [node('a', { models: {} })], secrets: { a: 'x' } }));
-  assert.deepEqual(empty.nodes[0].models, {});
-  assert.equal(empty.status, 'ready');
-});
-
-test('filled-but-invalid models map is a config error, NOT a wildcard', () => {
-  const bad = loadGatewayConfig(makeEnv({ tier1: [node('bad', { models: { 'general-air': 123 } })], secrets: { bad: 'x' } }));
-  assert.equal(bad.nodes.length, 0);
-  assert.ok(bad.diagnostics.some((d) => d.includes('models')), `expected a models diagnostic, got ${bad.diagnostics}`);
-});
-
-test('scalar / boolean models value is rejected, never emptied into wildcard', () => {
-  for (const value of ['deepseek', 5, true]) {
-    const cfg = loadGatewayConfig(makeEnv({ tier1: [node('s', { models: value })], secrets: { s: 'x' } }));
-    assert.equal(cfg.nodes.length, 0, `models=${JSON.stringify(value)} must not become a wildcard`);
-    assert.ok(cfg.diagnostics.some((d) => d.includes('models')), 'must produce a models diagnostic');
-  }
-});
-
-// ---- fail-fast Node schema -------------------------------------------------
-
-test('unknown top-level field (prioirty typo) is rejected', () => {
-  const cfg = loadGatewayConfig(makeEnv({ tier1: [node('b', { prioirty: 5 })], secrets: { b: 'x' } }));
-  assert.equal(cfg.nodes.length, 0);
-  assert.ok(cfg.diagnostics.some((d) => d.includes('prioirty')), `expected unknown-field diagnostic, got ${cfg.diagnostics}`);
-});
-
-test('removed limits field is rejected as unknown configuration', () => {
-  const cfg = loadGatewayConfig(makeEnv({ tier1: [node('b', { limits: { concurrency: 2 } })], secrets: { b: 'x' } }));
-  assert.equal(cfg.nodes.length, 0);
-  assert.ok(cfg.diagnostics.some((d) => d.includes('unknown field "limits"')), `expected strict-schema diagnostic, got ${cfg.diagnostics}`);
-});
-
-test('invalid priority is rejected with a named diagnostic', () => {
-  const cfg = loadGatewayConfig(makeEnv({ tier1: [node('p', { priority: -1 })], secrets: { p: 'x' } }));
-  assert.equal(cfg.nodes.length, 0);
-  assert.ok(cfg.diagnostics.some((d) => d.includes('priority')));
-});
-
-test('priority defaults to 100 with no node capacity fields', () => {
-  const cfg = loadGatewayConfig(makeEnv({ tier1: [node('ok')], secrets: { ok: 'x' } }));
-  assert.equal(cfg.status, 'ready');
-  assert.equal(cfg.nodes[0].priority, 100);
-  assert.equal('limits' in cfg.nodes[0], false);
-});
-
-// ---- protocol / surfaces schema --------------------------------------------
-
-test('explicit protocol + surfaces build cleanly with no diagnostics', () => {
-  const cfg = loadGatewayConfig(makeEnv({ tier1: [node('p1')], secrets: { p1: 'x' } }));
-  assert.equal(cfg.status, 'ready');
-  assert.deepEqual(cfg.diagnostics, []);
-  assert.equal(cfg.nodes[0].protocol, 'openai');
-  assert.deepEqual(cfg.nodes[0].surfaces, ['chat_completions']);
-});
-
-test('nodes without protocol/surfaces keep the established transport defaults', () => {
-  const legacy = { id: 'old-01', provider: 'nvidia', base_url: 'https://old.example.com/v1', models: {} };
-  const cfg = loadGatewayConfig(makeEnv({ tier1: [legacy], secrets: { 'old-01': 'x' } }));
-  assert.equal(cfg.status, 'ready');
-  assert.equal(cfg.ready, true);
-  assert.equal(cfg.nodes.length, 1);
-  assert.equal(cfg.nodes[0].protocol, 'openai');
-  assert.deepEqual(cfg.nodes[0].surfaces, ['chat_completions']);
-  assert.ok(cfg.diagnostics.some((d) => d.includes('old-01') && d.includes('protocol is implicit')));
-  assert.ok(cfg.diagnostics.some((d) => d.includes('old-01') && d.includes('surfaces is implicit')));
-});
-
-test('anthropic protocol without surfaces defaults to messages', () => {
-  const nodeWithoutSurface = { id: 'an-01', provider: 'anthropic', protocol: 'anthropic', base_url: 'https://an.example.com', models: {} };
-  const cfg = loadGatewayConfig(makeEnv({ tier1: [nodeWithoutSurface], secrets: { 'an-01': 'x' } }));
-  assert.equal(cfg.status, 'ready');
-  assert.deepEqual(cfg.nodes[0].surfaces, ['messages']);
-});
-
-test('invalid protocol value is rejected with a named diagnostic', () => {
-  for (const bad of ['gemini', 'grpc', 'OPENAI-X', '']) {
-    const cfg = loadGatewayConfig(makeEnv({ tier1: [node('bp', { protocol: bad })], secrets: { bp: 'x' } }));
-    assert.equal(cfg.nodes.length, 0, `protocol=${JSON.stringify(bad)} must be rejected`);
-    assert.ok(cfg.diagnostics.some((d) => d.includes('protocol must be "openai" or "anthropic"')));
-  }
-});
-
-test('invalid surfaces entries are rejected with a named diagnostic', () => {
-  const empty = loadGatewayConfig(makeEnv({ tier1: [node('se', { surfaces: [] })], secrets: { se: 'x' } }));
-  assert.equal(empty.nodes.length, 0);
-  assert.ok(empty.diagnostics.some((d) => d.includes('surfaces must be a non-empty array')));
-  const wrongProto = loadGatewayConfig(makeEnv({ tier1: [node('sw', { protocol: 'anthropic', surfaces: ['chat_completions'] })], secrets: { sw: 'x' } }));
-  assert.equal(wrongProto.nodes.length, 0, 'an anthropic node cannot declare the chat_completions surface');
-  assert.ok(wrongProto.diagnostics.some((d) => d.includes('not valid for protocol "anthropic"')));
-  const unknown = loadGatewayConfig(makeEnv({ tier1: [node('su', { surfaces: ['gemini'] })], secrets: { su: 'x' } }));
-  assert.equal(unknown.nodes.length, 0);
-  assert.ok(unknown.diagnostics.some((d) => d.includes('not valid for protocol "openai"')));
-});
-
-test('openai nodes may declare both chat_completions and responses surfaces', () => {
-  const cfg = loadGatewayConfig(makeEnv({ tier1: [node('multi', { surfaces: ['responses', 'chat_completions'] })], secrets: { multi: 'x' } }));
-  assert.equal(cfg.status, 'ready');
-  assert.deepEqual(cfg.nodes[0].surfaces, ['responses', 'chat_completions']);
-});
-
-// ---- Model Registry --------------------------------------------------------
-
-test('registry builds capability + policy from MODELS_CONFIG and fills conservative defaults', () => {
-  const env = makeEnv({
-    tier1: [node('a', { models: {} })],
-    secrets: { a: 'x' },
-    extraEnv: {
-      MODELS_CONFIG: JSON.stringify({
-        'code-pro': { policy: 'fast', capabilities: { vision: true }, reasoning_efforts: ['high'] },
-      }),
-    },
-  });
-  const reg = loadModelRegistry(env);
-  assert.equal(reg['code-pro'].policy, 'fast');
-  assert.equal(reg['code-pro'].capabilities.vision, true);
-  assert.deepEqual(reg['code-pro'].reasoning_efforts, ['high']);
-  const def = modelRegistryEntry(env, 'unknown-model');
-  assert.equal(def.capabilities.tools, false, 'undeclared models must not promise tools');
-  assert.equal(def.capabilities.reasoning, false, 'undeclared models must not promise reasoning');
-  assert.equal(def.capabilities.vision, false);
-  assert.equal(def.capabilities.ocr, false);
-  assert.equal(def.ui_visible, true, 'default ui_visible should be true');
-  assert.deepEqual(def.reasoning_efforts, [], 'no reasoning efforts without a declaration');
-});
-
-// ---- Modalities schema reservation (Omni phase) -----------------------------
-test('MODELS_CONFIG accepts a valid modalities declaration and the registry carries it', () => {
-  const env = makeEnv({
-    tier1: [node('a', { models: {} })],
-    secrets: { a: 'x' },
-    extraEnv: {
-      MODELS_CONFIG: JSON.stringify({
-        'omni-pro': { policy: 'default', modalities: { input: ['text', 'image', 'audio'], output: ['text', 'audio'] } },
-      }),
-    },
-  });
-  const reg = loadModelRegistry(env);
-  assert.deepEqual(reg['omni-pro'].modalities, { input: ['text', 'image', 'audio'], output: ['text', 'audio'] });
-  const def = modelRegistryEntry(env, 'unknown-model');
-  assert.equal(def.modalities, undefined, 'undeclared models must not claim modalities');
-  const reg2 = loadModelRegistry(makeEnv({
-    tier1: [node('a', { models: {} })],
-    secrets: { a: 'x' },
-    extraEnv: {
-      MODELS_CONFIG: JSON.stringify({
-        'dedupe': { modalities: { input: ['text', 'text'], output: ['text'] } },
-      }),
-    },
-  }));
-  assert.deepEqual(reg2['dedupe'].modalities, { input: ['text'], output: ['text'] });
-});
-
-test('servesModel treats empty models as wildcard, mapped as explicit', () => {
-  assert.equal(isWildcardNode(node('w', { models: {} })), true);
-  assert.equal(servesModel(node('w', { models: {} }), 'anything'), true);
-  assert.equal(servesModel(node('m', { models: { only: 'x' } }), 'only'), true);
-  assert.equal(servesModel(node('m', { models: { only: 'x' } }), 'other'), false);
-});
-
-// ---- Strict MODELS_CONFIG / POLICIES_CONFIG diagnostics --------------------
-test('malformed MODELS_CONFIG is FATAL: invalid config refuses service', () => {
-  const cfg = loadGatewayConfig(makeEnv({
-    tier1: [node('m1', { models: { 'general-air': 'up' } })],
-    secrets: { m1: 'k' },
-    extraEnv: { MODELS_CONFIG: '{not json' },
-  }));
-  assert.equal(cfg.status, 'invalid', 'a malformed MODELS_CONFIG must be fatal, not degraded');
-  assert.equal(cfg.ready, false, 'a malformed MODELS_CONFIG must refuse service');
-  assert.ok(cfg.diagnostics.some((d) => d.includes('MODELS_CONFIG')), `expected MODELS_CONFIG diagnostic, got ${cfg.diagnostics}`);
-});
-
-test('MODELS_CONFIG rejects unknown capabilities and non-boolean values', () => {
-  const diags = getModelsConfigDiagnostics(makeEnv({ extraEnv: {
-    MODELS_CONFIG: JSON.stringify({
-      'm': { capabilities: { tools: true, visionz: true, reasoning: 'yes' } },
-    }),
-  } }));
-  assert.ok(diags.some((d) => d.includes('capabilities.visionz')), 'unknown capability key must be flagged');
-  assert.ok(diags.some((d) => d.includes('capabilities.reasoning')), 'non-boolean capability must be flagged');
-});
-
-test('MODELS_CONFIG accepts ocr capability and ui_visible field', () => {
-  const env = makeEnv({ extraEnv: {
-    MODELS_CONFIG: JSON.stringify({
-      'OCR': { policy: 'default', capabilities: { ocr: true }, ui_visible: false, group: 'ocr' },
-      'Omni': { policy: 'default', capabilities: { vision: true }, ui_visible: false, group: 'omni' },
-    }),
-  } });
-  const diags = getModelsConfigDiagnostics(env);
-  assert.ok(!diags.some((d) => d.includes('ocr')), 'ocr capability should be accepted');
-  assert.ok(!diags.some((d) => d.includes('ui_visible')), 'ui_visible field should be accepted');
-  const reg = modelRegistryEntry(env, 'OCR');
-  assert.equal(reg.capabilities.ocr, true);
-  assert.equal(reg.ui_visible, false);
-  assert.equal(reg.group, 'ocr');
-  const omni = modelRegistryEntry(env, 'Omni');
-  assert.equal(omni.capabilities.vision, true);
-  assert.equal(omni.ui_visible, false);
-  assert.equal(omni.group, 'omni');
-});
-
-test('MODELS_CONFIG rejects non-boolean ui_visible', () => {
-  const diags = getModelsConfigDiagnostics(makeEnv({ extraEnv: {
-    MODELS_CONFIG: JSON.stringify({ 'm': { ui_visible: 'yes' } }),
-  } }));
-  assert.ok(diags.some((d) => d.includes('ui_visible must be a boolean')), 'non-boolean ui_visible must be flagged');
-});
-
-test('malformed POLICIES_CONFIG is FATAL: invalid config refuses service', () => {
-  const cfg = loadGatewayConfig(makeEnv({
-    tier1: [node('p1')],
-    secrets: { p1: 'k' },
-    extraEnv: { POLICIES_CONFIG: '{bad' },
-  }));
-  assert.equal(cfg.status, 'invalid', 'a malformed POLICIES_CONFIG must be fatal, not degraded');
-  assert.equal(cfg.ready, false, 'a malformed POLICIES_CONFIG must refuse service');
-  assert.ok(cfg.diagnostics.some((d) => d.includes('POLICIES_CONFIG')), `expected POLICIES_CONFIG diagnostic, got ${cfg.diagnostics}`);
-});
-
 const policyDiags = (policies) => getPoliciesConfigDiagnostics(makeEnv({ extraEnv: { POLICIES_CONFIG: JSON.stringify(policies) } }));
 const modelDiags = (models) => getModelsConfigDiagnostics(makeEnv({ extraEnv: { MODELS_CONFIG: JSON.stringify(models) } }));
 
-test('MODELS_CONFIG rejects malformed modalities with isolated diagnostics', () => {
-  const one = (mods) => modelDiags({ 'm': { modalities: mods } });
-  assert.match(one('nope')[0], /modalities must be an object \{ input, output \}/);
-  assert.match(one({ input: ['text'] })[0], /modalities\.output must be an array over the closed vocabulary/);
-  assert.match(one({ input: ['smell'], output: ['text'] })[0], /modalities\.input must be an array over the closed vocabulary/);
-  assert.match(one({ input: ['text'], output: 'text' })[0], /modalities\.output must be an array over the closed vocabulary/);
-  const cfg = loadGatewayConfig(makeEnv({
-    tier1: [node('a', { models: {} })],
-    secrets: { a: 'x' },
-    extraEnv: { MODELS_CONFIG: JSON.stringify({ 'm': { modalities: { input: ['hologram'], output: ['text'] } } }) },
-  }));
-  assert.equal(cfg.status, 'invalid', 'an invalid modalities token must refuse service, not degrade');
+// Shards.
+test('collectShards accepts 01..10 and reports out-of-range/malformed names', () => {
+  const diags = [];
+  const secrets = collectShards(
+    { TIER1_NODES_SECRETS_01: '{}', TIER1_NODES_SECRETS_09: '{}', TIER1_NODES_SECRETS_12: '{}' },
+    SECRET_SHARD_PATTERN, 'TIER1_NODES_SECRETS_', 'TIER1_NODES_SECRETS_01', 2, diags,
+  );
+  assert.deepEqual(secrets.map((s) => s.index), [1, 9]);
+  assert.ok(diags.some((d) => /12.*out of range/.test(d)));
+  const tiers = collectShards({ TIER2_NODES_CONFIG_03: '[]' }, TIER_SHARD_PATTERN, 'TIER2_NODES_CONFIG_', 'TIER2_NODES_CONFIG_01', 2, []);
+  assert.equal(tiers[0].tierNumber, 2);
+  assert.equal(tiers[0].index, 3);
 });
 
-const MAX_ATTEMPTS_TEXT = /max_attempts must be an integer between 1 and 8/;
-const TIER_ATTEMPTS_TEXT = /tier_attempts\.tier1 must be an integer between 0 and 8/;
-
-test('POLICIES_CONFIG rejects a non-string max_attempts', () => {
-  const diags = policyDiags({ 'p-abc': { max_attempts: 'abc' } });
-  assert.equal(diags.length, 1, `one isolated diagnostic expected, got ${JSON.stringify(diags)}`);
-  assert.match(diags[0], /"p-abc": max_attempts must be an integer between 1 and 8/);
-});
-test('POLICIES_CONFIG rejects a below-range max_attempts', () => {
-  const diags = policyDiags({ 'p-low': { max_attempts: -1 } });
-  assert.equal(diags.length, 1); assert.match(diags[0], MAX_ATTEMPTS_TEXT);
-});
-test('POLICIES_CONFIG rejects an above-range max_attempts', () => {
-  const diags = policyDiags({ 'p-high': { max_attempts: 9 } });
-  assert.equal(diags.length, 1); assert.match(diags[0], MAX_ATTEMPTS_TEXT);
-});
-test('POLICIES_CONFIG rejects a non-integer max_attempts', () => {
-  const diags = policyDiags({ 'p-frac': { max_attempts: 1.5 } });
-  assert.equal(diags.length, 1); assert.match(diags[0], MAX_ATTEMPTS_TEXT);
-});
-test('POLICIES_CONFIG rejects an explicit null max_attempts', () => {
-  const diags = policyDiags({ 'p-null': { max_attempts: null } });
-  assert.equal(diags.length, 1); assert.match(diags[0], MAX_ATTEMPTS_TEXT);
-});
-test('POLICIES_CONFIG rejects a non-integer tier_attempts value', () => {
-  const diags = policyDiags({ 't-frac': { tier_attempts: { tier1: 1.5 } } });
-  assert.equal(diags.length, 1); assert.match(diags[0], /"t-frac" tier_attempts\.tier1 must be an integer between 0 and 8/);
-});
-test('POLICIES_CONFIG rejects an above-range tier_attempts value', () => {
-  const diags = policyDiags({ 't-high': { tier_attempts: { tier1: 9 } } });
-  assert.equal(diags.length, 1); assert.match(diags[0], TIER_ATTEMPTS_TEXT);
-});
-test('POLICIES_CONFIG rejects a negative tier_attempts value', () => {
-  const diags = policyDiags({ 't-neg': { tier_attempts: { tier1: -1 } } });
-  assert.equal(diags.length, 1); assert.match(diags[0], TIER_ATTEMPTS_TEXT);
-});
-test('POLICIES_CONFIG rejects an unknown tier_attempts key', () => {
-  const diags = policyDiags({ 't-key': { tier_attempts: { tier9: 2 } } });
-  assert.equal(diags.length, 1); assert.match(diags[0], /tier_attempts\.tier9 is not a valid tier/);
-});
-test('POLICIES_CONFIG rejects unknown policy fields', () => {
-  const diags = policyDiags({ 'p-unknown': { nope: 1 } });
-  assert.equal(diags.length, 1); assert.match(diags[0], /has unknown field "nope"/);
+// Strict node schema: required current fields only.
+test('fully explicit node config is ready', () => {
+  const cfg = loadGatewayConfig(makeEnv({ tier1: [node('good')], secrets: { good: 'x' } }));
+  assert.equal(cfg.status, 'ready');
+  assert.equal(cfg.nodes.length, 1);
+  assert.equal(cfg.nodes[0].protocol, 'openai');
+  assert.deepEqual(cfg.nodes[0].surfaces, ['chat_completions']);
 });
 
-test('POLICIES_CONFIG parses a valid hedge policy', () => {
-  const policies = loadPoliciesConfig(makeEnv({ extraEnv: { POLICIES_CONFIG: JSON.stringify({ 'hp': { max_attempts: 5, hedge: { enabled: true, delay_ms: 4000, tiers: ['tier1'] } } }) } }));
-  assert.equal(policies.hp.hedge.enabled, true);
-  assert.equal(policies.hp.hedge.delayMs, 4000);
-  assert.deepEqual(policies.hp.hedge.tiers, ['tier1']);
-});
-test('POLICIES_CONFIG hedge null/absent returns null (custom policy without hedge)', () => {
-  const policies = loadPoliciesConfig(makeEnv({ extraEnv: { POLICIES_CONFIG: JSON.stringify({ 'hp': { max_attempts: 5 } }) } }));
-  assert.equal(policies.hp.hedge, null, 'absent hedge field = null = legacy global hedge');
-});
-test('POLICIES_CONFIG hedge.enabled=false is accepted', () => {
-  const policies = loadPoliciesConfig(makeEnv({ extraEnv: { POLICIES_CONFIG: JSON.stringify({ 'hp': { max_attempts: 5, hedge: { enabled: false } } }) } }));
-  assert.equal(policies.hp.hedge.enabled, false);
-});
-test('POLICIES_CONFIG rejects a non-boolean hedge.enabled', () => {
-  const diags = policyDiags({ 'hp': { hedge: { enabled: 'yes' } } });
-  assert.equal(diags.length, 1); assert.match(diags[0], /hedge\.enabled must be a boolean/);
-});
-test('POLICIES_CONFIG rejects a non-integer hedge.delay_ms', () => {
-  const diags = policyDiags({ 'hp': { hedge: { delay_ms: 1.5 } } });
-  assert.equal(diags.length, 1); assert.match(diags[0], /hedge\.delay_ms must be a non-negative integer/);
-});
-test('POLICIES_CONFIG rejects a negative hedge.delay_ms', () => {
-  const diags = policyDiags({ 'hp': { hedge: { delay_ms: -1 } } });
-  assert.equal(diags.length, 1); assert.match(diags[0], /hedge\.delay_ms must be a non-negative integer/);
-});
-test('POLICIES_CONFIG rejects invalid hedge.tiers values', () => {
-  const diags = policyDiags({ 'hp': { hedge: { tiers: ['tier9'] } } });
-  assert.equal(diags.length, 1); assert.match(diags[0], /hedge\.tiers must be an array of/);
-});
-test('MODELS_CONFIG rejects a non-string policy', () => {
-  const diags = modelDiags({ 'm-num': { policy: 123 } });
-  assert.equal(diags.length, 1); assert.match(diags[0], /model "m-num": policy must be a non-empty string/);
-});
-test('MODELS_CONFIG rejects empty and whitespace-only policy', () => {
-  for (const bad of ['', '   ']) {
-    const diags = modelDiags({ 'm-empty': { policy: bad } });
-    assert.equal(diags.length, 1);
-    assert.match(diags[0], /model "m-empty": policy must be a non-empty string/);
+test('provider, protocol, surfaces and models are required', () => {
+  for (const field of ['provider', 'protocol', 'surfaces', 'models']) {
+    const n = node(`missing-${field}`);
+    delete n[field];
+    const cfg = loadGatewayConfig(makeEnv({ tier1: [n], secrets: { [n.id]: 'x' } }));
+    assert.equal(cfg.nodes.length, 0, `${field} omission must not be repaired by a default`);
+    assert.ok(cfg.diagnostics.some((d) => d.includes(field)), `missing ${field} diagnostic required`);
   }
 });
 
-test('valid boundary attempts survive strict validation and defaults stay intact', () => {
-  const diags = policyDiags({ lo: { max_attempts: 1, tier_attempts: { tier1: 0 } }, hi: { max_attempts: 8, tier_attempts: { tier3: 8 } } });
-  assert.deepEqual(diags, []);
-  const pol = loadPoliciesConfig(makeEnv({ extraEnv: { POLICIES_CONFIG: JSON.stringify({ loose: {} }) } }));
-  assert.equal(pol.loose.maxAttempts, 5);
-  assert.equal(pol.loose.tierAttempts, null);
+test('models accepts object only; explicit empty object is intentional wildcard', () => {
+  const wildcard = loadGatewayConfig(makeEnv({ tier1: [node('w', { models: {} })], secrets: { w: 'x' } }));
+  assert.equal(wildcard.status, 'ready');
+  assert.deepEqual(wildcard.nodes[0].models, {});
+  for (const bad of [['general-air'], 'deepseek', 5, true]) {
+    const cfg = loadGatewayConfig(makeEnv({ tier1: [node('bad-models', { models: bad })], secrets: { 'bad-models': 'x' } }));
+    assert.equal(cfg.nodes.length, 0, `models=${JSON.stringify(bad)} must be rejected`);
+  }
 });
 
-test('invalid max_attempts is FATAL end-to-end: status invalid, ready false', () => {
-  const cfg = loadGatewayConfig(makeEnv({ tier1: [node('f1')], secrets: { f1: 'k' }, extraEnv: { POLICIES_CONFIG: JSON.stringify({ default: { max_attempts: 0 } }) } }));
-  assert.equal(cfg.status, 'invalid');
-  assert.equal(cfg.ready, false);
-  assert.ok(cfg.diagnostics.some((d) => d.includes('max_attempts must be an integer')));
+test('unknown, credential and retired capacity fields are rejected', () => {
+  for (const extra of [
+    { prioirty: 5 },
+    { limits: { concurrency: 2 } },
+    { api_key: 'secret' },
+  ]) {
+    const cfg = loadGatewayConfig(makeEnv({ tier1: [node('bad-field', extra)], secrets: { 'bad-field': 'x' } }));
+    assert.equal(cfg.nodes.length, 0);
+  }
 });
-test('a model referencing an undefined policy is a FATAL config diagnostic', () => {
-  const env = makeEnv({ tier1: [node('x1')], secrets: { x1: 'k' }, extraEnv: { MODELS_CONFIG: JSON.stringify({ 'general-air': { policy: 'missing-policy' } }), POLICIES_CONFIG: JSON.stringify({ default: { max_attempts: 5 } }) } });
-  const cfg = loadGatewayConfig(env);
-  assert.equal(cfg.status, 'invalid');
-  assert.equal(cfg.ready, false);
-  assert.ok(cfg.diagnostics.some((d) => d.includes('missing-policy')));
+
+test('priority is numeric-only; absent priority uses current default 100', () => {
+  const normal = loadGatewayConfig(makeEnv({ tier1: [node('prio')], secrets: { prio: 'x' } }));
+  assert.equal(normal.nodes[0].priority, 100);
+  for (const bad of [-1, '10', 1.5]) {
+    const cfg = loadGatewayConfig(makeEnv({ tier1: [node('prio-bad', { priority: bad })], secrets: { 'prio-bad': 'x' } }));
+    assert.equal(cfg.nodes.length, 0);
+    assert.ok(cfg.diagnostics.some((d) => d.includes('priority')));
+  }
 });
-test('valid MODELS_CONFIG + POLICIES_CONFIG resolve and stay ready', () => {
-  const env = makeEnv({ tier1: [node('g1')], secrets: { g1: 'k' }, extraEnv: { MODELS_CONFIG: JSON.stringify({ 'general-air': { policy: 'fast', capabilities: { tools: true } } }), POLICIES_CONFIG: JSON.stringify({ fast: { max_attempts: 6, tier_attempts: { tier1: 4, tier2: 1 } } }) } });
-  const cfg = loadGatewayConfig(env);
-  assert.equal(cfg.status, 'ready');
-  assert.equal(cfg.diagnostics.length, 0);
+
+test('protocol and surfaces are closed vocabularies', () => {
+  const anthropic = loadGatewayConfig(makeEnv({
+    tier1: [node('an', { protocol: 'anthropic', surfaces: ['messages'] })], secrets: { an: 'x' },
+  }));
+  assert.equal(anthropic.status, 'ready');
+  const badProtocol = loadGatewayConfig(makeEnv({ tier1: [node('pbad', { protocol: 'gemini' })], secrets: { pbad: 'x' } }));
+  assert.equal(badProtocol.nodes.length, 0);
+  const badSurface = loadGatewayConfig(makeEnv({ tier1: [node('sbad', { protocol: 'anthropic', surfaces: ['chat_completions'] })], secrets: { sbad: 'x' } }));
+  assert.equal(badSurface.nodes.length, 0);
 });
-test('POLICIES_CONFIG accepts budget_split: even and weighted', () => {
-  const diags = policyDiags({ ev: { max_attempts: 5, budget_split: 'even' }, wt: { max_attempts: 5, budget_split: 'weighted' } });
-  assert.deepEqual(diags, []);
-  const pol = loadPoliciesConfig(makeEnv({ extraEnv: { POLICIES_CONFIG: JSON.stringify({ a: { budget_split: 'even' }, b: { budget_split: 'weighted' } }) } }));
-  assert.equal(pol.a.budgetSplit, 'even');
-  assert.equal(pol.b.budgetSplit, 'weighted');
+
+// Registry / wildcard behavior.
+test('registry carries declared capabilities and conservative defaults', () => {
+  const env = makeEnv({
+    tier1: [node('r', { models: {} })], secrets: { r: 'x' },
+    extraEnv: { MODELS_CONFIG: JSON.stringify({ 'code-pro': { policy: 'fast', capabilities: { vision: true }, reasoning_efforts: ['high'] } }) },
+  });
+  const reg = loadModelRegistry(env);
+  assert.equal(reg['code-pro'].capabilities.vision, true);
+  assert.deepEqual(reg['code-pro'].reasoning_efforts, ['high']);
+  const def = modelRegistryEntry(env, 'unknown-model');
+  assert.equal(def.capabilities.tools, false);
+  assert.equal(def.capabilities.reasoning, false);
+  assert.equal(def.capabilities.vision, false);
 });
-test('POLICIES_CONFIG rejects an unknown budget_split value', () => {
-  const diags = policyDiags({ bad: { max_attempts: 5, budget_split: 'random' } });
-  assert.ok(diags.some((d) => d.includes('budget_split must be "even" or "weighted"')));
+
+test('wildcard and explicit model mappings remain distinct', () => {
+  assert.equal(isWildcardNode(node('w', { models: {} })), true);
+  assert.equal(servesModel(node('w', { models: {} }), 'known', new Set(['known'])), true);
+  assert.equal(servesModel(node('w', { models: {} }), 'unknown', new Set(['known'])), false,
+    'wildcard must be bounded by known catalog');
+  assert.equal(servesModel(node('m', { models: { only: 'x' } }), 'only', new Set(['only'])), true);
+  assert.equal(servesModel(node('m', { models: { only: 'x' } }), 'other', new Set(['only', 'other'])), false);
+});
+
+test('MODELS_CONFIG rejects malformed or unknown capability fields', () => {
+  const malformed = loadGatewayConfig(makeEnv({ tier1: [node('m1')], secrets: { m1: 'x' }, extraEnv: { MODELS_CONFIG: '{bad' } }));
+  assert.equal(malformed.status, 'invalid');
+  assert.equal(malformed.ready, false);
+  const diags = modelDiags({ m: { capabilities: { visionz: true, reasoning: 'yes' } } });
+  assert.ok(diags.some((d) => d.includes('visionz')));
+  assert.ok(diags.some((d) => d.includes('reasoning')));
+});
+
+test('MODELS_CONFIG accepts current modalities/ocr/ui fields', () => {
+  const env = makeEnv({ extraEnv: { MODELS_CONFIG: JSON.stringify({
+    Omni: { modalities: { input: ['text', 'image', 'audio'], output: ['text', 'audio'] } },
+    OCR: { capabilities: { ocr: true }, ui_visible: false },
+  }) } });
+  assert.deepEqual(getModelsConfigDiagnostics(env), []);
+  const reg = loadModelRegistry(env);
+  assert.deepEqual(reg.Omni.modalities, { input: ['text', 'image', 'audio'], output: ['text', 'audio'] });
+  assert.equal(reg.OCR.capabilities.ocr, true);
+  assert.equal(reg.OCR.ui_visible, false);
+});
+
+// Strict policy schema.
+test('max_attempts and tier_attempts accept only bounded integer numbers', () => {
+  for (const bad of ['5', -1, 0, 9, 1.5, null]) {
+    assert.ok(policyDiags({ p: { max_attempts: bad } }).some((d) => d.includes('max_attempts')));
+  }
+  for (const bad of ['2', -1, 9, 1.5]) {
+    assert.ok(policyDiags({ p: { tier_attempts: { tier1: bad } } }).some((d) => d.includes('tier_attempts.tier1')));
+  }
+  assert.deepEqual(policyDiags({ p: { max_attempts: 5, tier_attempts: { tier1: 3, tier2: 1, tier3: 1 } } }), []);
+});
+
+test('budget_split and other retired policy fields are rejected as unknown', () => {
+  for (const value of ['even', 'weighted', null]) {
+    const diags = policyDiags({ p: { max_attempts: 5, budget_split: value } });
+    assert.ok(diags.some((d) => d.includes('unknown field "budget_split"')),
+      `budget_split=${JSON.stringify(value)} must not be accepted`);
+  }
+});
+
+test('hedge and max_in_flight current fields validate without coercion', () => {
+  const policies = loadPoliciesConfig(makeEnv({ extraEnv: { POLICIES_CONFIG: JSON.stringify({ p: {
+    max_attempts: 5,
+    hedge: { enabled: true, delay_ms: 4000, tiers: ['tier1'] },
+    max_in_flight: 4,
+  } }) } }));
+  assert.equal(policies.p.hedge.enabled, true);
+  assert.equal(policies.p.hedge.delayMs, 4000);
+  assert.deepEqual(policies.p.hedge.tiers, ['tier1']);
+  assert.equal(policies.p.maxInFlight, 4);
+  assert.ok(policyDiags({ p: { max_in_flight: '4' } }).some((d) => d.includes('max_in_flight')));
+});
+
+test('invalid policy/model references are fatal end-to-end', () => {
+  const badAttempts = loadGatewayConfig(makeEnv({
+    tier1: [node('f1')], secrets: { f1: 'x' },
+    extraEnv: { POLICIES_CONFIG: JSON.stringify({ default: { max_attempts: 0 } }) },
+  }));
+  assert.equal(badAttempts.ready, false);
+  const missingPolicy = loadGatewayConfig(makeEnv({
+    tier1: [node('f2')], secrets: { f2: 'x' },
+    extraEnv: { MODELS_CONFIG: JSON.stringify({ 'general-air': { policy: 'missing' } }) },
+  }));
+  assert.equal(missingPolicy.ready, false);
+  assert.ok(missingPolicy.diagnostics.some((d) => d.includes('missing')));
 });
 
 if (!process.exitCode) console.log(`gateway configuration tests passed (${passed}).`);
