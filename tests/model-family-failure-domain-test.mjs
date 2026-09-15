@@ -138,6 +138,11 @@ const oneDomain = node('shared-account', {
 });
 const collapsed = await worker.fetch(request(), envFor([oneDomain]), {});
 assert.equal(collapsed.status, 503);
+const collapsedBody = await collapsed.json();
+assert.match(collapsedBody?.error?.message || '', /compatible-model failover plan/i,
+  'domain collapse can finish before max_attempts, so terminal wording must describe the plan rather than the numeric budget');
+assert.equal(collapsed.headers.get('x-gateway-error-code'), 'gateway_attempt_budget_exhausted',
+  'keep the stable Responses diagnostic code while broadening the human-readable wording');
 assert.deepEqual(calls, [
   { host: 'shared-account.example.com', model: 'same-real-model' },
 ], 'one real failure domain must be contacted only once across the whole family plan');
