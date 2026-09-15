@@ -19,6 +19,7 @@
 // still rotates to another node.
 
 import { createSseScanner, readWithDeadline } from './guard.ts';
+import { markSyntheticClientStreamHeaders } from './client-lifecycle.ts';
 import { mergeReportedUsage } from '../observability/token-usage.ts';
 import {
   UPSTREAM_PROCESSING_ERROR,
@@ -28,23 +29,16 @@ import {
 
 const MAX_COLLECTED_BYTES = 2 * 1024 * 1024;
 
-// Assemble a complete Anthropic message object from an upstream
-// /v1/messages SSE stream (message_start -> content blocks -> message_delta
-// -> message_stop). An upstream `error` event or a missing message_stop is a
-// failure: nothing reached the client yet, so the caller can rotate.
 export async function collectAnthropicMessageObject(upstream: Response, clientSignal: AbortSignal | null | undefined, deadlineMs?: number | null): Promise<Record<string, unknown>> {
   if (!upstream.body) throw upstreamProcessingError(UPSTREAM_PROCESSING_ERROR.EMPTY, 'Upstream response has no body.');
   const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
   let receivedBytes = 0;
   let stopMessageStop = false;
-  // Assigned from the SSE scanner closure; `| undefined` (no initializer)
-  // keeps control-flow analysis from collapsing the type to `null`.
-  let messageBase: { id: unknown, model: unknown } | null | undefined; // { id, model }
+  let messageBase: { id: unknown, model: unknown } | null | undefined;
   let stopReason: unknown = null;
   let usage: Record<string, unknown> = { input_tokens: 0, output_tokens: 0 } as Record<string, unknown>;
   const blocks: Record<string, unknown>[] = [];
-  // content_block_start state carries accumulated deltas per block index.
   const blockState = new Map<number, Record<string, unknown> & { text?: string, thinking?: string, signature?: string, partialJson?: string }>();
 
   const fail = async (code: UpstreamProcessingErrorCode, message: string): Promise<never> => {
@@ -64,24 +58,17 @@ export async function collectAnthropicMessageObject(upstream: Response, clientSi
         error,
       );
     }
-    if (receivedBytes > MAX_COLLECTED_BYTES) return; // enforced in the loop
+    if (receivedBytes > MAX_COLLECTED_BYTES) return;
     switch (json?.type) {
       case 'message_start': {
-        messageBase = {
-          id: json.message?.id,
-          model: json.message?.model,
-        };
+        messageBase = { id: json.message?.id, model: json.message?.model };
         const startUsage = json.message?.usage;
-        if (startUsage && typeof startUsage === 'object') {
-          // Preserve all known usage fields from message_start
-          usage = { ...usage, ...startUsage };
-        }
+        if (startUsage && typeof startUsage === 'object') usage = { ...usage, ...startUsage };
         break;
       }
       case 'content_block_start': {
         const index = Number(json.index ?? blocks.length);
-        const block = json.content_block || {};
-        blockState.set(index, { ...block });
+        blockState.set(index, { ...(json.content_block || {}) });
         break;
       }
       case 'content_block_delta': {
@@ -89,10 +76,10 @@ export async function collectAnthropicMessageObject(upstream: Response, clientSi
         const state = blockState.get(index);
         if (!state) break;
         const delta = json.delta || {};
-        if (delta.type === 'text_delta') { state.text = (state.text || '') + (delta.text || ''); }
-        else if (delta.type === 'thinking_delta') { state.thinking = (state.thinking || '') + (delta.thinking || ''); }
-        else if (delta.type === 'signature_delta') { state.signature = (state.signature || '') + (delta.signature || ''); }
-        else if (delta.type === 'input_json_delta') { state.partialJson = (state.partialJson || '') + (delta.partial_json || ''); }
+        if (delta.type === 'text_delta') state.text = (state.text || '') + (delta.text || '');
+        else if (delta.type === 'thinking_delta') state.thinking = (state.thinking || '') + (delta.thinking || '');
+        else if (delta.type === 'signature_delta') state.signature = (state.signature || '') + (delta.signature || '');
+        else if (delta.type === 'input_json_delta') state.partialJson = (state.partialJson || '') + (delta.partial_json || '');
         break;
       }
       case 'content_block_stop': {
@@ -105,12 +92,7 @@ export async function collectAnthropicMessageObject(upstream: Response, clientSi
       }
       case 'message_delta': {
         if (json.delta?.stop_reason !== undefined) stopReason = json.delta.stop_reason;
-        if (json.usage && typeof json.usage === 'object') {
-          // Merge by field: message_delta may report only output_tokens,
-          // or may re-report input_tokens (cumulative). Cache tokens
-          // from message_start must not be lost.
-          usage = mergeReportedUsage(usage, json.usage) as Record<string, unknown>;
-        }
+        if (json.usage && typeof json.usage === 'object') usage = mergeReportedUsage(usage, json.usage) as Record<string, unknown>;
         break;
       }
       case 'message_stop':
@@ -122,7 +104,7 @@ export async function collectAnthropicMessageObject(upstream: Response, clientSi
           `Upstream reported an error event: ${json.error?.message || 'unknown error'}`,
         );
       default:
-        break; // ping and unknown event types are lifecycle noise
+        break;
     }
   });
 
@@ -143,10 +125,6 @@ export async function collectAnthropicMessageObject(upstream: Response, clientSi
       if (receivedBytes > MAX_COLLECTED_BYTES) {
         await fail(UPSTREAM_PROCESSING_ERROR.TOO_LARGE, 'Assembled response exceeded gateway memory safety limit. Use stream:true.');
       }
-      // Semantic EOF: message_stop observed — the protocol stream is logically
-      // finished. Cancel the reader instead of waiting for HTTP EOF so a
-      // provider that leaves the connection open doesn't stall the failover
-      // budget.
       if (stopMessageStop) {
         await reader.cancel().catch(() => {});
         break;
@@ -191,16 +169,14 @@ function anthropicBlockFromState(state: Record<string, unknown> & { text?: strin
     if (state.signature) block.signature = state.signature;
     return block;
   }
-  if (state.type === 'redacted_thinking') {
-    return { type: 'redacted_thinking', data: state.data || '' };
-  }
+  if (state.type === 'redacted_thinking') return { type: 'redacted_thinking', data: state.data || '' };
   return { type: 'text', text: state.text || '' };
 }
 
 // Synthesize a complete Anthropic SSE event sequence around a full message
 // object (the "upstream answered JSON but the client wants a stream" case).
-// Event order follows the Anthropic contract:
-// message_start -> per-block start/delta/stop -> message_delta -> message_stop.
+// Event order follows the Anthropic contract. The internal lifecycle marker is
+// consumed and stripped by the outer request boundary.
 export function synthesizeAnthropicFromMessage(message: Record<string, unknown> | null | undefined, extraHeaders?: Record<string, string>): Response {
   const encoder = new TextEncoder();
   const emit = (chunks: string[], event: string, data: unknown) => chunks.push(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -209,7 +185,6 @@ export function synthesizeAnthropicFromMessage(message: Record<string, unknown> 
   const usageObj = object.usage && typeof object.usage === 'object'
     ? object.usage as Record<string, unknown>
     : { input_tokens: 0, output_tokens: 0 };
-  // Preserve all known usage fields from the original message
   const usage = {
     input_tokens: Number(usageObj.input_tokens ?? 0) || 0,
     cache_creation_input_tokens: Number(usageObj.cache_creation_input_tokens ?? 0) || 0,
@@ -238,9 +213,7 @@ export function synthesizeAnthropicFromMessage(message: Record<string, unknown> 
       emit(chunks, 'content_block_delta', { type: 'content_block_delta', index, delta: { type: 'text_delta', text: block.text } });
     } else if (block.type === 'thinking' && block.thinking) {
       emit(chunks, 'content_block_delta', { type: 'content_block_delta', index, delta: { type: 'thinking_delta', thinking: block.thinking } });
-      if (block.signature) {
-        emit(chunks, 'content_block_delta', { type: 'content_block_delta', index, delta: { type: 'signature_delta', signature: block.signature } });
-      }
+      if (block.signature) emit(chunks, 'content_block_delta', { type: 'content_block_delta', index, delta: { type: 'signature_delta', signature: block.signature } });
     } else if (block.type === 'tool_use') {
       emit(chunks, 'content_block_delta', {
         type: 'content_block_delta',
@@ -265,11 +238,11 @@ export function synthesizeAnthropicFromMessage(message: Record<string, unknown> 
   });
   return new Response(stream, {
     status: 200,
-    headers: {
+    headers: markSyntheticClientStreamHeaders({
       'content-type': 'text/event-stream; charset=utf-8',
       'cache-control': 'no-cache, no-transform',
       'x-accel-buffering': 'no',
       ...(extraHeaders || {}),
-    },
+    }),
   });
 }
