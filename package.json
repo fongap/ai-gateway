@@ -1,6 +1,5 @@
 {
   "name": "ai-gateway",
-  "version": "1.3.7",
   "private": true,
   "description": "AI API gateway on Cloudflare Workers that turns fragmented, failure-prone providers and keys into one stable OpenAI/Anthropic-compatible endpoint — maximizing low-cost capacity through smart routing and tiered failover.",
   "type": "module",
@@ -11,8 +10,6 @@
   "scripts": {
     "build": "npm run validate:merge",
     "check": "node scripts/check-syntax.mjs",
-    "check:version": "node scripts/version-check.mjs",
-    "version:sync": "node scripts/generate-version.mjs",
     "check:links": "node scripts/link-check.mjs",
     "check:docs": "node scripts/docs-check.mjs",
     "test:unit": "node tests/run-unit.mjs",
@@ -23,8 +20,8 @@
     "test:conversion": "node tests/conversion-test.mjs",
     "security:scan": "node scripts/secret-scan.mjs",
     "typecheck": "npx tsc --noEmit",
-    "validate:merge": "npm run check && npm run check:version && npm run check:deployment-config && npm run migrations:check && npm run test:gate && npm run security:scan && npm run check:docs && npm run typecheck && npm run check:links",
-    "validate:deploy": "npm run check && npm run check:version && npm run check:deployment-config && npm run migrations:check && npm run test:all && npm run security:scan && npm run check:docs && npm run typecheck && npm run check:links",
+    "validate:merge": "npm run check && npm run check:deployment-config && npm run migrations:check && npm run test:gate && npm run security:scan && npm run check:docs && npm run typecheck && npm run check:links",
+    "validate:deploy": "npm run check && npm run check:deployment-config && npm run migrations:check && npm run test:all && npm run security:scan && npm run check:docs && npm run typecheck && npm run check:links",
     "dev": "node scripts/cloudflare-wrangler.mjs dev",
     "deploy": "node scripts/cloudflare-wrangler.mjs deploy --keep-vars",
     "tail": "node scripts/cloudflare-wrangler.mjs tail",
