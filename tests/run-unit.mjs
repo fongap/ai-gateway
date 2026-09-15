@@ -24,6 +24,7 @@ const UNIT_TESTS = [
   'tests/responses-error-diagnostics-test.mjs',
   'tests/request-reliability-test.mjs',
   'tests/adaptive-429-test.mjs',
+  'tests/provider-quota-413-test.mjs',
   'tests/tier1-upstream-model-cooldown-test.mjs',
   'tests/tier1-heat-protection-test.mjs',
   'tests/model-family-fallback-test.mjs',
