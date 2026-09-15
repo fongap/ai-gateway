@@ -1,14 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
-//
-// Route detection for the gateway surface. Only the allowlisted paths below are
-// ever proxied or answered; everything else is a plain 404.
 
 export const TIER_ORDER: readonly [1, 2, 3] = [1, 2, 3];
 
 export type DetectedRoute =
   | 'openai_chat' | 'openai_responses' | 'anthropic_messages' | 'anthropic_count_tokens'
-  | 'health' | 'metrics' | 'version' | 'models' | 'other';
+  | 'health' | 'metrics' | 'models' | 'other';
 
 export function normalizePath(pathname: string | undefined): string {
   return String(pathname || '/').replace(/\/+$/, '').toLowerCase() || '/';
@@ -19,7 +16,6 @@ export function detectRoute(method: string, pathname: string): DetectedRoute {
   if (verb === 'GET') {
     if (pathname === '/health') return 'health';
     if (pathname === '/metrics') return 'metrics';
-    if (pathname === '/version') return 'version';
     if (pathname === '/v1/models' || pathname === '/models') return 'models';
     return 'other';
   }
