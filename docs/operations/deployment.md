@@ -25,7 +25,7 @@ D1 migrations (when configured)
     ↓
 atomic Worker code + secret deployment
     ↓
-remote gateway verification
+remote verification by commit SHA
     ↓
 success / automatic Worker rollback on post-deploy failure
 ```
@@ -43,29 +43,27 @@ The production gate is stricter than the PR merge gate. A PR can merge after the
 
 Scheduled CI and manually triggered CI are test-only and do not automatically deploy.
 
-A commit that changes only Markdown files and/or `docs/**` is intentionally skipped by the deployment gate. Documentation governance changes therefore do not republish the Worker merely because they reached `main`.
+A commit that changes only Markdown files and/or `docs/**` is intentionally skipped by the deployment gate.
 
 ## Manual Deploy workflow
 
-`workflow_dispatch` on the Deploy workflow is allowed, but it is not a validation bypass. The manual path runs:
+`workflow_dispatch` is allowed, but it is not a validation bypass. The manual path runs:
 
 ```bash
 npm run validate:deploy
 npm run check:deploy
 ```
 
-before the deploy job can proceed.
+before deployment.
 
 ## Local/operator lifecycle
 
-Local tools exist for bootstrap and operator work, but they are not a second production lifecycle.
-
 - `scripts/install.sh` / `scripts/install.ps1` — first-time local bootstrap and initial direct deployment.
-- `scripts/reconfigure.sh` / `scripts/reconfigure.ps1` — update an existing operator configuration and deploy it.
-- `npm run deploy` — the single supported direct local code-deploy entry point for an already configured checkout.
+- `scripts/reconfigure.sh` / `scripts/reconfigure.ps1` — update operator configuration and deploy it.
+- `npm run deploy` — supported direct local code-deploy entry point for an already configured checkout.
 - `npm run cf:login`, `npm run cf:whoami`, `npm run tail` — Cloudflare operator commands.
 
-All direct Cloudflare CLI calls above route through `scripts/cloudflare-wrangler.mjs`. Do not add parallel `deploy.*`, `update.*`, or `setup-and-deploy.*` aliases.
+All direct Cloudflare CLI calls route through `scripts/cloudflare-wrangler.mjs`. Do not add parallel deploy/update aliases.
 
 The tracked `wrangler.jsonc` is the repository baseline. Local Worker name, bindings, and operator configuration belong in gitignored `wrangler.user.jsonc`; installer/reconfigure tooling must not rewrite the tracked baseline.
 
@@ -91,19 +89,17 @@ The deployment preflight fails closed on missing required production inputs.
 
 ## Node credential binding
 
-Config and Secret shards are independent partitions. Runtime binding is by **Tier + node id**, not by matching `_01`, `_02`, and so on.
+Config and Secret shards are independent partitions. Runtime binding is by **Tier + node id**, not by matching shard suffixes.
 
 To add or rotate an upstream key:
 
 1. keep the node in the appropriate `TIER*_NODES_CONFIG_XX` Variable;
 2. add/update its credential under the same node id in any Secret shard for the same tier;
-3. let the next production deployment rebuild the runtime configuration.
+3. let the next production deployment rebuild runtime configuration.
 
 Do not place credentials in node JSON.
 
 ## Gateway access groups
-
-Client access is grouped:
 
 ```text
 GATEWAY_ACCESS_KEY_AIR       + GATEWAY_ACCESS_MODELS_AIR
@@ -117,40 +113,33 @@ A configured key with an empty/missing model allowlist is fail-closed and grants
 
 ## D1 migration ordering
 
-When token-usage D1 is configured, ordered migrations run **before** Worker deployment. A migration failure stops deployment so new code is not intentionally published against an older required schema.
+When token-usage D1 is configured, ordered migrations run **before** Worker deployment. A migration failure stops deployment.
 
-D1 migration is not transactionally rolled back with a Worker rollback. Migration design must therefore remain backward-compatible with the previous Worker version used by automatic rollback.
+D1 migration is not transactionally rolled back with Worker code. Migration design must therefore be operationally safe for the deployment sequence. Do not solve migration safety by keeping retired application contracts, aliases, or dual runtime paths alive.
 
 ## Atomic Worker deployment
 
-The production workflow deploys Worker code and the prepared Secret/variable payload in the same Wrangler deployment operation so the resulting Worker version sees the intended configuration set.
+The production workflow deploys Worker code and the prepared Secret/variable payload in the same Wrangler operation so the resulting deployment sees the intended configuration set.
 
-For direct local operations, `scripts/cloudflare-wrangler.mjs` is the single owner of the pinned Wrangler CLI and local binding/migration behavior. When `wrangler.user.jsonc` exists, the wrapper uses it by default unless an explicit config is supplied.
+For direct local operations, `scripts/cloudflare-wrangler.mjs` owns the pinned Wrangler CLI and local binding/migration behavior. When `wrangler.user.jsonc` exists, the wrapper uses it by default unless an explicit config is supplied.
 
 ## Verification and rollback
 
-After deployment, the workflow verifies the deployed gateway. If deployment happened but post-deploy verification fails, the workflow attempts to roll back the Worker version and verifies the rolled-back gateway.
+The CI/Deploy path injects the deployed Git commit SHA as `GITHUB_SHA`. Authenticated `/health` exposes it as `build`.
 
-Automatic rollback covers the Worker version/configuration represented by the deployment mechanism. It does not undo an already-applied D1 migration.
+Post-deploy verification requires `/health.build` to equal the exact commit SHA selected by the Deploy workflow, then verifies `/v1/models` and local count-tokens behavior. This proves which commit is live without any project release number in runtime source.
+
+If post-deploy verification fails, the workflow attempts to roll back the Worker deployment and verifies the rollback. An already-applied D1 migration is not undone automatically.
 
 A failed rollback or failed rollback verification requires operator intervention rather than repeated blind deployment.
 
-## Source version vs. build identity
-
-`/version` separates:
-
-- `version` — SemVer source identity generated from `package.json`;
-- `build` — deployed commit SHA injected by the CI/Deploy path.
-
-The deploy verifier can therefore prove which commit is live without changing the semantic version for every deployment.
+Project release numbering is not part of deployment automation. If a named release is desired, the operator creates a Git tag or GitHub Release manually after selecting the intended commit.
 
 ## Repository protection
 
-The intended repository settings are documented in [github-repository-settings.md](github-repository-settings.md). In particular, `validate-merge` is the PR-time required check; Deploy is a post-merge production workflow and should not be configured as a PR required check.
+The intended repository settings are documented in [github-repository-settings.md](github-repository-settings.md). `validate-merge` is the PR-time required check; Deploy is a post-merge production workflow and should not be configured as a PR required check.
 
 ## Local/operator checks
-
-Before a direct local production action:
 
 ```bash
 npm ci
@@ -158,4 +147,4 @@ npm run validate:deploy
 npm run check:deploy
 ```
 
-For configuration semantics, see [Configuration](configuration.md). For formal version/tag sequencing, see [Version policy](../governance/version-policy.md). For tooling entry points, see [`scripts/README.md`](../../scripts/README.md).
+For configuration semantics, see [Configuration](configuration.md). For tooling entry points, see [`scripts/README.md`](../../scripts/README.md).
