@@ -1,6 +1,6 @@
 # ai-gateway documentation
 
-This documentation describes the current repository contract. It is organized by responsibility so runtime facts, operating procedures, governance rules, and version history do not compete as equal sources of truth.
+This documentation describes the current repository contract. It is organized by responsibility so runtime facts, operating procedures, and governance rules do not compete as equal sources of truth.
 
 ## Documentation model
 
@@ -8,10 +8,10 @@ This documentation describes the current repository contract. It is organized by
 docs/
 ├── architecture/     durable system boundaries and invariants
 ├── operations/       current configuration, deployment, and troubleshooting procedures
-└── governance/       product boundary and rules for changing, validating, documenting, and versioning the system
+└── governance/       product boundary and rules for changing, validating, and documenting the system
 ```
 
-Historical version changes belong in [CHANGELOG.md](../CHANGELOG.md), Git tags, Pull Requests, commits, and existing GitHub Releases. Completed migration plans and temporary project-status documents do not remain in the long-lived documentation tree.
+History belongs in Git, Pull Requests and commits. Human-created tags or GitHub Releases may be used when the operator wants a named release; project release numbering is not maintained in source documentation.
 
 ## Architecture
 
@@ -20,7 +20,7 @@ Historical version changes belong in [CHANGELOG.md](../CHANGELOG.md), Git tags, 
 | [overview.md](architecture/overview.md) | System boundaries, request flow, fixed tier roles, and source-of-truth ownership |
 | [protocol-model.md](architecture/protocol-model.md) | Native protocols, Chat ↔ Messages fallback, conversion fidelity, streaming boundaries |
 | [routing-model.md](architecture/routing-model.md) | Tier routing, Tier 1 P2C, affinity, heat protection, attempts, hedge |
-| [reliability-model.md](architecture/reliability-model.md) | Failure classification, cooldown, 429 recovery, TTFT, circuit behavior |
+| [reliability-model.md](architecture/reliability-model.md) | Failure classification, cooldown, rate-limit recovery, TTFT, circuit behavior |
 | [repository-layout.md](architecture/repository-layout.md) | Repository and module responsibilities |
 | [calendar-heatmap.md](architecture/calendar-heatmap.md) | Dashboard calendar-heatmap contract |
 
@@ -29,7 +29,7 @@ Historical version changes belong in [CHANGELOG.md](../CHANGELOG.md), Git tags, 
 | Document | Responsibility |
 | --- | --- |
 | [configuration.md](operations/configuration.md) | Node, access-group, model, policy, and runtime configuration |
-| [deployment.md](operations/deployment.md) | CI-to-production workflow, D1 migration, verification, rollback |
+| [deployment.md](operations/deployment.md) | CI-to-production workflow, D1 migration, commit-SHA verification, rollback |
 | [troubleshooting.md](operations/troubleshooting.md) | Configuration and runtime failure diagnosis |
 | [provider-discovery.md](operations/provider-discovery.md) | Read-only provider capability observation |
 | [public-model-status.md](operations/public-model-status.md) | Read-only public status projection |
@@ -40,11 +40,10 @@ Historical version changes belong in [CHANGELOG.md](../CHANGELOG.md), Git tags, 
 | Document | Responsibility |
 | --- | --- |
 | [README.md](governance/README.md) | Governance index and authority model |
-| [product-policy.md](governance/product-policy.md) | Permanent household/small-team scope, Tier 1/2/3 roles, no-backward-compatibility rule, simplicity boundary |
+| [product-policy.md](governance/product-policy.md) | Household/small-team scope, Tier roles, clean replacement, human-owned release identity, simplicity boundary |
 | [development-policy.md](governance/development-policy.md) | Branch, PR, refactor, clean-replacement, and architecture-change rules |
-| [quality-policy.md](governance/quality-policy.md) | CI, tests, security, and production gates |
+| [quality-policy.md](governance/quality-policy.md) | CI, tests, security, deployment identity, and production gates |
 | [dependency-policy.md](governance/dependency-policy.md) | Dependency and toolchain update policy |
-| [version-policy.md](governance/version-policy.md) | Version, stable-tag, deployment/build, and historical Release rules |
 | [documentation-policy.md](governance/documentation-policy.md) | English-canonical documentation and code-to-doc synchronization |
 
 ## Authority order
@@ -55,9 +54,9 @@ For current executable behavior inside that product boundary, resolve conflicts 
 
 1. Runtime code, schemas, configuration parsers, tests, and workflows define what the repository actually does.
 2. Canonical current documentation explains that behavior and must be corrected when it drifts.
-3. `CHANGELOG.md`, tags, existing Releases, PRs, and commits explain how the current state was reached.
+3. Git history, PRs and commits explain how the current state was reached.
 
-Documentation must not invent a capability that is absent from the runtime, and runtime changes must not silently violate product policy.
+Documentation must not invent a capability that is absent from runtime, and runtime changes must not silently violate product policy.
 
 ## Entry points
 
@@ -65,4 +64,3 @@ Documentation must not invent a capability that is absent from the runtime, and 
 - [README.zh-CN.md](../README.zh-CN.md) — Simplified Chinese reader-facing mirror.
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — contribution workflow.
 - [SECURITY.md](../SECURITY.md) — vulnerability reporting and secret-handling rules.
-- [CHANGELOG.md](../CHANGELOG.md) — version history.
