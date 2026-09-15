@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT
-import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -15,104 +14,108 @@ function writeJSON(file, obj) {
   fs.writeFileSync(file, JSON.stringify(obj, null, 2));
   return file;
 }
-
-function tmp(name) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `cfg-cli-${name}-`));
-  return dir;
-}
-
-function run(args, opts = {}) {
-  const result = spawnSync(process.execPath, [cli, ...args], { encoding: 'utf8', ...opts });
+function tmp(name) { return fs.mkdtempSync(path.join(os.tmpdir(), `cfg-cli-${name}-`)); }
+function run(args) {
+  const result = spawnSync(process.execPath, [cli, ...args], { encoding: 'utf8' });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
-
-function check(cond, msg) {
-  if (!cond) throw new Error(`assertion failed: ${msg}`);
+function check(cond, msg) { if (!cond) throw new Error(`assertion failed: ${msg}`); }
+function explicitNode(id, base = `https://${id}.example.com/v1`, model = 'u') {
+  return {
+    id,
+    provider: 'mock',
+    protocol: 'openai',
+    surfaces: ['chat_completions'],
+    base_url: base,
+    models: { m: model },
+  };
+}
+function tier1ExampleSecrets() {
+  const nodes = JSON.parse(fs.readFileSync(cfg('tier1-nodes.example.json'), 'utf8'));
+  const dir = tmp('example-secrets');
+  return writeJSON(path.join(dir, 'secrets.json'), Object.fromEntries(nodes.map((n) => [n.id, `secret-${n.id}`])));
 }
 
-// ---- config:check ----
-
+// Current public example is Tier 1 only. Tier 2 has no generic API-key example.
 {
-  // Valid example config passes.
-  const r = run(['check', '--tier1', cfg('tier1-nodes.example.json'), '--tier2', cfg('tier2-nodes.example.json'), '--secrets', cfg('node-secrets.example.json')]);
+  const secrets = tier1ExampleSecrets();
+  const r = run(['check', '--tier1', cfg('tier1-nodes.example.json'), '--secrets', secrets]);
   check(r.status === 0, `valid config should pass, got status=${r.status} stderr=${r.stderr}`);
   check(r.stdout.includes('Configuration valid'), 'prints valid header');
-  check(r.stdout.includes('Tier 1: 3'), 'reports tier-1 node count from example');
+  check(r.stdout.includes('Tier 1: 3'), 'reports tier-1 node count');
   check(r.stdout.includes('All configured nodes have credentials'), 'reports credentials ok');
 }
 
+// Duplicate id fails after strict node-schema validation.
 {
-  // Duplicate node id FAILS.
   const dir = tmp('dup');
-  const tier1 = writeJSON(path.join(dir, 'tier1.json'), [
-    { id: 'dup', base_url: 'https://a.example.com/v1', models: { 'm': 'u' } },
-    { id: 'dup', base_url: 'https://b.example.com/v1', models: { 'm': 'u' } },
-  ]);
+  const tier1 = writeJSON(path.join(dir, 'tier1.json'), [explicitNode('dup', 'https://a.example.com/v1'), explicitNode('dup', 'https://b.example.com/v1')]);
   const secrets = writeJSON(path.join(dir, 'secrets.json'), { dup: 'k' });
   const r = run(['check', '--tier1', tier1, '--secrets', secrets]);
   check(r.status !== 0, 'duplicate node id must fail');
-  check(/duplicate node id "dup"/.test(r.stderr) || /duplicate node id "dup"/.test(r.stdout), 'names the duplicate id');
+  check(/duplicate node id "dup"/.test(r.stderr + r.stdout), 'names the duplicate id');
 }
 
+// Missing required current schema field fails; CLI does not repair it.
 {
-  // Node without secret FAILS.
+  const dir = tmp('strict');
+  const broken = explicitNode('broken');
+  delete broken.provider;
+  const tier1 = writeJSON(path.join(dir, 'tier1.json'), [broken]);
+  const secrets = writeJSON(path.join(dir, 'secrets.json'), { broken: 'k' });
+  const r = run(['check', '--tier1', tier1, '--secrets', secrets]);
+  check(r.status !== 0, 'missing provider must fail');
+  check(/provider/i.test(r.stderr + r.stdout), 'strict-schema error names provider');
+}
+
+// Node without credential fails.
+{
   const dir = tmp('orphan');
-  const tier1 = writeJSON(path.join(dir, 'tier1.json'), [
-    { id: 'lonely', base_url: 'https://a.example.com/v1', models: { 'm': 'u' } },
-  ]);
-  const secrets = writeJSON(path.join(dir, 'secrets.json'), { 'other': 'k' });
+  const tier1 = writeJSON(path.join(dir, 'tier1.json'), [explicitNode('lonely')]);
+  const secrets = writeJSON(path.join(dir, 'secrets.json'), { other: 'k' });
   const r = run(['check', '--tier1', tier1, '--secrets', secrets]);
   check(r.status !== 0, 'node without secret must fail');
-  check(/no credential/.test(r.stderr + r.stdout), 'names the missing credential');
+  check(/no credential/.test(r.stderr + r.stdout), 'names missing credential');
 }
 
+// Extra credential warns but does not expose its value.
 {
-  // Secret without node WARNS but does not fail.
   const dir = tmp('orphan-secret');
-  const tier1 = writeJSON(path.join(dir, 'tier1.json'), [
-    { id: 'a', base_url: 'https://a.example.com/v1', models: { 'm': 'u' } },
-  ]);
-  const secrets = writeJSON(path.join(dir, 'secrets.json'), { a: 'k', orphan: 'k' });
+  const tier1 = writeJSON(path.join(dir, 'tier1.json'), [explicitNode('a')]);
+  const secrets = writeJSON(path.join(dir, 'secrets.json'), { a: 'k-a', orphan: 'very-secret-orphan' });
   const r = run(['check', '--tier1', tier1, '--secrets', secrets]);
-  check(r.status === 0, 'orphan credential only warns, not fails');
-  check(/orphan/i.test(r.stderr) || /credential "orphan" has no matching node/.test(r.stderr), 'warns on orphan credential');
+  check(r.status === 0, 'orphan credential only warns');
+  check(/orphan/i.test(r.stderr + r.stdout), 'warns on orphan credential');
+  check(!r.stdout.includes('very-secret-orphan') && !r.stderr.includes('very-secret-orphan'), 'never prints credential value');
 }
 
+// Malformed JSON fails.
 {
-  // Malformed JSON FAILS.
   const dir = tmp('bad');
   const tier1 = path.join(dir, 'tier1.json');
   fs.writeFileSync(tier1, '{not json');
-  const secrets = path.join(dir, 'secrets.json');
-  fs.writeFileSync(secrets, '{}');
+  const secrets = writeJSON(path.join(dir, 'secrets.json'), {});
   const r = run(['check', '--tier1', tier1, '--secrets', secrets]);
   check(r.status !== 0, 'malformed JSON must fail');
   check(/invalid JSON/.test(r.stderr + r.stdout), 'reports invalid JSON');
 }
 
-// ---- config:show ----
-
+// Show works with current Tier 1 example and generated local credentials.
 {
-  const r = run(['show', '--tier1', cfg('tier1-nodes.example.json'), '--tier2', cfg('tier2-nodes.example.json'), '--secrets', cfg('node-secrets.example.json')]);
+  const secrets = tier1ExampleSecrets();
+  const r = run(['show', '--tier1', cfg('tier1-nodes.example.json'), '--secrets', secrets]);
   check(r.status === 0, 'show exits 0');
   check(r.stdout.includes('nvidia-01'), 'lists nvidia-01');
   check(/Tier: 1/.test(r.stdout), 'reports tier 1');
   check(/Credential: configured/.test(r.stdout), 'reports credential configured');
-  check(!/nvapi-/.test(r.stdout), 'never prints a credential value');
+  check(!/secret-nvidia/.test(r.stdout), 'never prints credential values');
 }
 
-// ---- config:diff ----
-
+// Diff reports node/credential membership changes but never secret values.
 {
   const dir = tmp('diff');
-  const oldTier = writeJSON(path.join(dir, 'old.json'), [
-    { id: 'a', base_url: 'https://a.example.com/v1', models: { 'm': 'u1' } },
-    { id: 'b', base_url: 'https://b.example.com/v1', models: { 'm': 'u' } },
-  ]);
-  const newTier = writeJSON(path.join(dir, 'new.json'), [
-    { id: 'a', base_url: 'https://a.example.com/v1', models: { 'm': 'u2' } },
-    { id: 'c', base_url: 'https://c.example.com/v1', models: { 'm': 'u' } },
-  ]);
+  const oldTier = writeJSON(path.join(dir, 'old.json'), [explicitNode('a', 'https://a.example.com/v1', 'u1'), explicitNode('b')]);
+  const newTier = writeJSON(path.join(dir, 'new.json'), [explicitNode('a', 'https://a.example.com/v1', 'u2'), explicitNode('c')]);
   const oldSec = writeJSON(path.join(dir, 'old-secrets.json'), { a: 'k1', b: 'k2' });
   const newSec = writeJSON(path.join(dir, 'new-secrets.json'), { a: 'k1', c: 'k3' });
   const r = run(['diff', '--old-tier1', oldTier, '--new-tier1', newTier, '--old-secrets', oldSec, '--new-secrets', newSec]);
@@ -121,8 +124,6 @@ function check(cond, msg) {
   check(r.stdout.includes('- b'), 'removed node detected');
   check(r.stdout.includes('~ a'), 'changed node detected');
   check(/Secrets:/.test(r.stdout), 'secrets section present');
-  check(r.stdout.includes('+ c'), 'added secret detected');
-  check(r.stdout.includes('- b'), 'removed secret detected');
   check(!/k1|k2|k3/.test(r.stdout), 'never prints secret values');
 }
 
