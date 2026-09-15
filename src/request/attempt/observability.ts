@@ -3,12 +3,11 @@
 // Part of src/request/attempt.ts (behavior-preserving split); see
 // attempt/index.ts for the module map.
 
-// observability.ts - post-outcome recording for one attempt: token
-// accounting (isolate-local + fail-open D1 persistence off the hot path),
-// node success recording, stream-end telemetry wiring, and Tier 1 non-stream
-// TTFT capture. These helpers NEVER change the HTTP response, the failover
-// decision, or any budget accounting - they call the public Reliability API
-// to record outcomes that the dispatch/success paths already decided.
+// observability.ts - post-outcome recording for one physical upstream attempt.
+// Delivered-response token statistics and physical-attempt token statistics are
+// intentionally separate: failed/fallback/hedge work must never fabricate
+// successful model-status evidence, but it still belongs in upstream cost
+// accounting when usage is reported.
 
 import {
   recordSuccess, recordNeutralEnd, applyHealthPenalty,
@@ -26,11 +25,24 @@ import {
   recordStreamStart, recordStreamCompleted, recordStreamInterrupted,
   gatewayStats,
 } from '../../observability/gateway-stats.ts';
-import { recordTokenUsage } from '../../observability/token-usage.ts';
-import { persistTokenUsage } from '../../observability/token-usage-store.ts';
+import { recordTokenUsage, mergeReportedUsage, normalizeTokenUsage } from '../../observability/token-usage.ts';
+import { persistTokenUsage, persistUpstreamAttemptUsage } from '../../observability/token-usage-store.ts';
 import { upstreamModelOf } from '../response-helpers.ts';
 import type { AttemptContext } from '../../types/request.ts';
 import type { RuntimeNode } from '../../types/node.ts';
+
+// Request-local attempt accounting lives outside AttemptContext so routing and
+// reliability types do not acquire observability-only mutable fields. Primary
+// and hedge contexts are distinct objects, so each physical dispatch receives
+// its own exactly-once accounting slot.
+const observedAttemptUsage = new WeakMap<object, unknown>();
+const settledAttemptUsage = new WeakSet<object>();
+
+export function observeUpstreamAttemptUsage(c: AttemptContext, usage: unknown): void {
+  if (!c || settledAttemptUsage.has(c as object) || usage == null) return;
+  const merged = mergeReportedUsage(observedAttemptUsage.get(c as object), usage);
+  if (normalizeTokenUsage(merged)) observedAttemptUsage.set(c as object, merged);
+}
 
 export function recordTier1NonStreamTtft(c: AttemptContext, node: RuntimeNode, data: unknown, isMeaningful: (data: unknown) => boolean): void {
   if (node.tier !== 'tier-1' || !isMeaningful(data)) return;
@@ -38,10 +50,34 @@ export function recordTier1NonStreamTtft(c: AttemptContext, node: RuntimeNode, d
   recordTier1Ttft(node.id, c.state.requestedModel, c.ttftMs);
 }
 
+// Delivered response: preserve the established isolate-local stats and D1
+// success evidence. persistTokenUsage also increments the upstream-attempt view
+// in the same SQL write set, because the winning response is itself one real
+// physical dispatch.
 export function recordTokens(c: AttemptContext, node: RuntimeNode, usage: unknown): void {
+  if (settledAttemptUsage.has(c as object)) return;
+  observeUpstreamAttemptUsage(c, usage);
+  settledAttemptUsage.add(c as object);
   const effectiveModel = upstreamModelOf(node, c.requestedModel);
   recordTokenUsage({ model: effectiveModel, tier: node.tier, provider: node.provider, nodeId: node.id, usage });
   scheduleD1TokenPersist(c, usage, effectiveModel);
+}
+
+// Physical upstream attempt that did NOT become a delivered response. It may
+// still have reported usage (e.g. an interrupted stream emitted cumulative
+// usage before truncation). Record the best reported cumulative observation;
+// otherwise increment upstream_usage_missing. Never estimate missing tokens.
+export function recordUndeliveredUpstreamAttempt(c: AttemptContext, node: RuntimeNode, usage?: unknown): void {
+  if (settledAttemptUsage.has(c as object)) return;
+  if (usage !== undefined) observeUpstreamAttemptUsage(c, usage);
+  settledAttemptUsage.add(c as object);
+  const observed = observedAttemptUsage.get(c as object) ?? null;
+  const effectiveModel = upstreamModelOf(node, c.reqDescriptor.model);
+  const task = persistUpstreamAttemptUsage(c.env, observed, Date.now(), effectiveModel).catch((err) => {
+    const scope = String(err?.scope || '').includes('model') ? 'upstream-model' : 'upstream-global';
+    try { c.logger?.error?.(`upstream token-stats D1 ${scope} persist failed: ${err?.message || err}`); } catch { /* fail-open */ }
+  });
+  scheduleBackground(c, task);
 }
 
 function scheduleD1TokenPersist(c: AttemptContext, usage: unknown, effectiveModel?: string): void {
@@ -50,6 +86,10 @@ function scheduleD1TokenPersist(c: AttemptContext, usage: unknown, effectiveMode
     const scope = err?.scope === 'per-model' ? 'per-model' : 'global';
     try { c.logger?.error?.(`token-stats D1 ${scope} persist failed: ${err?.message || err}`); } catch { /* never throw */ }
   });
+  scheduleBackground(c, task);
+}
+
+function scheduleBackground(c: AttemptContext, task: Promise<unknown>): void {
   const ctx = c.ctx;
   if (ctx && typeof ctx.waitUntil === 'function') {
     try { ctx.waitUntil(task); } catch { task.catch(() => {}); }
@@ -77,8 +117,9 @@ export function recordNodeSuccess(c: AttemptContext, node: RuntimeNode, latencyM
 }
 
 // Real upstream streams own both node outcome and client lifecycle accounting
-// here. Gateway-synthesized SSE never enters this tracker; it is explicitly
-// marked and settled once by the outer trackClientResponse boundary.
+// here. Upstream-attempt usage for an interrupted/cancelled real stream is
+// finalized by trackStreamResponse's onAttemptUsage callback; completed streams
+// continue through recordTokens(), which updates both accounting views once.
 export function makeNodeStreamTrack(c: AttemptContext, node: RuntimeNode, latencyMs: number) {
   const tier1 = node.tier === 'tier-1';
   return {
