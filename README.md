@@ -125,7 +125,7 @@ For production, use the repository-driven workflow in [Deployment](docs/operatio
 | Model access | `GATEWAY_ACCESS_MODELS_{AIR,PRO,MAX,ULTRA,AGENT}` |
 | Model/request policy | `MODELS_CONFIG` · `POLICIES_CONFIG` |
 
-Credentials bind by **Tier + node id**; Config and Secret shard suffixes are independent partitions and do not need matching suffixes. Gateway access is fail-closed: a configured Group Key with a missing or empty corresponding `GATEWAY_ACCESS_MODELS_<GROUP>` grants no model access.
+Credentials bind by **Tier + node id**; Config and Secret shard suffixes are independent partition numbers and are unrelated to one another. Gateway access is fail-closed: a configured Group Key with a missing or empty corresponding `GATEWAY_ACCESS_MODELS_<GROUP>` grants no model access.
 
 Node `limits` are not part of the active schema and are rejected. Runtime capacity is learned from real in-flight pressure, 429/cooldown, circuit state, and latency signals rather than guessed per-node ceilings.
 
