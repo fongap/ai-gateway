@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
+import worker from '../src/index.ts';
 import { classifyUpstreamStatus, KIND } from '../src/reliability/classify.ts';
+import { __resetAllStateForTests } from '../src/reliability/node-state.ts';
+import { __resetTier1StateForTests } from '../src/reliability/tier1-state.ts';
+import { __resetTier1AffinityForTests } from '../src/scheduler/tier1-affinity.ts';
 
 let passed = 0;
 let failed = 0;
@@ -71,6 +75,96 @@ await test('rate-limit wording on unrelated status does not broaden classificati
   );
   assert.equal(result.kind, KIND.CLIENT);
   assert.equal(result.action, 'stop');
+});
+
+await test('real request continues from Tier 1 quota-413 to the next tier', async () => {
+  __resetAllStateForTests();
+  __resetTier1StateForTests();
+  __resetTier1AffinityForTests();
+
+  const accessKey = 'quota-413-integration-key';
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(typeof input === 'string' ? input : input.url);
+    calls.push(url.hostname);
+    if (url.hostname === 'groq-quota.example.com') {
+      return new Response(JSON.stringify({
+        error: {
+          message: 'Request too large for model `qwen/qwen3.8-27b` on input tokens per minute (ITPM): Limit 7000, Requested 7398, please reduce your message size and try again.',
+        },
+      }), {
+        status: 413,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    if (url.hostname === 'fallback.example.com') {
+      const requestBody = init?.body ? JSON.parse(init.body) : {};
+      return new Response(JSON.stringify({
+        id: 'chatcmpl-quota-fallback',
+        object: 'chat.completion',
+        model: requestBody.model,
+        choices: [{ index: 0, message: { role: 'assistant', content: 'fallback ok' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 7398, completion_tokens: 2, total_tokens: 7400 },
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    throw new Error(`unexpected host ${url.hostname}`);
+  };
+
+  try {
+    const integrationEnv = {
+      GATEWAY_ACCESS_KEY_PRO: accessKey,
+      GATEWAY_ACCESS_MODELS_PRO: '*',
+      PROTOCOL_FALLBACKS: 'disable',
+      HEDGE_DELAY_MS: '0',
+      MAX_HEDGES_PER_REQUEST: '0',
+      RATE_LIMIT_COOLDOWN_MS: '60000',
+      TIER1_NODES_CONFIG_01: JSON.stringify([{
+        id: 'groq-quota',
+        provider: 'groq',
+        protocol: 'openai',
+        surfaces: ['chat_completions'],
+        base_url: 'https://groq-quota.example.com/v1',
+        priority: 10,
+        models: { 'Quota-Test': 'qwen/qwen3.8-27b' },
+      }]),
+      TIER1_NODES_SECRETS_01: JSON.stringify({ 'groq-quota': 'groq-key' }),
+      TIER2_NODES_CONFIG_01: JSON.stringify([{
+        id: 'fallback-node',
+        provider: 'fallback-provider',
+        protocol: 'openai',
+        surfaces: ['chat_completions'],
+        base_url: 'https://fallback.example.com/v1',
+        priority: 10,
+        models: { 'Quota-Test': 'fallback-model' },
+      }]),
+      TIER2_NODES_SECRETS_01: JSON.stringify({ 'fallback-node': 'fallback-key' }),
+      POLICIES_CONFIG: JSON.stringify({ default: { max_attempts: 2 } }),
+    };
+
+    const response = await worker.fetch(new Request('https://gateway.example.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${accessKey}`,
+      },
+      body: JSON.stringify({
+        model: 'Quota-Test',
+        messages: [{ role: 'user', content: 'large context already supplied by the client' }],
+      }),
+    }), integrationEnv, {});
+    const body = await response.json();
+
+    assert.equal(response.status, 200, 'quota-shaped 413 must not terminate the client request');
+    assert.equal(body?.choices?.[0]?.message?.content, 'fallback ok');
+    assert.deepEqual(calls, ['groq-quota.example.com', 'fallback.example.com'],
+      'the gateway must rotate away from the quota-limited Tier 1 node and continue failover');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 console.log(`\nprovider-quota-413-test: ${passed} passed, ${failed} failed.`);
