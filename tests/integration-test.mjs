@@ -252,8 +252,8 @@ await test('removed limits field is a hard schema error and never reaches upstre
   assert.equal(upstreamCalls.length, 0);
 });
 
-await test('production-style node config without protocol/surfaces remains routable', async () => {
-  routeHandlers['implicit.example.com'] = () => jsonResponse(okChat('implicit-ok'));
+await test('missing protocol/surfaces is a hard schema error and never reaches upstream', async () => {
+  routeHandlers['implicit.example.com'] = () => jsonResponse(okChat('must-not-route'));
   const implicit = {
     id: 'implicit', provider: 'mock', base_url: 'https://implicit.example.com/v1',
     models: { 'general-air': 'up-model' },
@@ -262,15 +262,13 @@ await test('production-style node config without protocol/surfaces remains routa
   const health = await worker.fetch(new Request('https://gateway.example.com/health', {
     headers: { authorization: `Bearer ${ACCESS_KEY}` },
   }), env, {});
-  assert.equal(health.status, 200);
+  assert.equal(health.status, 503);
   const body = await health.json();
-  assert.equal(body.status, 'ready');
-  assert.ok(body.diagnostics.some((d) => d.includes('protocol is implicit')));
-  assert.ok(body.diagnostics.some((d) => d.includes('surfaces is implicit')));
+  assert.equal(body.status, 'invalid');
+  assert.ok(body.diagnostics.some((d) => d.includes('protocol is required')));
   const res = await worker.fetch(chatRequest(), env, {});
-  assert.equal(res.status, 200);
-  assert.equal(upstreamCalls.length, 1);
-  assert.equal(upstreamCalls[0].path, '/v1/chat/completions');
+  assert.equal(res.status, 404);
+  assert.equal(upstreamCalls.length, 0);
 });
 
 // ---- Native routing / failover --------------------------------------------
@@ -715,17 +713,24 @@ await test('/v1/models derives public models from actual strict node mappings', 
   assert.deepEqual(model.api_backends.sort(), ['mock']);
 });
 
-await test('/version is public and reports deployment identity without topology', async () => {
+await test('/health.build reports deployment commit and /version stays removed', async () => {
   const build = 'a1b2c3d4e5f6';
   const env = makeEnv({
-    tier1: [openaiNode('version')], secrets: { version: 'k' }, extraEnv: { GITHUB_SHA: build },
+    tier1: [openaiNode('identity')], secrets: { identity: 'k' }, extraEnv: { GITHUB_SHA: build },
   });
-  const res = await worker.fetch(new Request('https://gateway.example.com/version'), env, {});
-  assert.equal(res.status, 200);
-  const body = await res.json();
-  assert.equal(body.name, 'ai-gateway');
+  const health = await worker.fetch(new Request('https://gateway.example.com/health', {
+    headers: { authorization: `Bearer ${ACCESS_KEY}` },
+  }), env, {});
+  assert.equal(health.status, 200);
+  const body = await health.json();
   assert.equal(body.build, build);
-  assert.equal(JSON.stringify(body).includes('version.example.com'), false);
+  assert.equal(JSON.stringify(body).includes('identity.example.com'), false);
+
+  const version = await worker.fetch(new Request('https://gateway.example.com/version', {
+    headers: { authorization: `Bearer ${ACCESS_KEY}` },
+  }), env, {});
+  assert.equal(version.status, 404);
+  assert.equal(upstreamCalls.length, 0);
 });
 
 if (!process.exitCode) console.log(`\nintegration tests passed (${passed}).`);
