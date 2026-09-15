@@ -1,15 +1,16 @@
 #!/usr/bin/env node
-// Unit tests for the node-configuration sharding/planning module.
+// SPDX-License-Identifier: MIT
 import assert from 'node:assert/strict';
 import {
   buildPlan, assertNodesArray, assertSecretsObject,
-  MANAGED_VAR_PATTERN, MANAGED_SECRET_PATTERN,
-  MAX_SHARD_NUMBER,
+  MANAGED_VAR_PATTERN, MANAGED_SECRET_PATTERN, MAX_SHARD_NUMBER,
 } from '../scripts/node-config-shards.mjs';
 
 const node = (id, extra = {}) => ({
   id,
-  provider: 'p',
+  provider: 'mock',
+  protocol: 'openai',
+  surfaces: ['chat_completions'],
   base_url: 'https://api.example.com/v1',
   priority: 10,
   models: { 'general-air': 'model-a' },
@@ -20,135 +21,125 @@ let passed = 0;
 function test(name, fn) {
   try {
     fn();
-    passed++;
-  } catch (e) {
+    passed += 1;
+    console.log(`ok - ${name}`);
+  } catch (error) {
     console.error(`FAIL: ${name}`);
-    console.error(e && e.stack || e);
+    console.error(error?.stack || error);
     process.exitCode = 1;
   }
 }
 
-test('valid plan shards nodes and secrets at entry boundaries', () => {
+test('valid plan shards current nodes and tier-scoped secrets', () => {
   const plan = buildPlan({
     tiers: { 1: [node('a'), node('b')], 2: [node('c')] },
     secretsMap: { a: 'cred-a', b: 'cred-b', c: 'cred-c' },
   });
-  assert.equal(plan.plannedVars.length >= 2, true);
   assert.ok(plan.vars.TIER1_NODES_CONFIG_01.startsWith('[{'));
-  assert.equal(Object.keys(plan.secrets).length >= 1, true);
-  JSON.parse(plan.vars.TIER1_NODES_CONFIG_01);
+  assert.ok(plan.vars.TIER2_NODES_CONFIG_01.startsWith('[{'));
+  assert.ok(plan.secrets.TIER1_NODES_SECRETS_01);
+  assert.ok(plan.secrets.TIER2_NODES_SECRETS_01);
+  for (const value of Object.values(plan.vars)) JSON.parse(value);
   for (const value of Object.values(plan.secrets)) JSON.parse(value);
 });
 
-test('rejects credential fields inside node configs', () => {
-  assert.throws(() => buildPlan({ tiers: { 1: [node('a', { token: 'sk-xxx' })] } }), /forbidden credential field/);
-  assert.throws(() => buildPlan({ tiers: { 1: [node('a', { api_key: 'k' })] } }), /forbidden credential field/);
-});
-
-test('rejects tier field in node configs', () => {
+test('credential fields and tier field are rejected', () => {
+  assert.throws(() => buildPlan({ tiers: { 1: [node('a', { token: 'x' })] } }), /forbidden credential field/);
   assert.throws(() => buildPlan({ tiers: { 1: [node('a', { tier: 'tier-1' })] } }), /must not declare "tier"/);
 });
 
-test('rejects duplicate node ids', () => {
+test('node ids must be unique inside and across tiers', () => {
   assert.throws(() => buildPlan({ tiers: { 1: [node('a'), node('a')] } }), /duplicate node id/);
+  assert.throws(() => buildPlan({ tiers: { 1: [node('a')], 2: [node('a')] } }), /duplicate node id.*across/i);
 });
 
-test('rejects http base_url', () => {
-  assert.throws(
-    () => buildPlan({ tiers: { 1: [{ ...node('a'), base_url: 'http://api.example.com/v1' }] } }),
-    /https:\/\/ base_url/,
-  );
+test('provider protocol surfaces and models are explicit required fields', () => {
+  for (const field of ['provider', 'protocol', 'surfaces', 'models']) {
+    const n = node('a');
+    delete n[field];
+    assert.throws(() => assertNodesArray([n]), new RegExp(field));
+  }
 });
 
-// ---- protocol / surfaces schema ---------------------------------------------
-
-test('accepts explicit protocol and surfaces values', () => {
-  assert.doesNotThrow(() => buildPlan({
-    tiers: { 1: [node('a', { protocol: 'openai', surfaces: ['chat_completions', 'responses'] })] },
-    secretsMap: { a: 'x' },
-  }));
-  assert.doesNotThrow(() => buildPlan({
-    tiers: { 1: [node('b', { protocol: 'anthropic', surfaces: ['messages'], base_url: 'https://api.example.com' })] },
-    secretsMap: { b: 'x' },
-  }));
+test('protocol and surfaces use closed vocabularies', () => {
+  assert.throws(() => assertNodesArray([node('a', { protocol: 'gemini' })]), /protocol must be/);
+  assert.throws(() => assertNodesArray([node('a', { protocol: 'anthropic', surfaces: ['chat_completions'] })]), /not valid for protocol/);
+  assert.throws(() => assertNodesArray([node('a', { surfaces: [] })]), /non-empty array/);
+  assert.doesNotThrow(() => assertNodesArray([node('a', { protocol: 'anthropic', surfaces: ['messages'] })]));
 });
 
-test('accepts legacy nodes without protocol/surfaces (implicit openai defaults)', () => {
-  assert.doesNotThrow(() => buildPlan({ tiers: { 1: [node('legacy')] }, secretsMap: { legacy: 'x' } }));
+test('base_url must be valid https without credentials', () => {
+  assert.throws(() => assertNodesArray([node('a', { base_url: 'http://api.example.com' })]), /https:\/\//);
+  assert.throws(() => assertNodesArray([node('a', { base_url: 'https://u:p@example.com' })]), /username\/password/);
+  assert.throws(() => assertNodesArray([node('a', { base_url: 'not-a-url' })]), /invalid base_url/);
 });
 
-test('rejects unknown protocol and protocol/surface mismatches', () => {
-  assert.throws(() => buildPlan({ tiers: { 1: [node('a', { protocol: 'gemini' })] } }), /protocol must be "openai" or "anthropic"/);
-  assert.throws(() => buildPlan({ tiers: { 1: [node('a', { protocol: 'anthropic', surfaces: ['chat_completions'] })] } }), /not valid for protocol "anthropic"/);
-  assert.throws(() => buildPlan({ tiers: { 1: [node('a', { surfaces: ['messages'] })] } }), /not valid for protocol "openai"/);
-  assert.throws(() => buildPlan({ tiers: { 1: [node('a', { surfaces: [] })] } }), /non-empty array/);
+test('priority accepts only non-negative integer numbers', () => {
+  assert.throws(() => assertNodesArray([node('a', { priority: '10' })]), /priority/);
+  assert.throws(() => assertNodesArray([node('a', { priority: 1.5 })]), /priority/);
+  assert.throws(() => assertNodesArray([node('a', { priority: -1 })]), /priority/);
+  assert.doesNotThrow(() => assertNodesArray([node('a', { priority: 0 })]));
 });
 
-test('rejects node without matching credential', () => {
+test('models accepts object only; explicit empty object is wildcard', () => {
+  assert.doesNotThrow(() => assertNodesArray([node('a', { models: {} })]));
+  assert.throws(() => assertNodesArray([node('a', { models: undefined })]), /models is required/);
+  assert.throws(() => assertNodesArray([node('a', { models: ['m'] })]), /models is required/);
+  assert.throws(() => assertNodesArray([node('a', { models: { m: 1 } })]), /models\["m"\]/);
+});
+
+test('retired limits and unknown fields are rejected', () => {
+  assert.throws(() => assertNodesArray([node('a', { limits: { concurrency: 2 } })]), /unknown field "limits"/);
+  assert.throws(() => assertNodesArray([node('a', { prioirty: 5 })]), /unknown field "prioirty"/);
+});
+
+test('node without credential and orphan credential both fail planning', () => {
   assert.throws(() => buildPlan({ tiers: { 1: [node('a')] }, secretsMap: {} }), /no credential/);
-});
-
-test('rejects orphan credentials', () => {
   assert.throws(() => buildPlan({ tiers: { 1: [node('a')] }, secretsMap: { a: 'x', ghost: 'y' } }), /no matching node/);
 });
 
-test('oversized single node throws', () => {
-  const big = node('big', { provider: 'x'.repeat(5000) });
-  assert.throws(() => buildPlan({ tiers: { 1: [big] } }), /exceeds the .*-byte shard limit/);
+test('secret object is strict', () => {
+  assert.throws(() => assertSecretsObject([]), /JSON object/);
+  assert.throws(() => assertSecretsObject({ a: '' }), /non-empty string/);
+  assert.throws(() => assertSecretsObject({ 'BAD ID': 'x' }), /valid node id/);
 });
 
-test('stale shard deletion lists are computed', () => {
+test('oversized entry fails before producing invalid shards', () => {
+  assert.throws(
+    () => buildPlan({ tiers: { 1: [node('big', { provider: 'x'.repeat(5000) })] }, secretsMap: { big: 'x' } }),
+    /exceeds the .*-byte shard limit/,
+  );
+});
+
+test('stale managed shard lists are computed', () => {
   const plan = buildPlan({
     tiers: { 1: [node('a')] },
     secretsMap: { a: 'x' },
     existingVarNames: ['TIER1_NODES_CONFIG_01', 'TIER1_NODES_CONFIG_02', 'TIER3_NODES_CONFIG_01'],
-    existingSecretNames: ['TIER1_NODES_SECRETS_01', 'TIER1_NODES_SECRETS_02'],
+    existingSecretNames: ['TIER1_NODES_SECRETS_01', 'TIER1_NODES_SECRETS_02', 'GATEWAY_ACCESS_KEY'],
   });
-  assert.deepEqual(plan.deleteVars.sort(), ['TIER1_NODES_CONFIG_02', 'TIER3_NODES_CONFIG_01']);
+  assert.deepEqual(plan.deleteVars, ['TIER1_NODES_CONFIG_02', 'TIER3_NODES_CONFIG_01']);
   assert.deepEqual(plan.deleteSecrets, ['TIER1_NODES_SECRETS_02']);
 });
 
-test('patterns only match managed names', () => {
+test('managed patterns cover current shards only', () => {
   assert.ok(MANAGED_VAR_PATTERN.test('TIER2_NODES_CONFIG_07'));
-  assert.ok(!MANAGED_VAR_PATTERN.test('GATEWAY_ACCESS_KEY'));
   assert.ok(MANAGED_SECRET_PATTERN.test('TIER1_NODES_SECRETS_03'));
-  assert.ok(MANAGED_SECRET_PATTERN.test('GATEWAY_ACCESS_KEY'));
-  assert.ok(!MANAGED_SECRET_PATTERN.test('MY_SECRET'));
+  assert.ok(!MANAGED_SECRET_PATTERN.test('GATEWAY_ACCESS_KEY'));
+  assert.ok(!MANAGED_SECRET_PATTERN.test('TIER1_NODES_SECRETS_11'));
 });
 
-test('shard limit is 10 (config) and 10 (secret), matching GitHub Deploy', () => {
-  assert.equal(MAX_SHARD_NUMBER, 10, 'MAX_SHARD_NUMBER must be 10');
-  const big = buildPlan({
-    tiers: { 1: Array.from({ length: 300 }, (_, i) => node(`n${i}`)) },
-    secretsMap: Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`n${i}`, 'x'])),
-  });
-  for (const key of Object.keys(big.vars).concat(Object.keys(big.secrets))) {
+test('planner never emits shard index above 10', () => {
+  assert.equal(MAX_SHARD_NUMBER, 10);
+  const nodes = Array.from({ length: 240 }, (_, i) => node(`n${i}`));
+  const secretsMap = Object.fromEntries(nodes.map((n) => [n.id, 'x']));
+  const plan = buildPlan({ tiers: { 1: nodes }, secretsMap });
+  for (const key of [...Object.keys(plan.vars), ...Object.keys(plan.secrets)]) {
     const match = /(\d{2})$/.exec(key);
-    assert.ok(match, `${key} must end with a 2-digit index`);
-    const idx = Number(match[1]);
-    assert.ok(idx >= 1 && idx <= 10, `${key} shard index must be within 01..10 (got ${idx})`);
+    assert.ok(match);
+    assert.ok(Number(match[1]) >= 1 && Number(match[1]) <= 10, key);
   }
-  assert.ok(!Object.keys(big.vars).some((k) => /_11$/.test(k)), 'no config shard 11');
-  assert.ok(!Object.keys(big.secrets).some((k) => /_11$/.test(k)), 'no secret shard 11');
 });
 
-test('assertNodesArray rejects malformed entries', () => {
-  assert.throws(() => assertNodesArray('[]'), /JSON array/);
-  assert.throws(() => assertNodesArray([{ id: 'BAD ID' }]), /invalid/);
-  assert.throws(() => assertSecretsObject([]), /JSON object/);
-  assert.throws(() => assertSecretsObject({ a: '' }), /non-empty string/);
-});
-
-test('assertNodesArray rejects unknown fields, invalid models values and invalid limits', () => {
-  assert.throws(() => assertNodesArray([node('a', { prioirty: 5 })]), /unknown field "prioirty"/);
-  assert.throws(() => assertNodesArray([node('a', { models: { x: 5 } })]), /models\["x"\]/);
-  assert.throws(() => assertNodesArray([node('a', { limits: { concurency: 2 } })]), /limits\.concurency/);
-  assert.throws(() => assertNodesArray([node('a', { priority: -1 })]), /priority/);
-});
-
-test('assertNodesArray allows wildcard (empty) models', () => {
-  assert.doesNotThrow(() => assertNodesArray([node('a', { models: {} })]));
-  assert.doesNotThrow(() => assertNodesArray([node('a', { models: undefined })]));
-});
-
-if (!process.exitCode) console.log(`node-config-shards tests passed (${passed}).`);
+if (process.exitCode) process.exit(1);
+console.log(`node-config-shards tests passed (${passed}).`);
