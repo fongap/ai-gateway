@@ -137,7 +137,7 @@ powershell scripts/install.ps1
 | Model Access | `GATEWAY_ACCESS_MODELS_{AIR,PRO,MAX,ULTRA,AGENT}` |
 | 模型 / 请求策略 | `MODELS_CONFIG` · `POLICIES_CONFIG` |
 
-凭据按 **Tier + node id** 绑定；Config 与 Secret 的 shard suffix 是独立分片编号，不要求同号匹配。Gateway Access 默认 fail-closed：Group Key 已配置但对应 `GATEWAY_ACCESS_MODELS_<GROUP>` 为空时，不获得任何模型访问权限。
+凭据按 **Tier + node id** 绑定；Config 与 Secret 的 shard suffix 是彼此独立、互不关联的分片编号。Gateway Access 默认 fail-closed：Group Key 已配置但对应 `GATEWAY_ACCESS_MODELS_<GROUP>` 为空时，不获得任何模型访问权限。
 
 Node `limits` 已不在现行 Schema 中，配置后会被拒绝。容量判断依赖真实 inFlight、429/Cooldown、Circuit 和延迟信号，而不是人工猜测的节点上限。
 
