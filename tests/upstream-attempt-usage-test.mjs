@@ -14,6 +14,7 @@ import {
 } from '../src/request/attempt/observability.ts';
 import { reportedUsageFromPayload } from '../src/observability/reported-usage.ts';
 import { trackStreamResponse } from '../src/stream/track.ts';
+import { createOpenAIChatStreamFromAnthropic } from '../src/conversion/anthropic-stream-to-openai-chat.ts';
 
 function fakeD1() {
   const writes = [];
@@ -124,6 +125,43 @@ test('successful settlement preserves a provider report observed before the term
   const global = d1.writes.find((w) => w.sql.includes('token_usage_hourly'));
   assert.deepEqual(global.params.slice(1, 9), [12, 3, 0, 0, 15, 1, 1, 0]);
   assert.deepEqual(global.params.slice(9, 17), [12, 3, 0, 0, 15, 1, 1, 0]);
+});
+
+test('Anthropic to OpenAI stream keeps raw provider usage including cache fields', async () => {
+  const d1 = fakeD1();
+  const waits = [];
+  const c = {
+    env: { TOKEN_STATS_DB: d1 },
+    ctx: { waitUntil(p) { waits.push(Promise.resolve(p)); } },
+    logger: { info() {}, debug() {}, error() {} },
+    requestedModel: 'Code-Max',
+    reqDescriptor: { model: 'Code-Max' },
+    state: { requestedModel: 'Code-Max' },
+  };
+  const node = { id: 'n3', provider: 'mock', tier: 'tier-1', models: { 'Code-Max': 'up-max' } };
+  const source = sseResponse([
+    'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_1","model":"up-max","usage":{"input_tokens":5,"cache_creation_input_tokens":7,"cache_read_input_tokens":11,"output_tokens":0}}}\n\n',
+    'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+    'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"x"}}\n\n',
+    'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+    'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}\n\n',
+    'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+  ]);
+  const converted = createOpenAIChatStreamFromAnthropic(source.body, {
+    model: 'Code-Max',
+    onUpstreamUsage: (usage) => observeUpstreamAttemptUsage(c, usage),
+  });
+  await drain(new Response(converted));
+  recordTokens(c, node, null);
+  await Promise.all(waits);
+
+  const global = d1.writes.find((w) => w.sql.includes('token_usage_hourly'));
+  assert.ok(global);
+  // Anthropic cache tokens remain additional input activity. The converted
+  // OpenAI usage chunk would not carry these raw provider fields, so this
+  // asserts accounting stayed on the native provider report.
+  assert.deepEqual(global.params.slice(1, 9), [5, 3, 7, 11, 26, 1, 1, 0]);
+  assert.deepEqual(global.params.slice(9, 17), [5, 3, 7, 11, 26, 1, 1, 0]);
 });
 
 test('interrupted stream exposes reported usage to physical-attempt accounting but not delivered onUsage', async () => {
