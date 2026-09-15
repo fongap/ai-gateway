@@ -49,10 +49,11 @@ Do not place test files back under `scripts/`; tests may exercise scripts, but t
 
 - [Architecture](docs/architecture/overview.md) — durable design boundaries and invariants.
 - [Operations](docs/operations/configuration.md) — configuration and deployment procedures.
-- [Governance](docs/governance/README.md) — development, quality, dependency, version/tag, and documentation policy.
-- [CHANGELOG.md](CHANGELOG.md), Git tags, PRs, commits, and existing GitHub Releases — historical evidence.
+- [Governance](docs/governance/README.md) — development, quality, dependency, product, and documentation policy.
 
-GitHub Releases are not part of the normal future service-version lifecycle. Stable source boundaries use Git tags under the [version/tag policy](docs/governance/version-policy.md).
+Historical evidence lives in Git history, pull requests, commits, existing tags, and existing GitHub Releases. The repository does not maintain an automated project release number or a source changelog as a second history system.
+
+If a named release is useful, a maintainer selects the intended commit and creates the Git tag or GitHub Release manually. CI and deployment automation must not infer, bump, validate, or publish project release numbering.
 
 Do not create temporary `latest`, `final`, `new`, or version-suffixed copies of long-lived documentation. Update the responsible document directly.
 
@@ -61,7 +62,7 @@ Do not create temporary `latest`, `final`, `new`, or version-suffixed copies of 
 - [Development policy](docs/governance/development-policy.md)
 - [Quality policy](docs/governance/quality-policy.md)
 - [Dependency policy](docs/governance/dependency-policy.md)
-- [Version/tag policy](docs/governance/version-policy.md)
+- [Product policy](docs/governance/product-policy.md)
 - [Documentation policy](docs/governance/documentation-policy.md)
 
 ## Security
