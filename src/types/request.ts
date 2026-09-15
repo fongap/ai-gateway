@@ -16,9 +16,6 @@ export type RequestDescriptor = {
   model: string,
   protocol: Protocol,
   surface: Surface,
-  /** Optional request priority (1=lowest, 5=highest). Derived from the
-   *  access key group during preflight. When absent, treated as normal (3). */
-  priority?: number,
 };
 
 /**
@@ -116,6 +113,13 @@ export type LoopContext = {
   tier1Session: string | null,
   knownModels: Set<string>,
   feasibility: RouteFeasibilityResult,
+  /**
+   * Logical-attempt slots intentionally preserved for later model-family
+   * passes. This is request-plan state, not tier state: the current pass may
+   * use fewer live candidates, but it must not consume the wall-clock reserve
+   * promised to reachable compatible siblings.
+   */
+  futureAttemptReserve: number,
 };
 
 /**
@@ -142,6 +146,12 @@ export type AttemptContext = {
   state: LoopState,
   failoverBudgetMs: number,
   requestStartMs: number,
+  /**
+   * Budget-visible logical opportunities: live dispatches remaining in the
+   * current pass plus request-plan slots reserved for later compatible models.
+   * dispatch.ts uses this only for wall-clock allocation; it does not create
+   * candidates or enlarge maxAttempts.
+   */
   remainingDispatchableAttempts: number,
   /** The active (protocol, surface, model) triple — the fallback passes carry
    * the fallback descriptor without a client route. */
