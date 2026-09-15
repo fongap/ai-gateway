@@ -9,7 +9,7 @@
 - Force pushes and branch deletion should be blocked by repository rules.
 - Squash merge is the intended merge strategy so `main` keeps one commit per accepted change.
 
-The repository Ruleset is the source of truth for required review count and required status checks; do not duplicate a review-count assumption here.
+The repository Ruleset is the source of truth for required review count and required status checks.
 
 ## Branch names
 
@@ -18,7 +18,7 @@ Use a short prefix that describes the type of change:
 ```text
 feat/      user-visible capability
 fix/       defect or current-contract fix
-refactor/  behavior-preserving structure change
+refactor/  structure or simplification
 docs/      documentation and governance
 ci/        CI/workflow change
 test/      tests and contracts
@@ -28,13 +28,6 @@ chore/     maintenance without product behavior change
 ## Commit messages
 
 Use concise Conventional Commit-style subjects that describe behavior or intent rather than a file list.
-
-```text
-fix: preserve tool-result errors across fallback
-docs: align routing documentation with tier1 heat protection
-refactor: isolate request orchestration boundary
-test: cover hard-rpm recovery after 429
-```
 
 ## Pull Request scope
 
@@ -49,7 +42,7 @@ One PR should have one primary objective. A PR must make it possible to answer:
 - Does the change stay inside [product-policy.md](product-policy.md)?
 - If complexity increased, what concrete household/small-team problem requires it?
 
-Do not mix unrelated cleanup into a correctness fix. If a separate defect is discovered, record it and handle it independently unless it blocks the current objective.
+Do not mix unrelated cleanup into a correctness fix unless it directly blocks the objective.
 
 ## Behavior-preserving refactors
 
@@ -67,8 +60,6 @@ A refactor that claims behavior preservation must not silently change:
 Tests are the primary evidence of behavior preservation. Types support that evidence but do not replace runtime contracts.
 
 ## Architecture boundaries
-
-The long-lived module responsibilities are:
 
 ```text
 config         parse configuration; own Model Registry, policy, Runtime Node construction
@@ -88,7 +79,7 @@ dashboard      public/operator presentation
 
 Provider labels are metadata and known-quirk selectors. They must not become an implicit source of model capabilities.
 
-The permanent tier roles are defined by [product-policy.md](product-policy.md): Tier 1 is free-token capacity and the primary reliability focus; Tier 2 is reserved for membership/subscription entitlements; Tier 3 is reserved for paid API capacity. New work must not blur those roles.
+Tier roles are fixed by [product-policy.md](product-policy.md): Tier 1 is free-token capacity and the primary reliability focus; Tier 2 is reserved for membership/subscription entitlements; Tier 3 is reserved for paid API capacity.
 
 ## Runtime dependency discipline
 
@@ -96,39 +87,26 @@ Prefer Web Standard APIs, Node built-ins used by tooling, and small local implem
 
 Do not add a framework merely to reorganize code. In particular, architecture work must not introduce a DI container, service locator, repository framework, general transformation framework, plugin marketplace, or generic control-plane abstraction without a demonstrated household/small-team requirement.
 
-TypeScript is a development/tooling choice and must not require a runtime framework. Source imports use the repository's current TypeScript/ESM conventions and must remain compatible with Node and Wrangler validation.
-
 ## Performance discipline
 
-Do not optimize for theoretical zero allocation. Prevent measurable and unnecessary request-hot-path regression.
+Prevent measurable and unnecessary request-hot-path regression. Review especially for repeated config/env parsing, repeated JSON work, unnecessary buffering, avoidable D1/KV reads, full-pool sorting, and speculative global coordination.
 
-Review especially for:
-
-- repeated config/env parsing;
-- repeated JSON parse/stringify;
-- unnecessary deep cloning or buffering;
-- unnecessary D1/KV reads in the request path;
-- full-pool sorting where bounded selection is sufficient;
-- global coordination added without evidence that local shaping is insufficient.
-
-Use focused regression tests and production observability as performance evidence when a change is expected to affect the request hot path. Do not introduce a standalone benchmark harness unless it has a stable baseline, explicit regression thresholds, and a maintained execution path.
+Use focused regression tests and production observability as evidence.
 
 ## Clean replacement rule
 
-ai-gateway does not keep old ai-gateway contracts alive for backward compatibility.
-
-When a public/configuration/runtime contract changes:
+ai-gateway keeps one current contract. When a public/configuration/runtime contract changes:
 
 1. update the canonical implementation;
-2. update configuration/schema/tests/examples/documentation in the same change;
+2. update configuration, schema, tests, examples and documentation in the same change;
 3. remove the superseded path in the same change;
-4. do not add deprecated aliases, dual-read/dual-write behavior, version switches, compatibility shims, or temporary old/new parallel mechanisms solely for an older ai-gateway version;
+4. do not add deprecated aliases, dual-read/dual-write behavior, compatibility switches, shims, or temporary old/new parallel mechanisms solely to keep retired ai-gateway behavior alive;
 5. document any operator action required to adopt the new current contract;
-6. record history in Git/PRs/`CHANGELOG.md`, not in runtime compatibility code.
+6. record history in Git and Pull Requests, not runtime compatibility code.
 
-A change may still preserve external OpenAI/Anthropic protocol compatibility when that compatibility is part of the current product surface. That is not backward compatibility with an older ai-gateway release.
+External OpenAI/Anthropic protocol compatibility remains when it is part of the current product surface.
 
-Documentation-only wording changes and factual drift corrections do not require a version bump.
+Project release numbering is not an engineering automation concern. Source, configuration, tests, docs and CI do not carry or advance it. A human may create a Git tag or GitHub Release when desired; deployment correctness is tied to commit SHA.
 
 ## Documentation
 
