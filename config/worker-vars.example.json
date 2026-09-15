@@ -9,22 +9,36 @@
       ],
       "base_url": "https://provider.example.com/v1",
       "priority": 10,
-      "models": { "code-pro": "provider-coding-model" },
-      "limits": { "concurrency": 2, "rpm": 30, "rpm_mode": "hard" }
+      "models": {
+        "code-pro": "provider-coding-model"
+      }
     }
   ],
   "GATEWAY_ACCESS_MODELS_PRO": "code-pro",
   "MODELS_CONFIG": {
     "code-pro": {
       "policy": "default",
-      "capabilities": { "tools": true, "reasoning": true, "vision": false, "stream": true }
+      "capabilities": {
+        "tools": true,
+        "reasoning": true,
+        "vision": false,
+        "stream": true
+      }
     }
   },
-  "POLICIES_CONFIG": { "default": { "max_attempts": 5 } },
+  "POLICIES_CONFIG": {
+    "default": {
+      "max_attempts": 5
+    }
+  },
   "DASHBOARD_MODELS": "Code-Ultra,Code-Max,Code-Pro,Ultra,Max,Pro,Air",
   "PROTOCOL_FALLBACKS": {
-    "anthropic:messages": ["openai:chat_completions"],
-    "openai:chat_completions": ["anthropic:messages"]
+    "anthropic:messages": [
+      "openai:chat_completions"
+    ],
+    "openai:chat_completions": [
+      "anthropic:messages"
+    ]
   },
   "PROJECT_REPOSITORY_URL": "https://github.com/your-org/ai-gateway"
 }
