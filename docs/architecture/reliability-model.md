@@ -24,7 +24,7 @@ Routing uses signals the gateway can actually observe:
 - an explicit positive `max_in_flight` may hard-limit Tier 1 local admission for that policy; unset, `0`, or `null` leaves admission uncapped;
 - real 429 responses create key-local adaptive cooldown and recovery state;
 - provider-model 429 evidence adds bounded soft heat when several independent keys hit the same shared capacity limit;
-- TTFT, affinity, circuit state, and recent transient failures influence ranking and recovery;
+- TTFT, affinity, request priority, circuit state, and recent transient failures influence ranking and recovery;
 - optional hedge work is suppressed before primary traffic when live pressure is already high.
 
 `max_in_flight` is deliberately not described as Provider-global capacity: multiple Cloudflare isolates can serve the same account independently. It is a local safety override, not a replacement for adaptive 429/cooldown learning.
@@ -100,7 +100,7 @@ Authentication failures use account-scoped cooldown so a bad credential is isola
 
 ## Failure classification
 
-`src/reliability/classify.ts` owns the closed failure vocabulary. Consumers use the exported classification helpers/constants rather than inventing new failure strings.
+`src/reliability/classify.ts` owns the closed failure vocabulary. Response parsers/assemblers do not choose reliability semantics: they raise typed processing reasons (`deadline`, `malformed`, `too_large`, `truncated`, `empty`, `terminal`), then `classifyPostHeadersFailure()` maps those reasons into the existing failure vocabulary. Error-message string matching is not part of this boundary.
 
 | Kind | Typical cause | Request action | Reliability effect |
 | --- | --- | --- | --- |
@@ -109,14 +109,15 @@ Authentication failures use account-scoped cooldown so a bad credential is isola
 | `client` | request-invalid 4xx | stop | neutral to upstream reliability |
 | `model_missing` | model-shaped 404 | rotate / model mapping cooldown | not circuit-counted |
 | `endpoint_not_found` | non-model 404 | rotate / short node cooldown | not circuit-counted |
-| `server` | upstream 5xx and selected retryable statuses | rotate | circuit-counted |
+| `server` | upstream 5xx, typed terminal response event | rotate | circuit-counted |
 | `network` | network failure | rotate | circuit-counted |
 | `headers_timeout` | no upstream response headers in time | rotate | circuit-counted |
-| `first_event_timeout` | headers received but no meaningful first output | rotate | circuit-counted |
-| `stream_interrupted` | committed stream truncates or misses completion semantics | record interruption | circuit-counted |
+| `first_event_timeout` | first meaningful output or pre-commit assembly misses the absolute attempt deadline | rotate | circuit-counted |
+| `stream_interrupted` | protocol stream truncates or misses completion semantics | rotate before commit / record interruption after commit | circuit-counted |
 | `client_abort` | client cancellation | stop/neutral | neutral |
 | `invalid_base_url` | invalid upstream URL before dispatch | rotate without budget charge | neutral/non-circuit |
-| `upstream_200_non_json_body` | HTTP 200 with invalid protocol body | rotate / short cooldown | circuit-counted |
+| `upstream_200_non_json_body` | HTTP 200 malformed/oversized protocol body | rotate / short cooldown | circuit-counted |
+| `upstream_200_no_meaningful_output` | structurally valid HTTP 200 without meaningful model output | rotate / short cooldown | circuit-counted |
 | `cancelled_after_peer_commit` | hedge loser cancelled after winner commits | neutral | neutral |
 | `unknown` | guarded catch-all | rotate according to caller | conservative |
 
@@ -143,13 +144,21 @@ max_attempts>=6 3 / 2 / 1, then bounded re-checks only from unused budget
 
 `Air` follows the same hard ceiling across the one-way `Air -> Pro -> Max -> Ultra` chain. Family fallback candidates are also intersected with the authenticated Gateway Key model scope; internal fallback cannot widen the caller's authorization.
 
-Every native attempt, protocol fallback, family fallback, and bounded re-check shares the same logical-attempt counter and whole-request wall-clock budget. When such a bounded family plan ends after only transient failures, the retryable 503 means the **attempt budget** was exhausted; it does not prove that every compatible account in the deployment was tested or unavailable.
+Every native attempt, protocol fallback, family fallback, and bounded re-check shares the same logical-attempt counter and whole-request wall-clock budget. Request-local failure-domain deduplication prevents sibling aliases that collapse to the same credential + provider-facing model from repeatedly spending that budget.
+
+When such a bounded family plan ends after only transient failures, the retryable 503 means the **attempt budget** was exhausted; it does not prove that every compatible account in the deployment was tested or unavailable.
 
 ## Timeout budget
 
 `FAILOVER_BUDGET_MS` is the request-wide wall-clock ceiling for transparent recovery. A policy-level `first_event_timeout_ms` cannot exceed that request budget. Per-attempt header and first-event waits are always bounded by the remaining request and attempt deadlines.
 
-This means a policy cannot claim a 120-second first-event wait while the whole request is configured to stop after 60 seconds; invalid combinations are rejected instead of silently behaving differently from configuration.
+The live allocator is reserve-aware, not equal-share. The current attempt may use the remaining request budget except for an escape reserve for later request-plan opportunities. With sufficient budget the reserve is capped at `MIN_FAILOVER_RESERVE_MS=5000` per later opportunity; under tight budgets it shrinks toward equal share so later candidates are not starved.
+
+The opportunity count is request-wide: it combines dispatchable attempts in the current pass with reachable future model-family passes. Already-spent duplicate failure domains are removed from future reserve planning, and the reserve is recomputed after a native pass before protocol fallback.
+
+A physical upstream attempt owns one absolute deadline. Header wait, first meaningful output, successful JSON/SSE assembly, and non-2xx diagnostic body reads are all bounded by that same deadline. A hedge twin inherits the primary logical attempt's deadline and never gets a fresh wall-clock window.
+
+This means a policy cannot claim a first-event wait longer than the whole request wall clock; invalid combinations are rejected instead of silently behaving differently from configuration.
 
 ## Streaming lifecycle
 
@@ -159,7 +168,11 @@ The first-event guard defines the transparent-failover boundary:
 - role-only, lifecycle-only, or empty deltas are not meaningful output;
 - after meaningful output commits, transparent replay/failover is unsafe and is not attempted.
 
-Tier 1 keeps its in-flight slot through headers, first output, and the active stream. Completion, cancellation, reader error, or idle timeout releases it exactly once. Client-level `activeRequests` is incremented once at the outer request boundary; stream start does not increment it again.
+Real upstream or live transformed streams are tracked by the node-layer `trackStreamResponse` / `makeNodeStreamTrack` path. That owner records node success/interruption, releases Tier 1 slots, and settles the outer client request exactly once.
+
+A gateway-synthesized SSE stream is different: the upstream already returned a complete JSON object, so there is no live node stream tracker. The synthesis helper marks that response with an internal lifecycle header; the outer `trackClientResponse` consumes and strips the marker, relays the body, and settles success/failure/cancellation on EOF/error/cancel. Ordinary real SSE is returned by the outer layer as-is, avoiding stacked pull wrappers.
+
+Tier 1 keeps its in-flight slot through headers, first output, and an active real upstream stream. For a synthetic stream the upstream/node success is already recorded before synthesis; only the client-facing request lifecycle remains open until the synthesized body ends.
 
 Commit semantics remain protocol-specific; see [protocol-model.md](protocol-model.md).
 
