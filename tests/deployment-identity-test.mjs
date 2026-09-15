@@ -12,19 +12,25 @@ test('online verification rejects the wrong Worker build before accepting health
   let calls = [];
   globalThis.fetch = async url => {
     calls.push(url);
-    return Response.json(url.endsWith('/version') ? { build: 'b'.repeat(40) } : { ready: true });
+    if (url.endsWith('/health')) return Response.json({ ready: true, build: 'b'.repeat(40) });
+    return Response.json({});
   };
   try {
-    // With propagation grace window, wrong build is retried before failing.
     await assert.rejects(verifyRemote('https://gateway.example', 'test-placeholder', expected, shortGrace), /does not match/);
-    assert.ok(calls.length >= 2, `expected retries, got ${calls.length} calls`);
+    assert.ok(calls.filter((url) => url.endsWith('/health')).length >= 2, 'expected build-propagation retries');
+
     calls = [];
-    globalThis.fetch = async url => { calls.push(url); return Response.json(url.endsWith('/version') ? { build: expected } : { ready: true }); };
+    globalThis.fetch = async url => {
+      calls.push(url);
+      if (url.endsWith('/health')) return Response.json({ ready: true, build: expected });
+      return Response.json({});
+    };
     await verifyRemote('https://gateway.example', 'test-placeholder', expected, shortGrace);
-    assert.equal(calls.length, 4);
+    assert.equal(calls.length, 3, 'build verification reuses the health probe');
+
     calls = [];
     await verifyRemote('https://gateway.example', 'test-placeholder');
-    assert.equal(calls.length, 3, 'rollback probes health without asserting the failed new SHA');
+    assert.equal(calls.length, 3, 'rollback probes health without asserting a target SHA');
   } finally { globalThis.fetch = original; }
 });
 
