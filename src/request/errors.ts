@@ -103,42 +103,42 @@ export function buildExhaustedResponse(
   const knownModels_ = knownModels ?? state.knownModels;
 
   // Distinguish WHY no node was available:
-  //   cooling / circuit / recovery gate -> 429 with the smallest real wait;
-  //   real failures -> terminal status unless a complete model-family sweep
-  //     failed only for transient reasons, in which case 503 asks the client to
-  //     retry the turn instead of stopping for manual intervention.
+  //   cooling / circuit / recovery / explicit local admission -> 429;
+  //   real failures -> terminal status unless a bounded model-family attempt
+  //     plan failed only for transient reasons, in which case 503 asks the
+  //     client to retry the turn instead of stopping for manual intervention.
   const now = Date.now();
   let status: number;
   let message: string;
   let retryAfterSec: number | undefined;
   if (nothingAttempted) {
     status = 429;
-    message = 'All eligible nodes are temporarily unavailable (cooldown, recovery gate, or circuit open).';
+    message = 'No eligible node can dispatch this request right now (cooldown, recovery gate, circuit state, or configured admission limit).';
     retryAfterSec = earliestBlockingRetryAfterSec(tiers, reqDescriptor, now, knownModels_);
   } else {
     // Terminal status is driven by the aggregated failure kinds, not by whatever
     // the last attempt happened to be. Otherwise a trailing 429 would mask a
     // dominant upstream failure (and vice versa).
     status = terminalStatus(state.failureKinds) ?? (last?.status === 429 ? 429 : 502);
-    message = `All nodes failed for model "${requestedModel}".`;
+    message = `All attempted nodes failed for model "${requestedModel}".`;
 
-    // A bounded model-family sweep has already rotated across compatible model
-    // pools before this point. If every observed failure is transient, there is
-    // no reason to hand control back to a human. Keep the INTERNAL reason as
-    // 429/5xx/timeout in failure_kinds and node reliability state, but present
-    // one retryable 503 capacity envelope to coding clients so they can resume
-    // automatically instead of stopping for manual "continue".
+    // The model-family plan is bounded by the request's max_attempts. It may
+    // stop before every configured account has been tried, so never describe
+    // this condition as proof that all compatible capacity is unavailable.
+    // If every observed failure is transient, keep the internal reason in
+    // failure_kinds and return one retryable 503 so coding clients can resume
+    // automatically instead of stopping for a manual "continue".
     if (retryableFamilyExhaustion && familyFailureSetIsRetryable(state.failureKinds)) {
       const originalStatus = status;
       status = 503;
-      message = `Compatible model capacity is temporarily unavailable for "${requestedModel}". Retry shortly.`;
+      message = `Transient failures exhausted the compatible-model attempt budget for "${requestedModel}". Retry shortly.`;
       // Rate-limit exhaustion should not be retried every second. Preserve the
       // earliest real cooldown across ALL compatible sibling models when it is
       // available; other transient family failures keep the short retry hint.
       retryAfterSec = originalStatus === 429
         ? earliestFamilyBlockingRetryAfterSec(tiers, reqDescriptor, requestedModel, now, knownModels_) ?? 1
         : 1;
-      state.logger.info('model-family exhaustion mapped to retryable capacity response', {
+      state.logger.info('model-family attempt budget exhausted by transient failures', {
         request_id: requestId,
         requested_model: requestedModel,
         upstream_status: originalStatus,
@@ -173,9 +173,9 @@ export function buildExhaustedResponse(
 // Earliest moment any node that serves the request (protocol + surface +
 // model descriptor) could accept the request again, as a Retry-After in
 // seconds. A node cooling for an unrelated model, or a healthy idle node,
-// never contributes — only nodes that actually serve THIS request AND are
-// currently blocking it. The min across blocking reasons is returned so the
-// shortest real wait wins.
+// never contributes — only timed blocking reasons can produce a meaningful
+// Retry-After. An explicit max_in_flight ceiling has no known release time and
+// therefore intentionally contributes no guessed delay.
 function earliestBlockingRetryAfterSec(tiers: Record<number, RuntimeNode[]>, reqDescriptor: RequestDescriptor, now: number = Date.now(), knownModels?: ReadonlySet<string>): number | undefined {
   let minMs = Infinity;
   for (const t of TIER_ORDER) {
@@ -212,10 +212,11 @@ function earliestFamilyBlockingRetryAfterSec(
   return Number.isFinite(minSec) ? minSec : undefined;
 }
 
-// Per-node wait until this (node, requestedModel) pair could serve again.
-// Returns Infinity when the node is healthy & idle (not blocking). Node-level
-// cooldown (429/auth/circuit) wins over the model-scoped cooldown (404). Live
-// in-flight load is ranking-only and never contributes a blocking wait.
+// Per-node timed wait until this (node, requestedModel) pair could serve again.
+// Returns Infinity when no timed block exists. Node-level cooldown
+// (429/auth/circuit) wins over the model-scoped cooldown (404). Live in-flight
+// load is ranking-only by default; an explicit max_in_flight limit has no
+// deterministic wait and is therefore not represented here.
 function blockingWaitMs(node: RuntimeNode, requestedModel: string, now: number): number {
   if (node.tier === 'tier-1') return tier1BlockingWaitMs(node, requestedModel, now);
   const nodeCd = getCooldownRemainingMs(node.id, now);
