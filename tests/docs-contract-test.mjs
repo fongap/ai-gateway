@@ -63,9 +63,6 @@ const SHARD_FACT_FILES = [
 ];
 for (const file of SHARD_FACT_FILES) {
   const text = read(file);
-  // The supported rule is semantic: suffixes are independent partitions and
-  // credentials bind by Tier + node id. A sentence such as "not by matching
-  // shard suffixes" is therefore evidence for the current rule, not a violation.
   assert.match(text, /independent|independently|not by matching|无需.*对应|不按.*后缀|Tier\s*\+\s*node id/i,
     `${file}: must state independent Config/Secret shard binding`);
   assert.doesNotMatch(text, /(?:must|should|required to|需要|必须)[^\n]{0,80}(?:paired\s*1:1|matching\s+(?:config\s+)?shard|matching\s+suffix|一一对应|1:1\s*配对)/i,
@@ -105,13 +102,16 @@ for (const name of RUNTIME_VAR_NAMES) {
 }
 ok(`deploy.yml injects all ${RUNTIME_VAR_NAMES.length} runtime variables`);
 
+// runtime-vars.ts is the one default-value source. .dev.vars.example is an
+// operator example and may intentionally show overrides, so it must list the
+// current knobs without duplicating a second machine-checked default table.
 const devVars = read('.dev.vars.example');
+assert.match(devVars, /Defaults live in src\/config\/runtime-vars\.ts/i,
+  '.dev.vars.example must point operators to runtime-vars.ts for defaults');
 for (const tunable of RUNTIME_TUNABLES) {
-  const expected = String(tunable.def);
-  const flexible = new RegExp(`${tunable.name}[^\\n]*#.*default:\\s*${expected}`);
-  assert.ok(flexible.test(devVars), `.dev.vars.example default for ${tunable.name} must be ${expected}`);
+  assert.ok(devVars.includes(tunable.name), `.dev.vars.example must mention ${tunable.name}`);
 }
-ok('.dev.vars.example defaults match runtime-vars.ts');
+ok('.dev.vars.example references every current tunable and keeps defaults single-sourced');
 
 assert.match(routing, /Tier 1:[^\n]*Eligibility → Affinity → P2C/i);
 assert.doesNotMatch(routing, /Same tier \+ same priority = LRU rotation/i);
