@@ -163,7 +163,14 @@ export async function runFallbackChain({ loopCtx, route, requestedModel, runTier
     }
 
     convertedTargetCount++;
-    const fbTierCaps = computeTierCaps(tiers, fbReqDescriptor, state.attempted, policy, knownModels);
+    // Protocol fallback must preserve the same explicit Tier 1 admission
+    // contract as the native pass. Omitting maxInFlight here overstates live
+    // capacity and can distort tier caps / fair-share timeout slicing before
+    // the downstream picker eventually rejects the saturated account.
+    const fbTierCaps = computeTierCaps(
+      tiers, fbReqDescriptor, state.attempted, policy, knownModels,
+      policy.maxInFlight ?? null,
+    );
     const conversionContext: ConversionContext = {
       convertedBody: conversionResult.body,
       fallbackProtocol: fb.protocol,
