@@ -24,7 +24,7 @@ import { classifyStreamInterrupted } from '../../reliability/classify.ts';
 import { writeTier1Affinity } from '../../scheduler/tier1-affinity.ts';
 import {
   recordStreamStart, recordStreamCompleted, recordStreamInterrupted,
-  gatewayStats,
+  markNodeTrackedClientStream, gatewayStats,
 } from '../../observability/gateway-stats.ts';
 import { recordTokenUsage } from '../../observability/token-usage.ts';
 import { persistTokenUsage } from '../../observability/token-usage-store.ts';
@@ -111,7 +111,9 @@ export function recordNodeSuccess(c: AttemptContext, node: RuntimeNode, latencyM
 
 // Node-layer stream tracking: node outcome recording + stream-end telemetry.
 // The client request itself was already counted at the outer request boundary;
-// this layer owns only the eventual decrement/outcome for streaming responses.
+// this layer owns the eventual decrement/outcome only for REAL upstream streams.
+// onStreamStart declares that ownership explicitly so the outer layer can still
+// track gateway-synthesized SSE streams without double-wrapping this one.
 export function makeNodeStreamTrack(c: AttemptContext, node: RuntimeNode, latencyMs: number) {
   const tier1 = node.tier === 'tier-1';
   return {
@@ -142,6 +144,7 @@ export function makeNodeStreamTrack(c: AttemptContext, node: RuntimeNode, latenc
       gatewayStats.cancellations++;
     },
     onStreamStart: () => {
+      markNodeTrackedClientStream(c.requestId);
       recordStreamStart();
     },
     onStreamEnd: (outcome: string, d: { reason: string | null, durationMs: number, chunkCount: number, receivedBytes: number, completionMarkerSeen: boolean }) => {
