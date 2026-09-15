@@ -60,6 +60,7 @@ const UNIT_TESTS = [
   'tests/architecture-contract-test.mjs',
   'tests/repository-layout-test.mjs',
   'tests/reliability-core-contract-test.mjs',
+  'tests/reliability-regression-test.mjs',
   'tests/deployment-workflow-contract-test.mjs',
   'tests/scheduler-racelost-test.mjs',
 ];

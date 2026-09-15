@@ -95,6 +95,14 @@ await test('snapshot reports the current usage', () => {
   }
   const snap = getKeyRpmSnapshot('kSnap', now + 3);
   assert.equal(snap.used, 3, 'snapshot should report the in-window count');
+  assert.equal(snap.cap, 10, 'snapshot should report the configured cap');
+});
+
+await test('snapshot returns cap 0 for unknown key', () => {
+  __resetKeyRpmForTests();
+  const snap = getKeyRpmSnapshot('unknown-key');
+  assert.equal(snap.used, 0);
+  assert.equal(snap.cap, 0);
 });
 
 await test('bounded key map: 10000 unique keys do not exceed the cap', () => {

@@ -315,7 +315,10 @@ function modelBlocked(model: Tier1ModelRuntime | null | undefined, now: number):
 // Read-only eligibility filter. Missing runtime state means UNKNOWN, not bad.
 // `knownModels` (the Known Model Catalog) bounds wildcard nodes: an
 // empty-models node serves only catalog models, never an arbitrary string.
-export function isTier1Eligible(node: RuntimeNode, req: RoutableRequest, now: number = Date.now(), knownModels?: ReadonlySet<string> | null): boolean {
+// `maxInFlight` (optional): when set, nodes at or above this concurrency
+// ceiling are treated as non-dispatchable, so the tier cap computation
+// reflects actual remaining capacity instead of overcounting.
+export function isTier1Eligible(node: RuntimeNode, req: RoutableRequest, now: number = Date.now(), knownModels?: ReadonlySet<string> | null, maxInFlight?: number | null): boolean {
   if (!node || node.tier !== 'tier-1') return false;
   if (node.protocol !== req.protocol) return false;
   if (!Array.isArray(node.surfaces) || !node.surfaces.includes(req.surface)) return false;
@@ -328,6 +331,9 @@ export function isTier1Eligible(node: RuntimeNode, req: RoutableRequest, now: nu
   if (modelBlocked(model, now) || (model?.rateLimitRecoveryUntil ?? 0) > now) return false;
   if (model?.failureState === FAILURE_STATE.HALF_OPEN && account.inFlight > 0) return false;
   if (account.quotaState === 'exhausted_until' && account.quotaResetAt > now) return false;
+  // Dispatchable capacity: when maxInFlight is set, a node at or above
+  // the ceiling has no remaining capacity and should not be counted.
+  if (maxInFlight !== null && maxInFlight !== undefined && maxInFlight > 0 && account.inFlight >= maxInFlight) return false;
   return true;
 }
 
@@ -339,18 +345,18 @@ export function maybeTransitionToHalfOpen(accountId: string, modelId: string, no
   }
 }
 
-export function tier1CountDispatchableNodes(nodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, now: number = Date.now(), knownModels?: ReadonlySet<string> | null): number {
+export function tier1CountDispatchableNodes(nodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, now: number = Date.now(), knownModels?: ReadonlySet<string> | null, maxInFlight?: number | null): number {
   let count = 0;
   for (const node of nodes ?? []) {
     if (attempted.has(node.id)) continue;
     maybeTransitionToHalfOpen(node.id, req.model, now);
-    if (isTier1Eligible(node, req, now, knownModels)) count++;
+    if (isTier1Eligible(node, req, now, knownModels, maxInFlight)) count++;
   }
   return count;
 }
 
-export function tier1HasDispatchableNode(nodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, now: number = Date.now(), knownModels?: ReadonlySet<string> | null): boolean {
-  return tier1CountDispatchableNodes(nodes, req, attempted, now, knownModels) > 0;
+export function tier1HasDispatchableNode(nodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, now: number = Date.now(), knownModels?: ReadonlySet<string> | null, maxInFlight?: number | null): boolean {
+  return tier1CountDispatchableNodes(nodes, req, attempted, now, knownModels, maxInFlight) > 0;
 }
 
 function median(values: ReadonlyArray<number>): number {
@@ -439,7 +445,10 @@ function ttftFactor(
   );
 }
 
-export function calculateTier1Score(node: RuntimeNode, modelId: string, candidates: ReadonlyArray<RuntimeNode>, affinityFactor: number = 1, now: number = Date.now()): number {
+export function calculateTier1Score(node: RuntimeNode, modelId: string, candidates: ReadonlyArray<RuntimeNode>, affinityFactor: number = 1, now: number = Date.now(), priority?: number): number {
+  // Priority factor: higher priority → lower score (more preferred).
+  // Priority 1-5, default 3 (normal). Factor = 3 / priority.
+  const priorityFactor = (priority && priority > 0) ? (3 / Math.min(5, Math.max(1, priority))) : 1;
   return Math.max(1,
     TIER1_SCORE_BASE
     * ttftFactor(node.id, modelId, candidates)
@@ -447,7 +456,8 @@ export function calculateTier1Score(node: RuntimeNode, modelId: string, candidat
     * quotaFactor(node.id, now)
     * tier1ProviderModelHeatFactor(node.provider, tier1UpstreamModelOf(node, modelId), now)
     * affinityFactor
-    * explorationFactor(node.id, modelId));
+    * explorationFactor(node.id, modelId)
+    * priorityFactor);
 }
 
 export function recordTier1Ttft(accountId: string, modelId: string, observedMs: number, now: number = Date.now()): boolean {

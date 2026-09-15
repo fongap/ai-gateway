@@ -112,15 +112,9 @@ export function buildExhaustedResponse(
   let message: string;
   let retryAfterSec: number | undefined;
   if (nothingAttempted) {
-    if (state.tier1ExhaustionReason === 'deadline_too_small') {
-      status = 503;
-      message = 'The remaining request deadline is too short for another safe upstream attempt.';
-      retryAfterSec = 1;
-    } else {
-      status = 429;
-      message = 'All eligible nodes are temporarily unavailable (cooldown, recovery gate, or circuit open).';
-      retryAfterSec = earliestBlockingRetryAfterSec(tiers, reqDescriptor, now, knownModels_);
-    }
+    status = 429;
+    message = 'All eligible nodes are temporarily unavailable (cooldown, recovery gate, or circuit open).';
+    retryAfterSec = earliestBlockingRetryAfterSec(tiers, reqDescriptor, now, knownModels_);
   } else {
     // Terminal status is driven by the aggregated failure kinds, not by whatever
     // the last attempt happened to be. Otherwise a trailing 429 would mask a

@@ -117,8 +117,13 @@ export function classifyUpstreamStatus(status: number, headers: Headers, env: Re
     }
     return { kind: KIND.ENDPOINT_NOT_FOUND, action: 'rotate', cooldownMs: 5_000, counted: false };
   }
-  if (status === 408 || status === 425 || status === 409) {
+  if (status === 408 || status === 425) {
     return { kind: KIND.SERVER, action: 'rotate', cooldownMs: 0, counted: true };
+  }
+  if (status === 409) {
+    // 409 Conflict: rotating to another node is unlikely to resolve a conflict.
+    // Default to stop; only rotate when the provider's 409 is known-retryable.
+    return { kind: KIND.SERVER, action: 'stop', cooldownMs: 0, counted: false };
   }
   if (status >= 500) {
     return { kind: KIND.SERVER, action: 'rotate', cooldownMs: 0, counted: true };

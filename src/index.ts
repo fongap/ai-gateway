@@ -5,13 +5,14 @@
 
 import { handleRequest } from './request/handler.ts';
 import { isCountedRoute, gatewayStats, trackClientResponse } from './observability/gateway-stats.ts';
-import { normalizePath } from './request/router.ts';
-import { sanitizedInternalError } from './observability/diagnostic-endpoints.ts';
+import { normalizePath, detectRoute } from './request/router.ts';
+import { sanitizedInternalErrorForRoute } from './observability/diagnostic-endpoints.ts';
 import { maintainUsageStats } from './observability/token-usage-store.ts';
 
 export default {
   async fetch(request: Request, env: Record<string, unknown>, ctx: { waitUntil?: Function }): Promise<Response> {
     const pathname = normalizePath(new URL(request.url).pathname);
+    const route = detectRoute(request.method.toUpperCase(), pathname);
     const counted = isCountedRoute(request.method.toUpperCase(), pathname);
     if (counted) {
       gatewayStats.requests++;
@@ -27,8 +28,7 @@ export default {
         if (request.signal?.aborted) gatewayStats.cancellations++;
       }
       console.error('unhandled gateway error:', (error as Error)?.message || error);
-      const isAnthropic = /messages/.test(pathname);
-      return sanitizedInternalError(request, env, isAnthropic, crypto.randomUUID().slice(0, 8));
+      return sanitizedInternalErrorForRoute(request, env, route, crypto.randomUUID().slice(0, 8));
     }
   },
 

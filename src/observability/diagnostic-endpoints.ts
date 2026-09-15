@@ -392,6 +392,32 @@ export function sanitizedInternalError(request: Request, env: Record<string, unk
     : jsonError(request, env, 500, message, undefined, requestId);
 }
 
+// Route-aware variant: routes to the correct error envelope shape based on
+// the detected route. OpenAI Responses gets its own shape; everything else
+// falls through to the existing boolean logic.
+export function sanitizedInternalErrorForRoute(request: Request, env: Record<string, unknown>, route: string, requestId: string): Response {
+  const message = 'Internal gateway error.';
+  if (route === 'anthropic_messages' || route === 'anthropic_count_tokens') {
+    return anthropicErrorResponseSafe(request, env, message, requestId);
+  }
+  if (route === 'openai_responses') {
+    return responsesErrorResponseSafe(request, env, message, requestId);
+  }
+  return jsonError(request, env, 500, message, undefined, requestId);
+}
+
+function responsesErrorResponseSafe(request: Request, env: Record<string, unknown>, message: string, requestId: string): Response {
+  return new Response(JSON.stringify({ error: { message, type: 'server_error', param: null, code: null } }), {
+    status: 500,
+    headers: {
+      'content-type': 'application/json;charset=UTF-8',
+      'cache-control': 'no-store',
+      'x-request-id': requestId || '',
+      ...corsHeaders(request, env),
+    },
+  });
+}
+
 function anthropicErrorResponseSafe(request: Request, env: Record<string, unknown>, message: string, requestId: string): Response {
   return new Response(JSON.stringify({ type: 'error', error: { type: 'api_error', message } }), {
     status: 500,

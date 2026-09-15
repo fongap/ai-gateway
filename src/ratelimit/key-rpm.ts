@@ -26,6 +26,7 @@
 type KeyStateEntry = {
   stamps: number[],
   lastSeen: number,
+  cap: number,
 };
 
 type KeyAdmissionVerdict = { ok: true } | { ok: false, retryAfterSec: number };
@@ -66,12 +67,13 @@ export function admitKeyRequest(keyFingerprint: string, cap: number, now: number
   if (!cap || cap <= 0) return { ok: true };
   let entry = keyState.get(keyFingerprint);
   if (!entry) {
-    entry = { stamps: [], lastSeen: now };
+    entry = { stamps: [], lastSeen: now, cap };
     keyState.set(keyFingerprint, entry);
     evictStale(now);
   }
   pruneWindow(entry.stamps, now);
   entry.lastSeen = now;
+  entry.cap = cap;
   if (entry.stamps.length >= cap) {
     const oldest = entry.stamps[0];
     const retryAfterMs = Math.max(1, oldest + WINDOW_MS - now);
@@ -85,7 +87,7 @@ export function getKeyRpmSnapshot(keyFingerprint: string, now: number = Date.now
   const entry = keyState.get(keyFingerprint);
   if (!entry) return { used: 0, cap: 0 };
   pruneWindow(entry.stamps, now);
-  return { used: entry.stamps.length, cap: 0 };
+  return { used: entry.stamps.length, cap: entry.cap };
 }
 
 export function __resetKeyRpmForTests(): void {

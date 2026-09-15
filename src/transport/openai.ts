@@ -140,6 +140,9 @@ export function isOpenAIChatCompletionMeaningful(json: unknown): boolean {
     const reasoning = message.reasoning ?? message.reasoning_content;
     if (typeof reasoning === 'string' && reasoning.trim().length > 0) return true;
     if (Array.isArray(message.tool_calls) && message.tool_calls.some(isMeaningfulToolCall)) return true;
+    // Legitimate refusal: the model declined to answer. This is valid output,
+    // not an empty response — do not rotate away from it.
+    if (typeof message.refusal === 'string' && message.refusal.trim().length > 0) return true;
   }
   return false;
 }
@@ -151,9 +154,13 @@ export function isOpenAIResponsesObjectMeaningful(json: unknown): boolean {
       (typeof item.name === 'string' && item.name.trim().length > 0)
       || (typeof item.arguments === 'string' && item.arguments.trim().length > 0)
     )) return true;
+    // Legitimate refusal: the model declined to answer. Valid output, not empty.
+    if (item?.type === 'refusal' && typeof item.refusal === 'string' && item.refusal.trim().length > 0) return true;
     for (const part of [...(item?.content ?? []), ...(item?.summary ?? [])]) {
       const text = part?.text ?? part?.content;
       if (typeof text === 'string' && text.trim().length > 0) return true;
+      // Refusal content part within a message output item.
+      if (part?.type === 'refusal' && typeof part.refusal === 'string' && part.refusal.trim().length > 0) return true;
     }
   }
   return false;

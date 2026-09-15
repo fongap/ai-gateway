@@ -31,7 +31,6 @@ export async function collectAnthropicMessageObject(upstream: Response, clientSi
   if (!upstream.body) throw new Error('Upstream response has no body.');
   const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
-  const encoder = new TextEncoder(); // UTF-8 byte accounting only
   let receivedBytes = 0;
   let stopMessageStop = false;
   // Assigned from the SSE scanner closure; `| undefined` (no initializer)
@@ -46,10 +45,6 @@ export async function collectAnthropicMessageObject(upstream: Response, clientSi
   const fail = async (message: string): Promise<never> => {
     await reader.cancel().catch(() => {});
     throw new Error(message);
-  };
-
-  const countBytes = (value: string) => {
-    if (value) receivedBytes += encoder.encode(value).length;
   };
 
   const scanner = createSseScanner((data) => {
@@ -85,10 +80,10 @@ export async function collectAnthropicMessageObject(upstream: Response, clientSi
         const state = blockState.get(index);
         if (!state) break;
         const delta = json.delta || {};
-        if (delta.type === 'text_delta') { state.text = (state.text || '') + (delta.text || ''); countBytes(delta.text); }
-        else if (delta.type === 'thinking_delta') { state.thinking = (state.thinking || '') + (delta.thinking || ''); countBytes(delta.thinking); }
+        if (delta.type === 'text_delta') { state.text = (state.text || '') + (delta.text || ''); }
+        else if (delta.type === 'thinking_delta') { state.thinking = (state.thinking || '') + (delta.thinking || ''); }
         else if (delta.type === 'signature_delta') { state.signature = (state.signature || '') + (delta.signature || ''); }
-        else if (delta.type === 'input_json_delta') { state.partialJson = (state.partialJson || '') + (delta.partial_json || ''); countBytes(delta.partial_json); }
+        else if (delta.type === 'input_json_delta') { state.partialJson = (state.partialJson || '') + (delta.partial_json || ''); }
         break;
       }
       case 'content_block_stop': {
@@ -131,6 +126,14 @@ export async function collectAnthropicMessageObject(upstream: Response, clientSi
       scanner.push(decoder.decode(value, { stream: true }));
       if (receivedBytes > MAX_COLLECTED_BYTES) {
         await fail('Assembled response exceeded gateway memory safety limit. Use stream:true.');
+      }
+      // Semantic EOF: message_stop observed — the protocol stream is logically
+      // finished. Cancel the reader instead of waiting for HTTP EOF so a
+      // provider that leaves the connection open doesn't stall the failover
+      // budget.
+      if (stopMessageStop) {
+        await reader.cancel().catch(() => {});
+        break;
       }
     }
     scanner.flush();

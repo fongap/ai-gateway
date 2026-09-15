@@ -24,7 +24,6 @@ import { classifyStreamInterrupted } from '../../reliability/classify.ts';
 import { writeTier1Affinity } from '../../scheduler/tier1-affinity.ts';
 import {
   recordStreamStart, recordStreamCompleted, recordStreamInterrupted,
-  gatewayStats,
 } from '../../observability/gateway-stats.ts';
 import { recordTokenUsage } from '../../observability/token-usage.ts';
 import { persistTokenUsage } from '../../observability/token-usage-store.ts';
@@ -51,8 +50,9 @@ export function recordTier1NonStreamTtft(c: AttemptContext, node: RuntimeNode, d
 //      and never change the HTTP response, fallback, node health, circuit
 //      breaker, scheduler, concurrency count or stream completion.
 export function recordTokens(c: AttemptContext, node: RuntimeNode, usage: unknown): void {
-  recordTokenUsage({ model: c.requestedModel, tier: node.tier, provider: node.provider, nodeId: node.id, usage });
-  scheduleD1TokenPersist(c, usage);
+  const effectiveModel = upstreamModelOf(node, c.requestedModel);
+  recordTokenUsage({ model: effectiveModel, tier: node.tier, provider: node.provider, nodeId: node.id, usage });
+  scheduleD1TokenPersist(c, usage, effectiveModel);
 }
 
 // Fire the D1 persistence WITHOUT touching the request path. Wrapped so that:
@@ -64,8 +64,9 @@ export function recordTokens(c: AttemptContext, node: RuntimeNode, usage: unknow
 //
 // TTFT is passed only for successful requests with meaningful output.
 // Failures MUST NOT pass a TTFT value — they enter failure statistics only.
-function scheduleD1TokenPersist(c: AttemptContext, usage: unknown): void {
-  const task = persistTokenUsage(c.env, usage, Date.now(), c.requestedModel, c.ttftMs ?? null).catch((err) => {
+function scheduleD1TokenPersist(c: AttemptContext, usage: unknown, effectiveModel?: string): void {
+  const modelForPersist = effectiveModel ?? c.requestedModel;
+  const task = persistTokenUsage(c.env, usage, Date.now(), modelForPersist, c.ttftMs ?? null).catch((err) => {
     const scope = err?.scope === 'per-model' ? 'per-model' : 'global';
     try { c.logger?.error?.(`token-stats D1 ${scope} persist failed: ${err?.message || err}`); } catch { /* never throw */ }
   });
@@ -116,8 +117,6 @@ export function recordNodeSuccess(c: AttemptContext, node: RuntimeNode, latencyM
     return {
       onSuccess: () => {
         recordNodeSuccess(c, node, latencyMs);
-        gatewayStats.activeRequests = Math.max(0, gatewayStats.activeRequests - 1);
-        gatewayStats.successes++;
       },
       // Field evidence (NVIDIA-hosted stalls mid-generation): 2s let a stalling
       // node straight back into rotation. 60s matches the rate-limit cooldown —
@@ -131,18 +130,13 @@ export function recordNodeSuccess(c: AttemptContext, node: RuntimeNode, latencyM
           const c = classifyStreamInterrupted();
           recordFailure(node.id, { counted: c.counted, cooldownMs: c.cooldownMs, reason: c.kind });
         }
-        gatewayStats.activeRequests = Math.max(0, gatewayStats.activeRequests - 1);
-        gatewayStats.failures++;
       },
       onNeutral: () => {
         if (tier1) releaseTier1Slot(node.id, c.tier1ReleaseToken);
         else recordNeutralEnd(node.id);
-        gatewayStats.activeRequests = Math.max(0, gatewayStats.activeRequests - 1);
-        gatewayStats.cancellations++;
       },
       onStreamStart: () => {
         recordStreamStart();
-        gatewayStats.activeRequests++;
       },
       onStreamEnd: (outcome: string, d: { reason: string | null, durationMs: number, chunkCount: number, receivedBytes: number, completionMarkerSeen: boolean }) => {
         if (outcome === 'completed') { recordStreamCompleted(); return; }
