@@ -9,6 +9,10 @@
 // tier, or the whole gateway for one node's 429/401.
 
 import { parseRetryAfterMs, getLimits } from '../config/timeouts.ts';
+import {
+  UPSTREAM_PROCESSING_ERROR,
+  upstreamProcessingErrorCode,
+} from '../transport/processing-error.ts';
 
 // `KIND` is the single source of truth for every failure-kind
 // string that appears on the request hot path (LoopState.failureKinds,
@@ -26,8 +30,9 @@ export const KIND = {
   // Waiting for HTTP response headers timed out: no HTTP status was ever
   // received (status=0 in attempt records).
   HEADERS_TIMEOUT: 'headers_timeout',
-  // HTTP 200 headers were received but no valid SSE event arrived in time
-  // (status=200 in attempt records; the wait after headers is the TTFT wait).
+  // HTTP 200 headers were received but no complete meaningful result arrived
+  // before the attempt deadline. Streaming first-output waits and pre-commit
+  // response assembly both use this kind when the absolute attempt clock wins.
   FIRST_EVENT_TIMEOUT: 'first_event_timeout',
   CLIENT_ABORT: 'client_abort',
   // --- pre-dispatch and intra-request kinds ---------------
@@ -37,12 +42,12 @@ export const KIND = {
   // A structurally broken node config (e.g. an unparseable base_url): the
   // request never reached an upstream, so it must NOT consume any budget.
   INVALID_BASE_URL: 'invalid_base_url',
-  // A streaming response was interrupted mid-generation (TTL expiry, peer
-  // close, missing completion marker). Counted=true so the circuit breaker
-  // sees it; Tier 1 gets a 60s cooldown via applyHealthPenalty.
+  // A streaming response was interrupted/truncated. Before the client commit
+  // boundary this can still rotate transparently; after commit it is recorded
+  // by the stream tracker. The reliability meaning is the same upstream fault.
   STREAM_INTERRUPTED: 'stream_interrupted',
-  // HTTP 200 with a body that violates the expected JSON protocol. This is
-  // an upstream/proxy failure, not a client-success neutral.
+  // HTTP 200 with a body that violates the expected JSON/protocol shape. This
+  // is an upstream/proxy failure, not a client-success neutral.
   NON_JSON_BODY: 'upstream_200_non_json_body',
   // HTTP 200 with a well-formed body that carries no meaningful model output
   // (e.g. `{}`, `{choices:[]}`, a role-only chat completion). Structurally
@@ -153,6 +158,29 @@ export function classifyNetworkError(kindHeadersTimeout: boolean): FailureClassi
 
 export function classifyFirstEventFailure(): FailureClassification {
   return { kind: KIND.FIRST_EVENT_TIMEOUT, action: 'rotate', cooldownMs: 0, counted: true };
+}
+
+// Classify a failure that happened AFTER HTTP headers arrived but BEFORE a
+// complete response was committed to the client. Parsers/assemblers expose a
+// typed transport reason; this function is the single reliability mapping.
+// No error-message string matching is used.
+export function classifyPostHeadersFailure(error: unknown): FailureClassification {
+  const code = upstreamProcessingErrorCode(error);
+  if (code === UPSTREAM_PROCESSING_ERROR.DEADLINE) return classifyFirstEventFailure();
+  if (code === UPSTREAM_PROCESSING_ERROR.MALFORMED || code === UPSTREAM_PROCESSING_ERROR.TOO_LARGE) {
+    return classifyNonJsonBody();
+  }
+  if (code === UPSTREAM_PROCESSING_ERROR.TRUNCATED) return classifyStreamInterrupted();
+  if (code === UPSTREAM_PROCESSING_ERROR.EMPTY) return classifyEmptyResponse();
+  if (code === UPSTREAM_PROCESSING_ERROR.TERMINAL) {
+    return { kind: KIND.SERVER, action: 'rotate', cooldownMs: 0, counted: true };
+  }
+  // Plain JSON.parse failures are still structural upstream-body failures even
+  // when they came from a non-stream 200 response rather than an assembler.
+  if (error instanceof SyntaxError) return classifyNonJsonBody();
+  // Preserve the previous retryable behavior for genuinely unknown post-header
+  // exceptions while typed coverage expands; do not invent another taxonomy.
+  return classifyFirstEventFailure();
 }
 
 export function classifyClientAbort(): FailureClassification {
