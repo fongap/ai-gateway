@@ -9,6 +9,8 @@
 import assert from 'node:assert/strict';
 import worker from '../src/index.ts';
 import { buildResponsesError } from '../src/protocol/responses/index.ts';
+import { terminalStatus } from '../src/request/errors.ts';
+import { KIND } from '../src/reliability/classify.ts';
 import { __resetAllStateForTests } from '../src/reliability/node-state.ts';
 import { __resetTier1StateForTests } from '../src/reliability/tier1-state.ts';
 import { __resetTier1AffinityForTests } from '../src/scheduler/tier1-affinity.ts';
@@ -67,6 +69,18 @@ function json(data, status = 200, headers = {}) {
   });
 }
 
+// Terminal status aggregation is order-independent and groups equivalent
+// failure kinds before comparison. Ties are deterministic: 504 > 502 > 429.
+assert.equal(terminalStatus({ [KIND.RATE_LIMIT]: 1, [KIND.HEADERS_TIMEOUT]: 1 }), 504);
+assert.equal(terminalStatus({ [KIND.HEADERS_TIMEOUT]: 1, [KIND.RATE_LIMIT]: 1 }), 504);
+assert.equal(terminalStatus({ [KIND.RATE_LIMIT]: 1, [KIND.SERVER]: 1 }), 502);
+assert.equal(terminalStatus({ [KIND.SERVER]: 1, [KIND.RATE_LIMIT]: 1 }), 502);
+assert.equal(terminalStatus({ [KIND.RATE_LIMIT]: 1, [KIND.RATE_LIMIT_GLOBAL]: 1, [KIND.SERVER]: 1 }), 429,
+  'rate-limit kinds must aggregate into one client-visible 429 bucket');
+assert.equal(terminalStatus({ [KIND.HEADERS_TIMEOUT]: 1, [KIND.FIRST_EVENT_TIMEOUT]: 1, [KIND.SERVER]: 1 }), 504,
+  'timeout kinds must aggregate into one client-visible 504 bucket');
+assert.equal(terminalStatus({}), null);
+
 // Envelope compatibility is deliberately strict: the gateway must not mutate
 // the body contract just to improve diagnostics.
 assert.equal(buildResponsesError('x', 'api_error').error.code, null);
@@ -106,8 +120,6 @@ assert.equal(dead.headers.get('x-gateway-node'), null);
 assert.equal(dead.headers.get('x-gateway-provider'), null);
 
 // Upstream client errors are not reclassified as gateway routing failures.
-// Counts remain available for diagnosis while both body code and gateway-code
-// header stay absent/null.
 reset();
 routeHandlers['badreq.example.com'] = () => json({ error: { message: 'bad input' } }, 400);
 const badReq = await worker.fetch(request(), envFor('badreq'), {});
