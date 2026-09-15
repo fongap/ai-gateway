@@ -11,7 +11,15 @@
 import { attemptFirstEventTimeoutMs } from '../../config/timeouts.ts';
 import { markProbeFailure, recordTtft, recordNeutralEnd, bumpNodeCounters } from '../../reliability/node-state.ts';
 import { recordTier1Ttft, releaseTier1Slot } from '../../reliability/tier1-state.ts';
-import { classifyUpstreamStatus, classifyFirstEventFailure, classifyClientAbort, classifyHedgeRaceLoss, classifyNonJsonBody, classifyEmptyResponse } from '../../reliability/classify.ts';
+import {
+  classifyUpstreamStatus,
+  classifyFirstEventFailure,
+  classifyPostHeadersFailure,
+  classifyClientAbort,
+  classifyHedgeRaceLoss,
+  classifyNonJsonBody,
+  classifyEmptyResponse,
+} from '../../reliability/classify.ts';
 import {
   corsHeaders,
   safeReadErrorBody, trimDiagnostic,
@@ -42,7 +50,7 @@ import { createOpenAIChatStreamFromAnthropic } from '../../conversion/anthropic-
 import {
   recordTokens, recordNodeSuccess, makeNodeStreamTrack, recordTier1NonStreamTtft,
 } from './observability.ts';
-import { recordOutcome, rotateWithNeutralEnd } from './outcome.ts';
+import { recordOutcome } from './outcome.ts';
 import type { AttemptContext, AttemptOutcome } from '../../types/request.ts';
 
 // Anthropic-native first-event guard predicate: only text / thinking /
@@ -87,8 +95,9 @@ export async function handleSuccess(s: {
     try {
       const remainingRequestBudgetMs = (c.failoverBudgetMs ?? limits.failoverBudgetMs) - (Date.now() - (c.requestStartMs || (s.attemptStartMs as number) || Date.now()));
       const remainingAttemptBudgetMs = (c.attemptDeadlineMs ?? Date.now()) - Date.now();
-      // Policy-level first_event_timeout_ms overrides the global env default
-      // for this model (e.g. long-reasoning needs 120s for chain-of-thought).
+      // Policy-level first_event_timeout_ms can override the global env default
+      // for models that intentionally need a longer first-output window. The
+      // request-wide and attempt-wide clocks still remain hard upper bounds.
       const effectiveFirstEventTimeoutMs = policy?.firstEventTimeoutMs ?? limits.firstEventTimeoutMs;
       const firstEventTimeout = attemptFirstEventTimeoutMs(
         effectiveFirstEventTimeoutMs,
@@ -102,15 +111,15 @@ export async function handleSuccess(s: {
       //   openai chat -> meaningful text/reasoning/tool delta in EVERY tier;
       //     role-only or empty deltas do not close the boundary. Tier 1 still
       //     remains the only tier that learns passive TTFT in tier1-state.
-const isRealOutput = c.conversionContext
-    ? (c.conversionContext.fallbackProtocol === 'anthropic'
-        ? isAnthropicNativeRealOutputForConversion
-        : isOpenAIChatRealOutputForConversion)
-    : surface === 'messages'
-      ? isAnthropicNativeRealOutput
-      : surface === 'responses' ? isResponsesRealOutput
-      : surface === 'chat_completions' ? isOpenAIChatRealOutput
-      : undefined;
+      const isRealOutput = c.conversionContext
+        ? (c.conversionContext.fallbackProtocol === 'anthropic'
+            ? isAnthropicNativeRealOutputForConversion
+            : isOpenAIChatRealOutputForConversion)
+        : surface === 'messages'
+          ? isAnthropicNativeRealOutput
+          : surface === 'responses' ? isResponsesRealOutput
+          : surface === 'chat_completions' ? isOpenAIChatRealOutput
+          : undefined;
       guarded = await ensureFirstSseEvent(upstream, firstEventTimeout, request.signal, isRealOutput);
     } catch (e) {
       detach();
@@ -143,8 +152,6 @@ const isRealOutput = c.conversionContext
         return { rotate: true, hedgedAway: true, kind: classifyHedgeRaceLoss().kind };
       }
       const classification = classifyFirstEventFailure();
-      // Latest main invalidates stale Tier 2/3 TTFT after a real first-event
-      // failure. Tier 1 has a separate passive metric and never writes here.
       if (node.tier !== 'tier-1') markProbeFailure(node.id, state.requestedModel);
       recordOutcome(state, node, classification, c, {
         latencyMs: Date.now() - (c.attemptStartMs as number),
@@ -155,34 +162,17 @@ const isRealOutput = c.conversionContext
       return { rotate: true, kind: classification.kind };
     }
     detach();
-    // TTFT: dispatch start -> first committed meaningful stream event. For
-    // Tier 1 this is the ONLY performance signal (passive, real-request), so
-    // it is recorded against the (account, model) pair in tier1-state; a
-    // failed request that produced no meaningful output never reaches here
-    // (it rotates through the failure pipeline instead). Tier 2/3 keep the
-    // node-level EWMA in node-state for their existing latency preference.
     c.ttftMs = Date.now() - (c.attemptStartMs as number);
-    if (node.tier === 'tier-1') {
-      recordTier1Ttft(node.id, state.requestedModel, c.ttftMs);
-    } else {
-      recordTtft(node.id, c.ttftMs, state.requestedModel);
-    }
+    if (node.tier === 'tier-1') recordTier1Ttft(node.id, state.requestedModel, c.ttftMs);
+    else recordTtft(node.id, c.ttftMs, state.requestedModel);
     const hiddenStreamFailure = () => guardedStreamFailureReason(guarded);
-
     const headers = finalHeaders(env, request, guarded.headers, extraHeaders);
 
     if (route === 'openai_chat' && !c.conversionContext) {
       const tracked = trackStreamResponse(new Response(guarded.body, { status: 200, headers }), {
         idleTimeoutMs: limits.streamIdleTimeoutMs,
         completionMarker: /data:\s*\[DONE\]\s*(?:\r?\n|$)/,
-        // Model rewrite happens INSIDE the tracked stream; wrapping yet another
-        // pull-based stream layer here stalls final chunks (see track.js).
         ...(needsModelRewrite ? { rewriteModel: requestedModel } : {}),
-        // Chat passthrough never parses chunks for protocol purposes, so this
-        // is the one streaming path whose usage is captured by track.js's
-        // passive scan. Transformed routes below report usage from the
-        // transform's parse point instead (onUsage NOT passed here), keeping
-        // exactly one capture per stream.
         onUsage: (u: unknown) => recordTokens(c, node, u),
         interruptionChunk: (reason: string | null) => streamInterruptionChunk(route, requestId, reason),
         upstreamFailureReason: hiddenStreamFailure,
@@ -191,13 +181,6 @@ const isRealOutput = c.conversionContext
       return { response: tracked };
     }
 
-    // Cross-protocol fallback (streaming, reverse direction): the client is
-    // OpenAI Chat, the upstream is Anthropic Messages. The first-event guard
-    // already committed on a real Anthropic output event (isAnthropicNativeRealOutput).
-    // Convert the Anthropic SSE stream to OpenAI Chat SSE through the stream
-    // converter, then track it with OpenAI Chat completion markers. The
-    // stream converter emits [DONE] when upstream reaches message_stop, so
-    // the existing [DONE] completion marker is the right boundary.
     if (route === 'openai_chat' && c.conversionContext) {
       const openAiStream = createOpenAIChatStreamFromAnthropic(guarded.body, {
         messageId: `chatcmpl-${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`,
@@ -209,9 +192,6 @@ const isRealOutput = c.conversionContext
           idleTimeoutMs: limits.streamIdleTimeoutMs,
           completionMarker: /data:\s*\[DONE\]\s*(?:\r?\n|$)/,
           ...(needsModelRewrite ? { rewriteModel: requestedModel } : {}),
-          // The stream converter emits usage in OpenAI Chat format
-          // (prompt_tokens / completion_tokens / total_tokens), so the
-          // passive scan can capture it directly.
           onUsage: (u: unknown) => recordTokens(c, node, u),
           interruptionChunk: (reason: string | null) => streamInterruptionChunk(route, requestId, reason),
           upstreamFailureReason: hiddenStreamFailure,
@@ -222,16 +202,11 @@ const isRealOutput = c.conversionContext
     }
 
     if (route === 'openai_responses' && !c.conversionContext) {
-      // NATIVE passthrough: the upstream streamed a Responses event sequence;
-      // it is relayed as-is (model field rewritten inside the tracked stream).
-      // No Chat Completions conversion is involved anywhere.
       const tracked = trackStreamResponse(new Response(guarded.body, { status: 200, headers }), {
         idleTimeoutMs: limits.streamIdleTimeoutMs,
         completionMarker: /event:\s*response\.(?:completed|incomplete)\b/,
         failureMarker: /event:\s*response\.failed\b/,
         ...(needsModelRewrite ? { rewriteModel: requestedModel, rewriteModelAt: 'response.model' } : {}),
-        // Native Responses SSE carries usage inside the response.completed
-        // payload; the tracked stream's passive scan reports it (onUsage).
         onUsage: (u: unknown) => recordTokens(c, node, u),
         interruptionChunk: (reason: string | null, details?: { nextSequenceNumber?: number }) => streamInterruptionChunk(route, requestId, reason, details),
         upstreamFailureReason: hiddenStreamFailure,
@@ -240,13 +215,6 @@ const isRealOutput = c.conversionContext
       return { response: tracked };
     }
 
-    // Cross-protocol fallback (streaming): the upstream is OpenAI Chat SSE but
-    // the client is Anthropic. The first-event guard already committed on a
-    // real OpenAI output event (isOpenAIChatRealOutput). Convert the OpenAI
-    // SSE stream to Anthropic SSE through the stream converter, then track it
-    // with Anthropic completion markers. The stream converter already emits
-    // usage in Anthropic format (input_tokens/output_tokens), so the usage
-    // scan reports it as-is.
     if (route === 'anthropic_messages' && c.conversionContext) {
       const inputTokens = estimateAnthropicInputTokens(bodyJson);
       const messageId = `msg_${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`;
@@ -263,8 +231,6 @@ const isRealOutput = c.conversionContext
           idleTimeoutMs: limits.streamIdleTimeoutMs,
           completionMarker: /event:\s*message_stop\b/,
           onUsage: () => {
-            // Use the TRUE upstream (OpenAI) usage for observability.
-            // The stream converter already emitted client-facing Anthropic usage.
             if (upstreamUsage !== null) recordTokens(c, node, upstreamUsage);
           },
           interruptionChunk: (reason: string | null) => streamInterruptionChunk(route, requestId, reason),
@@ -275,14 +241,8 @@ const isRealOutput = c.conversionContext
       return { response: new Response(tracked.body, { status: 200, headers }) };
     }
 
-    // anthropic_messages: NATIVE passthrough. The upstream streamed the
-    // Anthropic event lifecycle (message_start ... message_stop); relay it
-    // as-is, tracked so an interrupted passthrough records against the node
-    // exactly once. No OpenAI conversion is involved anywhere.
     const tracked = trackStreamResponse(new Response(guarded.body, { status: 200, headers }), {
       idleTimeoutMs: limits.streamIdleTimeoutMs,
-      // A stream that never reaches message_stop (truncated / errored mid-way)
-      // must NOT be recorded as a node success.
       completionMarker: /event:\s*message_stop\b/,
       ...(needsModelRewrite ? { rewriteModel: requestedModel, rewriteModelAt: 'message.model' } : {}),
       onUsage: (u: unknown) => recordTokens(c, node, u),
@@ -298,14 +258,8 @@ const isRealOutput = c.conversionContext
   if (route === 'openai_responses' && !c.conversionContext) {
     try {
       let data: (Record<string, unknown> & { error?: { status?: unknown, message?: string } }) | null;
-      if (upstreamWasStreaming) {
-        // Defensive: the native upstream streamed although the client asked
-        // for JSON. Assemble the terminal response object — nothing has
-        // reached the client, so failures here still rotate.
-        data = await collectResponsesObject(upstream, request.signal, c.attemptDeadlineMs);
-      } else {
-        data = JSON.parse(await safeReadErrorBody(upstream, 2 * 1024 * 1024, c.attemptDeadlineMs));
-      }
+      if (upstreamWasStreaming) data = await collectResponsesObject(upstream, request.signal, c.attemptDeadlineMs);
+      else data = JSON.parse(await safeReadErrorBody(upstream, 2 * 1024 * 1024, c.attemptDeadlineMs));
       if (data && typeof data === 'object' && data.error) {
         const status = Number(data.error?.status) >= 400 && Number(data.error?.status) < 600
           ? Math.trunc(Number(data.error?.status))
@@ -318,23 +272,17 @@ const isRealOutput = c.conversionContext
         return { rotate: true, kind: classification.kind };
       }
       if (!isOpenAIResponsesObjectMeaningful(data)) {
-        // 200 but no meaningful output: rotate instead of counting a success
-        // and relaying an empty object to the client.
         const classification = classifyEmptyResponse();
         recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: 'Responses object carried no meaningful output' });
         return { rotate: true, kind: classification.kind };
       }
       recordTier1NonStreamTtft(c, node, data, isOpenAIResponsesObjectMeaningful);
-      // Single usage capture point for BOTH delivered forms below (plain JSON
-      // and the synthesized Responses SSE).
       recordTokens(c, node, data?.usage);
       if (!clientWantsStream) {
         recordNodeSuccess(c, node, latencyMs);
         if (data && typeof data === 'object') data.model = requestedModel;
         return { response: jsonResponse(200, data, env, request, extraHeaders) };
       }
-      // Stream requested but upstream returned a full object: synthesize a
-      // well-formed Responses SSE stream in one body.
       recordNodeSuccess(c, node, latencyMs);
       return { response: synthesizeResponsesFromObject(data, requestedModel, { ...extraHeaders, ...corsHeaders(request, env) }) };
     } catch (error) {
@@ -343,32 +291,18 @@ const isRealOutput = c.conversionContext
         recordOutcome(state, node, classifyClientAbort(), c, { latencyMs: elapsedSinceStart(), status: upstream.status });
         return { response: gatewayError(request, env, route, 499, 'Client closed the request during assembly.', requestId) };
       }
-      const classification = classifyFirstEventFailure();
+      const classification = classifyPostHeadersFailure(error);
       recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: errorMessage });
       return { rotate: true, kind: classification.kind };
     }
   }
 
   // ---- OpenAI chat (non-stream, CROSS-PROTOCOL FALLBACK) ----
-  // The client is OpenAI Chat; the upstream is Anthropic Messages (fallback
-  // pass only — native OpenAI Chat is handled in the branch below). The
-  // conversion at the request boundary already turned the OpenAI Chat body
-  // into an Anthropic Messages body, so the upstream answered with a
-  // standard Anthropic /v1/messages response. We must convert it back to
-  // OpenAI Chat shape here so the client sees a familiar envelope, and any
-  // upstream error must surface as an OpenAI Chat error (R0.4).
   if (route === 'openai_chat' && c.conversionContext) {
     try {
       let data: (Record<string, unknown> & { error?: { status?: unknown, message?: string } }) | null;
-      if (upstreamWasStreaming) {
-        // Anthropic fallback upstream streamed although the client asked for
-        // JSON. Assemble the full Anthropic message object, then convert to
-        // the OpenAI Chat shape and deliver.
-        data = await collectAnthropicMessageObject(upstream, request.signal, c.attemptDeadlineMs);
-      } else {
-        const text = await safeReadErrorBody(upstream, 2 * 1024 * 1024, c.attemptDeadlineMs);
-        data = JSON.parse(text);
-      }
+      if (upstreamWasStreaming) data = await collectAnthropicMessageObject(upstream, request.signal, c.attemptDeadlineMs);
+      else data = JSON.parse(await safeReadErrorBody(upstream, 2 * 1024 * 1024, c.attemptDeadlineMs));
       if (data && typeof data === 'object' && (data.type === 'error' || data.error)) {
         const status = Number(data.error?.status) >= 400 && Number(data.error?.status) < 600
           ? Math.trunc(Number(data.error?.status))
@@ -377,17 +311,10 @@ const isRealOutput = c.conversionContext
         const classification = classifyUpstreamStatus(status, upstream.headers, env, undefined, message);
         recordOutcome(state, node, classification, c, { latencyMs, status, diagnostic: trimDiagnostic(message, 200) });
         if (classification.action === 'stop') {
-          // R0.4: the client is OpenAI Chat; buildClientErrorResponse uses
-          // the client route to pick the envelope shape. The Anthropic error
-          // body never reaches the client.
           return { response: buildClientErrorResponse(request, env, route, requestId, requestedModel, status, JSON.stringify(data), state, exposeUpstreamInfo) };
         }
         return { rotate: true, kind: classification.kind };
       }
-      // Valid response gate: HTTP 200 + no embedded error does NOT mean
-      // success. The Anthropic response must carry meaningful output before
-      // converting and crediting the node. Empty content [] or refusal-only
-      // without text/tool_use must rotate.
       if (!isAnthropicMessageMeaningful(data)) {
         const classification = classifyEmptyResponse();
         recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: 'cross-protocol Anthropic message carried no meaningful output' });
@@ -396,11 +323,8 @@ const isRealOutput = c.conversionContext
       const converted = convertAnthropicResponseToOpenAIChat(data);
       converted.model = requestedModel;
       recordNodeSuccess(c, node, latencyMs);
-      // Usage from the converted body is already in OpenAI Chat shape.
       recordTokens(c, node, converted?.usage);
-      if (clientWantsStream) {
-        return { response: synthesizeSseFromCompletion(converted, env, request, extraHeaders) };
-      }
+      if (clientWantsStream) return { response: synthesizeSseFromCompletion(converted, env, request, extraHeaders) };
       return { response: jsonResponse(200, converted, env, request, extraHeaders) };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -408,7 +332,7 @@ const isRealOutput = c.conversionContext
         recordOutcome(state, node, classifyClientAbort(), c, { latencyMs: elapsedSinceStart(), status: upstream.status });
         return { response: gatewayError(request, env, route, 499, 'Client closed the request during assembly.', requestId) };
       }
-      const classification = classifyFirstEventFailure();
+      const classification = classifyPostHeadersFailure(error);
       recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: errorMessage });
       return { rotate: true, kind: classification.kind };
     }
@@ -417,7 +341,6 @@ const isRealOutput = c.conversionContext
   // ---- OpenAI chat (non-stream, NATIVE) ----
   if (route === 'openai_chat' && !c.conversionContext) {
     if (fakeStream || (upstreamWasStreaming && !clientWantsStream)) {
-      // Assemble the full object; nothing reached the client yet, so failures rotate.
       try {
         const data = await collectOpenAIStreamObject(upstream, request.signal, c.attemptDeadlineMs);
         if (!isOpenAIChatCompletionMeaningful(data)) {
@@ -427,10 +350,6 @@ const isRealOutput = c.conversionContext
         }
         recordTier1NonStreamTtft(c, node, data, isOpenAIChatCompletionMeaningful);
         recordNodeSuccess(c, node, latencyMs);
-        // Assembled-from-stream usage (fake-stream protection and the
-        // upstream-stream / client-non-stream case): the collect helper
-        // already carries the final usage chunk — record it here, exactly
-        // once, instead of inside the passthrough scan.
         recordTokens(c, node, data?.usage);
         data.model = requestedModel;
         return { response: jsonResponse(200, data, env, request, extraHeaders) };
@@ -440,7 +359,7 @@ const isRealOutput = c.conversionContext
           recordOutcome(state, node, classifyClientAbort(), c, { latencyMs: elapsedSinceStart(), status: upstream.status });
           return { response: gatewayError(request, env, route, 499, 'Client closed the request during assembly.', requestId) };
         }
-        const classification = classifyFirstEventFailure();
+        const classification = classifyPostHeadersFailure(error);
         recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: errorMessage });
         return { rotate: true, kind: classification.kind };
       }
@@ -450,13 +369,8 @@ const isRealOutput = c.conversionContext
         new Response(upstream.body, { status: 200, headers: finalHeaders(env, request, upstream.headers, extraHeaders) }),
         {
           idleTimeoutMs: limits.streamIdleTimeoutMs,
-          // A passthrough stream that closes without [DONE] is a truncation:
-          // deliver what arrived, but account the node failure.
           completionMarker: /data:\s*\[DONE\]\s*(?:\r?\n|$)/,
           ...(needsModelRewrite ? { rewriteModel: requestedModel } : {}),
-          // Defensive consistency with the streaming passthrough above (this
-          // branch is mutually exclusive with the assemble path below, so the
-          // scan can never double-count against a recordTokens call).
           onUsage: (u: unknown) => recordTokens(c, node, u),
           interruptionChunk: (reason: string | null) => streamInterruptionChunk(route, requestId, reason),
           ...makeNodeStreamTrack(c, node, latencyMs),
@@ -464,10 +378,6 @@ const isRealOutput = c.conversionContext
       );
       return { response: tracked };
     }
-    // Upstream answered 200 but NOT with SSE. Some free providers return
-    // JSON bodies (sometimes with an embedded error object) even for
-    // stream:true requests. Handle explicitly instead of feeding the client
-    // a body it cannot parse as a stream.
     const text = await safeReadErrorBody(upstream, 2 * 1024 * 1024, c.attemptDeadlineMs);
     let data: (Record<string, unknown> & { error?: { status?: unknown, message?: string } }) | null;
     try {
@@ -478,8 +388,6 @@ const isRealOutput = c.conversionContext
       return { rotate: true, kind: classification.kind };
     }
     if (data && typeof data === 'object' && data.error) {
-      // Provider returned 200 with an embedded error: treat as a real failure
-      // so the request rotates to a healthy node instead of relaying garbage.
       const status = Number(data.error?.status) >= 400 && Number(data.error?.status) < 600
         ? Math.trunc(Number(data.error?.status))
         : 502;
@@ -491,24 +399,17 @@ const isRealOutput = c.conversionContext
       return { rotate: true, kind: classification.kind };
     }
     if (!isOpenAIChatCompletionMeaningful(data)) {
-      // 200 chat completion with no meaningful output (empty choices, empty
-      // content): rotate instead of crediting the node and relaying an empty
-      // object to the client.
       const classification = classifyEmptyResponse();
       recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: 'chat completion carried no meaningful output' });
       return { rotate: true, kind: classification.kind };
     }
     recordTier1NonStreamTtft(c, node, data, isOpenAIChatCompletionMeaningful);
-    // Single usage capture point for BOTH delivered forms below (plain JSON
-    // and the synthesized chat SSE) — nothing else parses this body.
     recordTokens(c, node, data?.usage);
     if (!clientWantsStream) {
       recordNodeSuccess(c, node, latencyMs);
       if (data && typeof data === 'object') data.model = requestedModel;
       return { response: jsonResponse(200, data, env, request, extraHeaders) };
     }
-    // Valid completion JSON for a streaming client: synthesize a proper SSE
-    // stream so SSE clients receive a well-formed event sequence.
     recordNodeSuccess(c, node, latencyMs);
     if (data && typeof data === 'object') data.model = requestedModel;
     return { response: synthesizeSseFromCompletion(data, env, request, extraHeaders) };
@@ -518,15 +419,8 @@ const isRealOutput = c.conversionContext
   if (route === 'anthropic_messages' && c.conversionContext) {
     try {
       let data: (Record<string, unknown> & { error?: { status?: unknown, message?: string } }) | null;
-      if (upstreamWasStreaming) {
-        // OpenAI fallback upstream streamed although the client asked for
-        // JSON. Assemble the full OpenAI completion object, then convert to
-        // the Anthropic message shape and deliver.
-        data = await collectOpenAIStreamObject(upstream, request.signal, c.attemptDeadlineMs);
-      } else {
-        const text = await safeReadErrorBody(upstream, 2 * 1024 * 1024, c.attemptDeadlineMs);
-        data = JSON.parse(text);
-      }
+      if (upstreamWasStreaming) data = await collectOpenAIStreamObject(upstream, request.signal, c.attemptDeadlineMs);
+      else data = JSON.parse(await safeReadErrorBody(upstream, 2 * 1024 * 1024, c.attemptDeadlineMs));
       if (data && typeof data === 'object' && data.error) {
         const status = Number(data.error?.status) >= 400 && Number(data.error?.status) < 600
           ? Math.trunc(Number(data.error?.status))
@@ -539,10 +433,6 @@ const isRealOutput = c.conversionContext
         }
         return { rotate: true, kind: classification.kind };
       }
-      // Valid response gate: HTTP 200 + no embedded error does NOT mean
-      // success. The OpenAI Chat response must carry meaningful output before
-      // converting and crediting the node. Empty choices or empty content must
-      // rotate.
       if (!isOpenAIChatCompletionMeaningful(data)) {
         const classification = classifyEmptyResponse();
         recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: 'cross-protocol OpenAI Chat completion carried no meaningful output' });
@@ -552,9 +442,7 @@ const isRealOutput = c.conversionContext
       converted.model = requestedModel;
       recordNodeSuccess(c, node, latencyMs);
       recordTokens(c, node, convertOpenAIUsageToAnthropic(data?.usage));
-      if (clientWantsStream) {
-        return { response: synthesizeAnthropicFromMessage(converted, { ...extraHeaders, ...corsHeaders(request, env) }) };
-      }
+      if (clientWantsStream) return { response: synthesizeAnthropicFromMessage(converted, { ...extraHeaders, ...corsHeaders(request, env) }) };
       return { response: jsonResponse(200, converted, env, request, extraHeaders) };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -562,7 +450,7 @@ const isRealOutput = c.conversionContext
         recordOutcome(state, node, classifyClientAbort(), c, { latencyMs: elapsedSinceStart(), status: upstream.status });
         return { response: gatewayError(request, env, route, 499, 'Client closed the request during assembly.', requestId) };
       }
-      const classification = classifyFirstEventFailure();
+      const classification = classifyPostHeadersFailure(error);
       recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: errorMessage });
       return { rotate: true, kind: classification.kind };
     }
@@ -571,20 +459,9 @@ const isRealOutput = c.conversionContext
   // ---- Anthropic messages (non-stream, NATIVE) ----
   try {
     let data: (Record<string, unknown> & { error?: { status?: unknown, message?: string } }) | null;
-    if (upstreamWasStreaming) {
-      // Defensive: the native upstream streamed although the client asked
-      // for JSON. Assemble the final message object — nothing has reached
-      // the client, so failures here still rotate.
-      data = await collectAnthropicMessageObject(upstream, request.signal, c.attemptDeadlineMs);
-    } else {
-      // Use bounded read (2 MiB, consistent with assemble.js MAX_ASSEMBLED_BYTES
-      // and the first-event guard pre-byte limit) instead of unbounded text().
-      const text = await safeReadErrorBody(upstream, 2 * 1024 * 1024, c.attemptDeadlineMs);
-      data = JSON.parse(text);
-    }
+    if (upstreamWasStreaming) data = await collectAnthropicMessageObject(upstream, request.signal, c.attemptDeadlineMs);
+    else data = JSON.parse(await safeReadErrorBody(upstream, 2 * 1024 * 1024, c.attemptDeadlineMs));
     if (data && typeof data === 'object' && (data.type === 'error' || data.error)) {
-      // Provider returned 200 with an embedded error envelope: treat as a
-      // real failure so the request rotates to a healthy node.
       const message = data.error?.message || 'Upstream returned an embedded error.';
       const classification = classifyUpstreamStatus(502, upstream.headers, env, undefined, message);
       recordOutcome(state, node, classification, c, { latencyMs, status: 502, diagnostic: trimDiagnostic(message, 200) });
@@ -594,22 +471,14 @@ const isRealOutput = c.conversionContext
       return { rotate: true, kind: classification.kind };
     }
     if (!isAnthropicMessageMeaningful(data)) {
-      // 200 Anthropic message with no meaningful output (empty/no text or
-      // tool content): rotate instead of counting a success.
       const classification = classifyEmptyResponse();
       recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: 'Anthropic message carried no meaningful output' });
       return { rotate: true, kind: classification.kind };
     }
     recordTier1NonStreamTtft(c, node, data, isAnthropicMessageMeaningful);
     recordNodeSuccess(c, node, latencyMs);
-    // Single usage capture point: this branch serves both the plain JSON body
-    // and the upstream-stream-assembled object.
     recordTokens(c, node, data?.usage);
-    if (clientWantsStream) {
-      // Stream requested but upstream returned a full message object:
-      // synthesize the well-formed Anthropic SSE lifecycle in one body.
-      return { response: synthesizeAnthropicFromMessage(data, { ...extraHeaders, ...corsHeaders(request, env) }) };
-    }
+    if (clientWantsStream) return { response: synthesizeAnthropicFromMessage(data, { ...extraHeaders, ...corsHeaders(request, env) }) };
     if (data && typeof data === 'object') data.model = requestedModel;
     return { response: jsonResponse(200, data, env, request, extraHeaders) };
   } catch (error) {
@@ -618,7 +487,7 @@ const isRealOutput = c.conversionContext
       recordOutcome(state, node, classifyClientAbort(), c, { latencyMs, status: upstream.status });
       return { response: gatewayError(request, env, route, 499, 'Client closed the request during assembly.', requestId) };
     }
-    const classification = classifyFirstEventFailure();
+    const classification = classifyPostHeadersFailure(error);
     recordOutcome(state, node, classification, c, { latencyMs, status: upstream.status, diagnostic: errorMessage });
     return { rotate: true, kind: classification.kind };
   }
