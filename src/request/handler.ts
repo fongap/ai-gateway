@@ -30,7 +30,7 @@ import {
 import { pickForTier, makeTier1Rng, computeTierCaps, countRemainingDispatchableAttempts } from './tier-loop.ts';
 import { runFallbackChain } from './fallback.ts';
 import { dispatchWithHedge } from './attempt.ts';
-import type { LoopContext, ConversionContext } from '../types/request.ts';
+import type { LoopContext, ConversionContext, RouteFeasibilityResult } from '../types/request.ts';
 import type { RoutableRequest } from '../types/scheduler.ts';
 import type { RuntimeNode } from '../types/node.ts';
 
@@ -65,6 +65,48 @@ export async function handleRequest(request: Request, env: Record<string, unknow
   );
   const familyFallback = familyModels.size > 1;
 
+  // Flatten only for request-plan accounting. Execution still follows the
+  // original bounded rounds below. The flattened order lets the wall-clock
+  // allocator see reachable sibling opportunities that live OUTSIDE the
+  // current logical-model pass, which per-tier live counts cannot observe.
+  const orderedModelPasses = modelPlan.flatMap((round, roundIndex) =>
+    round.map((pass, passIndex) => ({ roundIndex, passIndex, pass })));
+
+  const feasibilityForModel = (model: string): RouteFeasibilityResult => {
+    if (model === requestedModel) return feasibility;
+    const descriptor = { ...reqDescriptor, model };
+    return evaluateRouteFeasibility({
+      route,
+      requestedModel: model,
+      requestDescriptor: descriptor,
+      tiers,
+      knownModels,
+      env,
+    });
+  };
+
+  // Request-level wall-clock reserve for future FAMILY passes. PR #197's
+  // reserve-aware attempt allocator is intentionally request-scoped: a current
+  // model pass must not spend time that the logical attempt plan has already
+  // reserved for later compatible siblings. We reserve only statically
+  // reachable future pass slots and never exceed the request-wide maxAttempts.
+  // Current-pass live capacity is still counted dynamically in runTierLoop.
+  const futureAttemptReserveFor = (currentOrdinal: number, passAttemptCeiling: number): number => {
+    if (!familyFallback) return 0;
+    let slotsLeft = Math.max(0, requestPolicy.maxAttempts - passAttemptCeiling);
+    if (slotsLeft === 0) return 0;
+    let reserved = 0;
+    for (let i = currentOrdinal + 1; i < orderedModelPasses.length && slotsLeft > 0; i++) {
+      const futurePass = orderedModelPasses[i].pass;
+      if (!feasibilityForModel(futurePass.model).reachable) continue;
+      const cap = futurePass.attemptCap == null ? slotsLeft : futurePass.attemptCap;
+      const take = Math.min(slotsLeft, Math.max(0, cap));
+      reserved += take;
+      slotsLeft -= take;
+    }
+    return reserved;
+  };
+
   // Request-local real failure domains. A logical sibling is not fresh
   // capacity when the same configured account resolves it to the same upstream
   // model that already failed earlier in this request. Keep this separate from
@@ -88,6 +130,7 @@ export async function handleRequest(request: Request, env: Record<string, unknow
     maxDispatches: requestPolicy.maxAttempts + limits.maxHedgesPerRequest,
     requestedModel,
     nodes: config.nodes,
+    knownModels,
   };
 
   // Tier 1 session affinity is a SOFT bias, read once before the loop. A cold
@@ -102,7 +145,7 @@ export async function handleRequest(request: Request, env: Record<string, unknow
     clientWantsStream, fakeStream, bodyJson, limits, exposeUpstreamInfo, state,
     failoverBudgetMs, requestStartMs, policy: requestPolicy, tiers,
     tier1Affinity, tier1EvaluateAffinity, tier1Rng, tier1Session,
-    knownModels, feasibility,
+    knownModels, feasibility, futureAttemptReserve: 0,
   };
 
   // Model fallback is a bounded outer loop around the EXISTING scheduler. It
@@ -121,10 +164,13 @@ export async function handleRequest(request: Request, env: Record<string, unknow
   // gets at most one attempt per eligible family member and can only spend
   // request budget that earlier passes left unused.
 
+  let planOrdinal = 0;
   modelRoundsLoop:
   for (let roundIndex = 0; roundIndex < modelPlan.length; roundIndex++) {
     const round = modelPlan[roundIndex];
-    for (const pass of round) {
+    for (let passIndex = 0; passIndex < round.length; passIndex++) {
+      const pass = round[passIndex];
+      const currentOrdinal = planOrdinal++;
       if (state.logicalAttempts >= requestPolicy.maxAttempts) break modelRoundsLoop;
       const remainingBudgetMs = failoverBudgetMs - (Date.now() - requestStartMs);
       if (remainingBudgetMs <= 0) {
@@ -142,16 +188,7 @@ export async function handleRequest(request: Request, env: Record<string, unknow
         : { ...requestPolicy, maxAttempts: passAttemptCeiling };
 
       const effectiveReqDescriptor = { ...reqDescriptor, model: effectiveModel };
-      const effectiveFeasibility = roundIndex === 0 && effectiveModel === requestedModel
-        ? feasibility
-        : evaluateRouteFeasibility({
-          route,
-          requestedModel: effectiveModel,
-          requestDescriptor: effectiveReqDescriptor,
-          tiers,
-          knownModels,
-          env,
-        });
+      const effectiveFeasibility = feasibilityForModel(effectiveModel);
 
       // A family member that has no statically reachable route costs no
       // attempt and does not block later siblings. Runtime cooldown/circuit
@@ -165,10 +202,12 @@ export async function handleRequest(request: Request, env: Record<string, unknow
       // preserved in response bodies; only this request-local reliability key
       // changes between family passes.
       state.requestedModel = effectiveModel;
+      const futureAttemptReserve = futureAttemptReserveFor(currentOrdinal, passAttemptCeiling);
       const effectiveLoopCtx: LoopContext = {
         ...loopCtx,
         feasibility: effectiveFeasibility,
         policy: passPolicy,
+        futureAttemptReserve,
       };
 
       if (effectiveModel !== requestedModel || roundIndex > 0 || domainExcluded > 0) {
@@ -176,6 +215,7 @@ export async function handleRequest(request: Request, env: Record<string, unknow
           `model-fallback request=${requestId} round=${roundIndex + 1}/${modelPlan.length}`
           + ` requested=${requestedModel} effective=${effectiveModel}`
           + ` pass_cap=${pass.attemptCap ?? 'policy'}`
+          + ` future_reserve=${futureAttemptReserve}`
           + ` domain_excluded=${domainExcluded}`
           + ` logical_attempts=${state.logicalAttempts}/${requestPolicy.maxAttempts}`,
         );
@@ -205,7 +245,6 @@ export async function handleRequest(request: Request, env: Record<string, unknow
       });
       if (fbResult) return fbResult;
       rememberFailedDomains(failedDomains, nodesById, state.attempted, effectiveModel);
-
     }
   }
 
@@ -234,7 +273,7 @@ async function runTierLoop(loopCtx: LoopContext, reqDescriptor: RoutableRequest,
     clientWantsStream, fakeStream, bodyJson, limits, exposeUpstreamInfo, state,
     failoverBudgetMs, requestStartMs, policy, tiers,
     tier1Affinity, tier1EvaluateAffinity, tier1Rng, tier1Session,
-    knownModels,
+    knownModels, futureAttemptReserve,
   } = loopCtx;
   const tierCaps = overrideTierCaps ?? computeTierCaps(tiers, reqDescriptor, state.attempted, policy, knownModels, policy.maxInFlight ?? null);
   for (const tierNumber of TIER_ORDER) {
@@ -246,10 +285,20 @@ async function runTierLoop(loopCtx: LoopContext, reqDescriptor: RoutableRequest,
       if (remainingBudgetMs <= 0) {
         return buildBudgetExhaustedResponse(request, env, route, requestId, requestedModel, state, exposeUpstreamInfo);
       }
-      const remainingDispatchableAttempts = countRemainingDispatchableAttempts(
+      const currentPassRemaining = countRemainingDispatchableAttempts(
         tiers, reqDescriptor, state.attempted, tierCaps,
         tierNumber, usedInTier, policy.maxAttempts - state.logicalAttempts, knownModels, policy.maxInFlight ?? null,
       );
+      // The dispatch deadline allocator must see the REQUEST plan, not only the
+      // current logical-model pass. Add the sibling slots reserved by handler
+      // and cap by the original request-wide maxAttempts. This changes only
+      // wall-clock allocation; selection and logical-attempt accounting remain
+      // owned by the existing tier/model loops.
+      const requestRemaining = Math.max(1, state.maxAttempts - state.logicalAttempts);
+      const remainingDispatchableAttempts = Math.max(1, Math.min(
+        requestRemaining,
+        currentPassRemaining + Math.max(0, futureAttemptReserve),
+      ));
       const pick = pickForTier(tierNumber, tiers[tierNumber], reqDescriptor, state.attempted, {
         affinityAccountId: tierNumber === 1 ? tier1Affinity : null,
         evaluateAffinity: tierNumber === 1 && tier1EvaluateAffinity,
