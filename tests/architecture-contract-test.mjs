@@ -269,7 +269,7 @@ await test('Contract 09: removed node limits are rejected instead of influencing
 await test('Contract 10: Closed Catalog - wildcard node rejects unknown model', async () => {
   resetMock();
   const wildcardNode = {
-    id: 'wc1', provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'],
+    id: 'wc1', provider: 'mock',
     base_url: 'https://wc1.example.com/v1', models: {},
   };
   routeHandlers['wc1.example.com'] = () => jsonUpstream(okCompletion());
