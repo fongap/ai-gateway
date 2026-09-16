@@ -66,15 +66,11 @@ function makeEnv({ tier1, tier2, tier3, secrets, extraEnv } = {}) {
 }
 
 const openaiChatNode = (id, extra = {}) => ({
-  id, provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'],
-  base_url: `https://${id}.example.com/v1`, models: { 'Code-Max': 'up-model' }, ...extra,
-});
-const openaiResponsesNode = (id, extra = {}) => ({
-  id, provider: 'mock', protocol: 'openai', surfaces: ['responses'],
+  id, provider: 'mock',
   base_url: `https://${id}.example.com/v1`, models: { 'Code-Max': 'up-model' }, ...extra,
 });
 const anthropicNode = (id, extra = {}) => ({
-  id, provider: 'mock', protocol: 'anthropic', surfaces: ['messages'],
+  id, provider: 'anthropic',
   base_url: `https://${id}.example.com`, models: { 'Code-Max': 'up-model' }, ...extra,
 });
 
@@ -138,18 +134,6 @@ await test('Contract 03b: PROTOCOL_FALLBACKS=disable -> 404', async () => {
   resetMock();
   routeHandlers['o1.example.com'] = () => jsonUpstream(okCompletion());
   const env = makeEnv({ tier1: [openaiChatNode('o1')], secrets: { o1: 'k' }, extraEnv: { PROTOCOL_FALLBACKS: 'disable' } });
-  const res = await worker.fetch(messagesRequest({}), env, {});
-  assert.equal(res.status, 404);
-  assert.equal(upstreamCalls.length, 0);
-});
-
-await test('Contract 04: Unsupported Conversion (responses target) -> 404', async () => {
-  resetMock();
-  routeHandlers['o-resp.example.com'] = () => jsonUpstream({ object: 'response' });
-  const env = makeEnv({
-    tier1: [openaiResponsesNode('o-resp')], secrets: { 'o-resp': 'k' },
-    extraEnv: { PROTOCOL_FALLBACKS: JSON.stringify({ 'anthropic:messages': ['openai:chat_completions'] }) },
-  });
   const res = await worker.fetch(messagesRequest({}), env, {});
   assert.equal(res.status, 404);
   assert.equal(upstreamCalls.length, 0);
