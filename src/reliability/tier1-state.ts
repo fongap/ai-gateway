@@ -6,6 +6,7 @@
 // node-state.ts and never read this module.
 
 import { servesModel } from '../config/registry.ts';
+import { RUNTIME_TUNABLES } from '../config/runtime-vars.ts';
 import type { RuntimeNode } from '../types/node.ts';
 import type { RoutableRequest } from '../types/scheduler.ts';
 
@@ -32,7 +33,11 @@ export const TIER1_TIMEOUT_MAX_MS = 120_000;
 export const TIER1_5XX_BASE_MS = 1_000;
 export const TIER1_5XX_MAX_MS = 300_000;
 // Auth (401/403) cooldown is account-scoped and comes from the shared upstream
-// classifier. Tier 1 must not maintain a second hard-coded auth timeout.
+// classifier. If a direct internal caller omits the duration, fall back to the
+// canonical runtime-variable default rather than maintaining a second literal.
+const TIER1_AUTH_DEFAULT_COOLDOWN_MS = RUNTIME_TUNABLES.find(
+  (entry) => entry.name === 'AUTH_FAIL_COOLDOWN_MS',
+)?.def ?? 0;
 // 429 cooldown duration is owned exclusively by adaptive-429.ts. This module
 // stores the supplied deadline and controls the post-cooldown recovery probe;
 // it must never invent a second rate-limit ladder.
@@ -483,7 +488,7 @@ export function classifyTier1Failure(classification: Tier1FailureInput, opts: { 
   if (kind === 'auth') {
     return {
       scope: 'account', action: 'disable', reason: kind,
-      cooldownMs: Math.max(0, classification?.cooldownMs ?? 0),
+      cooldownMs: Math.max(0, classification?.cooldownMs ?? TIER1_AUTH_DEFAULT_COOLDOWN_MS),
     };
   }
   if (kind === 'model_missing') {
