@@ -1,0 +1,53 @@
+name: Patch Claude fallback provider fixture
+
+on:
+  push:
+    branches: [fix/provider-capability-contract]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, '[claude-fallback-provider]') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: fix/provider-capability-contract
+
+      - name: Remove retired wire fields from Claude OpenAI fallback helper
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('tests/claude-contract-test.mjs')
+          s = p.read_text()
+          old = """const openaiNode = (id, extra = {}) => ({
+            id,
+            provider: 'mock',
+            protocol: 'openai',
+            surfaces: ['chat_completions'],
+            base_url: `https://${id}.example.com/v1`,
+            models: { 'code-max': 'up-model' },
+            ...extra,
+          });"""
+          new = """const openaiNode = (id, extra = {}) => ({
+            id,
+            provider: 'mock',
+            base_url: `https://${id}.example.com/v1`,
+            models: { 'code-max': 'up-model' },
+            ...extra,
+          });"""
+          if s.count(old) != 1:
+              raise SystemExit(f'expected one Claude OpenAI fallback helper, found {s.count(old)}')
+          p.write_text(s.replace(old, new, 1))
+
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git diff --check
+          git add tests/claude-contract-test.mjs
+          git diff --cached --quiet && exit 0
+          git commit -m "test: converge Claude fallback provider fixture [claude-fallback-provider]"
+          git push origin HEAD:fix/provider-capability-contract
