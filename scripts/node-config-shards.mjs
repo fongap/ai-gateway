@@ -7,9 +7,8 @@
 // Secrets:
 //   TIER{1,2,3}_NODES_SECRETS_01..10  JSON objects { nodeId: credential }
 //
-// The planner intentionally mirrors the current runtime node contract. It does
-// not accept retired fields, implicit protocol/surface/model defaults, or
-// numeric-string coercions.
+// Node config is account-level only. Protocol and surfaces are Provider wire
+// capabilities owned by src/config/provider-profile.ts, not repeated here.
 
 import fs from 'node:fs';
 
@@ -22,11 +21,7 @@ export const MANAGED_SECRET_PATTERN = /^TIER[123]_NODES_SECRETS_(0[1-9]|10)$/;
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const VALID_TIER_PATTERN = /^[123]$/;
 const FORBIDDEN_NODE_FIELDS = ['token', 'credential', 'api_key', 'apikey', 'authorization', 'password', 'secret'];
-const ALLOWED_NODE_FIELDS = new Set(['id', 'provider', 'protocol', 'surfaces', 'base_url', 'priority', 'models']);
-const PROTOCOL_SURFACES = new Map([
-  ['openai', new Set(['chat_completions', 'responses'])],
-  ['anthropic', new Set(['messages'])],
-]);
+const ALLOWED_NODE_FIELDS = new Set(['id', 'provider', 'base_url', 'priority', 'models']);
 
 function byteLength(value) {
   return Buffer.byteLength(value, 'utf8');
@@ -112,25 +107,6 @@ export function assertNodesArray(nodes, label = 'nodes config') {
         || !Number.isInteger(node.priority)
         || node.priority < 0)) {
       throw new Error(`${label}: node "${id}" priority must be a non-negative integer number`);
-    }
-
-    if (typeof node.protocol !== 'string' || !node.protocol.trim()) {
-      throw new Error(`${label}: node "${id}" protocol is required and must be "openai" or "anthropic"`);
-    }
-    const protocol = node.protocol.trim().toLowerCase();
-    const allowedSurfaces = PROTOCOL_SURFACES.get(protocol);
-    if (!allowedSurfaces) {
-      throw new Error(`${label}: node "${id}" protocol must be "openai" or "anthropic"`);
-    }
-
-    if (!Array.isArray(node.surfaces) || node.surfaces.length === 0) {
-      throw new Error(`${label}: node "${id}" surfaces is required and must be a non-empty array`);
-    }
-    for (const entry of node.surfaces) {
-      const surface = typeof entry === 'string' ? entry.trim().toLowerCase() : '';
-      if (!allowedSurfaces.has(surface)) {
-        throw new Error(`${label}: node "${id}" surfaces entry "${String(entry).slice(0, 40)}" is not valid for protocol "${protocol}" (allowed: ${[...allowedSurfaces].join(', ')})`);
-      }
     }
 
     if (!node.models || typeof node.models !== 'object' || Array.isArray(node.models)) {
