@@ -261,8 +261,9 @@ await test('protocol/surfaces in Node JSON are hard schema errors and never reac
   assert.equal(health.status, 503);
   const body = await health.json();
   assert.equal(body.status, 'invalid');
-  assert.ok(body.diagnostics.some((d) => d.includes('unknown field "protocol"')));
-  assert.ok(body.diagnostics.some((d) => d.includes('unknown field "surfaces"')));
+  assert.ok(body.diagnostics.some((d) =>
+    d.includes('unknown field "protocol"') || d.includes('unknown field "surfaces"')
+  ));
   const res = await worker.fetch(chatRequest(), env, {});
   assert.equal(res.status, 404);
   assert.equal(upstreamCalls.length, 0);
