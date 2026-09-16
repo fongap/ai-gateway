@@ -903,8 +903,7 @@ await run('config: default ON — empty string is treated as unset', () => {
 });
 
 await run('config: "disable" literal turns the default off', () => {
-  // The magic literal is the documented opt-out path for operators who want
-  // the legacy Native-Only behavior.
+  // The magic literal is the documented opt-out path for explicit Native-Only behavior.
   const cfg = loadProtocolFallbacks({ PROTOCOL_FALLBACKS: 'disable' });
   assert.deepEqual(cfg, {}, 'disable literal produces empty config');
   assert.deepEqual(getFallbackChain('anthropic_messages', { PROTOCOL_FALLBACKS: 'disable' }), []);
@@ -1017,9 +1016,7 @@ function makeEnv({ tier1, tier2, secrets, extraEnv } = {}) {
 
 const anthropicNode = (id, extra = {}) => ({
   id,
-  provider: 'mock',
-  protocol: 'anthropic',
-  surfaces: ['messages'],
+  provider: 'anthropic',
   base_url: `https://${id}.example.com`,
   models: { 'claude-x': 'up-model' },
   ...extra,
@@ -1028,8 +1025,6 @@ const anthropicNode = (id, extra = {}) => ({
 const openaiNode = (id, extra = {}) => ({
   id,
   provider: 'mock',
-  protocol: 'openai',
-  surfaces: ['chat_completions'],
   base_url: `https://${id}.example.com/v1`,
   models: { 'claude-x': 'up-model' },
   ...extra,
@@ -1520,31 +1515,6 @@ await run('regression: fallback configured but target node lacks the model -> 40
   assert.equal(upstreamCalls.length, 0, 'no upstream is contacted');
 });
 
-await run('regression: fallback target surface unsupported (responses-only) -> 404', async () => {
-  resetMock();
-  // Only an OpenAI RESPONSES node exists. The only supported conversion is
-  // anthropic:messages -> openai:chat_completions, so a responses node is NOT
-  // a valid fallback candidate and the request must fail closed.
-  const openaiResponsesNode = (id, extra = {}) => ({
-    id, provider: 'mock', protocol: 'openai', surfaces: ['responses'],
-    base_url: `https://${id}.example.com/v1`, models: { 'claude-x': 'up-model' }, ...extra,
-  });
-  routeHandlers['o-resp.example.com'] = () => jsonUpstream({ object: 'response' });
-  const env = makeEnv({
-    tier1: [openaiResponsesNode('o-resp')],
-    secrets: { 'o-resp': 'k' },
-    extraEnv: {
-      PROTOCOL_FALLBACKS: JSON.stringify({ 'anthropic:messages': ['openai:chat_completions'] }),
-      EXPOSE_UPSTREAM_INFO: 'true',
-    },
-  });
-  const res = await worker.fetch(messagesRequest({
-    model: 'claude-x', max_tokens: 64, messages: [{ role: 'user', content: 'hi' }],
-  }), env, {});
-  assert.equal(res.status, 404, 'a responses-only node must not count as a chat_completions fallback');
-  assert.equal(upstreamCalls.length, 0, 'no upstream is contacted');
-});
-
 // =====================================================================
 //   REVERSE FALLBACK: OpenAI Chat CLIENT -> Anthropic MESSAGES UPSTREAM
 //   (cross-protocol acceptance: the OpenAI Chat client and the
@@ -1792,9 +1762,7 @@ await run('handler: conversion error skips the fallback target -> gateway exhaus
 
 const anthropicResponsesNode = (id, extra = {}) => ({
   id,
-  provider: 'mock',
-  protocol: 'anthropic',
-  surfaces: ['messages'],
+  provider: 'anthropic',
   base_url: `https://${id}.example.com`,
   models: { 'code-max': 'up-model' },
   ...extra,
@@ -1802,9 +1770,7 @@ const anthropicResponsesNode = (id, extra = {}) => ({
 
 const openaiResponsesNodeOnly = (id, extra = {}) => ({
   id,
-  provider: 'mock',
-  protocol: 'openai',
-  surfaces: ['responses'],
+  provider: 'openai',
   base_url: `https://${id}.example.com/v1`,
   models: { 'code-max': 'up-model' },
   ...extra,

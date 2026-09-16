@@ -8,7 +8,6 @@ import { __resetTier1AffinityForTests } from '../src/scheduler/tier1-affinity.ts
 
 let passed = 0;
 let failed = 0;
-
 async function test(name, fn) {
   try { await fn(); passed++; console.log(`ok - ${name}`); }
   catch (error) { failed++; console.error(`FAIL - ${name}`); console.error(error?.stack || error); }
@@ -42,7 +41,6 @@ await test('real request continues after Tier 1 quota-413', async () => {
   __resetAllStateForTests();
   __resetTier1StateForTests();
   __resetTier1AffinityForTests();
-
   const accessKey = 'quota-413-integration-key';
   const calls = [];
   const originalFetch = globalThis.fetch;
@@ -51,8 +49,7 @@ await test('real request continues after Tier 1 quota-413', async () => {
     calls.push(url.hostname);
     if (url.hostname === 'groq-quota.example.com') {
       return new Response(JSON.stringify({ error: { message: 'input tokens per minute (ITPM): Limit 7000, Requested 7398' } }), {
-        status: 413,
-        headers: { 'content-type': 'application/json' },
+        status: 413, headers: { 'content-type': 'application/json' },
       });
     }
     if (url.hostname === 'fallback.example.com') {
@@ -75,12 +72,12 @@ await test('real request continues after Tier 1 quota-413', async () => {
       MAX_HEDGES_PER_REQUEST: '0',
       RATE_LIMIT_COOLDOWN_MS: '60000',
       TIER1_NODES_CONFIG_01: JSON.stringify([{
-        id: 'groq-quota', provider: 'groq', protocol: 'openai', surfaces: ['chat_completions'],
+        id: 'groq-quota', provider: 'groq',
         base_url: 'https://groq-quota.example.com/v1', priority: 10, models: { 'Quota-Test': 'qwen/qwen3.8-27b' },
       }]),
       TIER1_NODES_SECRETS_01: JSON.stringify({ 'groq-quota': 'groq-key' }),
       TIER2_NODES_CONFIG_01: JSON.stringify([{
-        id: 'fallback-node', provider: 'fallback-provider', protocol: 'openai', surfaces: ['chat_completions'],
+        id: 'fallback-node', provider: 'fallback-provider',
         base_url: 'https://fallback.example.com/v1', priority: 10, models: { 'Quota-Test': 'fallback-model' },
       }]),
       TIER2_NODES_SECRETS_01: JSON.stringify({ 'fallback-node': 'fallback-key' }),

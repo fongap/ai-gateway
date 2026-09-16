@@ -80,12 +80,16 @@ assert.doesNotMatch(routing, /historical config|migration-time runtime interpret
 ok('routing docs use one current attempt-allocation contract');
 
 const config = read('docs/operations/configuration.md');
-assert.match(config, /provider[\s\S]{0,160}protocol[\s\S]{0,160}surfaces[\s\S]{0,160}models/i,
-  'configuration docs must show explicit required node fields');
-assert.match(config, /There is no fallback shape for missing `provider`, `protocol`, `surfaces`, or `models`/i);
+assert.match(config, /Required fields:[\s\S]{0,160}id[\s\S]{0,80}provider[\s\S]{0,80}base_url[\s\S]{0,80}models/i,
+  'configuration docs must show the small account-level node schema');
+assert.match(config, /Provider wire profiles/i);
+assert.match(config, /`protocol`, `surfaces`[^\n]*rejected/i,
+  'protocol/surfaces must not return to per-node config');
+assert.match(config, /provider:\s*"anthropic"[\s\S]{0,100}messages/i);
+assert.match(config, /provider:\s*"openai"[\s\S]{0,120}responses/i);
 assert.match(config, /`budget_split`, weighted allocation, and alternate tier-budget modes are not part of the current policy schema/i);
-assert.doesNotMatch(config, /protocol` defaults|surfaces` defaults|budget_split"\s*:/i);
-ok('configuration docs match strict current schema');
+assert.doesNotMatch(config, /protocol` is required|surfaces` is required|budget_split"\s*:/i);
+ok('configuration docs match provider-owned wire contract');
 
 for (const file of DOCS) {
   const text = read(file);
@@ -102,9 +106,6 @@ for (const name of RUNTIME_VAR_NAMES) {
 }
 ok(`deploy.yml injects all ${RUNTIME_VAR_NAMES.length} runtime variables`);
 
-// runtime-vars.ts is the one default-value source. .dev.vars.example is an
-// operator example and may intentionally show overrides, so it must list the
-// current knobs without duplicating a second machine-checked default table.
 const devVars = read('.dev.vars.example');
 assert.match(devVars, /Defaults live in src\/config\/runtime-vars\.ts/i,
   '.dev.vars.example must point operators to runtime-vars.ts for defaults');

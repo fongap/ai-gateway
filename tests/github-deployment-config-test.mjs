@@ -12,8 +12,6 @@ import {
 const currentNode = (id = 'node-a') => ({
   id,
   provider: 'mock',
-  protocol: 'openai',
-  surfaces: ['chat_completions'],
   base_url: 'https://provider.example.com/v1',
   models: { 'code-pro': 'upstream-code-pro' },
 });
@@ -184,12 +182,8 @@ function envFixture() {
     affinityKvConfigured: 'kv-id',
     removedSecretShards: 1,
   });
-  for (const fragment of ['Deployment completed', 'Nodes: 1/1 usable', 'Models: 1', 'Status: ready', 'OK']) {
-    assert.ok(summary.includes(fragment), fragment);
-  }
-  for (const secret of ['upstream-key', 'gateway-key', 'Bearer', 'authorization']) {
-    assert.ok(!summary.includes(secret), `summary leaks ${secret}`);
-  }
+  for (const fragment of ['Deployment completed', 'Nodes: 1/1 usable', 'Models: 1', 'Status: ready', 'OK']) assert.ok(summary.includes(fragment), fragment);
+  for (const secret of ['upstream-key', 'gateway-key', 'Bearer', 'authorization']) assert.ok(!summary.includes(secret), `summary leaks ${secret}`);
 }
 
 {

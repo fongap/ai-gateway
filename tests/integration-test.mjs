@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MIT
 // Black-box integration coverage for the current gateway architecture.
-// Runs the real worker pipeline against mocked upstreams. Retired node limits,
-// node RPM buckets, and implicit protocol/surface defaults are intentionally
-// absent: strict schema rejection is the compatibility boundary.
+// Runs the real worker pipeline against mocked upstreams. Retired node limits
+// stay rejected, while protocol/surface capabilities are derived from the Provider
+// profile rather than repeated in account-level Node JSON.
 
 import assert from 'node:assert/strict';
 import worker from '../src/index.ts';
@@ -89,8 +89,6 @@ function makeEnv({ tier1, tier2, tier3, secrets = {}, extraEnv = {} } = {}) {
 const openaiNode = (id, extra = {}) => ({
   id,
   provider: 'mock',
-  protocol: 'openai',
-  surfaces: ['chat_completions'],
   base_url: `https://${id}.example.com/v1`,
   models: { 'general-air': 'up-model' },
   ...extra,
@@ -98,9 +96,7 @@ const openaiNode = (id, extra = {}) => ({
 
 const anthropicNode = (id, extra = {}) => ({
   id,
-  provider: 'mock',
-  protocol: 'anthropic',
-  surfaces: ['messages'],
+  provider: 'anthropic',
   base_url: `https://${id}.example.com`,
   models: { 'general-air': 'up-model' },
   ...extra,
@@ -108,9 +104,7 @@ const anthropicNode = (id, extra = {}) => ({
 
 const responsesNode = (id, extra = {}) => ({
   id,
-  provider: 'mock',
-  protocol: 'openai',
-  surfaces: ['responses'],
+  provider: 'openai',
   base_url: `https://${id}.example.com/v1`,
   models: { 'general-air': 'up-model' },
   ...extra,
@@ -252,20 +246,24 @@ await test('removed limits field is a hard schema error and never reaches upstre
   assert.equal(upstreamCalls.length, 0);
 });
 
-await test('missing protocol/surfaces is a hard schema error and never reaches upstream', async () => {
-  routeHandlers['implicit.example.com'] = () => jsonResponse(okChat('must-not-route'));
-  const implicit = {
-    id: 'implicit', provider: 'mock', base_url: 'https://implicit.example.com/v1',
+await test('protocol/surfaces in Node JSON are hard schema errors and never reach upstream', async () => {
+  routeHandlers['retired-wire-fields.example.com'] = () => jsonResponse(okChat('must-not-route'));
+  const invalid = {
+    id: 'retired-wire-fields', provider: 'mock',
+    protocol: 'openai', surfaces: ['chat_completions'],
+    base_url: 'https://retired-wire-fields.example.com/v1',
     models: { 'general-air': 'up-model' },
   };
-  const env = makeEnv({ tier1: [implicit], secrets: { implicit: 'k' } });
+  const env = makeEnv({ tier1: [invalid], secrets: { 'retired-wire-fields': 'k' } });
   const health = await worker.fetch(new Request('https://gateway.example.com/health', {
     headers: { authorization: `Bearer ${ACCESS_KEY}` },
   }), env, {});
   assert.equal(health.status, 503);
   const body = await health.json();
   assert.equal(body.status, 'invalid');
-  assert.ok(body.diagnostics.some((d) => d.includes('protocol is required')));
+  assert.ok(body.diagnostics.some((d) =>
+    d.includes('unknown field "protocol"') || d.includes('unknown field "surfaces"')
+  ));
   const res = await worker.fetch(chatRequest(), env, {});
   assert.equal(res.status, 404);
   assert.equal(upstreamCalls.length, 0);
@@ -598,7 +596,7 @@ await test('Anthropic client may fall back to OpenAI Chat through the bounded co
   assert.equal(upstreamCalls[0].path, '/v1/chat/completions');
 });
 
-await test('OpenAI Responses uses only a responses-capable native node', async () => {
+await test('OpenAI Responses uses the native OpenAI provider profile', async () => {
   routeHandlers['responses.example.com'] = () => jsonResponse(okResponses('responses-ok'));
   const env = makeEnv({ tier1: [responsesNode('responses')], secrets: { responses: 'rk' } });
   const res = await worker.fetch(responsesRequest(), env, {});
@@ -710,7 +708,7 @@ await test('/v1/models derives public models from actual strict node mappings', 
   const body = await res.json();
   const model = body.data.find((m) => m.id === 'general-air');
   assert.ok(model);
-  assert.deepEqual(model.api_backends.sort(), ['mock']);
+  assert.deepEqual(model.api_backends.sort(), ['anthropic', 'mock']);
 });
 
 await test('/health.build reports deployment commit and /version stays removed', async () => {

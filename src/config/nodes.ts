@@ -7,34 +7,31 @@
 //                                     configs WITHOUT credential material.
 //   TIER{1,2,3}_NODES_SECRETS_01..10  secrets, JSON objects { nodeId: credential }.
 //
-// Current Node JSON schema is explicit. Required fields:
-//   id, provider, protocol, surfaces, base_url, models
+// Current Node JSON schema is deliberately small. Required fields:
+//   id, provider, base_url, models
 // Optional:
 //   priority (non-negative integer number, default 100)
 //
-// There are no old-version defaults or alternate shapes. Missing protocol /
-// surfaces / provider / models, a models array, numeric strings, retired limits,
-// credential fields, or unknown fields are configuration errors.
+// Protocol and surfaces are NOT account-level configuration. They come from
+// the provider wire profile so one provider contract is defined exactly once.
+// Unknown fields, credential material, alternate model shapes, and numeric
+// strings are configuration errors.
 
 import { readEnv, getBool } from './env.ts';
 import { loadModelsConfig, getModelsConfigDiagnostics } from './models.ts';
 import { loadPoliciesConfig, getPoliciesConfigDiagnostics } from './policies.ts';
 import { getProtocolFallbacksDiagnostics } from './protocol-fallbacks.ts';
 import { loadModelRegistry } from './registry.ts';
+import { providerWireProfile } from './provider-profile.ts';
 import type { RegistryEntry } from './registry.ts';
 import type { RuntimeNode, NodeTier } from '../types/node.ts';
-import type { Protocol, Surface } from '../types/protocol.ts';
 
 export const TIER_SHARD_PATTERN = /^TIER([123])_NODES_CONFIG_(\d{2})$/;
 export const SECRET_SHARD_PATTERN = /^TIER([123])_NODES_SECRETS_(\d{2})$/;
 export const MAX_SHARD_INDEX = 10;
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const FORBIDDEN_NODE_FIELDS = ['token', 'credential', 'api_key', 'apikey', 'authorization', 'password', 'secret'];
-const ALLOWED_NODE_FIELDS = new Set(['id', 'provider', 'protocol', 'surfaces', 'base_url', 'priority', 'models']);
-const PROTOCOL_SURFACES = new Map<string, Set<string>>([
-  ['openai', new Set(['chat_completions', 'responses'])],
-  ['anthropic', new Set(['messages'])],
-]);
+const ALLOWED_NODE_FIELDS = new Set(['id', 'provider', 'base_url', 'priority', 'models']);
 
 export type ConfigStatus = 'unconfigured' | 'invalid' | 'degraded' | 'ready';
 
@@ -253,7 +250,7 @@ function buildRuntimeNode(
   }
   for (const key of Object.keys(rec)) {
     if (!ALLOWED_NODE_FIELDS.has(key)) {
-      diagnostics.push(`node "${id}": unknown field "${key}" (allowed: id, provider, protocol, surfaces, base_url, priority, models)`);
+      diagnostics.push(`node "${id}": unknown field "${key}" (allowed: id, provider, base_url, priority, models)`);
       return null;
     }
   }
@@ -287,14 +284,11 @@ function buildRuntimeNode(
     return null;
   }
 
-  const protocol = parseProtocol(rec.protocol, id, diagnostics);
-  if (protocol === null) return null;
-  const surfaces = parseSurfaces(rec.surfaces, protocol, id, diagnostics);
-  if (surfaces === null) return null;
   const models = normalizeModels(rec.models, id, diagnostics);
   if (models === null) return null;
   const priority = parsePriority(rec.priority, id, diagnostics);
   if (priority === null) return null;
+  const { protocol, surfaces } = providerWireProfile(provider);
 
   return {
     id,
@@ -307,37 +301,6 @@ function buildRuntimeNode(
     priority,
     models,
   };
-}
-
-function parseProtocol(raw: unknown, nodeId: string, diagnostics: string[]): Protocol | null {
-  if (typeof raw !== 'string' || !raw.trim()) {
-    diagnostics.push(`node "${nodeId}": protocol is required and must be "openai" or "anthropic"`);
-    return null;
-  }
-  const value = raw.trim().toLowerCase();
-  if (!PROTOCOL_SURFACES.has(value)) {
-    diagnostics.push(`node "${nodeId}": protocol must be "openai" or "anthropic"`);
-    return null;
-  }
-  return value as Protocol;
-}
-
-function parseSurfaces(raw: unknown, protocol: Protocol, nodeId: string, diagnostics: string[]): Surface[] | null {
-  if (!Array.isArray(raw) || raw.length === 0) {
-    diagnostics.push(`node "${nodeId}": surfaces is required and must be a non-empty array`);
-    return null;
-  }
-  const allowed = PROTOCOL_SURFACES.get(protocol) as Set<string>;
-  const out: Surface[] = [];
-  for (const entry of raw) {
-    const value = typeof entry === 'string' ? entry.trim().toLowerCase() : '';
-    if (!allowed.has(value)) {
-      diagnostics.push(`node "${nodeId}": surfaces entry "${String(entry).slice(0, 40)}" is not valid for protocol "${protocol}" (allowed: ${[...allowed].join(', ')})`);
-      return null;
-    }
-    if (!out.includes(value as Surface)) out.push(value as Surface);
-  }
-  return out;
 }
 
 function parsePriority(raw: unknown, nodeId: string, diagnostics: string[]): number | null {

@@ -25,6 +25,7 @@ const tooling = [
   'scripts/cloudflare-wrangler.mjs', 'scripts/github-deployment-config.mjs',
 ];
 for (const file of tooling) assert.ok(fs.existsSync(path.join(root, file)), `Missing deployment/tooling file: ${file}`);
+assert.ok(fs.existsSync(path.join(root, 'src/config/provider-profile.ts')), 'Provider wire profile must be single-sourced');
 
 for (const file of ['scripts/install.sh', 'scripts/install.ps1']) {
   const source = read(file);
@@ -99,9 +100,6 @@ for (const group of accessGroups) {
   assert.match(workflow, new RegExp(`GATEWAY_ACCESS_MODELS_${group}:`));
 }
 
-// The current repository intentionally keeps only non-secret configuration
-// examples. Tier 2 is reserved for a concrete subscription-entitlement adapter,
-// so there is no generic Tier 2 node example or public credential example.
 for (const removedExample of [
   'config/tier2-nodes.example.json',
   'config/node-secrets.example.json',
@@ -115,9 +113,11 @@ const tier1 = parseJsonFile(path.join(root, 'config/tier1-nodes.example.json'));
 assertNodesArray(tier1, 'config/tier1-nodes.example.json');
 assert.ok(tier1.length >= 2, 'Tier 1 example should demonstrate multiple free-capacity nodes');
 for (const n of tier1) {
-  for (const required of ['id', 'provider', 'protocol', 'surfaces', 'base_url', 'models']) {
+  for (const required of ['id', 'provider', 'base_url', 'models']) {
     assert.ok(Object.hasOwn(n, required), `Tier 1 example node ${n.id || '?'} must explicitly declare ${required}`);
   }
+  assert.equal(Object.hasOwn(n, 'protocol'), false, 'protocol belongs to Provider profile, not node JSON');
+  assert.equal(Object.hasOwn(n, 'surfaces'), false, 'surfaces belong to Provider profile, not node JSON');
   assert.equal(Array.isArray(n.models), false, 'models must use current object mapping');
 }
 JSON.parse(read('config/models.example.json'));
@@ -131,7 +131,6 @@ assert.ok(Object.keys(accessExample).some((name) => /^GATEWAY_ACCESS_KEY_(AIR|PR
 assert.ok(Object.keys(accessExample).some((name) => /^GATEWAY_ACCESS_MODELS_(AIR|PRO|MAX|ULTRA|AGENT)$/.test(name)));
 assert.doesNotMatch(JSON.stringify(accessExample), standaloneAccessKeyPattern);
 
-// Runtime source must not resurrect removed config surfaces.
 const srcFiles = [];
 function walk(dir) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
