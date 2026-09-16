@@ -31,10 +31,8 @@ export const TIER1_TIMEOUT_BASE_MS = 5_000;
 export const TIER1_TIMEOUT_MAX_MS = 120_000;
 export const TIER1_5XX_BASE_MS = 1_000;
 export const TIER1_5XX_MAX_MS = 300_000;
-// Auth (401/403) is account-scoped and intentionally long-lived so the same
-// isolate can recover on its own after a key rotation without repeatedly
-// hammering a rejected credential. To force a permanent block, set this to 0.
-export const TIER1_AUTH_DISABLED_COOLDOWN_MS = 3_600_000;
+// Auth (401/403) cooldown is account-scoped and comes from the shared upstream
+// classifier. Tier 1 must not maintain a second hard-coded auth timeout.
 // 429 cooldown duration is owned exclusively by adaptive-429.ts. This module
 // stores the supplied deadline and controls the post-cooldown recovery probe;
 // it must never invent a second rate-limit ladder.
@@ -445,10 +443,7 @@ function ttftFactor(
   );
 }
 
-export function calculateTier1Score(node: RuntimeNode, modelId: string, candidates: ReadonlyArray<RuntimeNode>, affinityFactor: number = 1, now: number = Date.now(), priority?: number): number {
-  // Priority factor: higher priority → lower score (more preferred).
-  // Priority 1-5, default 3 (normal). Factor = 3 / priority.
-  const priorityFactor = (priority && priority > 0) ? (3 / Math.min(5, Math.max(1, priority))) : 1;
+export function calculateTier1Score(node: RuntimeNode, modelId: string, candidates: ReadonlyArray<RuntimeNode>, affinityFactor: number = 1, now: number = Date.now()): number {
   return Math.max(1,
     TIER1_SCORE_BASE
     * ttftFactor(node.id, modelId, candidates)
@@ -456,8 +451,7 @@ export function calculateTier1Score(node: RuntimeNode, modelId: string, candidat
     * quotaFactor(node.id, now)
     * tier1ProviderModelHeatFactor(node.provider, tier1UpstreamModelOf(node, modelId), now)
     * affinityFactor
-    * explorationFactor(node.id, modelId)
-    * priorityFactor);
+    * explorationFactor(node.id, modelId));
 }
 
 export function recordTier1Ttft(accountId: string, modelId: string, observedMs: number, now: number = Date.now()): boolean {
@@ -486,7 +480,12 @@ export function recordTier1Ttft(accountId: string, modelId: string, observedMs: 
 export function classifyTier1Failure(classification: Tier1FailureInput, opts: { retryAfterMs?: number } = {}): Tier1Outcome {
   const { retryAfterMs } = opts;
   const kind = classification?.kind;
-  if (kind === 'auth') return { scope: 'account', action: 'disable', reason: kind };
+  if (kind === 'auth') {
+    return {
+      scope: 'account', action: 'disable', reason: kind,
+      cooldownMs: Math.max(0, classification?.cooldownMs ?? 0),
+    };
+  }
   if (kind === 'model_missing') {
     return {
       scope: 'upstream_model', action: 'cooldown', counted: false,
@@ -562,9 +561,9 @@ export function applyTier1Outcome(accountId: string, modelId: string, outcome: T
   }
 
   if (outcome.action === 'disable') {
-    // Auth is the only Tier 1 disable-class outcome. It is converted to a long
-    // account cooldown so rotated credentials self-recover without isolate restart.
-    const ms = outcome.reason === 'auth' ? TIER1_AUTH_DISABLED_COOLDOWN_MS : 0;
+    // Auth is the only Tier 1 disable-class outcome. Its cooldown comes from
+    // the shared upstream classifier, so AUTH_FAIL_COOLDOWN_MS has one owner.
+    const ms = Math.max(0, outcome.cooldownMs ?? 0);
     if (ms > 0) {
       if (outcome.scope === 'account') {
         account.accountDisabled = false;
@@ -579,7 +578,7 @@ export function applyTier1Outcome(accountId: string, modelId: string, outcome: T
       }
       return;
     }
-    // Legacy permanent-disable path (cooldown = 0 means operator wants hard disable).
+    // A zero cooldown is an explicit permanent-disable instruction.
     if (outcome.scope === 'account') {
       account.accountDisabled = true;
       account.accountCooldownReason = outcome.reason;

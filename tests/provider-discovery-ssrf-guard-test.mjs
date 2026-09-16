@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import {
   isDangerousHost,
   isSafeDiscoveryUrl,
+  isSafeDiscoveryTarget,
   redirectTargetIsSafe,
   readBoundedResponseText,
   enforceMaxModelCount,
@@ -51,6 +52,7 @@ test('loopback IPs are dangerous', () => {
   assert.ok(isDangerousHost('127.0.0.5'));
   assert.ok(isDangerousHost('::1'));
   assert.ok(isDangerousHost('[::1]'));
+  assert.ok(isDangerousHost('::ffff:127.0.0.1'));
 });
 
 test('link-local IPv4 (metadata) is dangerous', () => {
@@ -134,6 +136,42 @@ test('invalid URL format rejected', () => {
   assert.ok(r.reason.includes('invalid URL'));
 });
 
+// --- DNS-backed target validation ---
+
+await testAsync('DNS resolution to a public address passes', async () => {
+  const lookup = async () => [{ address: '93.184.216.34', family: 4 }];
+  const r = await isSafeDiscoveryTarget('https://api.example.com/v1', false, lookup);
+  assert.ok(r.safe);
+});
+
+await testAsync('DNS resolution to loopback is rejected', async () => {
+  const lookup = async () => [{ address: '127.0.0.1', family: 4 }];
+  const r = await isSafeDiscoveryTarget('https://apparently-public.example/v1', false, lookup);
+  assert.ok(!r.safe);
+  assert.match(r.reason, /resolved to blocked address/);
+});
+
+await testAsync('DNS resolution to metadata address is rejected', async () => {
+  const lookup = async () => [{ address: '169.254.169.254', family: 4 }];
+  const r = await isSafeDiscoveryTarget('https://apparently-public.example/v1', false, lookup);
+  assert.ok(!r.safe);
+});
+
+await testAsync('DNS failure is fail-closed', async () => {
+  const lookup = async () => { throw new Error('NXDOMAIN'); };
+  const r = await isSafeDiscoveryTarget('https://missing.example/v1', false, lookup);
+  assert.ok(!r.safe);
+  assert.match(r.reason, /DNS resolution failed/);
+});
+
+await testAsync('allowPrivate bypasses DNS private-address rejection', async () => {
+  let called = false;
+  const lookup = async () => { called = true; return [{ address: '10.0.0.1', family: 4 }]; };
+  const r = await isSafeDiscoveryTarget('https://private-provider.example/v1', true, lookup);
+  assert.ok(r.safe);
+  assert.equal(called, false);
+});
+
 // --- redirectTargetIsSafe ---
 
 test('redirect revalidation blocks dangerous targets', () => {
@@ -177,13 +215,13 @@ function makeMockResponse(bodyText) {
   };
 }
 
-testAsync('response under limit passes', async () => {
+await testAsync('response under limit passes', async () => {
   const res = makeMockResponse('hello');
   const text = await readBoundedResponseText(res, 1000);
   assert.equal(text, 'hello');
 });
 
-testAsync('response over limit throws', async () => {
+await testAsync('response over limit throws', async () => {
   const res = makeMockResponse('x'.repeat(1000));
   await assert.rejects(readBoundedResponseText(res, 100), /exceeds 100/);
 });

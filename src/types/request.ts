@@ -16,9 +16,6 @@ export type RequestDescriptor = {
   model: string,
   protocol: Protocol,
   surface: Surface,
-  /** Legacy request metadata. It is not a cross-request priority queue and
-   * must not be treated as provider-capacity or admission state. */
-  priority?: number,
 };
 
 /**

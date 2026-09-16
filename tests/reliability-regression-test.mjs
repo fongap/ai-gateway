@@ -193,15 +193,31 @@ await test('token attribution uses resolved upstream model', () => {
   assert.ok(src.includes('upstreamModelOf(node, c.requestedModel)'));
 });
 
-await test('Tier 1 score keeps bounded request priority', async () => {
-  const { calculateTier1Score, __resetTier1StateForTests } = await import('../src/reliability/tier1-state.ts');
+await test('Tier 1 auth cooldown follows the shared classification value', async () => {
+  const {
+    classifyTier1Failure,
+    applyTier1Outcome,
+    getTier1Account,
+    __resetTier1StateForTests,
+  } = await import('../src/reliability/tier1-state.ts');
   __resetTier1StateForTests();
-  const node = { id: 'p-test', tier: 'tier-1', protocol: 'openai', surfaces: ['chat'], models: {}, provider: 'test' };
-  const normal = calculateTier1Score(node, 'm', [node], 1, Date.now());
-  const high = calculateTier1Score(node, 'm', [node], 1, Date.now(), 5);
-  const low = calculateTier1Score(node, 'm', [node], 1, Date.now(), 1);
-  assert.ok(high < normal);
-  assert.ok(low > normal);
+  const now = 1_000;
+  const outcome = classifyTier1Failure({ kind: 'auth', cooldownMs: 12_345 });
+  assert.equal(outcome.cooldownMs, 12_345);
+  applyTier1Outcome('auth-test', 'm', outcome, now);
+  const account = getTier1Account('auth-test');
+  assert.equal(account.accountDisabled, false);
+  assert.equal(account.accountCooldownUntil, now + 12_345);
+  assert.equal(account.accountCooldownReason, 'auth');
+});
+
+await test('Tier 1 request scoring has no access-key group priority path', () => {
+  const tier1State = readFileSync(join(root, 'src', 'reliability', 'tier1-state.ts'), 'utf8');
+  const preflight = readFileSync(join(root, 'src', 'request', 'preflight.ts'), 'utf8');
+  const schedulerTypes = readFileSync(join(root, 'src', 'types', 'scheduler.ts'), 'utf8');
+  assert.ok(!tier1State.includes('priorityFactor'));
+  assert.ok(!preflight.includes('GROUP_PRIORITY'));
+  assert.ok(!schedulerTypes.includes('priority?:'));
 });
 
 console.log(`\nreliability-regression-test: ${passed} passed, ${failed} failed`);

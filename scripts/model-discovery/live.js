@@ -9,21 +9,17 @@
 // snapshots. It NEVER mutates Runtime Node config, Model Registry, Variables or
 // Secrets.
 
+import { providerWireProfile } from '../../src/config/provider-profile.ts';
 import {
   DISCOVERY_LIMITS,
   enforceMaxModelCount,
-  isSafeDiscoveryUrl,
+  isSafeDiscoveryTarget,
   readBoundedResponseText,
   redirectTargetIsSafe,
 } from '../provider-discovery/ssrf-guard.js';
 
 const CONFIG_RE = /^TIER([123])_NODES_CONFIG_(0[1-9]|10)$/;
 const SECRET_RE = /^TIER([123])_NODES_SECRETS_(0[1-9]|10)$/;
-const SUPPORTED_PROTOCOLS = new Set(['openai', 'anthropic']);
-const SUPPORTED_SURFACES = Object.freeze({
-  openai: ['chat_completions', 'responses'],
-  anthropic: ['messages'],
-});
 
 function parseJson(text, label) {
   try {
@@ -143,31 +139,30 @@ export function collectDiscoveryNodes(env) {
     for (const raw of parsed) {
       if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
       const id = typeof raw.id === 'string' ? raw.id.trim() : '';
+      const provider = typeof raw.provider === 'string' ? raw.provider.trim() : '';
       const baseUrl = cleanBaseUrl(raw.base_url);
-      const protocol = typeof raw.protocol === 'string' ? raw.protocol.trim().toLowerCase() : 'openai';
       const credential = credentials.get(id);
-      if (!id || !baseUrl || !credential || !SUPPORTED_PROTOCOLS.has(protocol)) continue;
+      if (!id || !provider || !baseUrl || !credential) continue;
       if (secretTiers.get(id) !== tier) continue;
+      const profile = providerWireProfile(provider);
       nodes.push({
         id,
         tier,
-        provider: typeof raw.provider === 'string' && raw.provider.trim() ? raw.provider.trim() : 'unknown',
-        protocol,
+        provider,
+        protocol: profile.protocol,
         baseUrl,
         credential,
-        configuredSurfaces: Array.isArray(raw.surfaces)
-          ? raw.surfaces.filter((v) => typeof v === 'string').map((v) => v.trim().toLowerCase())
-          : (protocol === 'anthropic' ? ['messages'] : ['chat_completions']),
+        configuredSurfaces: [...profile.surfaces],
       });
     }
   }
   return nodes.sort((a, b) => a.tier - b.tier || a.provider.localeCompare(b.provider) || a.id.localeCompare(b.id));
 }
 
-async function guardedFetch(url, init, fetchImpl, allowPrivate) {
+async function guardedFetch(url, init, fetchImpl, allowPrivate, lookupImpl) {
   let current = url;
   for (let redirects = 0; redirects <= DISCOVERY_LIMITS.maxRedirects; redirects++) {
-    const safe = isSafeDiscoveryUrl(current, allowPrivate);
+    const safe = await isSafeDiscoveryTarget(current, allowPrivate, lookupImpl);
     if (!safe.safe) throw new Error(`unsafe discovery URL: ${safe.reason}`);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), DISCOVERY_LIMITS.responseTimeoutMs);
@@ -187,12 +182,12 @@ async function guardedFetch(url, init, fetchImpl, allowPrivate) {
   throw new Error(`too many redirects (>${DISCOVERY_LIMITS.maxRedirects})`);
 }
 
-async function fetchModels(node, fetchImpl, allowPrivate) {
+async function fetchModels(node, fetchImpl, allowPrivate, lookupImpl) {
   const url = buildTargetUrl(node.baseUrl, '/v1/models');
   const response = await guardedFetch(url, {
     method: 'GET',
     headers: authHeaders(node.protocol, node.credential),
-  }, fetchImpl, allowPrivate);
+  }, fetchImpl, allowPrivate, lookupImpl);
   const text = await readBoundedResponseText(response);
   if (!response.ok) {
     const err = new Error(`/models HTTP ${response.status}`);
@@ -218,14 +213,14 @@ function classifyProbeStatus(status) {
   return 'unknown';
 }
 
-async function probeSurface(node, surface, fetchImpl, allowPrivate) {
+async function probeSurface(node, surface, fetchImpl, allowPrivate, lookupImpl) {
   const url = buildTargetUrl(node.baseUrl, surfacePath(node.protocol, surface));
   try {
     const response = await guardedFetch(url, {
       method: 'POST',
       headers: authHeaders(node.protocol, node.credential),
       body: '{}',
-    }, fetchImpl, allowPrivate);
+    }, fetchImpl, allowPrivate, lookupImpl);
     try { await readBoundedResponseText(response, 64 * 1024); } catch { /* status is enough */ }
     return { status: classifyProbeStatus(response.status), http_status: response.status };
   } catch (error) {
@@ -235,6 +230,7 @@ async function probeSurface(node, surface, fetchImpl, allowPrivate) {
 
 export async function scanDiscoveryNode(node, options = {}) {
   const fetchImpl = options.fetchImpl || fetch;
+  const lookupImpl = options.lookupImpl;
   const allowPrivate = options.allowPrivate === true;
   const started = new Date().toISOString();
   const base = {
@@ -246,10 +242,10 @@ export async function scanDiscoveryNode(node, options = {}) {
     scanned_at: started,
   };
   try {
-    const models = await fetchModels(node, fetchImpl, allowPrivate);
+    const models = await fetchModels(node, fetchImpl, allowPrivate, lookupImpl);
     const capabilities = {};
-    for (const surface of SUPPORTED_SURFACES[node.protocol]) {
-      capabilities[surface] = await probeSurface(node, surface, fetchImpl, allowPrivate);
+    for (const surface of node.configuredSurfaces) {
+      capabilities[surface] = await probeSurface(node, surface, fetchImpl, allowPrivate, lookupImpl);
     }
     return { ...base, status: 'ok', models, capabilities };
   } catch (error) {
