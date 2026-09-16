@@ -1,0 +1,154 @@
+name: Patch provider-profile test fixtures
+
+on:
+  push:
+    branches: [fix/provider-capability-contract]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, '[provider-fixtures-patched]') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: fix/provider-capability-contract
+          fetch-depth: 2
+
+      - name: Patch only retired config-fixture shapes
+        shell: python
+        run: |
+          from pathlib import Path
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly 1 match, found {count}')
+              return text.replace(old, new, 1)
+
+          # conversion-test: config helpers now express Provider identity only.
+          p = Path('tests/conversion-test.mjs')
+          s = p.read_text()
+          s = replace_once(s, """const anthropicNode = (id, extra = {}) => ({
+            id,
+            provider: 'mock',
+            protocol: 'anthropic',
+            surfaces: ['messages'],
+            base_url: `https://${id}.example.com`,
+            models: { 'claude-x': 'up-model' },
+            ...extra,
+          });""", """const anthropicNode = (id, extra = {}) => ({
+            id,
+            provider: 'anthropic',
+            base_url: `https://${id}.example.com`,
+            models: { 'claude-x': 'up-model' },
+            ...extra,
+          });""", 'conversion anthropic helper')
+          s = replace_once(s, """const openaiNode = (id, extra = {}) => ({
+            id,
+            provider: 'mock',
+            protocol: 'openai',
+            surfaces: ['chat_completions'],
+            base_url: `https://${id}.example.com/v1`,
+            models: { 'claude-x': 'up-model' },
+            ...extra,
+          });""", """const openaiNode = (id, extra = {}) => ({
+            id,
+            provider: 'mock',
+            base_url: `https://${id}.example.com/v1`,
+            models: { 'claude-x': 'up-model' },
+            ...extra,
+          });""", 'conversion openai-chat helper')
+          s = replace_once(s, """const anthropicResponsesNode = (id, extra = {}) => ({
+            id,
+            provider: 'mock',
+            protocol: 'anthropic',
+            surfaces: ['messages'],
+            base_url: `https://${id}.example.com`,
+            models: { 'code-max': 'up-model' },
+            ...extra,
+          });""", """const anthropicResponsesNode = (id, extra = {}) => ({
+            id,
+            provider: 'anthropic',
+            base_url: `https://${id}.example.com`,
+            models: { 'code-max': 'up-model' },
+            ...extra,
+          });""", 'conversion responses anthropic helper')
+          s = replace_once(s, """const openaiResponsesNodeOnly = (id, extra = {}) => ({
+            id,
+            provider: 'mock',
+            protocol: 'openai',
+            surfaces: ['responses'],
+            base_url: `https://${id}.example.com/v1`,
+            models: { 'code-max': 'up-model' },
+            ...extra,
+          });""", """const openaiResponsesNodeOnly = (id, extra = {}) => ({
+            id,
+            provider: 'openai',
+            base_url: `https://${id}.example.com/v1`,
+            models: { 'code-max': 'up-model' },
+            ...extra,
+          });""", 'conversion responses openai helper')
+
+          start = "await run('regression: fallback target surface unsupported (responses-only) -> 404'"
+          end = "// =====================================================================\n//   REVERSE FALLBACK: OpenAI Chat CLIENT -> Anthropic MESSAGES UPSTREAM"
+          a = s.find(start)
+          b = s.find(end, a)
+          if a < 0 or b < 0:
+              raise SystemExit('conversion obsolete responses-only block markers not found')
+          s = s[:a] + end + s[b + len(end):]
+          s = s.replace('// The magic literal is the documented opt-out path for operators who want\n  // the legacy Native-Only behavior.', '// The magic literal is the documented opt-out path for explicit Native-Only behavior.')
+          p.write_text(s)
+
+          # token-usage-test: these inline objects are environment config, not RuntimeNode.
+          p = Path('tests/token-usage-test.mjs')
+          s = p.read_text()
+          old = "provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'], base_url:"
+          count = s.count(old)
+          if count != 3:
+              raise SystemExit(f'token usage config fixtures: expected 3 matches, found {count}')
+          s = s.replace(old, "provider: 'mock', base_url:")
+          p.write_text(s)
+
+          # architecture-contract: Provider profiles own native wire capabilities.
+          p = Path('tests/architecture-contract-test.mjs')
+          s = p.read_text()
+          s = replace_once(s, """const openaiChatNode = (id, extra = {}) => ({
+            id, provider: 'mock', protocol: 'openai', surfaces: ['chat_completions'],
+            base_url: `https://${id}.example.com/v1`, models: { 'Code-Max': 'up-model' }, ...extra,
+          });""", """const openaiChatNode = (id, extra = {}) => ({
+            id, provider: 'mock',
+            base_url: `https://${id}.example.com/v1`, models: { 'Code-Max': 'up-model' }, ...extra,
+          });""", 'architecture chat helper')
+          s = replace_once(s, """const openaiResponsesNode = (id, extra = {}) => ({
+            id, provider: 'mock', protocol: 'openai', surfaces: ['responses'],
+            base_url: `https://${id}.example.com/v1`, models: { 'Code-Max': 'up-model' }, ...extra,
+          });\n""", "", 'architecture obsolete responses helper')
+          s = replace_once(s, """const anthropicNode = (id, extra = {}) => ({
+            id, provider: 'mock', protocol: 'anthropic', surfaces: ['messages'],
+            base_url: `https://${id}.example.com`, models: { 'Code-Max': 'up-model' }, ...extra,
+          });""", """const anthropicNode = (id, extra = {}) => ({
+            id, provider: 'anthropic',
+            base_url: `https://${id}.example.com`, models: { 'Code-Max': 'up-model' }, ...extra,
+          });""", 'architecture anthropic helper')
+
+          start = "await test('Contract 04: Unsupported Conversion (responses target) -> 404'"
+          end = "await test('Contract 05: Hedge twin never crosses protocol/surface'"
+          a = s.find(start)
+          b = s.find(end, a)
+          if a < 0 or b < 0:
+              raise SystemExit('architecture obsolete Contract 04 markers not found')
+          s = s[:a] + s[b:]
+          p.write_text(s)
+
+      - name: Commit fixture convergence
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git diff --check
+          git add tests/conversion-test.mjs tests/token-usage-test.mjs tests/architecture-contract-test.mjs
+          git diff --cached --quiet && exit 0
+          git commit -m "test: converge provider-profile fixtures [provider-fixtures-patched]"
+          git push origin HEAD:fix/provider-capability-contract
