@@ -22,9 +22,6 @@ export type RoutableRequest = {
   model: string,
   protocol: Protocol,
   surface: Surface,
-  /** Optional request priority (1=lowest, 5=highest). Derived from the
-   *  access key group during preflight. When absent, treated as normal (3). */
-  priority?: number,
 };
 
 /**

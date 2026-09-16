@@ -225,15 +225,10 @@ export async function preflight(request: Request, env: Record<string, unknown>, 
   }
 
   const tiers = config.tiers;
-  const GROUP_PRIORITY: Record<string, number> = { AIR: 2, PRO: 3, MAX: 4, ULTRA: 5, AGENT: 3 };
-  const group = ('group' in authResult ? authResult.group : null) as string | null;
-  const priority = (group ? GROUP_PRIORITY[group] : null) ?? 3;
-
   const requestDescriptor: RequestDescriptor = {
     route: route as 'openai_chat' | 'openai_responses' | 'anthropic_messages',
     model: requestedModel,
     ...ROUTE_PROTOCOL_SURFACE[route as keyof typeof ROUTE_PROTOCOL_SURFACE],
-    priority,
   };
 
   const feasibility = evaluateRouteFeasibility({

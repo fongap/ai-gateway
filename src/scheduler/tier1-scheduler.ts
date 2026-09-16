@@ -93,7 +93,7 @@ export function pickTier1Candidate(tier1Nodes: ReadonlyArray<RuntimeNode>, req: 
   );
   const scoreFor = (node: RuntimeNode): number => calculateTier1Score(
     node, req.model, eligible,
-    selectionFactor(node), now, req.priority,
+    selectionFactor(node), now,
   );
 
   if (eligible.length === 1) {

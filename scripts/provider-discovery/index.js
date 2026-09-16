@@ -58,6 +58,7 @@ export {
 export {
   isDangerousHost,
   isSafeDiscoveryUrl,
+  isSafeDiscoveryTarget,
   redirectTargetIsSafe,
   readBoundedResponseText,
   enforceMaxModelCount,
