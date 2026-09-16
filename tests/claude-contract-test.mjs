@@ -72,9 +72,7 @@ function makeEnv({ tier1, tier2, secrets, extraEnv } = {}) {
 // Anthropic-protocol node serving /v1/messages natively.
 const node = (id, extra = {}) => ({
   id,
-  provider: 'mock',
-  protocol: 'anthropic',
-  surfaces: ['messages'],
+  provider: 'anthropic',
   base_url: `https://${id}.example.com`,
   models: { 'claude-x': 'up-model', 'code-max': 'up-model' },
   ...extra,

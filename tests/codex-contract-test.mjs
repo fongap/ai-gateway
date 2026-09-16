@@ -79,9 +79,7 @@ function makeEnv({ tier1, tier2, tier3, secrets, extraEnv } = {}) {
 // OpenAI-protocol node serving /v1/responses natively.
 const node = (id, extra = {}) => ({
   id,
-  provider: 'mock',
-  protocol: 'openai',
-  surfaces: ['responses'],
+  provider: 'openai',
   base_url: `https://${id}.example.com/v1`,
   models: { 'code-max': 'up-model' },
   ...extra,
