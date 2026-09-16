@@ -22,11 +22,8 @@ jobs:
           from pathlib import Path
           p = Path('tests/integration-test.mjs')
           s = p.read_text()
-          old = '''  assert.ok(body.diagnostics.some((d) => d.includes('unknown field "protocol"')));
-  assert.ok(body.diagnostics.some((d) => d.includes('unknown field "surfaces"')));'''
-          new = '''  assert.ok(body.diagnostics.some((d) =>
-    d.includes('unknown field "protocol"') || d.includes('unknown field "surfaces"')
-  ));'''
+          old = "  assert.ok(body.diagnostics.some((d) => d.includes('unknown field \\\"protocol\\\"')));\n  assert.ok(body.diagnostics.some((d) => d.includes('unknown field \\\"surfaces\\\"')));"
+          new = "  assert.ok(body.diagnostics.some((d) =>\n    d.includes('unknown field \\\"protocol\\\"') || d.includes('unknown field \\\"surfaces\\\"')\n  ));"
           if s.count(old) != 1:
               raise SystemExit(f'expected exactly one diagnostic assertion pair, found {s.count(old)}')
           p.write_text(s.replace(old, new, 1))
