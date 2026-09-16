@@ -534,8 +534,6 @@ await test('claude stream client + JSON upstream synthesizes the SSE lifecycle',
 const openaiNode = (id, extra = {}) => ({
   id,
   provider: 'mock',
-  protocol: 'openai',
-  surfaces: ['chat_completions'],
   base_url: `https://${id}.example.com/v1`,
   models: { 'code-max': 'up-model' },
   ...extra,
