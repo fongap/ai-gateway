@@ -18,7 +18,6 @@ import { __resetAdaptive429StateForTests } from '../src/reliability/adaptive-429
 
 const ACCESS_KEY = 'responses-diagnostics-key';
 let routeHandlers = {};
-
 function reset() {
   __resetAllStateForTests();
   __resetTier1StateForTests();
@@ -37,9 +36,7 @@ globalThis.fetch = async (input, init) => {
 
 const node = (id) => ({
   id,
-  provider: 'mock',
-  protocol: 'openai',
-  surfaces: ['responses'],
+  provider: 'openai',
   base_url: `https://${id}.example.com/v1`,
   models: { 'code-max': 'up-model' },
 });
@@ -61,31 +58,19 @@ function request(model = 'code-max') {
     body: JSON.stringify({ model, input: 'hi' }),
   });
 }
-
 function json(data, status = 200, headers = {}) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { 'content-type': 'application/json', ...headers },
-  });
+  return new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json', ...headers } });
 }
 
-// Terminal status aggregation is order-independent and groups equivalent
-// failure kinds before comparison. Ties are deterministic: 504 > 502 > 429.
 assert.equal(terminalStatus({ [KIND.RATE_LIMIT]: 1, [KIND.HEADERS_TIMEOUT]: 1 }), 504);
 assert.equal(terminalStatus({ [KIND.HEADERS_TIMEOUT]: 1, [KIND.RATE_LIMIT]: 1 }), 504);
 assert.equal(terminalStatus({ [KIND.RATE_LIMIT]: 1, [KIND.SERVER]: 1 }), 502);
 assert.equal(terminalStatus({ [KIND.SERVER]: 1, [KIND.RATE_LIMIT]: 1 }), 502);
-assert.equal(terminalStatus({ [KIND.RATE_LIMIT]: 1, [KIND.RATE_LIMIT_GLOBAL]: 1, [KIND.SERVER]: 1 }), 429,
-  'rate-limit kinds must aggregate into one client-visible 429 bucket');
-assert.equal(terminalStatus({ [KIND.HEADERS_TIMEOUT]: 1, [KIND.FIRST_EVENT_TIMEOUT]: 1, [KIND.SERVER]: 1 }), 504,
-  'timeout kinds must aggregate into one client-visible 504 bucket');
+assert.equal(terminalStatus({ [KIND.RATE_LIMIT]: 1, [KIND.RATE_LIMIT_GLOBAL]: 1, [KIND.SERVER]: 1 }), 429);
+assert.equal(terminalStatus({ [KIND.HEADERS_TIMEOUT]: 1, [KIND.FIRST_EVENT_TIMEOUT]: 1, [KIND.SERVER]: 1 }), 504);
 assert.equal(terminalStatus({}), null);
-
-// Envelope compatibility is deliberately strict: the gateway must not mutate
-// the body contract just to improve diagnostics.
 assert.equal(buildResponsesError('x', 'api_error').error.code, null);
 
-// A second request while the only account is cooling performs no dispatch.
 reset();
 routeHandlers['cool.example.com'] = () => json({ error: { message: 'rate' } }, 429, { 'retry-after': '30' });
 const coolingEnv = envFor('cool');
@@ -102,8 +87,6 @@ assert.equal(cooling.headers.get('x-gateway-hedges'), '0');
 assert.equal(cooling.headers.get('x-gateway-failure-kinds'), null);
 assert.ok(Number(cooling.headers.get('retry-after')) > 0);
 
-// Real upstream exhaustion gets a stable header classification and aggregate
-// failure diagnostics, but never node/provider/credential topology.
 reset();
 routeHandlers['dead.example.com'] = () => json({}, 503);
 const dead = await worker.fetch(request(), envFor('dead'), {});
@@ -119,7 +102,6 @@ assert.equal(dead.headers.get('x-gateway-failure-kinds'), 'server:1');
 assert.equal(dead.headers.get('x-gateway-node'), null);
 assert.equal(dead.headers.get('x-gateway-provider'), null);
 
-// Upstream client errors are not reclassified as gateway routing failures.
 reset();
 routeHandlers['badreq.example.com'] = () => json({ error: { message: 'bad input' } }, 400);
 const badReq = await worker.fetch(request(), envFor('badreq'), {});
@@ -131,7 +113,6 @@ assert.equal(badReq.headers.get('x-gateway-error-code'), null);
 assert.equal(badReq.headers.get('x-gateway-attempts'), '1');
 assert.equal(badReq.headers.get('x-gateway-dispatches'), '1');
 
-// Preflight errors have no scheduler activity and must not pretend they do.
 reset();
 const unknown = await worker.fetch(request('not-a-model'), envFor('unused'), {});
 assert.equal(unknown.status, 404);
