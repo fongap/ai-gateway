@@ -21,12 +21,19 @@ jobs:
         run: |
           from pathlib import Path
           p = Path('tests/integration-test.mjs')
-          s = p.read_text()
-          old = "  assert.ok(body.diagnostics.some((d) => d.includes('unknown field \\\"protocol\\\"')));\n  assert.ok(body.diagnostics.some((d) => d.includes('unknown field \\\"surfaces\\\"')));"
-          new = "  assert.ok(body.diagnostics.some((d) =>\n    d.includes('unknown field \\\"protocol\\\"') || d.includes('unknown field \\\"surfaces\\\"')\n  ));"
-          if s.count(old) != 1:
-              raise SystemExit(f'expected exactly one diagnostic assertion pair, found {s.count(old)}')
-          p.write_text(s.replace(old, new, 1))
+          lines = p.read_text().splitlines()
+          first = "  assert.ok(body.diagnostics.some((d) => d.includes('unknown field \"protocol\"')));"
+          second = "  assert.ok(body.diagnostics.some((d) => d.includes('unknown field \"surfaces\"')));"
+          matches = [i for i in range(len(lines) - 1) if lines[i] == first and lines[i + 1] == second]
+          if len(matches) != 1:
+              raise SystemExit(f'expected exactly one diagnostic assertion pair, found {len(matches)}')
+          i = matches[0]
+          lines[i:i + 2] = [
+              "  assert.ok(body.diagnostics.some((d) =>",
+              "    d.includes('unknown field \"protocol\"') || d.includes('unknown field \"surfaces\"')",
+              "  ));",
+          ]
+          p.write_text('\n'.join(lines) + '\n')
 
       - name: Commit
         run: |
