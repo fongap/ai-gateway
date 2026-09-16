@@ -17,8 +17,6 @@ function test(name, fn) {
 const node = (id, extra = {}) => ({
   id,
   provider: 'mock',
-  protocol: 'openai',
-  surfaces: ['chat_completions'],
   base_url: `https://${id}.example.com/v1`,
   models: { 'general-air': 'up-model' },
   ...extra,
@@ -49,8 +47,8 @@ test('collectShards accepts 01..10 and reports out-of-range/malformed names', ()
   assert.equal(tiers[0].index, 3);
 });
 
-// Strict node schema: required current fields only.
-test('fully explicit node config is ready', () => {
+// Current node schema: account data only; provider owns wire structure.
+test('account-level node config is ready and gets provider wire profile', () => {
   const cfg = loadGatewayConfig(makeEnv({ tier1: [node('good')], secrets: { good: 'x' } }));
   assert.equal(cfg.status, 'ready');
   assert.equal(cfg.nodes.length, 1);
@@ -58,13 +56,38 @@ test('fully explicit node config is ready', () => {
   assert.deepEqual(cfg.nodes[0].surfaces, ['chat_completions']);
 });
 
-test('provider, protocol, surfaces and models are required', () => {
-  for (const field of ['provider', 'protocol', 'surfaces', 'models']) {
+test('provider, base_url and models are required account fields', () => {
+  for (const field of ['provider', 'base_url', 'models']) {
     const n = node(`missing-${field}`);
     delete n[field];
     const cfg = loadGatewayConfig(makeEnv({ tier1: [n], secrets: { [n.id]: 'x' } }));
-    assert.equal(cfg.nodes.length, 0, `${field} omission must not be repaired by a default`);
+    assert.equal(cfg.nodes.length, 0, `${field} omission must fail`);
     assert.ok(cfg.diagnostics.some((d) => d.includes(field)), `missing ${field} diagnostic required`);
+  }
+});
+
+test('provider wire profiles are single-sourced', () => {
+  const anthropic = loadGatewayConfig(makeEnv({ tier1: [node('an', { provider: 'anthropic' })], secrets: { an: 'x' } }));
+  assert.equal(anthropic.nodes[0].protocol, 'anthropic');
+  assert.deepEqual(anthropic.nodes[0].surfaces, ['messages']);
+
+  const openai = loadGatewayConfig(makeEnv({ tier1: [node('oa', { provider: 'openai' })], secrets: { oa: 'x' } }));
+  assert.equal(openai.nodes[0].protocol, 'openai');
+  assert.deepEqual(openai.nodes[0].surfaces, ['chat_completions', 'responses']);
+
+  const compatible = loadGatewayConfig(makeEnv({ tier1: [node('groq', { provider: 'groq' })], secrets: { groq: 'x' } }));
+  assert.equal(compatible.nodes[0].protocol, 'openai');
+  assert.deepEqual(compatible.nodes[0].surfaces, ['chat_completions']);
+});
+
+test('protocol and surfaces are not node fields', () => {
+  for (const extra of [
+    { protocol: 'openai' },
+    { surfaces: ['chat_completions'] },
+  ]) {
+    const cfg = loadGatewayConfig(makeEnv({ tier1: [node('wire-field', extra)], secrets: { 'wire-field': 'x' } }));
+    assert.equal(cfg.nodes.length, 0);
+    assert.ok(cfg.diagnostics.some((d) => d.includes('unknown field')));
   }
 });
 
@@ -97,17 +120,6 @@ test('priority is numeric-only; absent priority uses current default 100', () =>
     assert.equal(cfg.nodes.length, 0);
     assert.ok(cfg.diagnostics.some((d) => d.includes('priority')));
   }
-});
-
-test('protocol and surfaces are closed vocabularies', () => {
-  const anthropic = loadGatewayConfig(makeEnv({
-    tier1: [node('an', { protocol: 'anthropic', surfaces: ['messages'] })], secrets: { an: 'x' },
-  }));
-  assert.equal(anthropic.status, 'ready');
-  const badProtocol = loadGatewayConfig(makeEnv({ tier1: [node('pbad', { protocol: 'gemini' })], secrets: { pbad: 'x' } }));
-  assert.equal(badProtocol.nodes.length, 0);
-  const badSurface = loadGatewayConfig(makeEnv({ tier1: [node('sbad', { protocol: 'anthropic', surfaces: ['chat_completions'] })], secrets: { sbad: 'x' } }));
-  assert.equal(badSurface.nodes.length, 0);
 });
 
 // Registry / wildcard behavior.
