@@ -158,9 +158,6 @@ export async function usageSection(env: Record<string, unknown>, now: number = D
 
   let totalAttempts = 0;
   if (available && dailyMap) for (const v of dailyMap.values()) totalAttempts += v.requests;
-  const coverageText = summaryOk && summary.coverage !== null
-    ? ` · Usage 覆盖 ${(summary.coverage * 100).toFixed(1)}%`
-    : '';
 
   const errors: string[] = [];
   if (summaryErrorMessage(summary)) errors.push(summaryErrorMessage(summary) as string);
@@ -186,7 +183,7 @@ export async function usageSection(env: Record<string, unknown>, now: number = D
   <div class="wrap">
     <div class="section-head"><span class="section-title">使用情况</span></div>
     <div class="stat-row">${kpis}</div>
-    <div class="subhead"><b>已报告上游 Token 活动 · 近 52 周</b><span>${fmtInt(totalAttempts)} 次上游调用${coverageText} · 缺失不估算 · 迁移前历史为已知下限</span></div>
+    <div class="subhead"><b>Token 活动 · 近 52 周</b><span>${fmtInt(totalAttempts)} 次请求</span></div>
     ${activity}
     ${renderModelUsage(modelUsage, officialNames)}
   </div>
