@@ -1,0 +1,82 @@
+name: Patch client contract provider fixtures
+
+on:
+  push:
+    branches: [fix/provider-capability-contract]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, '[client-provider-fixtures]') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: fix/provider-capability-contract
+
+      - name: Converge Codex and Claude contract fixtures
+        shell: python
+        run: |
+          from pathlib import Path
+
+          def replace_once(path, old, new, label):
+              p = Path(path)
+              s = p.read_text()
+              count = s.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly 1 match, found {count}')
+              p.write_text(s.replace(old, new, 1))
+
+          replace_once(
+              'tests/codex-contract-test.mjs',
+              """const node = (id, extra = {}) => ({
+            id,
+            provider: 'mock',
+            protocol: 'openai',
+            surfaces: ['responses'],
+            base_url: `https://${id}.example.com/v1`,
+            models: { 'code-max': 'up-model' },
+            ...extra,
+          });""",
+              """const node = (id, extra = {}) => ({
+            id,
+            provider: 'openai',
+            base_url: `https://${id}.example.com/v1`,
+            models: { 'code-max': 'up-model' },
+            ...extra,
+          });""",
+              'codex node helper',
+          )
+
+          replace_once(
+              'tests/claude-contract-test.mjs',
+              """const node = (id, extra = {}) => ({
+            id,
+            provider: 'mock',
+            protocol: 'anthropic',
+            surfaces: ['messages'],
+            base_url: `https://${id}.example.com`,
+            models: { 'claude-x': 'up-model', 'code-max': 'up-model' },
+            ...extra,
+          });""",
+              """const node = (id, extra = {}) => ({
+            id,
+            provider: 'anthropic',
+            base_url: `https://${id}.example.com`,
+            models: { 'claude-x': 'up-model', 'code-max': 'up-model' },
+            ...extra,
+          });""",
+              'claude node helper',
+          )
+
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git diff --check
+          git add tests/codex-contract-test.mjs tests/claude-contract-test.mjs
+          git diff --cached --quiet && exit 0
+          git commit -m "test: converge client provider fixtures [client-provider-fixtures]"
+          git push origin HEAD:fix/provider-capability-contract
