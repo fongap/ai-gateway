@@ -80,8 +80,6 @@ function makeEnv({ tier1, tier2, tier3, secrets = {}, extraEnv = {} } = {}) {
 const node = (id, extra = {}) => ({
   id,
   provider: 'mock',
-  protocol: 'openai',
-  surfaces: ['chat_completions'],
   base_url: `https://${id}.example.com/v1`,
   models: { 'general-air': 'up-model' },
   ...extra,
