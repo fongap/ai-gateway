@@ -62,8 +62,6 @@ try {
       {
         id: 'openai-only',
         provider: 'mock',
-        protocol: 'openai',
-        surfaces: ['chat_completions'],
         base_url: 'https://openai-only.example.com/v1',
         models: { 'code-max': 'up-model' },
       },
