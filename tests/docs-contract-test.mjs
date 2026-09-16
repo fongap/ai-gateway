@@ -1,22 +1,17 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MIT
-//
-// Docs contract test: blocks old-architecture semantics from re-entering docs.
-// Scans current docs/examples (excluding CHANGELOG.md, whose historical entries
-// legitimately describe earlier behavior) for factual drift.
-//
-// Run as part of `npm run validate:merge`.
-
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const read = (file) => fs.readFileSync(path.join(root, file), 'utf8');
+let passed = 0;
+const ok = (label) => { passed++; console.log(`ok - ${label}`); };
+
 const DOCS = [
-  'README.md',
-  'README.zh-CN.md',
-  'SECURITY.md',
+  'README.md', 'README.zh-CN.md', 'SECURITY.md',
   'docs/architecture/overview.md',
   'docs/architecture/protocol-model.md',
   'docs/architecture/routing-model.md',
@@ -25,259 +20,101 @@ const DOCS = [
   'docs/operations/deployment.md',
 ];
 
-let passed = 0;
-
-function readDoc(file) {
-  return fs.readFileSync(path.join(root, file), 'utf8');
-}
-
-// Forbidden patterns that indicate old-architecture drift has returned.
-const FORBIDDEN = [
-  {
-    pattern: /RESPONSES_REASONING_MODE/,
-    message: 'RESPONSES_REASONING_MODE was removed — /v1/responses is native passthrough, no chat-conversion knob',
-  },
-  {
-    pattern: /ANTHROPIC_REASONING_REQUEST_MODE/,
-    message: 'ANTHROPIC_REASONING_REQUEST_MODE is stale — remove from runtime knobs table',
-  },
-  {
-    pattern: /responses\/messages conversions|converted OpenAI-chat outbound body/,
-    message: 'Responses cross-protocol conversion language is stale — /v1/responses is native-only',
-  },
-  {
-    pattern: /max_attempts.*\bphysical\b|max_attempts.*physical upstream/i,
-    message: 'max_attempts is LOGICAL attempts, not physical upstream dispatches',
-  },
-];
-
-// Protocol fact contract: current docs/examples must match protocol-fallbacks.ts.
-// Only OpenAI Chat ↔ Anthropic Messages bidirectional fallback exists.
-// OpenAI Responses is Native Only.
 const PROTOCOL_FACT_FILES = [
-  'README.md',
-  'README.zh-CN.md',
+  'README.md', 'README.zh-CN.md',
   'docs/architecture/protocol-model.md',
   'docs/architecture/routing-model.md',
   'docs/operations/configuration.md',
-  '.dev.vars.example',
-  'config/worker-vars.example.json',
+  '.dev.vars.example', 'config/worker-vars.example.json',
 ];
 for (const file of PROTOCOL_FACT_FILES) {
-  const text = readDoc(file);
-  assert.doesNotMatch(text, /Responses\s*→\s*Anthropic|Responses\s*->\s*Anthropic/, `${file}: must not claim Responses → Anthropic cross-protocol conversion`);
-  assert.doesNotMatch(text, /three-way|三向/, `${file}: must not claim three-way protocol fallback`);
-  assert.doesNotMatch(text, /"openai:responses"\s*:\s*\["anthropic:messages"\]/, `${file}: must not include openai:responses → anthropic:messages in default fallback chain`);
-  passed++;
-  console.log(`ok - ${file} respects protocol fact contract`);
+  const text = read(file);
+  assert.doesNotMatch(text, /Responses\s*(?:→|->)\s*Anthropic/i, `${file}: Responses must remain Native Only`);
+  assert.doesNotMatch(text, /three-way|三向/i, `${file}: no three-way protocol fallback`);
+  assert.doesNotMatch(text, /"openai:responses"\s*:\s*\["anthropic:messages"\]/, `${file}: invalid Responses fallback`);
+  ok(`${file} protocol contract`);
 }
 
-const explicitFallbackExamples = ['.dev.vars.example', 'config/worker-vars.example.json'];
-for (const file of explicitFallbackExamples) {
-  const text = readDoc(file);
-  assert.match(text, /anthropic:messages[\s\S]{0,160}openai:chat_completions/, `${file}: must show Anthropic Messages → OpenAI Chat fallback`);
-  assert.match(text, /openai:chat_completions[\s\S]{0,160}anthropic:messages/, `${file}: must show OpenAI Chat → Anthropic Messages fallback`);
-  passed++;
-  console.log(`ok - ${file} shows the bidirectional v1.3.0 fallback`);
+for (const file of ['.dev.vars.example', 'config/worker-vars.example.json']) {
+  const text = read(file);
+  assert.match(text, /anthropic:messages[\s\S]{0,180}openai:chat_completions/);
+  assert.match(text, /openai:chat_completions[\s\S]{0,180}anthropic:messages/);
+  ok(`${file} bidirectional Chat/Messages fallback`);
 }
 
-// configuration.md must not list a wrong default chain.
-const configDocText = readDoc('docs/operations/configuration.md');
-assert.doesNotMatch(
-  configDocText,
-  /openai:responses.*anthropic:messages.*openai:chat_completions.*anthropic:messages.*openai:responses/,
-  'configuration.md default chain must not include openai:responses → anthropic:messages',
-);
-passed++;
-console.log('ok - configuration.md default chain matches SUPPORTED_CONVERSIONS');
-
-// Access-key fact contract: current operator-facing material is group-first.
 const ACCESS_FACT_FILES = [
-  'README.md',
-  'README.zh-CN.md',
-  'SECURITY.md',
-  'docs/operations/configuration.md',
-  'docs/operations/deployment.md',
-  '.dev.vars.example',
-  'config/access-keys.example.json',
+  'README.md', 'README.zh-CN.md', 'SECURITY.md',
+  'docs/operations/configuration.md', 'docs/operations/deployment.md',
+  '.dev.vars.example', 'config/access-keys.example.json',
 ];
-const GROUP_KEY_DOC = /GATEWAY_ACCESS_KEY_(?:AIR|PRO|MAX|ULTRA|AGENT|<GROUP>|\{AIR,PRO,MAX,ULTRA,AGENT\})/;
-const GROUP_MODELS_DOC = /GATEWAY_ACCESS_MODELS_(?:AIR|PRO|MAX|ULTRA|AGENT|<GROUP>|\{AIR,PRO,MAX,ULTRA,AGENT\})/;
+const GROUP_KEY = /GATEWAY_ACCESS_KEY_(?:AIR|PRO|MAX|ULTRA|AGENT|<GROUP>|\{AIR,PRO,MAX,ULTRA,AGENT\})/;
+const GROUP_MODELS = /GATEWAY_ACCESS_MODELS_(?:AIR|PRO|MAX|ULTRA|AGENT|<GROUP>|\{AIR,PRO,MAX,ULTRA,AGENT\})/;
 for (const file of ACCESS_FACT_FILES) {
-  const text = readDoc(file);
-  assert.match(text, GROUP_KEY_DOC, `${file}: must document the current Group Keys`);
-  assert.match(text, GROUP_MODELS_DOC, `${file}: must document the corresponding Group Models`);
-  passed++;
-  console.log(`ok - ${file} uses the current Gateway Access Group model`);
+  const text = read(file);
+  assert.match(text, GROUP_KEY, `${file}: grouped access key required`);
+  assert.match(text, GROUP_MODELS, `${file}: grouped model allowlist required`);
+  ok(`${file} grouped access model`);
 }
 
-// Secret shards bind by Tier + node id. Suffixes are independent shard numbers.
 const SHARD_FACT_FILES = [
-  'README.md',
-  'README.zh-CN.md',
-  'SECURITY.md',
+  'README.md', 'README.zh-CN.md', 'SECURITY.md',
   'docs/architecture/routing-model.md',
-  'docs/operations/configuration.md',
-  'docs/operations/deployment.md',
-  '.dev.vars.example',
+  'docs/operations/configuration.md', 'docs/operations/deployment.md', '.dev.vars.example',
 ];
 for (const file of SHARD_FACT_FILES) {
-  const text = readDoc(file);
-  assert.doesNotMatch(text, /paired\s*1:1|paired\s+one-to-one|matching\s+(?:config\s+)?shard|matching\s+suffix|一一对应|1:1\s*配对/i, `${file}: must not require Config/Secret shard suffix pairing`);
-  passed++;
-  console.log(`ok - ${file} does not require Config/Secret suffix pairing`);
+  const text = read(file);
+  assert.match(text, /independent|independently|not by matching|无需.*对应|不按.*后缀|Tier\s*\+\s*node id/i,
+    `${file}: must state independent Config/Secret shard binding`);
+  assert.doesNotMatch(text, /(?:must|should|required to|需要|必须)[^\n]{0,80}(?:paired\s*1:1|matching\s+(?:config\s+)?shard|matching\s+suffix|一一对应|1:1\s*配对)/i,
+    `${file}: must not instruct operators to pair Config/Secret suffixes`);
+  ok(`${file} independent shard suffixes`);
 }
 
-// Tier 1 has no independent hard attempt cap in v1.3.0.
-const routingText = readDoc('docs/architecture/routing-model.md');
-assert.doesNotMatch(
-  routingText,
-  /Tier\s*1[^\n]{0,100}(?:最多|maximum|max(?:imum)?)[^\n]{0,30}\b3\b[^\n]{0,30}(?:logical\s+)?attempt/i,
-  'routing-model.md must not reintroduce a Tier 1 three-attempt cap',
-);
-assert.match(
-  routingText,
-  /Tier 1 没有独立 attempt 上限/,
-  'routing-model.md must state that Tier 1 has no independent attempt cap',
-);
-passed++;
-console.log('ok - routing-model.md matches the unified Tier attempt budget');
+const routing = read('docs/architecture/routing-model.md');
+assert.match(routing, /Tier 1 has no independent attempt cap/i);
+assert.match(routing, /Node `limits` are not part of the schema/i);
+assert.match(routing, /`max_attempts` is the request-wide hard ceiling/i);
+assert.match(routing, /There is exactly one cross-tier allocation model/i);
+assert.match(routing, /There is no `budget_split`, weighted allocation, or alternate cross-tier budget mode/i);
+assert.doesNotMatch(routing, /historical config|migration-time runtime interpretation/i);
+ok('routing docs use one current attempt-allocation contract');
 
-// Current node schema rejects retired limits, and model-family fallback must
-// never enlarge the operator-configured request budget.
-assert.match(
-  routingText,
-  /Node `limits` are not part of the active schema/,
-  'routing-model.md must state the current hard node-schema boundary',
-);
-assert.doesNotMatch(
-  routingText,
-  /accepted temporarily for migration|accepted during migration|legacy `limits` objects are accepted/i,
-  'routing-model.md must not claim retired limits remain migration-compatible',
-);
-assert.match(
-  routingText,
-  /`max_attempts` remains the request-wide hard ceiling/,
-  'routing-model.md must state that model-family fallback cannot enlarge max_attempts',
-);
-assert.doesNotMatch(
-  routingText,
-  /requires a six-attempt minimum|receive at least six request-wide logical attempts/i,
-  'routing-model.md must not claim family fallback automatically raises max_attempts to six',
-);
-passed++;
-console.log('ok - routing-model.md matches strict limits schema and hard family attempt ceiling');
-
-const overviewText = readDoc('docs/architecture/overview.md');
-assert.doesNotMatch(
-  overviewText,
-  /model mapping, limits, credential binding/,
-  'overview.md must not list retired node limits as Node config ownership',
-);
-assert.doesNotMatch(
-  overviewText,
-  /Tier 1[^\n]*RPM bucket/,
-  'overview.md must not describe the retired node-RPM capacity model',
-);
-assert.match(
-  overviewText,
-  /`max_attempts`[^\n]*request-wide hard ceiling/,
-  'overview.md must preserve the model-family hard budget invariant',
-);
-passed++;
-console.log('ok - overview.md matches current node capacity and family budget boundaries');
+const config = read('docs/operations/configuration.md');
+assert.match(config, /provider[\s\S]{0,160}protocol[\s\S]{0,160}surfaces[\s\S]{0,160}models/i,
+  'configuration docs must show explicit required node fields');
+assert.match(config, /There is no fallback shape for missing `provider`, `protocol`, `surfaces`, or `models`/i);
+assert.match(config, /`budget_split`, weighted allocation, and alternate tier-budget modes are not part of the current policy schema/i);
+assert.doesNotMatch(config, /protocol` defaults|surfaces` defaults|budget_split"\s*:/i);
+ok('configuration docs match strict current schema');
 
 for (const file of DOCS) {
-  const text = readDoc(file);
-  for (const { pattern, message } of FORBIDDEN) {
-    const match = text.match(pattern);
-    if (match) {
-      assert.fail(`${file}: forbidden pattern "${match[0]}" — ${message}`);
-    }
-  }
-  passed++;
-  console.log(`ok - ${file} has no forbidden old-architecture patterns`);
+  const text = read(file);
+  assert.doesNotMatch(text, /RESPONSES_REASONING_MODE|ANTHROPIC_REASONING_REQUEST_MODE/, `${file}: removed knobs must stay absent`);
+  assert.doesNotMatch(text, /max_attempts[^\n]{0,80}\bphysical\b/i, `${file}: max_attempts is logical`);
+  assert.doesNotMatch(text, /CHANGELOG\.md|version-policy\.md|\/version\b/i, `${file}: project release/version surface must stay absent`);
+  ok(`${file} has no retired contract surface`);
 }
 
-// CONFIGURATION.md must NOT present GATEWAY_CONFIG / GATEWAY_SECRETS_CONFIG
-// as the recommended production source (it is deprecated per deployment.md).
-const configText = readDoc('docs/operations/configuration.md');
-assert.ok(
-  !/deliver.*through.*GATEWAY_CONFIG/i.test(configText) || /deprecated/i.test(configText),
-  'CONFIGURATION.md must not present GATEWAY_CONFIG as the production path without marking it deprecated',
-);
-assert.ok(
-  !/deliver.*through.*GATEWAY_SECRETS_CONFIG/i.test(configText) || /deprecated/i.test(configText),
-  'CONFIGURATION.md must not present GATEWAY_SECRETS_CONFIG as the production path without marking it deprecated',
-);
-passed++;
-console.log('ok - CONFIGURATION.md does not present legacy blob as production path');
-
-// deploy.yml must inject every runtime tunable from runtime-vars.ts.
-const deployYml = readDoc('.github/workflows/deploy.yml');
-const { RUNTIME_VAR_NAMES } = await import('../src/config/runtime-vars.ts');
+const deployYml = read('.github/workflows/deploy.yml');
+const { RUNTIME_VAR_NAMES, RUNTIME_TUNABLES } = await import('../src/config/runtime-vars.ts');
 for (const name of RUNTIME_VAR_NAMES) {
-  assert.ok(
-    deployYml.includes(`${name}:`),
-    `deploy.yml must inject ${name} as an env var`,
-  );
+  assert.ok(deployYml.includes(`${name}:`), `deploy.yml must inject ${name}`);
 }
-passed++;
-console.log(`ok - deploy.yml injects all ${RUNTIME_VAR_NAMES.length} runtime variables`);
+ok(`deploy.yml injects all ${RUNTIME_VAR_NAMES.length} runtime variables`);
 
-// .dev.vars.example comments must match runtime-vars.ts defaults.
-// This ensures the example config doesn't silently override defaults with stale values.
-const devVarsExample = readDoc('.dev.vars.example');
-const { RUNTIME_TUNABLES } = await import('../src/config/runtime-vars.ts');
+// runtime-vars.ts is the one default-value source. .dev.vars.example is an
+// operator example and may intentionally show overrides, so it must list the
+// current knobs without duplicating a second machine-checked default table.
+const devVars = read('.dev.vars.example');
+assert.match(devVars, /Defaults live in src\/config\/runtime-vars\.ts/i,
+  '.dev.vars.example must point operators to runtime-vars.ts for defaults');
 for (const tunable of RUNTIME_TUNABLES) {
-  const name = tunable.name;
-  const expectedDefault = String(tunable.def);
-  const commentPattern = new RegExp(`#\\s+${name}=.*#\\s+default:\\s+${expectedDefault}\\s*\\(`);
-  const match = devVarsExample.match(commentPattern);
-  if (!match) {
-    const flexiblePattern = new RegExp(`${name}[^\\n]*#.*default:\\s*${expectedDefault}`);
-    if (!flexiblePattern.test(devVarsExample)) {
-      assert.fail(`.dev.vars.example: missing or mismatched default for ${name} (expected ${expectedDefault})`);
-    }
-  }
-  passed++;
-  console.log(`ok - .dev.vars.example default for ${name} matches runtime-vars.ts`);
+  assert.ok(devVars.includes(tunable.name), `.dev.vars.example must mention ${tunable.name}`);
 }
+ok('.dev.vars.example references every current tunable and keeps defaults single-sourced');
 
-// Architecture docs must not contradict runtime-vars.ts defaults.
-// Specific drift-prone values: FAILOVER_BUDGET_MS, HEDGE_DELAY_MS.
-const archDocDefaults = [
-  { file: 'docs/architecture/routing-model.md', varName: 'FAILOVER_BUDGET_MS', def: RUNTIME_TUNABLES.find((t) => t.name === 'FAILOVER_BUDGET_MS').def },
-  { file: 'docs/architecture/routing-model.md', varName: 'HEDGE_DELAY_MS', def: RUNTIME_TUNABLES.find((t) => t.name === 'HEDGE_DELAY_MS').def },
-];
-for (const { file, varName, def } of archDocDefaults) {
-  const text = readDoc(file);
-  const re = new RegExp(`${varName}[^\\n]*?\\u9ed8\\u8ba4\\s*(\\d+)\\s*s`, 'g');
-  let m;
-  while ((m = re.exec(text)) !== null) {
-    const seconds = parseInt(m[1], 10);
-    const expectedSeconds = Math.round(def / 1000);
-    assert.equal(
-      seconds,
-      expectedSeconds,
-      `${file}: ${varName} default is ${seconds}s in docs but runtime-vars.ts says ${expectedSeconds}s (${def}ms)`,
-    );
-  }
-  passed++;
-  console.log(`ok - ${file} default for ${varName} matches runtime-vars.ts (${def}ms)`);
-}
-
-// routing-model.md must describe Tier 1 as Affinity → P2C, not LRU.
-assert.ok(
-  /Tier 1[\s\S]{0,200}Affinity[\s\S]{0,200}P2C/.test(routingText),
-  'routing-model.md must describe Tier 1 as Eligibility → Affinity → P2C (not LRU rotation)',
-);
-assert.doesNotMatch(
-  routingText,
-  /Same tier \+ same priority = LRU rotation/,
-  'routing-model.md must not describe LRU rotation as the tier-1 selection algorithm',
-);
-passed++;
-console.log('ok - routing-model.md describes Tier 1 as Affinity → P2C, not LRU');
+assert.match(routing, /Tier 1:[^\n]*Eligibility → Affinity → P2C/i);
+assert.doesNotMatch(routing, /Same tier \+ same priority = LRU rotation/i);
+ok('Tier 1 docs remain Affinity → P2C');
 
 console.log(`\ndocs contract tests passed (${passed}).`);

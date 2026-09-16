@@ -1,16 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
 //
-// Tier Execution Loop — iterates tiers in TIER_ORDER, within each tier
-// attempts eligible candidates in priority order, charges logical
-// attempts / dispatches / hedges, and returns a terminal Response when
-// the request was committed (success, budget exhausted, client-side
-// stop) or null when all tiers are exhausted so the caller can fall
-// through to cross-protocol fallback or the exhausted handler.
-//
-// This module owns the pure helpers that compute per-tier budget and
-// dispatchable-count. The actual request orchestration stays in handler.ts;
-// upstream attempt execution lives in attempt.ts.
+// Tier Execution Loop helpers. Tier order is a product invariant:
+// Tier 1 (free capacity) -> Tier 2 (subscription entitlement reserve)
+// -> Tier 3 (paid API reserve). Attempt allocation therefore has one explicit
+// precedence model; lower-tier node counts never pull surplus budget away from
+// a higher tier.
 
 import { TIER_ORDER } from './router.ts';
 import { pickCandidate, tierHasDispatchableNode, countDispatchableNodes } from '../scheduler/scheduler.ts';
@@ -41,6 +36,7 @@ function tier1LiveCount(
 ): number {
   return tier1CountDispatchableNodes(nodes, req, attempted, now, knownModels, maxInFlight);
 }
+
 export type TierPickResult = {
   node?: RuntimeNode,
   raceLost?: boolean,
@@ -62,14 +58,15 @@ type PickForTierOpts = {
   maxInFlight?: number | null,
 };
 
-// Tier-aware picker. Tier 1 uses P2C + affinity + tier1-state eligibility;
- // Tier 2/3 use node-state pickCandidate. Both paths expose the same
- // { node } | { raceLost: true, raceLostNodeId } | null result shape to the tier loop.
- // An optional deterministic RNG (from TIER1_SCHEDULER_SEED) makes P2C sampling
- // reproducible in tests; when the seed is absent, Math.random is used.
- export function pickForTier(tierNumber: Tier, tierNodes: ReadonlyArray<RuntimeNode>, req: RoutableRequest, attempted: Set<string>, opts: PickForTierOpts = {}): TierPickResult {
-   const { knownModels, raceLostIds, maxInFlight } = opts;
-   if (tierNumber !== 1) {
+export function pickForTier(
+  tierNumber: Tier,
+  tierNodes: ReadonlyArray<RuntimeNode>,
+  req: RoutableRequest,
+  attempted: Set<string>,
+  opts: PickForTierOpts = {},
+): TierPickResult {
+  const { knownModels, raceLostIds, maxInFlight } = opts;
+  if (tierNumber !== 1) {
     const r = pickCandidate(tierNodes, req, attempted, undefined, null, knownModels, raceLostIds ?? null);
     if (!r) return null;
     if (r.raceLost) return { raceLost: true, raceLostNodeId: r.raceLostNodeId };
@@ -87,9 +84,8 @@ type PickForTierOpts = {
   };
 }
 
-// Mulberry32 — a tiny deterministic PRNG for test reproducibility only. It is
-// only wired in when env.TIER1_SCHEDULER_SEED is a non-empty string; production
-// leaves it unset and P2C uses Math.random.
+// Mulberry32 is used only when TIER1_SCHEDULER_SEED is set for deterministic
+// tests. Production leaves it unset and uses Math.random.
 export function makeTier1Rng(env: Record<string, unknown>): () => number {
   const seedRaw = String(env?.TIER1_SCHEDULER_SEED ?? '').trim();
   if (!seedRaw) return Math.random;
@@ -100,31 +96,38 @@ export function makeTier1Rng(env: Record<string, unknown>): () => number {
   }
   let a = h >>> 0;
   return () => {
-    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    a |= 0;
+    a = (a + 0x6D2B79F5) | 0;
     let t = Math.imul(a ^ (a >>> 15), 1 | a);
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
 
-// Per-tier attempt budget: { tier1, tier2, tier3 } -> max attempts each.
-//   * DISPATCHABLE means a candidate this tier can launch now. Deferred
-//     capacity (cooldown / over-quota) feeds Retry-After and diagnostics but
-//     receives no attempt budget. Guessed concurrency is never a hard gate.
-//   * A tier with no dispatchable candidate for the request descriptor gets 0
-//     budget.
-//   * Explicit `tier_attempts` values are fixed caps. Their configured total is
-//     reserved first; remaining budget may only be assigned to dispatchable
-//     tiers without an explicit value. An explicit 0 disables that tier.
-//   * `even` gives the first adjustable tier the available surplus.
-//   * `weighted` distributes adjustable budget according to each tier's live
-//     dispatchable node count.
-// Budget is a per-tier upper bound; the shared state.maxAttempts still caps the
-// request's total upstream attempts, and FAILOVER_BUDGET_MS caps wall-clock.
-export function computeTierCaps(tiers: Record<number, RuntimeNode[]>, reqDescriptor: RoutableRequest, attempted: Set<string>, policy: PolicyConfig, knownModels: ReadonlySet<string>, maxInFlight?: number | null): Record<number, number> {
+// One allocation model only:
+//
+// - a tier with no dispatchable candidate gets 0;
+// - explicit tier_attempts values are hard caps and are reserved first;
+// - an explicit 0 disables that tier;
+// - each remaining dispatchable tier gets a one-attempt baseline while budget
+//   permits, in strict Tier 1 -> Tier 2 -> Tier 3 order;
+// - every remaining surplus attempt goes to the FIRST adjustable dispatchable
+//   tier, preserving the product's free -> subscription -> paid precedence.
+//
+// There is deliberately no weighted/live-node cross-tier splitter. Candidate
+// count influences selection INSIDE a tier, never the tier hierarchy itself.
+export function computeTierCaps(
+  tiers: Record<number, RuntimeNode[]>,
+  reqDescriptor: RoutableRequest,
+  attempted: Set<string>,
+  policy: PolicyConfig,
+  knownModels: ReadonlySet<string>,
+  maxInFlight?: number | null,
+): Record<number, number> {
   const now = Date.now();
   const caps: Record<number, number> = {};
   for (const t of TIER_ORDER) caps[t] = 0;
+
   const dispatchable = TIER_ORDER.filter((t) =>
     t === 1
       ? tier1Dispatchable(tiers[t], reqDescriptor, attempted, now, knownModels, maxInFlight)
@@ -134,8 +137,6 @@ export function computeTierCaps(tiers: Record<number, RuntimeNode[]>, reqDescrip
   const max = policy.maxAttempts;
   const explicitTotal = TIER_ORDER.reduce((sum, t) =>
     sum + (policy.tierAttempts?.[`tier${t}`] ?? 0), 0);
-  const hasExplicit = TIER_ORDER.some((t) =>
-    policy.tierAttempts?.[`tier${t}`] !== undefined);
   const adjustable = dispatchable.filter((t) =>
     policy.tierAttempts?.[`tier${t}`] === undefined);
 
@@ -144,72 +145,30 @@ export function computeTierCaps(tiers: Record<number, RuntimeNode[]>, reqDescrip
     if (override !== undefined) caps[t] = override;
   }
 
-  const liveCount = (tierNumber: number): number => {
-    return tierNumber === 1
-      ? tier1LiveCount(tiers[tierNumber], reqDescriptor, attempted, now, knownModels, maxInFlight)
-      : countDispatchableNodes(tiers[tierNumber], reqDescriptor, attempted, now, knownModels);
-  };
-
-  if (policy.budgetSplit === 'weighted') {
-    if (adjustable.length === 0) return caps;
-    const remaining = Math.max(0, max - explicitTotal);
-    if (remaining === 0) return caps;
-
-    const counts = new Map(adjustable.map((t) => [t, liveCount(t)]));
-    const totalLive = adjustable.reduce((sum, t) => sum + (counts.get(t) ?? 0), 0);
-    if (totalLive === 0) return caps;
-
-    // Give each adjustable tier a one-attempt baseline when budget permits,
-    // then distribute the remaining surplus by live-node weight. If fewer
-    // slots remain than adjustable tiers, strict tier order receives them.
-    const baselineCount = Math.min(remaining, adjustable.length);
-    for (let i = 0; i < baselineCount; i++) caps[adjustable[i]] = 1;
-    if (remaining <= baselineCount) return caps;
-
-    const surplus = remaining - baselineCount;
-    const shares = adjustable.map((t, order) => {
-      const exact = surplus * ((counts.get(t) ?? 0) / totalLive);
-      const whole = Math.floor(exact);
-      caps[t] += whole;
-      return { tier: t, fraction: exact - whole, order };
-    });
-
-    // Largest-remainder apportionment keeps the final integer allocation
-    // faithful to live-node weights. Equal fractions preserve strict tier
-    // order; explicit tier_attempts are never modified.
-    let remainder = remaining - adjustable.reduce((sum, t) => sum + caps[t], 0);
-    shares.sort((a, b) => b.fraction - a.fraction || a.order - b.order);
-    for (let i = 0; i < shares.length && remainder > 0; i++, remainder--) {
-      caps[shares[i].tier] += 1;
-    }
-    return caps;
-  }
-
-  // With no explicit caps, preserve the existing default allocation exactly.
-  if (!hasExplicit) {
-    const surplus = Math.max(0, max - dispatchable.length);
-    dispatchable.forEach((t, i) => {
-      caps[t] = i === 0 ? 1 + surplus : 1;
-    });
-    return caps;
-  }
-
-  // With explicit caps, only the remaining budget is adjustable. Keep the
-  // default Tier precedence by giving any surplus to the first adjustable tier.
   if (adjustable.length === 0) return caps;
   const remaining = Math.max(0, max - explicitTotal);
   if (remaining === 0) return caps;
+
   const baselineCount = Math.min(remaining, adjustable.length);
   for (let i = 0; i < baselineCount; i++) caps[adjustable[i]] = 1;
   if (remaining > baselineCount) caps[adjustable[0]] += remaining - baselineCount;
   return caps;
 }
 
-// Number of upstream dispatches that can still happen in this request after
-// applying live availability, per-tier caps, strict tier order, and the shared
-// policy cap. This is recomputed before every attempt because a pre-dispatch
-// deny or a concurrent request can change the live candidate set.
-export function countRemainingDispatchableAttempts(tiers: Record<number, RuntimeNode[]>, reqDescriptor: RoutableRequest, attempted: Set<string>, tierCaps: Record<number, number>, currentTier: Tier, usedInTier: number, sharedRemaining: number, knownModels: ReadonlySet<string>, maxInFlight?: number | null): number {
+// Number of dispatches that can still happen in the current model/protocol pass.
+// This is recomputed before every attempt because availability can change while
+// a request is in flight. It observes tier caps; it does not redistribute them.
+export function countRemainingDispatchableAttempts(
+  tiers: Record<number, RuntimeNode[]>,
+  reqDescriptor: RoutableRequest,
+  attempted: Set<string>,
+  tierCaps: Record<number, number>,
+  currentTier: Tier,
+  usedInTier: number,
+  sharedRemaining: number,
+  knownModels: ReadonlySet<string>,
+  maxInFlight?: number | null,
+): number {
   const now = Date.now();
   let total = 0;
   let currentReached = false;

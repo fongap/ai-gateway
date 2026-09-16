@@ -1,9 +1,6 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
-//
-// Ordered unit/contract suite runner. Every executable test lives under tests/;
-// repository tooling remains under scripts/.
 
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -41,6 +38,7 @@ const UNIT_TESTS = [
   'tests/config-cli-test.mjs',
   'tests/docs-contract-test.mjs',
   'tests/product-policy-contract-test.mjs',
+  'tests/release-identity-contract-test.mjs',
   'tests/provider-discovery-test.mjs',
   'tests/provider-discovery-ssrf-guard-test.mjs',
   'tests/model-discovery-live-test.mjs',
@@ -66,7 +64,6 @@ const UNIT_TESTS = [
   'tests/calendar-heatmap-view-test.mjs',
   'tests/calendar-heatmap-contract-test.mjs',
   'tests/migrations-check-test.mjs',
-  'tests/version-check-test.mjs',
   'tests/architecture-contract-test.mjs',
   'tests/repository-layout-test.mjs',
   'tests/reliability-core-contract-test.mjs',
@@ -78,19 +75,10 @@ const UNIT_TESTS = [
 
 let failed = 0;
 let passed = 0;
-
 for (const rel of UNIT_TESTS) {
-  const abs = join(root, rel);
-  const result = spawnSync(process.execPath, [abs], { stdio: 'inherit', cwd: root });
-  if (result.status === 0) {
-    passed++;
-  } else {
-    failed++;
-    console.error(`\n[runner] FAILED: ${rel} (exit ${result.status})\n`);
-  }
+  const result = spawnSync(process.execPath, [join(root, rel)], { stdio: 'inherit', cwd: root });
+  if (result.status === 0) passed++;
+  else { failed++; console.error(`\n[runner] FAILED: ${rel} (exit ${result.status})\n`); }
 }
-
-console.log(`\n[test:unit] ${passed}/${UNIT_TESTS.length} suites passed` +
-  (failed > 0 ? `, ${failed} FAILED` : ''));
-
+console.log(`\n[test:unit] ${passed}/${UNIT_TESTS.length} suites passed${failed ? `, ${failed} FAILED` : ''}`);
 if (failed > 0) process.exit(1);

@@ -1,12 +1,12 @@
 # Quality policy
 
-Quality gates protect behavior before deployment. The repository deliberately separates the fast merge gate from the full production gate.
+Quality gates protect behavior before deployment. The repository separates the merge gate from the full production gate.
 
 ## CI model
 
 ### Merge gate
 
-`validate-merge` runs for Pull Requests and pushes. It executes the canonical merge validation and a Worker bundle dry-run:
+`validate-merge` runs for Pull Requests and pushes:
 
 ```bash
 npm ci
@@ -14,19 +14,19 @@ npm run validate:merge
 npm run check:deploy
 ```
 
-`validate:merge` covers syntax, version consistency, deployment configuration, migration governance, unit/contract suites, secret scanning, documentation checks, TypeScript type checking, and Markdown links.
+It covers syntax, deployment configuration, migration governance, unit/contract suites, secret scanning, documentation checks, TypeScript type checking, Markdown links, and a Worker bundle dry-run.
 
 ### Production gate
 
-`validate-deploy` runs on pushes to `main`, scheduled CI, and manual CI. It executes:
+`validate-deploy` runs on pushes to `main`, scheduled CI, and manual CI:
 
 ```bash
 npm run validate:deploy
 ```
 
-`validate:deploy` includes `test:all`: the unit suite plus scheduler-stability, integration, stress, Codex, and Claude contracts.
+It includes the unit suite plus scheduler-stability, integration, stress, Codex, and Claude contracts.
 
-Automatic production deployment is permitted only when a **push-triggered** `main` CI run succeeds. Scheduled and manually triggered CI runs are test-only. Manual Deploy runs its own full validation before touching production.
+Automatic production deployment is permitted only when a push-triggered `main` CI run succeeds. Scheduled and manually triggered CI runs are test-only. Manual Deploy runs full validation before touching production.
 
 ## Behavioral contracts
 
@@ -38,18 +38,18 @@ High-risk areas include:
 - Chat Completions ↔ Anthropic Messages fallback;
 - OpenAI Responses Native-Only behavior;
 - streaming first-event commit points;
-- Tier 1 P2C, affinity, heat protection, RPM admission, and 429 recovery;
+- Tier 1 P2C, affinity, heat protection, RPM admission, and rate-limit recovery;
 - Tier 2/3 selection and circuit state;
 - logical-attempt, dispatch, hedge, and failover budgets;
 - access-group authorization and node credential binding;
 - deployment ordering and rollback;
 - D1 retention and public model-status projection.
 
-Do not rewrite a contract test merely because a new implementation disagrees with it. First decide whether the intended behavior actually changed.
+Do not rewrite a contract test merely because a new implementation disagrees with it. First decide whether intended behavior actually changed.
 
 ## Protocol quality
 
-The current built-in protocol fallback is exactly:
+The built-in protocol fallback is exactly:
 
 ```json
 {
@@ -93,10 +93,10 @@ See [SECURITY.md](../../SECURITY.md).
 
 Canonical documentation is part of the contract surface. CI checks structure and links, but review must also check factual agreement with source code and workflows.
 
-Do not maintain two equal README implementations. `README.md` is canonical; localized documents must point back to it.
+`README.md` is canonical; localized documents must point back to it.
 
-## Version/tag quality
+## Release identity quality
 
-A stable version tag is created only after the intended `main` commit has passed the full production gate and, for deployable changes, the production deployment/verification path has succeeded. Version and tag rules are defined in [version-policy.md](version-policy.md).
+Automation validates **deployment identity by commit SHA**, not project release numbering. `/health.build` must match the commit being deployed before production verification succeeds.
 
-GitHub Releases are not required by the current service-deployment model. Existing Releases are historical records rather than a second version authority.
+Project release numbering is human-owned and outside automated quality gates. If a named release is desired, a human may create a Git tag or GitHub Release after the desired commit is verified. CI must not generate, infer, advance, synchronize, or validate that numbering.

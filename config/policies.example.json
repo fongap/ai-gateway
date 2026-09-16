@@ -1,4 +1,9 @@
 {
-  "fast": { "max_attempts": 5 },
-  "stable": { "max_attempts": 3 }
+  "default": {
+    "max_attempts": 5
+  },
+  "long-reasoning": {
+    "max_attempts": 3,
+    "first_event_timeout_ms": 60000
+  }
 }

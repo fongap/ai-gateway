@@ -4,48 +4,17 @@
 // Config Layer: environment shards -> Runtime Node list.
 //
 //   TIER{1,2,3}_NODES_CONFIG_01..10   plain variables, JSON arrays of node
-//                                     configs WITHOUT any credential material.
+//                                     configs WITHOUT credential material.
 //   TIER{1,2,3}_NODES_SECRETS_01..10  secrets, JSON objects { nodeId: credential }.
-//                                     Credentials must match the node Tier by
-//                                     prefix and match exactly one node id.
-//                                     Shard suffixes are partitioning only.
 //
-// Active Node JSON schema:
-//   {
-//     "id": "nvidia-01",                  // ^[a-z0-9][a-z0-9-]{0,63}$
-//     "provider": "nvidia",               // WHO provides it (label/quirks only)
-//     "protocol": "openai",               // HOW to talk upstream: openai|anthropic
-//     "surfaces": ["chat_completions"],   // WHICH endpoints the node really serves
-//     "base_url": "https://.../v1",       // https required by default
-//     "priority": 10,                     // smaller = higher precedence
-//     "models": { "logical": "upstream" } // empty object = supports all models
-//   }
+// Current Node JSON schema is explicit. Required fields:
+//   id, provider, protocol, surfaces, base_url, models
+// Optional:
+//   priority (non-negative integer number, default 100)
 //
-// Node-level limits are intentionally absent. Capacity is learned from live
-// in-flight pressure, 429/cooldown, health/circuit and latency signals rather
-// than operator-guessed concurrency/RPM ceilings.
-//
-// protocol decides request format, upstream endpoint, auth header, protocol
-// headers, and stream wire format. surfaces decides which client surfaces can
-// be routed to this node (openai: chat_completions|responses; anthropic: messages).
-// provider is metadata only (dashboard / metrics / diagnostics / quirks) and
-// never influences transport.
-//
-// Missing `protocol` or `surfaces` keeps the long-standing defaults so existing
-// node configuration remains serviceable. Explicit values are still validated.
-//
-// Tier is derived ONLY from the variable prefix. The node JSON must not carry
-// a tier field; a tier field is rejected as invalid configuration.
-//
-// Configuration status:
-//   unconfigured - key config vars are missing entirely
-//   invalid      - config exists but no usable Runtime Node can be built,
-//                  or structural conflicts exist (duplicate ids / secret keys)
-//   degraded     - some nodes are unusable but at least one remains
-//   ready        - all declared nodes are usable
-//
-// The result is cached for the isolate lifetime; env vars never change while
-// an isolate is alive.
+// There are no old-version defaults or alternate shapes. Missing protocol /
+// surfaces / provider / models, a models array, numeric strings, retired limits,
+// credential fields, or unknown fields are configuration errors.
 
 import { readEnv, getBool } from './env.ts';
 import { loadModelsConfig, getModelsConfigDiagnostics } from './models.ts';
@@ -65,10 +34,6 @@ const ALLOWED_NODE_FIELDS = new Set(['id', 'provider', 'protocol', 'surfaces', '
 const PROTOCOL_SURFACES = new Map<string, Set<string>>([
   ['openai', new Set(['chat_completions', 'responses'])],
   ['anthropic', new Set(['messages'])],
-]);
-const DEFAULT_SURFACES = new Map<Protocol, Surface[]>([
-  ['openai', ['chat_completions']],
-  ['anthropic', ['messages']],
 ]);
 
 export type ConfigStatus = 'unconfigured' | 'invalid' | 'degraded' | 'ready';
@@ -107,9 +72,7 @@ function collectAuxConfigDiagnostics(env: Record<string, unknown>): string[] {
   const policies = loadPoliciesConfig(env);
   for (const [model, mcfg] of Object.entries(models)) {
     const pname = mcfg?.policy || 'default';
-    if (!policies[pname]) {
-      diags.push(`MODELS_CONFIG: model "${model}" references unknown policy "${pname}"`);
-    }
+    if (!policies[pname]) diags.push(`MODELS_CONFIG: model "${model}" references unknown policy "${pname}"`);
   }
   return diags;
 }
@@ -129,7 +92,6 @@ function collectNodeModelDiagnostics(nodes: ReadonlyArray<RuntimeNode>, env: Rec
   }
   if (internalModels.size === 0) return diags;
   for (const node of nodes) {
-    if (!node || !node.models) continue;
     for (const logical of Object.keys(node.models)) {
       if (internalModels.has(logical)) {
         diags.push(`NODE CONFIG: node "${node.id}" maps logical model "${logical}" which is marked visibility:"internal" in MODELS_CONFIG; internal models are still requestable but hidden from the dashboard`);
@@ -142,11 +104,7 @@ function collectNodeModelDiagnostics(nodes: ReadonlyArray<RuntimeNode>, env: Rec
 function buildConfig(env: Record<string, unknown>): GatewayConfig {
   const diagnostics: string[] = [];
   const auxDiagnostics = collectAuxConfigDiagnostics(env);
-  // All PROTOCOL_FALLBACKS diagnostics are blocking config errors (parse
-  // errors and unsupported conversions are hard errors, not warnings). Add
-  // them to auxDiagnostics so they trip `status='invalid'`, then spread once.
-  const fallbackDiags = getProtocolFallbacksDiagnostics(env);
-  auxDiagnostics.push(...fallbackDiags);
+  auxDiagnostics.push(...getProtocolFallbacksDiagnostics(env));
   diagnostics.push(...auxDiagnostics);
   const accessKeyBound = ['AIR', 'PRO', 'MAX', 'ULTRA', 'AGENT'].some((g) => readEnv(env, `GATEWAY_ACCESS_KEY_${g}`));
 
@@ -266,7 +224,14 @@ function buildConfig(env: Record<string, unknown>): GatewayConfig {
   };
 }
 
-function buildRuntimeNode(rawNode: unknown, tier: NodeTier, credentials: Map<string, string>, allowInsecure: boolean, sourceKey: string, diagnostics: string[]): RuntimeNode | null {
+function buildRuntimeNode(
+  rawNode: unknown,
+  tier: NodeTier,
+  credentials: Map<string, string>,
+  allowInsecure: boolean,
+  sourceKey: string,
+  diagnostics: string[],
+): RuntimeNode | null {
   if (!rawNode || typeof rawNode !== 'object' || Array.isArray(rawNode)) {
     diagnostics.push(`${sourceKey}: entry is not a JSON object`);
     return null;
@@ -293,6 +258,12 @@ function buildRuntimeNode(rawNode: unknown, tier: NodeTier, credentials: Map<str
     }
   }
 
+  const provider = typeof rec.provider === 'string' ? rec.provider.trim() : '';
+  if (!provider) {
+    diagnostics.push(`node "${id}": provider is required and must be a non-empty string`);
+    return null;
+  }
+
   const baseUrl = typeof rec.base_url === 'string' ? rec.base_url.trim() : '';
   let url: URL;
   try {
@@ -316,22 +287,19 @@ function buildRuntimeNode(rawNode: unknown, tier: NodeTier, credentials: Map<str
     return null;
   }
 
+  const protocol = parseProtocol(rec.protocol, id, diagnostics);
+  if (protocol === null) return null;
+  const surfaces = parseSurfaces(rec.surfaces, protocol, id, diagnostics);
+  if (surfaces === null) return null;
   const models = normalizeModels(rec.models, id, diagnostics);
   if (models === null) return null;
   const priority = parsePriority(rec.priority, id, diagnostics);
   if (priority === null) return null;
 
-  const protocol = parseProtocol(rec.protocol, id, diagnostics);
-  if (protocol === null) return null;
-  const surfaces = parseSurfaces(rec.surfaces, protocol, id, diagnostics);
-  if (surfaces === null) return null;
-
-  const providerLabel = typeof rec.provider === 'string' && rec.provider.trim() ? rec.provider.trim() : 'unknown';
-
   return {
     id,
     tier,
-    provider: providerLabel,
+    provider,
     protocol,
     surfaces,
     baseUrl: baseUrl.replace(/\/+$/, ''),
@@ -342,11 +310,11 @@ function buildRuntimeNode(rawNode: unknown, tier: NodeTier, credentials: Map<str
 }
 
 function parseProtocol(raw: unknown, nodeId: string, diagnostics: string[]): Protocol | null {
-  if (raw === undefined || raw === null) {
-    diagnostics.push(`node "${nodeId}": protocol is implicit and defaults to "openai"`);
-    return 'openai';
+  if (typeof raw !== 'string' || !raw.trim()) {
+    diagnostics.push(`node "${nodeId}": protocol is required and must be "openai" or "anthropic"`);
+    return null;
   }
-  const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  const value = raw.trim().toLowerCase();
   if (!PROTOCOL_SURFACES.has(value)) {
     diagnostics.push(`node "${nodeId}": protocol must be "openai" or "anthropic"`);
     return null;
@@ -355,13 +323,8 @@ function parseProtocol(raw: unknown, nodeId: string, diagnostics: string[]): Pro
 }
 
 function parseSurfaces(raw: unknown, protocol: Protocol, nodeId: string, diagnostics: string[]): Surface[] | null {
-  if (raw === undefined || raw === null) {
-    const defaults = DEFAULT_SURFACES.get(protocol) as Surface[];
-    diagnostics.push(`node "${nodeId}": surfaces is implicit and defaults to [${defaults.map((s) => `"${s}"`).join(', ')}]`);
-    return defaults.slice();
-  }
   if (!Array.isArray(raw) || raw.length === 0) {
-    diagnostics.push(`node "${nodeId}": surfaces must be a non-empty array`);
+    diagnostics.push(`node "${nodeId}": surfaces is required and must be a non-empty array`);
     return null;
   }
   const allowed = PROTOCOL_SURFACES.get(protocol) as Set<string>;
@@ -379,40 +342,22 @@ function parseSurfaces(raw: unknown, protocol: Protocol, nodeId: string, diagnos
 
 function parsePriority(raw: unknown, nodeId: string, diagnostics: string[]): number | null {
   if (raw === undefined) return 100;
-  const n = typeof raw === 'number' ? raw : (typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN);
-  if (!Number.isFinite(n) || n < 0) {
-    diagnostics.push(`node "${nodeId}": priority must be a non-negative number`);
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0) {
+    diagnostics.push(`node "${nodeId}": priority must be a non-negative integer number`);
     return null;
   }
-  return Math.trunc(n);
+  return raw;
 }
 
 function normalizeModels(models: unknown, nodeId: string, diagnostics: string[]): Record<string, string> | null {
-  const out: Record<string, string> = {};
-  if (models === undefined || models === null) return out;
-
-  if (Array.isArray(models)) {
-    if (models.length === 0) return out;
-    for (const m of models) {
-      if (typeof m !== 'string' || !m.trim()) {
-        diagnostics.push(`node "${nodeId}": models array entries must be non-empty strings`);
-        return null;
-      }
-      out[m.trim()] = m.trim();
-    }
-    return out;
-  }
-
-  if (typeof models !== 'object') {
-    diagnostics.push(`node "${nodeId}": models must be an object { logical: upstream }`);
+  if (!models || typeof models !== 'object' || Array.isArray(models)) {
+    diagnostics.push(`node "${nodeId}": models is required and must be an object { logical: upstream }; use {} only for an intentional catalog-bounded wildcard`);
     return null;
   }
 
-  const keys = Object.keys(models);
-  if (keys.length === 0) return out;
-
-  for (const key of keys) {
-    if (typeof key !== 'string' || !key.trim()) {
+  const out: Record<string, string> = {};
+  for (const key of Object.keys(models)) {
+    if (!key.trim()) {
       diagnostics.push(`node "${nodeId}": models keys must be non-empty strings`);
       return null;
     }
@@ -426,7 +371,14 @@ function normalizeModels(models: unknown, nodeId: string, diagnostics: string[])
   return out;
 }
 
-export function collectShards(env: Record<string, unknown>, pattern: RegExp, loosePrefix: string, expectedExample: string, indexGroup: number, diagnostics: string[]): Array<{ key: string, index: number, tierNumber: number }> {
+export function collectShards(
+  env: Record<string, unknown>,
+  pattern: RegExp,
+  loosePrefix: string,
+  expectedExample: string,
+  indexGroup: number,
+  diagnostics: string[],
+): Array<{ key: string, index: number, tierNumber: number }> {
   const shards: Array<{ key: string, index: number, tierNumber: number }> = [];
   for (const key of Object.keys(env || {})) {
     const match = pattern.exec(key);

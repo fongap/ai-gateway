@@ -10,7 +10,6 @@ Cloudflare Workers · Multi-provider routing · Multi-key resilience · Tiered f
 
 [![CI](https://github.com/fongap/ai-gateway/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/fongap/ai-gateway/actions/workflows/ci.yml)
 [![Deploy](https://github.com/fongap/ai-gateway/actions/workflows/deploy.yml/badge.svg?branch=main&event=workflow_run)](https://github.com/fongap/ai-gateway/actions/workflows/deploy.yml)
-![Version](https://img.shields.io/github/package-json/v/fongap/ai-gateway?label=Version)
 ![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)
 ![License](https://img.shields.io/github/license/fongap/ai-gateway?label=License)
 
@@ -28,11 +27,11 @@ The three tiers have fixed long-term roles:
 
 | Tier | Role |
 | --- | --- |
-| **Tier 1** | Free or effectively free token capacity. This is the primary daily layer and the main reliability focus. |
-| **Tier 2** | Reserved for future membership/subscription entitlement capacity. It is not a second generic API-key pool. |
+| **Tier 1** | Free or effectively free token capacity. Primary daily layer and main reliability focus. |
+| **Tier 2** | Reserved for future membership/subscription entitlement capacity. Not a second generic API-key pool. |
 | **Tier 3** | Paid API capacity kept as protected final fallback. |
 
-Tier 1 is designed for uneven quotas and unreliable free capacity: P2C load spreading, passive TTFT, live in-flight pressure, adaptive 429 cooldown, provider-model heat, circuit/recovery handling, bounded failover, and safe streaming. The objective is **stable, efficient, safe, continuously usable free capacity**, not chasing one “best” key.
+Tier 1 is designed for uneven quotas and unreliable free capacity: P2C load spreading, passive TTFT, live in-flight pressure, adaptive rate-limit cooldown, provider-model heat, circuit/recovery handling, bounded failover, and safe streaming. The objective is **stable, efficient, safe, continuously usable free capacity**, not chasing one “best” key.
 
 Tier 2 and Tier 3 deliberately stay simpler. The project will not copy Tier 1 adaptive machinery into them unless real usage proves it necessary.
 
@@ -40,7 +39,7 @@ Tier 2 and Tier 3 deliberately stay simpler. The project will not copy Tier 1 ad
 
 | Capability | Current behavior |
 | --- | --- |
-| **Multi-key resilience** | P2C selection, passive TTFT, live in-flight soft load, 429 cooldown and provider-model heat |
+| **Multi-key resilience** | P2C selection, passive TTFT, live in-flight soft load, adaptive cooldown and provider-model heat |
 | **Tiered failover** | Route through **Tier 1 → Tier 2 → Tier 3** under one request-wide budget |
 | **Model-family fallback** | Bounded recovery across compatible aliases without raising `max_attempts` |
 | **Protocol compatibility** | Native OpenAI Chat, OpenAI Responses, and Anthropic Messages |
@@ -74,11 +73,11 @@ Code aliases stay inside the Code family. `Air` may move upward to `Pro → Max 
 
 The project prefers bounded local state over global coordination. Cross-PoP concurrency/quota coordination is not added unless production evidence shows the household/small-team deployment model actually needs it.
 
-## No old-version compatibility layer
+## Clean replacement rule
 
 ai-gateway carries one current contract. When configuration, schemas, or internal contracts change, the old path is removed rather than preserved behind aliases, dual-read/dual-write logic, deprecation windows, or compatibility shims.
 
-Git history and tags preserve old versions. Runtime code does not.
+Git history preserves history. If a release label is needed, a human creates the Git tag or GitHub Release manually. Runtime source, configuration, documentation, and CI do not generate, infer, synchronize, or validate project release numbers.
 
 This rule does **not** remove intentional OpenAI/Anthropic protocol compatibility; those protocols are part of the current product surface.
 
@@ -93,8 +92,7 @@ See [Product Policy](docs/governance/product-policy.md) for the permanent rule.
 | `POST` | `/v1/messages` | Anthropic Messages |
 | `POST` | `/v1/messages/count_tokens` | Anthropic-compatible local token count |
 | `GET` | `/v1/models` | Model catalog |
-| `GET` | `/health` | Authenticated health diagnostics |
-| `GET` | `/version` | Source version and deployed-build identity |
+| `GET` | `/health` | Authenticated health diagnostics and deployed commit SHA |
 
 ## Quick start
 
@@ -127,7 +125,7 @@ For production, use the repository-driven workflow in [Deployment](docs/operatio
 
 Credentials bind by **Tier + node id**; Config and Secret shard suffixes are independent partition numbers and are unrelated to one another. Gateway access is fail-closed: a configured Group Key with a missing or empty corresponding `GATEWAY_ACCESS_MODELS_<GROUP>` grants no model access.
 
-Node `limits` are not part of the active schema and are rejected. Runtime capacity is learned from real in-flight pressure, 429/cooldown, circuit state, and latency signals rather than guessed per-node ceilings.
+Node `limits` are not part of the active schema and are rejected. Runtime capacity is learned from real in-flight pressure, rate-limit/cooldown, circuit state, and latency signals rather than guessed per-node ceilings.
 
 See [Configuration](docs/operations/configuration.md) for the current schema and runtime variables.
 
@@ -146,7 +144,7 @@ D1 migrations
     ↓
 Worker deploy
     ↓
-remote verification
+remote verification by commit SHA
 ```
 
 Documentation-only commits are intentionally excluded from Worker redeployment.
@@ -158,8 +156,7 @@ Documentation-only commits are intentionally excluded from Worker redeployment.
 | [Product Policy](docs/governance/product-policy.md) | Permanent scope, tier roles, simplicity and clean-replacement rules |
 | [Architecture](docs/architecture/overview.md) | Runtime boundaries, routing, protocol and reliability contracts |
 | [Operations](docs/operations/configuration.md) | Configuration, deployment and troubleshooting |
-| [Governance](docs/governance/README.md) | Development, quality, dependency, version/tag and documentation rules |
-| [CHANGELOG](CHANGELOG.md) | Version history |
+| [Governance](docs/governance/README.md) | Development, quality, dependency and documentation rules |
 
 English is the canonical documentation language. The [Simplified Chinese README](README.zh-CN.md) is a reader-facing translation.
 

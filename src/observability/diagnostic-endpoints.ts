@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Fongap Studio
-//
-// Diagnostic HTTP endpoints: /health, /metrics, /version, /v1/models.
-// Responses contain node ids and runtime state only — never credentials.
+
+// Diagnostic HTTP endpoints: /health, /metrics, /v1/models.
+// Responses contain runtime state only — never credentials.
 
 import { loadGatewayConfig } from '../config/nodes.ts';
 import { snapshotNode } from '../reliability/node-state.ts';
@@ -17,52 +17,26 @@ import type { RegistryEntry } from '../config/registry.ts';
 import type { AuthResult } from '../types/request.ts';
 import type { RuntimeNode } from '../types/node.ts';
 import type { Surface } from '../types/protocol.ts';
-import { VERSION } from '../config/version.ts';
 
 export const APP_META = Object.freeze({
   name: 'ai-gateway',
   displayName: 'Smart AI Gateway',
-  version: VERSION,
 });
 
-// Production Identity. Build SHA is the deployment identity
-// and is injected by the CI/Deploy workflow as the `GITHUB_SHA` Worker
-// text variable (see .github/workflows/deploy.yml `env.GITHUB_SHA` and
-// scripts/github-deployment-config.mjs `EXTRA_VAR_ALLOW`). The value is
-// NOT hand-maintained: the workflow pins it from
-// `github.event.workflow_run.head_sha` and the runtime reads it as-is.
-// Accept the standard 7–40 hex chars; anything else falls back to
-// `unknown` so `wrangler dev` / local dev / pre-deploy probes never
-// crash on a malformed value.
+// Build SHA is deployment identity only. Human release labels live outside
+// runtime source and are never generated, inferred, or validated by the app.
 const SHA_RE = /^[0-9a-f]{7,40}$/;
 export function resolveBuildSha(env: Record<string, unknown>): string {
   const raw = String(env?.GITHUB_SHA ?? '').trim();
-  if (SHA_RE.test(raw)) return raw;
-  return 'unknown';
+  return SHA_RE.test(raw) ? raw : 'unknown';
 }
 
 function sanitizePrometheusLabel(value: unknown): string {
   return String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
 }
 
-// Logical model list with capability metadata. Node mappings are the PRIMARY
-// source of the logical-model set: a model only exists if at least one node
-// actually serves it. MODELS_CONFIG is an OPTIONAL capability layer — when
-// present, it enriches a node-mapped model with policy / capabilities /
-// reasoning_efforts; when absent, conservative defaults apply. The
-// `visibility` field, when present, can downgrade a model to `internal` to
-// hide it from this public list.
-//
-// buildModelsList: builds the key-scoped model list for /v1/models.
-// Returns only models visible to the current key (intersection of configured models
-// and key's allowlist). Also includes ui_visible flag and ocr capability.
 function buildModelsList(nodes: RuntimeNode[], env: Record<string, unknown>, authResult: AuthResult): { object: string, data: Array<Record<string, unknown>> } {
-  // The Known Model Catalog is the single source of model existence: every
-  // explicit node.models key union every MODELS_CONFIG key. A wildcard node
-  // (empty models) serves every model in this catalog. Visible == Callable
-  // holds because the same catalog drives authorization.
   const logicalNames = collectKnownModels(nodes, env);
-
   type ModelListEntry = {
     id: string,
     object: string,
@@ -95,36 +69,28 @@ function buildModelsList(nodes: RuntimeNode[], env: Record<string, unknown>, aut
     const keys = Object.keys(node.models || {});
     const servedKeys = keys.length === 0 ? [...logicalNames] : keys;
     for (const logical of servedKeys) {
-      if (!logicalNames.has(logical)) continue;
-      if (!servesModel(node, logical, logicalNames)) continue;
+      if (!logicalNames.has(logical) || !servesModel(node, logical, logicalNames)) continue;
       const e = entryFor(logical);
       e.apiBackends.add(node.provider);
       for (const surface of node.surfaces || []) e.surfaces.add(surface);
     }
   }
 
-  // Determine allowed models for this key. Visible == Callable because the
-  // filter is the same catalog that authorization checks against. An
-  // unauthorized or skip-mode request sees an empty catalog.
   const filterShape = authResult.authorized && authResult.mode !== 'skip'
     ? { allowAll: authResult.allowAll, allowlist: authResult.allowlist }
     : null;
-  const allowedModels = filterModelsByKey(filterShape, logicalNames);
-  const allowedSet = new Set(allowedModels);
-
+  const allowedSet = new Set(filterModelsByKey(filterShape, logicalNames));
   const data = [...models.values()]
     .sort((a, b) => a.id.localeCompare(b.id))
-    .filter((e) => e.apiBackends.size > 0 && e.reg.visibility !== 'internal')
-    .filter((e) => allowedSet.has(e.id))
+    .filter((e) => e.apiBackends.size > 0 && e.reg.visibility !== 'internal' && allowedSet.has(e.id))
     .map((e) => {
       const backends = [...e.apiBackends];
-      const apiBackend = backends.length === 1 ? backends[0] : 'mixed';
       return {
         id: e.id,
         object: 'model',
         created: 0,
         owned_by: APP_META.name,
-        apiBackend,
+        apiBackend: backends.length === 1 ? backends[0] : 'mixed',
         api_backends: backends,
         protocols: [...e.surfaces].sort(),
         supports_tools: e.reg.capabilities.tools,
@@ -143,9 +109,6 @@ function buildModelsList(nodes: RuntimeNode[], env: Record<string, unknown>, aut
 export function healthResponse(request: Request, env: Record<string, unknown>, requestId: string): Response {
   const config = loadGatewayConfig(env);
   const now = Date.now();
-  // The Known Model Catalog (node models keys union MODELS_CONFIG) is the
-  // single source of "all known logical models". A wildcard node serves
-  // every model in this catalog; a mapped node serves only its own keys.
   const allLogical = collectKnownModels(config.nodes, env);
   const endpoints = config.nodes.map((n) => {
     const configuredModels = Object.keys(n.models || {});
@@ -172,10 +135,10 @@ export function healthResponse(request: Request, env: Record<string, unknown>, r
   const disabled = endpoints.filter((e) => e.status === 'disabled').length;
   const observedHealthy = endpoints.filter((e) => e.status === 'observed_healthy' || e.status === 'active').length;
   const unknown = endpoints.filter((e) => e.status === 'configured' || e.status === 'unknown').length;
-  // A fully invalid or unconfigured gateway is not "healthy": fail with 503 so
-  // probe clients stop polling, while degraded/ready (some usable node) stay 200.
   const statusCode = config.status === 'invalid' || config.status === 'unconfigured' ? 503 : 200;
+
   return new Response(JSON.stringify({
+    build: resolveBuildSha(env),
     status: config.status,
     ready: config.ready,
     nodes_total: config.nodesTotal,
@@ -190,7 +153,7 @@ export function healthResponse(request: Request, env: Record<string, unknown>, r
       'tier-2': config.nodes.filter((n) => n.tier === 'tier-2').length,
       'tier-3': config.nodes.filter((n) => n.tier === 'tier-3').length,
     },
-    note: "Isolate-local best-effort state; not a cluster-wide snapshot.",
+    note: 'Isolate-local best-effort state; not a cluster-wide snapshot.',
     tier1_affinity: snapshotTier1Affinity(env),
     client_stats: {
       started_at: new Date(gatewayStats.startedAt).toISOString(),
@@ -252,29 +215,24 @@ export function metricsResponse(request: Request, env: Record<string, unknown>, 
   counter('gateway_stream_started_total', streamStats.started);
   emit('gateway_stream_completed_total', 'counter', 'Streams that reached their completion marker.');
   counter('gateway_stream_completed_total', streamStats.completed);
-  emit('gateway_stream_interrupted_total', 'counter', 'Streams interrupted after real output. Equals the sum of the three reason counters below.');
+  emit('gateway_stream_interrupted_total', 'counter', 'Streams interrupted after real output.');
   counter('gateway_stream_interrupted_total', streamStats.interrupted);
-  emit('gateway_stream_missing_completion_marker_total', 'counter', 'Interrupted: clean EOF without the completion marker.');
+  emit('gateway_stream_missing_completion_marker_total', 'counter', 'Interrupted: clean EOF without completion marker.');
   counter('gateway_stream_missing_completion_marker_total', streamStats.missingCompletion);
-  emit('gateway_stream_idle_timeout_total', 'counter', 'Interrupted: STREAM_IDLE_TIMEOUT_MS elapsed without a new chunk.');
+  emit('gateway_stream_idle_timeout_total', 'counter', 'Interrupted: stream idle timeout.');
   counter('gateway_stream_idle_timeout_total', streamStats.idleTimeout);
-  emit('gateway_stream_reader_error_total', 'counter', 'Interrupted: upstream reader threw mid-stream.');
+  emit('gateway_stream_reader_error_total', 'counter', 'Interrupted: upstream reader error.');
   counter('gateway_stream_reader_error_total', streamStats.readerError);
 
-  // Token usage observability (isolate-local, NOT billing-grade). The
-  // unlabelled gateway totals are emitted FIRST: Prometheus text format keeps
-  // every line of the same name, and the /metrics delta helpers in the test
-  // suite read the first line, so labelled per-bucket series must not precede
-  // the totals.
-  emit('gateway_tokens_input_total', 'counter', 'Upstream-reported input tokens since isolate start (isolate-local, not billing-grade).');
+  emit('gateway_tokens_input_total', 'counter', 'Upstream-reported input tokens since isolate start.');
   counter('gateway_tokens_input_total', tokenStats.totals.input);
-  emit('gateway_tokens_output_total', 'counter', 'Upstream-reported output tokens since isolate start (isolate-local, not billing-grade).');
+  emit('gateway_tokens_output_total', 'counter', 'Upstream-reported output tokens since isolate start.');
   counter('gateway_tokens_output_total', tokenStats.totals.output);
-  emit('gateway_tokens_total', 'counter', 'Upstream-reported total tokens since isolate start (isolate-local, not billing-grade).');
+  emit('gateway_tokens_total', 'counter', 'Upstream-reported total tokens since isolate start.');
   counter('gateway_tokens_total', tokenStats.totals.total);
   emit('gateway_token_usage_reports_total', 'counter', 'Responses whose upstream reported usable usage.');
   counter('gateway_token_usage_reports_total', tokenStats.totals.reports);
-  emit('gateway_token_usage_missing_total', 'counter', 'Delivered responses whose upstream reported NO usable usage (never estimated).');
+  emit('gateway_token_usage_missing_total', 'counter', 'Delivered responses with no usable upstream usage report.');
   counter('gateway_token_usage_missing_total', tokenStats.totals.missing);
   for (const b of tokenMetricSeries()) {
     const label = `model="${sanitizePrometheusLabel(b.model)}",tier="${sanitizePrometheusLabel(b.tier)}",provider="${sanitizePrometheusLabel(b.provider)}",node_id="${sanitizePrometheusLabel(b.nodeId)}"`;
@@ -293,8 +251,8 @@ export function metricsResponse(request: Request, env: Record<string, unknown>, 
   emit('gateway_node_requests_total', 'counter', 'Total upstream attempts per node.');
   emit('gateway_node_successes_total', 'counter', 'Total successful upstream attempts per node.');
   emit('gateway_node_failures_total', 'counter', 'Total failed upstream attempts per node.');
-  emit('gateway_tier1_model_ttft_ewma_ms', 'gauge', 'Passive real-request TTFT EWMA for known Tier 1 account/model pairs. Unknown pairs have no series.');
-  emit('gateway_tier1_model_ttft_samples', 'gauge', 'Number of passive real-request TTFT samples for each Tier 1 account/model pair.');
+  emit('gateway_tier1_model_ttft_ewma_ms', 'gauge', 'Passive real-request TTFT EWMA for known Tier 1 account/model pairs.');
+  emit('gateway_tier1_model_ttft_samples', 'gauge', 'Passive real-request TTFT sample count for Tier 1 account/model pairs.');
   emit('gateway_tier1_model_cooldown_remaining_ms', 'gauge', 'Remaining Tier 1 account/model cooldown in ms.');
 
   for (const node of config.nodes) {
@@ -302,9 +260,7 @@ export function metricsResponse(request: Request, env: Record<string, unknown>, 
     const label = `node_id="${sanitizePrometheusLabel(node.id)}",tier="${node.tier}",provider="${sanitizePrometheusLabel(node.provider)}"`;
     if (node.tier === 'tier-1') {
       const configured = Object.keys(node.models || {});
-      // Wildcard node fallback: serve every model in the Known Model Catalog.
-      const fallbackModels = collectKnownModels(config.nodes, env);
-      const modelIds = configured.length ? configured : [...fallbackModels];
+      const modelIds = configured.length ? configured : [...collectKnownModels(config.nodes, env)];
       const runtime = snapshotTier1AccountRuntime(node.id, modelIds, now);
       counter('gateway_node_active_requests', runtime.in_flight, label);
       counter('gateway_node_cooldown_remaining_ms', runtime.account_cooldown_remaining_ms, label);
@@ -336,45 +292,10 @@ export function metricsResponse(request: Request, env: Record<string, unknown>, 
   });
 }
 
-export function versionResponse(request: Request, env: Record<string, unknown>): Response {
-  const repositoryRaw = String(env?.PROJECT_REPOSITORY_URL || '').trim();
-  let repository: string | undefined;
-  try {
-    const url = new URL(repositoryRaw);
-    repository = url.protocol === 'https:' ? url.href.replace(/\/$/, '') : undefined;
-  } catch { repository = undefined; }
-// Public endpoint: expose only branding/version + build identity. Never
-// leak configuration status, node counts, or topology here — that
-// belongs to the auth-protected /health (and server logs).
-// `version` is the release identity (semver, hand-bumped at release time);
-// `build` is the deployment identity (commit SHA, injected by CI).
-// The two are SEPARATE — a release version and the specific build
-// deployed under that version.
-  return new Response(JSON.stringify({
-    name: APP_META.name,
-    display_name: APP_META.displayName,
-    version: APP_META.version,
-    build: resolveBuildSha(env),
-    runtime: 'Cloudflare Workers',
-    protocols: ['OpenAI Chat Completions', 'OpenAI Responses', 'Anthropic Messages'],
-    ...(repository ? { repository } : {}),
-  }, null, 2), {
-    status: 200,
-    headers: {
-      'content-type': 'application/json;charset=UTF-8',
-      'cache-control': 'no-store',
-      ...corsHeaders(request, env),
-    },
-  });
-}
-
 export function modelsListResponse(request: Request, env: Record<string, unknown>, requestId: string, authResult: AuthResult): Response {
   const config = loadGatewayConfig(env);
   const list = buildModelsList(config.nodes, env, authResult);
-  return new Response(JSON.stringify({
-    ...list,
-    observed_at: new Date().toISOString(),
-  }), {
+  return new Response(JSON.stringify({ ...list, observed_at: new Date().toISOString() }), {
     status: 200,
     headers: {
       'content-type': 'application/json;charset=UTF-8',
@@ -392,17 +313,12 @@ export function sanitizedInternalError(request: Request, env: Record<string, unk
     : jsonError(request, env, 500, message, undefined, requestId);
 }
 
-// Route-aware variant: routes to the correct error envelope shape based on
-// the detected route. OpenAI Responses gets its own shape; everything else
-// falls through to the existing boolean logic.
 export function sanitizedInternalErrorForRoute(request: Request, env: Record<string, unknown>, route: string, requestId: string): Response {
   const message = 'Internal gateway error.';
   if (route === 'anthropic_messages' || route === 'anthropic_count_tokens') {
     return anthropicErrorResponseSafe(request, env, message, requestId);
   }
-  if (route === 'openai_responses') {
-    return responsesErrorResponseSafe(request, env, message, requestId);
-  }
+  if (route === 'openai_responses') return responsesErrorResponseSafe(request, env, message, requestId);
   return jsonError(request, env, 500, message, undefined, requestId);
 }
 

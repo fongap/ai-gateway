@@ -1,9 +1,9 @@
 # Local development only (wrangler dev). Copy to .dev.vars and fill in real values.
 # .dev.vars is gitignored; never commit real credentials.
 
-# ============ Gateway Access Groups ============
-# Configure one or more groups. Each configured Key has its own model allowlist.
-# Missing/empty Models is fail-closed and grants that Key zero models.
+# ============ Gateway access groups ============
+# Configure one or more groups. Each configured key has its own model allowlist.
+# Missing/empty models is fail-closed and grants that key zero models.
 GATEWAY_ACCESS_KEY_AIR="replace-with-a-long-random-air-key"
 GATEWAY_ACCESS_MODELS_AIR="general-air"
 # GATEWAY_ACCESS_KEY_PRO="replace-with-a-long-random-pro-key"
@@ -15,80 +15,75 @@ GATEWAY_ACCESS_MODELS_AIR="general-air"
 # GATEWAY_ACCESS_KEY_AGENT="replace-with-a-long-random-agent-key"
 # GATEWAY_ACCESS_MODELS_AGENT="agent"
 
-# ============ Node configs: plain variables, NO credentials allowed ============
-# Tier comes from the variable prefix. Shard values are JSON arrays; each shard
-# stays under the 5 KB Cloudflare variable limit (split at node boundaries).
-# Node-level concurrency/RPM limits are intentionally absent. Tier 1 learns
-# capacity from live load and upstream feedback; use policy max_in_flight only
-# when an upstream has a known per-account concurrency contract.
+# ============ Tier roles ============
+# Tier 1: free/effectively-free capacity; primary daily traffic and reliability focus.
+# Tier 2: reserved for future membership/subscription entitlement adapters.
+# Tier 3: paid API capacity; protected final fallback.
+#
+# Do not use Tier 2 as another generic API-key pool. Leave it unconfigured until
+# a concrete membership/subscription adapter exists.
 
+# ============ Node config: explicit current schema ============
+# Required per node: id, provider, protocol, surfaces, base_url, models.
+# Optional: priority (integer number, default 100; ignored by Tier 1 P2C).
+# No credentials, limits, implicit protocol/surfaces, model arrays, or old aliases.
 TIER1_NODES_CONFIG_01='[
   {"id":"nvidia-01","provider":"nvidia","protocol":"openai","surfaces":["chat_completions"],"base_url":"https://integrate.api.nvidia.com/v1","priority":10,"models":{"general-air":"deepseek-ai/deepseek-v3.1","code-pro":"qwen/qwen3-coder-480b"}},
   {"id":"nvidia-02","provider":"nvidia","protocol":"openai","surfaces":["chat_completions"],"base_url":"https://integrate.api.nvidia.com/v1","priority":10,"models":{"general-air":"deepseek-ai/deepseek-v3.1"}},
   {"id":"glm-01","provider":"zhipu","protocol":"openai","surfaces":["chat_completions"],"base_url":"https://open.bigmodel.cn/api/paas/v4","priority":20,"models":{"code-max":"glm-4.7"}}
 ]'
-# Tier 1 uses Eligibility → Affinity → P2C (priority is ignored); Tier 2/3 use priority + LRU.
+
+# Tier 3 uses the same explicit Node schema only when you intentionally enable
+# paid-API fallback capacity. Example intentionally omitted to avoid encouraging
+# accidental paid fallback in a default household/small-team setup.
+
+# ============ Credentials live ONLY in tier-scoped secrets ============
+# Runtime binds by Tier + node id. Config/Secret shard numbers are independent.
 # TIER1_NODES_SECRETS_01='{"nvidia-01":"nvapi-xxx","nvidia-02":"nvapi-yyy","glm-01":"zzz.id"}'
-# TIER2_NODES_CONFIG_01='[{"id":"fallback-01","base_url":"https://fallback.example.com/v1","models":{"general-air":"fa"}}]'
-# TIER3_NODES_CONFIG_01='[{"id":"last-resort-01","base_url":"https://last.example.com/v1","models":{}}]'
+# More shards: TIER1_NODES_SECRETS_02 ... TIER1_NODES_SECRETS_10
+# Tier 2 credentials remain unset until a subscription-entitlement adapter exists.
+# Tier 3 credentials are configured only together with intentional paid-API nodes.
 
-# ============ Credentials live ONLY here (Secrets) ============
-# Secrets are tier-scoped. Runtime binds credentials by Tier + node id; 01..10
-# are shard numbers only. Config shard suffix and Secret shard suffix do NOT
-# need to match. A TIER1 credential under a TIER2 secret is a config error
-# (operator surfaces it at boot via /health).
-# TIER1_NODES_SECRETS_01='{"nvidia-01":"nvapi-xxx","openrouter-01":"sk-or-xxx"}'
-# TIER1_NODES_SECRETS_03='{"nvidia-02":"nvapi-yyy","glm-01":"zzz.id"}'
-# TIER2_NODES_SECRETS_01='{"fallback-01":"sk-fb"}'
-# TIER3_NODES_SECRETS_01='{"last-resort-01":"sk-lr"}'
-# More shards: TIER1_NODES_SECRETS_02, TIER1_NODES_SECRETS_03, ... (01..10)
-
-# ============ Optional policy / model config ============
+# ============ Optional model / request policy ============
 # MODELS_CONFIG='{"general-air":{"policy":"fast"}}'
-# POLICIES_CONFIG='{"fast":{"max_attempts":5}}'
-# Explicit local ceiling only when you know the upstream contract:
-# POLICIES_CONFIG='{"default":{"max_in_flight":4}}'
-# max_in_flight=0 or null disables the ceiling; unset is also unlimited.
+# POLICIES_CONFIG='{"default":{"max_attempts":5}}'
+# Explicit Tier 1 local ceiling only when the upstream contract is known:
+# POLICIES_CONFIG='{"default":{"max_attempts":5,"max_in_flight":4}}'
+# max_in_flight=0 or null disables the ceiling; numeric strings are invalid.
+# There is no budget_split setting: Tier order is always Tier 1 -> Tier 2 -> Tier 3.
 
 # ============ Runtime knobs (all optional) ============
-# The full list and defaults live in src/config/runtime-vars.ts (single source
-# of truth). The GitHub deployment bridge and deploy.yml inject every name
-# listed there; local dev can override any of them in this file.
-# DEFAULT VALUES (from runtime-vars.ts) ARE SHOWN IN COMMENTS — DO NOT UNCOMMENT
-# UNLESS YOU INTENTIONALLY WANT TO OVERRIDE THE CODE DEFAULTS.
-# MAX_BODY_BYTES="20971520"              # default: 20971520 (20 MB)
-# UPSTREAM_HEADERS_TIMEOUT_MS="15000"     # default: 15000 (15 s)
-# FIRST_EVENT_TIMEOUT_MS="30000"         # default: 30000 (30 s)
-# STREAM_IDLE_TIMEOUT_MS="120000"         # default: 120000 (120 s)
-# RATE_LIMIT_COOLDOWN_MS="30000"          # default: 30000 (30 s)
-# AUTH_FAIL_COOLDOWN_MS="3600000"         # default: 3600000 (1 h)
-# FAILOVER_BUDGET_MS="60000"              # default: 60000 (60 s)
-# HEDGE_DELAY_MS="3000"                   # default: 3000 (3 s)
-# MAX_HEDGES_PER_REQUEST="1"              # default: 1
-# GATEWAY_KEY_RPM="600"                   # default: 0 (disabled) — per-isolate per-key RPM cap on the gateway access key
-# LOG_LEVEL="info"                        # default: info
-# EXPOSE_UPSTREAM_INFO="false"            # default: false
-# FAKE_STREAM_PROTECTION="false"          # default: false
-# ALLOW_INSECURE_HTTP_UPSTREAM="false"     # default: false
-# ANTHROPIC_COUNT_TOKENS_MODE="approximate" # default: approximate
-# DASHBOARD_MODELS="Code-Ultra,Code-Max,Code-Pro,Ultra,Max,Pro,Air" # default: empty (show all public models)
+# Defaults live in src/config/runtime-vars.ts. Uncomment only intentional overrides.
+# MAX_BODY_BYTES="20971520"              # default: 20 MB
+# UPSTREAM_HEADERS_TIMEOUT_MS="15000"     # default: 15 s
+# FIRST_EVENT_TIMEOUT_MS="30000"         # default: 30 s
+# STREAM_IDLE_TIMEOUT_MS="120000"        # default: 120 s
+# RATE_LIMIT_COOLDOWN_MS="30000"         # default: 30 s
+# AUTH_FAIL_COOLDOWN_MS="3600000"        # default: 1 h
+# FAILOVER_BUDGET_MS="60000"             # default: 60 s
+# HEDGE_DELAY_MS="3000"                  # default: 3 s
+# MAX_HEDGES_PER_REQUEST="1"             # default: 1
+# GATEWAY_KEY_RPM="600"                  # default: 0 (disabled)
+# LOG_LEVEL="info"
+# EXPOSE_UPSTREAM_INFO="false"
+# FAKE_STREAM_PROTECTION="false"
+# ALLOW_INSECURE_HTTP_UPSTREAM="false"
+# ANTHROPIC_COUNT_TOKENS_MODE="approximate"
+# DASHBOARD_MODELS="Code-Ultra,Code-Max,Code-Pro,Ultra,Max,Pro,Air"
 
-# ============ Protocol Fallback (optional) ============
-# JSON object mapping client route to ordered fallback chains.
-# v1.3.0 supports Anthropic Messages ↔ OpenAI Chat Completions bidirectionally.
-# OpenAI Responses is Native Only. Unset/empty uses the built-in bidirectional
-# default; "disable" turns cross-protocol fallback off; explicit JSON overrides it.
+# ============ Protocol fallback (optional) ============
+# Current supported conversion is bidirectional Anthropic Messages <-> OpenAI Chat.
+# OpenAI Responses is Native Only for protocol conversion.
+# Unset/empty uses the built-in bidirectional chain; "disable" turns conversion off;
+# explicit JSON replaces the built-in mapping.
 # PROTOCOL_FALLBACKS='{"anthropic:messages":["openai:chat_completions"],"openai:chat_completions":["anthropic:messages"]}'
 
-# ============ Token-usage stream hint (all optional, fail-open) ============
-# Ask OpenAI-compatible streaming upstreams to report usage in the final chunk
-# via stream_options.include_usage. "auto" (default) uses each node's provider
-# protocol and provider quirks; "on" forces it; "off" disables it everywhere.
-# Off never breaks any request — an upstream that rejects the field just means
-# that provider's streaming usage counts as missing (never estimated).
+# ============ Token-usage stream hint (optional, fail-open) ============
+# Ask OpenAI-compatible streaming upstreams to report usage in the final chunk.
+# "auto" (default) follows provider quirks; "on" forces it; "off" disables it.
+# Missing provider usage is recorded as missing and is never estimated.
 # STREAM_INCLUDE_USAGE="auto"
-# Comma-separated provider labels to disable the streaming usage hint for:
 # STREAM_USAGE_INCLUDE_OFF_PROVIDERS="my-llm-provider"
 
-# CORS is DISABLED by default. Set an explicit origin to enable browser access:
+# CORS is disabled by default. Set an explicit origin to enable browser access:
 # ALLOWED_ORIGIN="https://your-app.example.com"
