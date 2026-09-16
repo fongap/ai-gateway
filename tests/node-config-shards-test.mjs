@@ -9,8 +9,6 @@ import {
 const node = (id, extra = {}) => ({
   id,
   provider: 'mock',
-  protocol: 'openai',
-  surfaces: ['chat_completions'],
   base_url: 'https://api.example.com/v1',
   priority: 10,
   models: { 'general-air': 'model-a' },
@@ -19,22 +17,12 @@ const node = (id, extra = {}) => ({
 
 let passed = 0;
 function test(name, fn) {
-  try {
-    fn();
-    passed += 1;
-    console.log(`ok - ${name}`);
-  } catch (error) {
-    console.error(`FAIL: ${name}`);
-    console.error(error?.stack || error);
-    process.exitCode = 1;
-  }
+  try { fn(); passed += 1; console.log(`ok - ${name}`); }
+  catch (error) { console.error(`FAIL: ${name}`); console.error(error?.stack || error); process.exitCode = 1; }
 }
 
 test('valid plan shards current nodes and tier-scoped secrets', () => {
-  const plan = buildPlan({
-    tiers: { 1: [node('a'), node('b')], 2: [node('c')] },
-    secretsMap: { a: 'cred-a', b: 'cred-b', c: 'cred-c' },
-  });
+  const plan = buildPlan({ tiers: { 1: [node('a'), node('b')], 2: [node('c')] }, secretsMap: { a: 'cred-a', b: 'cred-b', c: 'cred-c' } });
   assert.ok(plan.vars.TIER1_NODES_CONFIG_01.startsWith('[{'));
   assert.ok(plan.vars.TIER2_NODES_CONFIG_01.startsWith('[{'));
   assert.ok(plan.secrets.TIER1_NODES_SECRETS_01);
@@ -53,19 +41,17 @@ test('node ids must be unique inside and across tiers', () => {
   assert.throws(() => buildPlan({ tiers: { 1: [node('a')], 2: [node('a')] } }), /duplicate node id.*across/i);
 });
 
-test('provider protocol surfaces and models are explicit required fields', () => {
-  for (const field of ['provider', 'protocol', 'surfaces', 'models']) {
+test('provider base_url and models are explicit required fields', () => {
+  for (const field of ['provider', 'base_url', 'models']) {
     const n = node('a');
     delete n[field];
     assert.throws(() => assertNodesArray([n]), new RegExp(field));
   }
 });
 
-test('protocol and surfaces use closed vocabularies', () => {
-  assert.throws(() => assertNodesArray([node('a', { protocol: 'gemini' })]), /protocol must be/);
-  assert.throws(() => assertNodesArray([node('a', { protocol: 'anthropic', surfaces: ['chat_completions'] })]), /not valid for protocol/);
-  assert.throws(() => assertNodesArray([node('a', { surfaces: [] })]), /non-empty array/);
-  assert.doesNotThrow(() => assertNodesArray([node('a', { protocol: 'anthropic', surfaces: ['messages'] })]));
+test('protocol and surfaces are provider-owned, not node fields', () => {
+  assert.throws(() => assertNodesArray([node('a', { protocol: 'openai' })]), /unknown field "protocol"/);
+  assert.throws(() => assertNodesArray([node('a', { surfaces: ['chat_completions'] })]), /unknown field "surfaces"/);
 });
 
 test('base_url must be valid https without credentials', () => {
@@ -105,16 +91,12 @@ test('secret object is strict', () => {
 });
 
 test('oversized entry fails before producing invalid shards', () => {
-  assert.throws(
-    () => buildPlan({ tiers: { 1: [node('big', { provider: 'x'.repeat(5000) })] }, secretsMap: { big: 'x' } }),
-    /exceeds the .*-byte shard limit/,
-  );
+  assert.throws(() => buildPlan({ tiers: { 1: [node('big', { provider: 'x'.repeat(5000) })] }, secretsMap: { big: 'x' } }), /exceeds the .*-byte shard limit/);
 });
 
 test('stale managed shard lists are computed', () => {
   const plan = buildPlan({
-    tiers: { 1: [node('a')] },
-    secretsMap: { a: 'x' },
+    tiers: { 1: [node('a')] }, secretsMap: { a: 'x' },
     existingVarNames: ['TIER1_NODES_CONFIG_01', 'TIER1_NODES_CONFIG_02', 'TIER3_NODES_CONFIG_01'],
     existingSecretNames: ['TIER1_NODES_SECRETS_01', 'TIER1_NODES_SECRETS_02', 'GATEWAY_ACCESS_KEY'],
   });
